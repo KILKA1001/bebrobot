@@ -371,26 +371,27 @@ async def save_data():
             }).execute()
 
         # Сохраняем историю
-        # внутри функции save_data
-for user_id, user_history in history.items():
-    for entry in user_history:
-        insert_data = {
-            'user_id': user_id,
-                        'points': entry['points'],
-                        'reason': entry['reason'],
-                        'author_id': entry.get('author_id'),
-                        'timestamp': entry.get('timestamp', datetime.now().isoformat())
-        }
-        if entry.get('author_id') is not None:
-            insert_data['author_id'] = int(entry['author_id'])
+        for user_id, user_history in history.items():
+            for entry in user_history:
+                insert_data = {
+                    'user_id': user_id,
+                    'points': entry['points'],
+                    'reason': entry['reason'],
+                    'timestamp': entry.get('timestamp', datetime.now().isoformat())
+                }
+                if entry.get('author_id') is not None:
+                    insert_data['author_id'] = int(entry['author_id'])
 
-        res = supabase.table('history').insert(insert_data).execute()
-        print("History insert result:", res)
+                res = supabase.table('history').insert(insert_data).execute()
+                print("History insert result:", res)
 
     except Exception as e:
         print(f"Ошибка при сохранении данных: {e}")
+        raise
+
+
 async def load_data():
-    global scores, history  # Объявляем глобальные переменные один раз в начале функции
+    global scores, history
     try:
         # Загружаем баллы
         points_response = supabase.table('points').select('*').execute()
@@ -408,13 +409,15 @@ async def load_data():
                 history[user_id].append({
                     'points': record['points'],
                     'reason': record['reason'],
-                    'author_id': record['author_id'],
+                    'author_id': record.get('author_id'),
                     'timestamp': record['timestamp']
                 })
+
     except Exception as e:
         print(f"Ошибка при загрузке данных: {e}")
         scores = {}
         history = {}
+        raise
 
 res = supabase.table('history').insert(insert_data).execute()
 print("History insert result:", res)
