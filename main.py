@@ -410,5 +410,9 @@ async def load_data():
         scores = {}
         history = {}
 
+res = supabase.table('history').insert(insert_data).execute()
+print("History insert result:", res)
+
+
 
 bot.run(os.getenv("TOKEN"))
