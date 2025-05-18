@@ -335,7 +335,7 @@ print(bot.all_commands.keys())
 print(dir(data))
 print(data.scores)
 
-TOKEN = "MTM3MjczMzgwODU1NzgxNzg4Ng.GsFdAJ.dvDQktkecbOZYpg0GFq1VHePNNIodoSZJ9KLXE"
+TOKEN = "MTM3MjczMzgwODU1NzgxNzg4Ng.GllxwR.EJoAVZ8bKbfZb9JlJfMTpT86HlrPITld4D3zeQ"
 
 bot.run(TOKEN)
 
