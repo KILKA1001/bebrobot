@@ -345,8 +345,4 @@ load_dotenv()  # Загружает переменные из .env файла в
 
 TOKEN = os.getenv('DISCORD_TOKEN')
 
-if TOKEN is None:
-    print("Ошибка: Токен не найден! Проверьте файл .env")
-    exit(1)
-    
 bot.run(os.getenv("TOKEN"))
