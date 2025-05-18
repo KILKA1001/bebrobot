@@ -384,6 +384,8 @@ async def save_data():
     except Exception as e:
         print(f"Ошибка при сохранении данных: {e}")
 async def load_data():
+    global scores
+    global history
     # Загрузка данных
     try:
         # Загружаем баллы
