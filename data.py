@@ -79,14 +79,20 @@ async def load_data() -> None:
     """Загружает данные из базы данных"""
     global scores, history
     try:
+        # Очищаем существующие данные
+        scores.clear()
+        history.clear()
+        
         # Загружаем баллы
         points_response = supabase.table('points').select('*').execute()
+        print("Loaded points:", points_response.data)
         if points_response.data:
             for record in points_response.data:
                 scores[int(record['user_id'])] = float(record['score'])
 
         # Загружаем историю
-        history_response = supabase.table('history').select('*').execute()
+        history_response = supabase.table('history').select('*').order('timestamp').execute()
+        print("Loaded history:", history_response.data)
         if history_response.data:
             for record in history_response.data:
                 user_id = int(record['user_id'])
@@ -98,6 +104,7 @@ async def load_data() -> None:
                     'author_id': int(record['author_id']) if record.get('author_id') else None,
                     'timestamp': str(record['timestamp'])
                 })
+        print("Final history state:", history)
     except Exception as e:
         print(f"Ошибка при загрузке данных: {e}")
         scores = {}
