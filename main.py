@@ -371,16 +371,22 @@ async def save_data():
             }).execute()
 
         # Сохраняем историю
-        for user_id, user_history in history.items():
-            for entry in user_history:
-                if isinstance(entry, dict):
-                    data = supabase.table('history').insert({
-                        'user_id': user_id,
+        # внутри функции save_data
+for user_id, user_history in history.items():
+    for entry in user_history:
+        insert_data = {
+            'user_id': user_id,
                         'points': entry['points'],
                         'reason': entry['reason'],
                         'author_id': entry.get('author_id'),
                         'timestamp': entry.get('timestamp', datetime.now().isoformat())
-                    }).execute()
+        }
+        if entry.get('author_id') is not None:
+            insert_data['author_id'] = int(entry['author_id'])
+
+        res = supabase.table('history').insert(insert_data).execute()
+        print("History insert result:", res)
+
     except Exception as e:
         print(f"Ошибка при сохранении данных: {e}")
 async def load_data():
