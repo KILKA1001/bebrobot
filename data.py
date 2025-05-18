@@ -31,16 +31,26 @@ async def save_data() -> None:
         # Сохраняем историю
         for user_id, user_history in history.items():
             for entry in user_history:
-                insert_data = {
-                    'user_id': int(user_id),
-                    'points': float(entry['points']),
-                    'reason': str(entry['reason']),
-                    'timestamp': entry.get('timestamp', datetime.now().isoformat())
-                }
-                if entry.get('author_id') is not None:
-                    insert_data['author_id'] = int(entry['author_id'])
-                else:
-                    insert_data['author_id'] = 0
+                if isinstance(entry, dict):  # Новый формат
+                    insert_data = {
+                        'user_id': int(user_id),
+                        'points': float(entry['points']),
+                        'reason': str(entry['reason']),
+                        'timestamp': entry.get('timestamp', datetime.now().isoformat())
+                    }
+                    if entry.get('author_id') is not None:
+                        insert_data['author_id'] = int(entry['author_id'])
+                    else:
+                        insert_data['author_id'] = 0
+                else:  # Старый формат (tuple)
+                    points, reason = entry
+                    insert_data = {
+                        'user_id': int(user_id),
+                        'points': float(points),
+                        'reason': str(reason),
+                        'timestamp': datetime.now().isoformat(),
+                        'author_id': 0
+                    }
 
                 supabase.table('history').insert(insert_data).execute()
     except Exception as e:
