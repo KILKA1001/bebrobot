@@ -418,7 +418,6 @@ async def load_data():
         history = {}
         raise
 
-res = supabase.table('history').insert(insert_data).execute()
 print("History insert result:", res)
 
 
