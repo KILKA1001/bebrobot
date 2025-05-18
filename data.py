@@ -23,38 +23,48 @@ async def save_data() -> None:
     try:
         # Обновляем или создаем записи баллов
         for user_id, score in scores.items():
-            supabase.table('points').upsert({
-                'user_id': int(user_id),
-                'score': float(score)
-            }).execute()
+            try:
+                response = supabase.table('points').upsert({
+                    'user_id': int(user_id),
+                    'score': float(score)
+                }).execute()
+                print(f"Points saved for user {user_id}: {response}")
+            except Exception as e:
+                print(f"Error saving points for user {user_id}: {e}")
+                continue
 
         # Сохраняем историю
         for user_id, user_history in history.items():
             for entry in user_history:
-                if isinstance(entry, dict):  # Новый формат
-                    insert_data = {
-                        'user_id': int(user_id),
-                        'points': float(entry['points']),
-                        'reason': str(entry['reason']),
-                        'timestamp': entry.get('timestamp', datetime.now().isoformat())
-                    }
-                    if entry.get('author_id') is not None:
-                        insert_data['author_id'] = int(entry['author_id'])
-                    else:
-                        insert_data['author_id'] = 0
-                else:  # Старый формат (tuple)
-                    points, reason = entry
-                    insert_data = {
-                        'user_id': int(user_id),
-                        'points': float(points),
-                        'reason': str(reason),
-                        'timestamp': datetime.now().isoformat(),
-                        'author_id': 0
-                    }
+                try:
+                    if isinstance(entry, dict):  # Новый формат
+                        insert_data = {
+                            'user_id': int(user_id),
+                            'points': float(entry['points']),
+                            'reason': str(entry['reason']),
+                            'timestamp': entry.get('timestamp', datetime.now().isoformat())
+                        }
+                        if entry.get('author_id') is not None:
+                            insert_data['author_id'] = int(entry['author_id'])
+                        else:
+                            insert_data['author_id'] = 0
+                    else:  # Старый формат (tuple)
+                        points, reason = entry
+                        insert_data = {
+                            'user_id': int(user_id),
+                            'points': float(points),
+                            'reason': str(reason),
+                            'timestamp': datetime.now().isoformat(),
+                            'author_id': 0
+                        }
 
-                supabase.table('history').insert(insert_data).execute()
+                    response = supabase.table('history').insert(insert_data).execute()
+                    print(f"History saved for user {user_id}: {response}")
+                except Exception as e:
+                    print(f"Error saving history for user {user_id}: {e}")
+                    continue
     except Exception as e:
-        print(f"Ошибка при сохранении данных: {e}")
+        print(f"Critical error saving data: {e}")
         raise
 
 async def load_data() -> None:
