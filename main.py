@@ -384,9 +384,7 @@ async def save_data():
     except Exception as e:
         print(f"Ошибка при сохранении данных: {e}")
 async def load_data():
-    global scores
-    global history
-    # Загрузка данных
+    global scores, history
     try:
         # Загружаем баллы
         points_response = supabase.table('points').select('*').execute()
@@ -398,7 +396,6 @@ async def load_data():
         history_response = supabase.table('history').select('*').execute()
         if history_response.data:
             for record in history_response.data:
-                global history
                 user_id = record['user_id']
                 if user_id not in history:
                     history[user_id] = []
