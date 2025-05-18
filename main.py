@@ -349,4 +349,4 @@ if TOKEN is None:
     print("Ошибка: Токен не найден! Проверьте файл .env")
     exit(1)
     
-bot.run(TOKEN)
+bot.run(os.getenv("TOKEN"))
