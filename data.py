@@ -1,42 +1,107 @@
-import json
+
+from supabase import create_client
 import os
+from datetime import datetime
+from dotenv import load_dotenv
 
-DATA_FILE = 'scores.json'
-HISTORY_FILE = 'history.json'
+load_dotenv()
 
-# Начальные данные
+# Инициализация Supabase клиента
+if not os.getenv('SUPABASE_URL') or not os.getenv('SUPABASE_KEY'):
+    raise ValueError("Missing Supabase credentials in environment variables")
+
+supabase = create_client(
+    os.getenv('SUPABASE_URL'),
+    os.getenv('SUPABASE_KEY')
+)
+
 scores = {}
 history = {}
 
-def load_data():
+async def save_data():
+    """Сохраняет все изменения в базу данных"""
+    try:
+        # Обновляем или создаем записи баллов
+        for user_id, score in scores.items():
+            supabase.table('points').upsert({
+                'user_id': int(user_id),
+                'score': float(score)
+            }).execute()
+
+        # Сохраняем историю
+        for user_id, user_history in history.items():
+            for entry in user_history:
+                insert_data = {
+                    'user_id': int(user_id),
+                    'points': float(entry['points']),
+                    'reason': str(entry['reason']),
+                    'timestamp': entry.get('timestamp', datetime.now().isoformat())
+                }
+                if entry.get('author_id') is not None:
+                    insert_data['author_id'] = int(entry['author_id'])
+                    
+                supabase.table('history').insert(insert_data).execute()
+    except Exception as e:
+        print(f"Ошибка при сохранении данных: {e}")
+        raise
+
+async def load_data():
+    """Загружает данные из базы данных"""
     global scores, history
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, 'r') as f:
-            scores = {int(k): float(v) for k, v in json.load(f).items()}
-    else:
+    try:
+        # Загружаем баллы
+        points_response = supabase.table('points').select('*').execute()
+        if points_response.data:
+            for record in points_response.data:
+                scores[int(record['user_id'])] = float(record['score'])
+
+        # Загружаем историю
+        history_response = supabase.table('history').select('*').execute()
+        if history_response.data:
+            for record in history_response.data:
+                user_id = int(record['user_id'])
+                if user_id not in history:
+                    history[user_id] = []
+                history[user_id].append({
+                    'points': float(record['points']),
+                    'reason': str(record['reason']),
+                    'author_id': int(record['author_id']) if record.get('author_id') else None,
+                    'timestamp': str(record['timestamp'])
+                })
+    except Exception as e:
+        print(f"Ошибка при загрузке данных: {e}")
         scores = {}
-
-    if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, 'r') as f:
-            loaded = json.load(f)
-            # Проверка на формат: кортеж или словарь
-            def parse_entry(entry):
-                if isinstance(entry, dict):
-                    return entry
-                elif isinstance(entry, list) and len(entry) == 2:
-                    return {
-                        'points': float(entry[0]),
-                        'reason': str(entry[1]),
-                        'author_id': None,
-                        'timestamp': None
-                    }
-                return {}
-            history = {int(k): [parse_entry(e) for e in v] for k, v in loaded.items()}
-    else:
         history = {}
+        raise
 
-def save_data():
-    with open(DATA_FILE, 'w') as f:
-        json.dump({str(k): v for k, v in scores.items()}, f)
-    with open(HISTORY_FILE, 'w') as f:
-        json.dump({str(k): v for k, v in history.items()}, f)
+async def add_points(user_id: int, points: float, reason: str, author_id: int = None):
+    """Добавляет баллы пользователю"""
+    try:
+        # Обновляем баллы
+        current_score = scores.get(user_id, 0)
+        new_score = current_score + points
+        scores[user_id] = new_score
+
+        # Добавляем запись в историю
+        timestamp = datetime.now().isoformat()
+        history_entry = {
+            'points': points,
+            'reason': reason,
+            'author_id': author_id,
+            'timestamp': timestamp
+        }
+        
+        if user_id not in history:
+            history[user_id] = []
+        history[user_id].append(history_entry)
+
+        # Сохраняем изменения в базу
+        await save_data()
+        return True
+    except Exception as e:
+        print(f"Ошибка при добавлении баллов: {e}")
+        return False
+
+async def remove_points(user_id: int, points: float, reason: str, author_id: int = None):
+    """Удаляет баллы у пользователя"""
+    return await add_points(user_id, -points, reason, author_id)

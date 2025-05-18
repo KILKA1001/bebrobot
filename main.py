@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import data
 from keep_alive import keep_alive
 from dotenv import load_dotenv
+from supabase import create_client
 
 # Константы
 COMMAND_PREFIX = '?'
@@ -63,7 +64,8 @@ async def update_roles(member: discord.Member):
 async def add_points(ctx, member: discord.Member, points: float, *, reason: str = 'Без причины'):
     user_id = member.id
     scores[user_id] = scores.get(user_id, 0) + points
-    timestamp = datetime.now(timezone.utc).isoformat()
+    timestamp = datetime.now(timezone.utc)
+    formatted_date = timestamp.strftime('%d.%m.%Y %H:%M:%S UTC')
 
     history.setdefault(user_id, []).append({
         'points': points,
@@ -72,7 +74,7 @@ async def add_points(ctx, member: discord.Member, points: float, *, reason: str 
         'timestamp': timestamp
     })
 
-    save_data()
+    await save_data()
     await update_roles(member)
 
     embed = discord.Embed(
@@ -83,6 +85,7 @@ async def add_points(ctx, member: discord.Member, points: float, *, reason: str 
     embed.add_field(name="➕ Количество:", value=f"**{points}** баллов", inline=False)
     embed.add_field(name="📝 Причина:", value=reason, inline=False)
     embed.add_field(name="🎯 Текущий баланс:", value=f"{scores[user_id]} баллов", inline=False)
+    embed.add_field(name="⏰ Время:", value=formatted_date, inline=False)
 
     await ctx.send(embed=embed)
 
@@ -95,7 +98,9 @@ async def remove_points(ctx, member: discord.Member, points: float, *, reason: s
     if scores[user_id] < 0:
         scores[user_id] = 0
 
-    timestamp = datetime.now(timezone.utc).isoformat()
+    timestamp = datetime.now(timezone.utc)
+    formatted_date = timestamp.strftime('%d.%m.%Y %H:%M:%S UTC')
+
     history.setdefault(user_id, []).append({
         'points': -points,
         'reason': reason,
@@ -103,7 +108,7 @@ async def remove_points(ctx, member: discord.Member, points: float, *, reason: s
         'timestamp': timestamp
     })
 
-    save_data()
+    await save_data()
     await update_roles(member)
 
     embed = discord.Embed(
@@ -114,6 +119,7 @@ async def remove_points(ctx, member: discord.Member, points: float, *, reason: s
     embed.add_field(name="➖ Количество:", value=f"**{points}** баллов", inline=False)
     embed.add_field(name="📝 Причина:", value=reason, inline=False)
     embed.add_field(name="🎯 Текущий баланс:", value=f"{scores[user_id]} баллов", inline=False)
+    embed.add_field(name="⏰ Время:", value=formatted_date, inline=False)
 
     await ctx.send(embed=embed)
 @bot.command(name='points')
@@ -162,6 +168,7 @@ async def leaderboard(ctx, top: int = 10):
         else:
             embed.add_field(name=f"{i}. Пользователь с ID {user_id}", value=f"Баллы: {points_val}", inline=False)
     await ctx.send(embed=embed)
+
 
 
 @bot.command(name='history')
@@ -218,7 +225,6 @@ async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 
 
     await ctx.send(embed=embed)
 
-
 @bot.command(name='roles')
 async def roles_list(ctx):
     desc = ""
@@ -259,7 +265,7 @@ async def send_greetings(channel, user_list):
 
     @bot.event
     async def on_ready():
-        load_data()  # Загрузка из файла (data.py)
+        await load_data()  # Загрузка из Supabase (data.py)
         print(f'Бот {bot.user} запущен! Команд зарегистрировано: {len(bot.commands)}')
     for cmd in bot.commands:
         print(f"- {cmd.name}")
@@ -269,7 +275,7 @@ async def send_greetings(channel, user_list):
 async def autosave_task():
     await bot.wait_until_ready()
     while not bot.is_closed():
-        save_data()
+        await save_data()
         print("Данные сохранены автоматически.")
         await asyncio.sleep(300)
 
@@ -299,7 +305,7 @@ async def autosave_task():
         if not user_history:
             del history[user_id]
 
-        save_data()
+        await save_data()
         await update_roles(member)
 
         embed = discord.Embed(
@@ -346,5 +352,65 @@ load_dotenv()  # Загружает переменные из .env файла в
 print("TOKEN:", os.getenv("TOKEN"))
 
 TOKEN = os.getenv('DISCORD_TOKEN')
+
+# Инициализация Supabase клиента
+
+# Приходится инициализировать здесь, чтобы переменные окружения успели загрузиться
+supabase = create_client(
+    os.getenv('SUPABASE_URL'),
+    os.getenv('SUPABASE_KEY')
+)
+
+async def save_data():
+    try:
+        # Сохраняем баллы
+        for user_id, score in scores.items():
+            data = supabase.table('points').upsert({
+                'user_id': user_id,
+                'score': score
+            }).execute()
+
+        # Сохраняем историю
+        for user_id, user_history in history.items():
+            for entry in user_history:
+                if isinstance(entry, dict):
+                    data = supabase.table('history').insert({
+                        'user_id': user_id,
+                        'points': entry['points'],
+                        'reason': entry['reason'],
+                        'author_id': entry.get('author_id'),
+                        'timestamp': entry.get('timestamp', datetime.now().isoformat())
+                    }).execute()
+    except Exception as e:
+        print(f"Ошибка при сохранении данных: {e}")
+async def load_data():
+    # Загрузка данных
+    try:
+        # Загружаем баллы
+        points_response = supabase.table('points').select('*').execute()
+        if points_response.data:
+            for record in points_response.data:
+                scores[record['user_id']] = record['score']
+
+        # Загружаем историю
+        history_response = supabase.table('history').select('*').execute()
+        if history_response.data:
+            for record in history_response.data:
+                global history
+                user_id = record['user_id']
+                if user_id not in history:
+                    history[user_id] = []
+                history[user_id].append({
+                    'points': record['points'],
+                    'reason': record['reason'],
+                    'author_id': record['author_id'],
+                    'timestamp': record['timestamp']
+                })
+    except Exception as e:
+        print(f"Ошибка при загрузке данных: {e}")
+        global scores
+        global history
+        scores = {}
+        history = {}
 
 bot.run(os.getenv("TOKEN"))
