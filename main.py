@@ -4,12 +4,15 @@ import json
 import os
 from typing import Optional
 import asyncio
-from data import scores, history, save_data, load_data
+from database import db
 from datetime import datetime, timezone
-import data
 from keep_alive import keep_alive
 from dotenv import load_dotenv
 from supabase import create_client
+
+# Initialize global variables
+scores = {}
+history = {}
 
 # Константы
 COMMAND_PREFIX = '?'
@@ -405,4 +408,9 @@ async def load_data():
 # Start the keep-alive server
 keep_alive()
 
-bot.run(os.getenv("TOKEN"))
+# Run the bot
+TOKEN = os.getenv('DISCORD_TOKEN')
+if not TOKEN:
+    print("Error: DISCORD_TOKEN not found in environment variables")
+else:
+    bot.run(TOKEN)
