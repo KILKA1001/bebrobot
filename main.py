@@ -335,23 +335,7 @@ print(bot.all_commands.keys())
 print(dir(data))
 print(data.scores)
 
-from dotenv import load_dotenv
-import os
-
-load_dotenv()  # Загружает переменные из .env файла в окружение
-
-TOKEN = os.getenv('DISCORD_TOKEN')
-
-if TOKEN is None:
-    print("Ошибка: Токен не найден! Проверьте файл .env и переменную DISCORD_TOKEN")
-    exit(1)
-
-@bot.event
-async def on_ready():
-    print(f'Logged in as {bot.user}!')
-
-keep_alive()  # Поддерживаем работу через веб-сервер
+TOKEN = "MTM3MjczMzgwODU1NzgxNzg4Ng.GsFdAJ.dvDQktkecbOZYpg0GFq1VHePNNIodoSZJ9KLXE"
 
 bot.run(TOKEN)
-
 
