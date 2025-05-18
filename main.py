@@ -405,9 +405,4 @@ async def load_data():
 # Start the keep-alive server
 keep_alive()
 
-# Run the bot
-TOKEN = os.getenv('DISCORD_TOKEN')
-if not TOKEN:
-    print("Error: DISCORD_TOKEN not found in environment variables")
-else:
-    bot.run(TOKEN)
+bot.run(os.getenv("TOKEN"))
