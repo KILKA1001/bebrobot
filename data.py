@@ -1,8 +1,8 @@
-
 from supabase import create_client
 import os
 from datetime import datetime
 from dotenv import load_dotenv
+from typing import Dict, List, Any, Optional
 
 load_dotenv()
 
@@ -15,10 +15,10 @@ supabase = create_client(
     os.getenv('SUPABASE_KEY')
 )
 
-scores = {}
-history = {}
+scores: Dict[int, float] = {}
+history: Dict[int, List[Dict[str, Any]]] = {}
 
-async def save_data():
+async def save_data() -> None:
     """Сохраняет все изменения в базу данных"""
     try:
         # Обновляем или создаем записи баллов
@@ -39,13 +39,15 @@ async def save_data():
                 }
                 if entry.get('author_id') is not None:
                     insert_data['author_id'] = int(entry['author_id'])
-                    
+                else:
+                    insert_data['author_id'] = 0
+
                 supabase.table('history').insert(insert_data).execute()
     except Exception as e:
         print(f"Ошибка при сохранении данных: {e}")
         raise
 
-async def load_data():
+async def load_data() -> None:
     """Загружает данные из базы данных"""
     global scores, history
     try:
@@ -74,7 +76,7 @@ async def load_data():
         history = {}
         raise
 
-async def add_points(user_id: int, points: float, reason: str, author_id: int = None):
+async def add_points(user_id: int, points: float, reason: str, author_id: Optional[int] = None) -> bool:
     """Добавляет баллы пользователю"""
     try:
         # Обновляем баллы
@@ -90,7 +92,7 @@ async def add_points(user_id: int, points: float, reason: str, author_id: int = 
             'author_id': author_id,
             'timestamp': timestamp
         }
-        
+
         if user_id not in history:
             history[user_id] = []
         history[user_id].append(history_entry)
@@ -102,6 +104,6 @@ async def add_points(user_id: int, points: float, reason: str, author_id: int = 
         print(f"Ошибка при добавлении баллов: {e}")
         return False
 
-async def remove_points(user_id: int, points: float, reason: str, author_id: int = None):
+async def remove_points(user_id: int, points: float, reason: str, author_id: Optional[int] = None) -> bool:
     """Удаляет баллы у пользователя"""
     return await add_points(user_id, -points, reason, author_id)
