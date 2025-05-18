@@ -384,7 +384,7 @@ async def save_data():
     except Exception as e:
         print(f"Ошибка при сохранении данных: {e}")
 async def load_data():
-    global scores, history
+    global scores, history  # Объявляем глобальные переменные один раз в начале функции
     try:
         # Загружаем баллы
         points_response = supabase.table('points').select('*').execute()
@@ -407,9 +407,8 @@ async def load_data():
                 })
     except Exception as e:
         print(f"Ошибка при загрузке данных: {e}")
-        global scores
-        global history
         scores = {}
         history = {}
+
 
 bot.run(os.getenv("TOKEN"))
