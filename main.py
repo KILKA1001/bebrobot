@@ -23,17 +23,12 @@ ROLE_THRESHOLDS = {
     1105906310131744868: 10     # @Новый волонтер
 }
 
-# Файлы для хранения данных
-DATA_FILE = 'scores.json'
-HISTORY_FILE = 'history.json'
-
 # Интенты — обязательно message_content=True для команд
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
-
 
 async def update_roles(member: discord.Member):
     user_id = member.id
@@ -57,7 +52,6 @@ async def update_roles(member: discord.Member):
             role_to_remove = member.guild.get_role(role_id)
             if role_to_remove:
                 await member.remove_roles(role_to_remove)
-
 
 @bot.command(name='addpoints')
 @commands.has_permissions(administrator=True)
@@ -88,7 +82,6 @@ async def add_points(ctx, member: discord.Member, points: float, *, reason: str 
     embed.add_field(name="⏰ Время:", value=formatted_date, inline=False)
 
     await ctx.send(embed=embed)
-
 
 @bot.command(name='removepoints')
 @commands.has_permissions(administrator=True)
@@ -150,7 +143,6 @@ async def points(ctx, member: Optional[discord.Member] = None):
 
     await ctx.send(embed=embed)
 
-
 @bot.command(name='leaderboard')
 async def leaderboard(ctx, top: int = 10):
     if not scores:
@@ -168,8 +160,6 @@ async def leaderboard(ctx, top: int = 10):
         else:
             embed.add_field(name=f"{i}. Пользователь с ID {user_id}", value=f"Баллы: {points_val}", inline=False)
     await ctx.send(embed=embed)
-
-
 
 @bot.command(name='history')
 async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 1):
@@ -213,8 +203,12 @@ async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 
             field_value = f"{reason}\nАвтор: {author_str} {time_str}"
         else:
             # Старый формат (points, reason)
-            points_val, reason = entry
-            sign = "+" if points_val > 0 else ""
+            if isinstance(entry, tuple):
+                points_val, reason = entry
+                sign = "+" if points_val > 0 else ""
+            else:
+                print(f"Unexpected history entry format: {entry}")
+                continue # Skip this entry
             field_value = reason
 
         embed.add_field(
@@ -235,7 +229,6 @@ async def roles_list(ctx):
     embed = discord.Embed(title="Роли и стоимость баллов", description=desc, color=discord.Color.purple())
     await ctx.send(embed=embed)
 
-
 @bot.command(name='helpy')
 async def helpy_cmd(ctx):
     help_text = f"""
@@ -251,26 +244,22 @@ async def helpy_cmd(ctx):
 """
     await ctx.send(help_text)
 
-
 @bot.command()
 async def ping(ctx):
     await ctx.send('pong')
-
 
 async def send_greetings(channel, user_list):
     for user_id in user_list:
         await channel.send(f"Привет, <@{user_id}>!")
         await asyncio.sleep(1)
 
-
-    @bot.event
-    async def on_ready():
-        await load_data()  # Загрузка из Supabase (data.py)
-        print(f'Бот {bot.user} запущен! Команд зарегистрировано: {len(bot.commands)}')
+@bot.event
+async def on_ready():
+    await load_data()  # Загрузка из Supabase
+    print(f'Бот {bot.user} запущен! Команд зарегистрировано: {len(bot.commands)}')
     for cmd in bot.commands:
         print(f"- {cmd.name}")
     bot.loop.create_task(autosave_task())
-
 
 async def autosave_task():
     await bot.wait_until_ready()
@@ -279,49 +268,48 @@ async def autosave_task():
         print("Данные сохранены автоматически.")
         await asyncio.sleep(300)
 
-    @bot.command(name='undo')
-    @commands.has_permissions(administrator=True)
-    async def undo(ctx, member: discord.Member, count: int = 1):
-        user_id = member.id
-        user_history = history.get(user_id, [])
+@bot.command(name='undo')
+@commands.has_permissions(administrator=True)
+async def undo(ctx, member: discord.Member, count: int = 1):
+    user_id = member.id
+    user_history = history.get(user_id, [])
 
-        if len(user_history) < count:
-            await ctx.send(
-                f"❌ Нельзя отменить **{count}** изменений для {member.display_name}, "
-                f"так как доступно только **{len(user_history)}** записей."
-            )
-            return
-
-        undo_entries = []
-        for _ in range(count):
-            entry = user_history.pop()
-            points_val = entry.get("points", 0)
-            reason = entry.get("reason", "Без причины")
-            scores[user_id] = scores.get(user_id, 0) - points_val
-            if scores[user_id] < 0:
-                scores[user_id] = 0
-            undo_entries.append((points_val, reason))
-
-        if not user_history:
-            del history[user_id]
-
-        await save_data()
-        await update_roles(member)
-
-        embed = discord.Embed(
-            title=f"↩️ Отменено {count} изменений для {member.display_name}",
-            color=discord.Color.orange()
+    if len(user_history) < count:
+        await ctx.send(
+            f"❌ Нельзя отменить **{count}** изменений для {member.display_name}, "
+            f"так как доступно только **{len(user_history)}** записей."
         )
-        for i, (points_val, reason) in enumerate(undo_entries[::-1], start=1):
-            sign = "+" if points_val > 0 else ""
-            embed.add_field(
-                name=f"{i}. {sign}{points_val} баллов",
-                value=reason,
-                inline=False
-            )
-        await ctx.send(embed=embed)
-        await log_action_cancellation(ctx, member, undo_entries)
+        return
 
+    undo_entries = []
+    for _ in range(count):
+        entry = user_history.pop()
+        points_val = entry.get("points", 0)
+        reason = entry.get("reason", "Без причины")
+        scores[user_id] = scores.get(user_id, 0) - points_val
+        if scores[user_id] < 0:
+            scores[user_id] = 0
+        undo_entries.append((points_val, reason))
+
+    if not user_history:
+        del history[user_id]
+
+    await save_data()
+    await update_roles(member)
+
+    embed = discord.Embed(
+        title=f"↩️ Отменено {count} изменений для {member.display_name}",
+        color=discord.Color.orange()
+    )
+    for i, (points_val, reason) in enumerate(undo_entries[::-1], start=1):
+        sign = "+" if points_val > 0 else ""
+        embed.add_field(
+            name=f"{i}. {sign}{points_val} баллов",
+            value=reason,
+            inline=False
+        )
+    await ctx.send(embed=embed)
+    await log_action_cancellation(ctx, member, undo_entries)
 
 async def log_action_cancellation(ctx, member: discord.Member, entries: list):
     channel = discord.utils.get(ctx.guild.channels, name='history-log')
@@ -336,90 +324,90 @@ async def log_action_cancellation(ctx, member: discord.Member, entries: list):
 
     await channel.send("\n".join(lines))
 
-print(bot.all_commands.keys())
+# Load environment variables
+load_dotenv()
 
-print(dir(data))
-print(data.scores)
-
-@bot.event
-async def on_ready():
-    print(f'Logged in as {bot.user}!')
-
-keep_alive()  # Поддерживаем работу через веб-сервер
-
-load_dotenv()  # Загружает переменные из .env файла в окружение
-
-print("TOKEN:", os.getenv("TOKEN"))
-
-TOKEN = os.getenv('DISCORD_TOKEN')
-
-# Инициализация Supabase клиента
-
-# Приходится инициализировать здесь, чтобы переменные окружения успели загрузиться
-supabase = create_client(
-    os.getenv('SUPABASE_URL'),
-    os.getenv('SUPABASE_KEY')
-)
+# Initialize Supabase client
+try:
+    supabase = create_client(
+        os.getenv('SUPABASE_URL'),
+        os.getenv('SUPABASE_KEY')
+    )
+except Exception as e:
+    print(f"Error initializing Supabase client: {e}")
+    supabase = None
 
 async def save_data():
     try:
         # Сохраняем баллы
-        for user_id, score in scores.items():
-            supabase.table('points').upsert({
-                'user_id': user_id,
-                'score': score
-            }).execute()
+        if supabase:
+            for user_id, score in scores.items():
+                try:
+                    supabase.table('points').upsert({
+                        'user_id': user_id,
+                        'score': score
+                    }).execute()
+                except Exception as e:
+                    print(f"Error upserting points for user {user_id}: {e}")
 
         # Сохраняем историю
-        for user_id, user_history in history.items():
-            for entry in user_history:
-                insert_data = {
-                    'user_id': user_id,
-                    'points': entry['points'],
-                    'reason': entry['reason'],
-                    'timestamp': entry.get('timestamp', datetime.now().isoformat())
-                }
-                if entry.get('author_id') is not None:
-                    insert_data['author_id'] = int(entry['author_id'])
+        if supabase:
+            for user_id, user_history in history.items():
+                for entry in user_history:
+                    insert_data = {
+                        'user_id': user_id,
+                        'points': entry['points'],
+                        'reason': entry['reason'],
+                        'timestamp': entry.get('timestamp', datetime.now().isoformat())
+                    }
+                    if entry.get('author_id') is not None:
+                        insert_data['author_id'] = int(entry['author_id'])
 
-                res = supabase.table('history').insert(insert_data).execute()
-                print("History insert result:", res)
+                    try:
+                        res = supabase.table('history').insert(insert_data).execute()
+                        print("History insert result:", res)
+                    except Exception as e:
+                        print(f"Error inserting history for user {user_id}: {e}")
 
     except Exception as e:
         print(f"Ошибка при сохранении данных: {e}")
-        raise
 
 async def load_data():
     global scores, history
     try:
         # Загружаем баллы
-        points_response = supabase.table('points').select('*').execute()
-        if points_response.data:
-            for record in points_response.data:
-                scores[record['user_id']] = record['score']
+        if supabase:
+            points_response = supabase.table('points').select('*').execute()
+            if points_response and points_response.data:
+                for record in points_response.data:
+                    scores[record['user_id']] = record['score']
 
         # Загружаем историю
-        history_response = supabase.table('history').select('*').execute()
-        if history_response.data:
-            for record in history_response.data:
-                user_id = record['user_id']
-                if user_id not in history:
-                    history[user_id] = []
-                history[user_id].append({
-                    'points': record['points'],
-                    'reason': record['reason'],
-                    'author_id': record.get('author_id'),
-                    'timestamp': record['timestamp']
-                })
+        if supabase:
+            history_response = supabase.table('history').select('*').execute()
+            if history_response and history_response.data:
+                for record in history_response.data:
+                    user_id = record['user_id']
+                    if user_id not in history:
+                        history[user_id] = []
+                    history[user_id].append({
+                        'points': record['points'],
+                        'reason': record['reason'],
+                        'author_id': record.get('author_id'),
+                        'timestamp': record['timestamp']
+                    })
 
     except Exception as e:
         print(f"Ошибка при загрузке данных: {e}")
         scores = {}
         history = {}
-        raise
 
-print("History insert result:", res)
+# Start the keep-alive server
+keep_alive()
 
-
-
-bot.run(os.getenv("TOKEN"))
+# Run the bot
+TOKEN = os.getenv('DISCORD_TOKEN')
+if not TOKEN:
+    print("Error: DISCORD_TOKEN not found in environment variables")
+else:
+    bot.run(TOKEN)
