@@ -33,9 +33,10 @@ async def save_data() -> None:
                 print(f"Error saving points for user {user_id}: {e}")
                 continue
 
-        # Сохраняем историю
+        # Сохраняем историю и очищаем локальную историю после сохранения
         for user_id, user_history in history.items():
-            for entry in user_history:
+            entries_to_remove = []
+            for i, entry in enumerate(user_history):
                 try:
                     if isinstance(entry, dict):  # Новый формат
                         insert_data = {
@@ -60,9 +61,16 @@ async def save_data() -> None:
 
                     response = supabase.table('history').insert(insert_data).execute()
                     print(f"History saved for user {user_id}: {response}")
+                    entries_to_remove.append(i)  # Помечаем запись для удаления
                 except Exception as e:
                     print(f"Error saving history for user {user_id}: {e}")
                     continue
+            
+            # Удаляем сохраненные записи из локальной истории
+            for i in reversed(entries_to_remove):
+                user_history.pop(i)
+            if not user_history:  # Если история пользователя пуста, удаляем ключ
+                del history[user_id]
     except Exception as e:
         print(f"Critical error saving data: {e}")
         raise
