@@ -343,6 +343,8 @@ keep_alive()  # Поддерживаем работу через веб-серв
 
 load_dotenv()  # Загружает переменные из .env файла в окружение
 
+print("TOKEN:", os.getenv("TOKEN"))
+
 TOKEN = os.getenv('DISCORD_TOKEN')
 
 bot.run(os.getenv("TOKEN"))
