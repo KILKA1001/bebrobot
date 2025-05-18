@@ -365,7 +365,7 @@ async def save_data():
     try:
         # Сохраняем баллы
         for user_id, score in scores.items():
-            data = supabase.table('points').upsert({
+            supabase.table('points').upsert({
                 'user_id': user_id,
                 'score': score
             }).execute()
@@ -388,7 +388,6 @@ async def save_data():
     except Exception as e:
         print(f"Ошибка при сохранении данных: {e}")
         raise
-
 
 async def load_data():
     global scores, history
