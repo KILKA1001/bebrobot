@@ -310,6 +310,17 @@ async def undo(ctx, member: discord.Member, count: int = 1):
             if scores[user_id] < 0:
                 scores[user_id] = 0
             undo_entries.append((points_val, reason))
+            
+            # Добавляем запись об отмене в историю
+            moscow_tz = pytz.timezone('Europe/Moscow')
+            timestamp = datetime.now(moscow_tz).strftime("%H:%M %d-%m-%Y")
+            user_history.append({
+                'points': -points_val,
+                'reason': f"Отмена действия: {reason}",
+                'author_id': ctx.author.id,
+                'timestamp': timestamp,
+                'is_undo': True
+            })
 
         if not user_history:
             del history[user_id]
