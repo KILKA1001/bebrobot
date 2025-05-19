@@ -38,24 +38,24 @@ def load_data():
 def save_data():
     try:
         # Сохраняем баллы в Supabase
-        for user_id, points in scores.items():
-            supabase.table("scores").upsert({
-                "user_id": user_id,
-                "points": points
-            }).execute()
+        scores_data = [{"user_id": user_id, "points": points} for user_id, points in scores.items()]
+        if scores_data:
+            supabase.table("scores").upsert(scores_data).execute()
         
         # Сохраняем историю в Supabase
-        for user_id, entries in history.items():
-            supabase.table("history").upsert({
-                "user_id": user_id,
-                "history_entries": entries
-            }).execute()
+        history_data = [{"user_id": user_id, "history_entries": entries} for user_id, entries in history.items()]
+        if history_data:
+            supabase.table("history").upsert(history_data).execute()
             
     except Exception as e:
         print(f"Ошибка при сохранении в Supabase: {e}")
-        # Резервное сохранение в JSON файлы
-        with open("scores.json", "w") as f:
-            json.dump(scores, f)
-        
-        with open("history.json", "w") as f:
-            json.dump(history, f)
+        try:
+            # Резервное сохранение в JSON файлы
+            with open("scores.json", "w", encoding='utf-8') as f:
+                json.dump(scores, f, ensure_ascii=False, indent=2)
+            
+            with open("history.json", "w", encoding='utf-8') as f:
+                json.dump(history, f, ensure_ascii=False, indent=2)
+            print("Данные успешно сохранены локально")
+        except Exception as e:
+            print(f"Ошибка при локальном сохранении: {e}")
