@@ -18,6 +18,7 @@ def load_data():
     scores_data = supabase.table("scores").select("*").execute()
     # Загружаем данные об истории
     history_data = supabase.table("history").select("*").execute()
+    print("Loaded history:", history)
 
     # Assuming data is stored in JSON files
     if os.path.exists("scores.json"):
