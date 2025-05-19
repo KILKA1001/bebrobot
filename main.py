@@ -167,7 +167,7 @@ async def leaderboard(ctx, top: int = 10):
         if member:
             user_roles = [role for role in member.roles if role.id in ROLE_THRESHOLDS]
             role_names = ', '.join(role.name for role in user_roles) if user_roles else 'Нет роли'
-            embed.add_field(name=f"{i}. {member.display_name}", value=f"Баллы: {points_val}\nРоли: {role_names}", inline=False)
+            embed.add_field(name=f"{i}. {member.display_name}", value=f"Баллы: {points_val}\nРоль: {role_names}", inline=False)
         else:
             embed.add_field(name=f"{i}. Пользователь с ID {user_id}", value=f"Баллы: {points_val}", inline=False)
     await ctx.send(embed=embed)
