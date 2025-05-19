@@ -61,6 +61,8 @@ async def add_points(ctx, member: discord.Member, points: str, *, reason: str = 
         scores[user_id] = scores.get(user_id, 0) + points_float
         moscow_tz = pytz.timezone('Europe/Moscow')
         timestamp = datetime.now(moscow_tz).isoformat()
+        if points_float < 0:
+            scores[user_id] = 0
     except ValueError:
         await ctx.send("Ошибка: введите корректное число")
         return
