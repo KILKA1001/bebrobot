@@ -1,17 +1,24 @@
+# Основные импорты Discord
 import discord
 from discord.ext import commands
+
+# Системные импорты
 import json
 import os
 from typing import Optional
 import asyncio
-from data import scores, history, save_data, load_data
 from datetime import datetime, timezone
 import pytz
+
+# Локальные импорты
+from data import scores, history, save_data, load_data
 import data
 from keep_alive import keep_alive
 from dotenv import load_dotenv
-from roles_and_activities import ACTIVITY_CATEGORIES
-from roles_and_activities import ROLE_THRESHOLDS
+from roles_and_activities import ACTIVITY_CATEGORIES, ROLE_THRESHOLDS
+from history_manager import format_history_embed
+
+# Настройки бота
 
 # Константы
 COMMAND_PREFIX = '?'
@@ -60,7 +67,7 @@ async def add_points(ctx, member: discord.Member, points: str, *, reason: str = 
         user_id = member.id
         scores[user_id] = scores.get(user_id, 0) + points_float
         moscow_tz = pytz.timezone('Europe/Moscow')
-        timestamp = datetime.now(moscow_tz).isoformat()
+        timestamp = datetime.now(moscow_tz).strftime("%H:%M %d-%m-%Y")
         if points_float < 0:
             scores[user_id] = 0
     except ValueError:
@@ -104,7 +111,7 @@ async def remove_points(ctx, member: discord.Member, points: str, *, reason: str
         return
 
     moscow_tz = pytz.timezone('Europe/Moscow')
-    timestamp = datetime.now(moscow_tz).isoformat()
+    timestamp = datetime.now(moscow_tz).strftime("%H:%M %d-%m-%Y")
     history.setdefault(user_id, []).append({
         'points': -float(points.replace(',', '.')),
         'reason': reason,
@@ -175,14 +182,15 @@ async def leaderboard(ctx, top: int = 10):
     await ctx.send(embed=embed)
 
 
+from history_manager import format_history_embed
+
 @bot.command(name='history')
 async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 1):
-    # Проверка: если участник не указан — используем автора команды
     if member is None:
-        if not isinstance(ctx.author, discord.Member):
-            await ctx.send("Не удалось определить пользователя. Пожалуйста, используйте команду на сервере.")
-            return
         member = ctx.author
+    if member is None:
+        await ctx.send("Не удалось определить пользователя. Пожалуйста, попробуйте еще раз.")
+        return
 
     user_id = member.id
     entries_per_page = 5
@@ -191,7 +199,9 @@ async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 
         await ctx.send(f"История начисления баллов для {member.display_name} пуста.")
         return
 
-    total_pages = (len(history[user_id]) + entries_per_page - 1) // entries_per_page
+    total_entries = len(history[user_id])
+    total_pages = (total_entries + entries_per_page - 1) // entries_per_page
+
     if page < 1 or page > total_pages:
         await ctx.send(f"Страница {page} не существует. Доступно всего {total_pages} страниц.")
         return
@@ -200,34 +210,7 @@ async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 
     end = start + entries_per_page
     page_history = history[user_id][start:end]
 
-    embed = discord.Embed(
-        title=f"История баллов {member.display_name} (страница {page}/{total_pages})",
-        color=discord.Color.green()
-    )
-
-    for entry in page_history:
-        if isinstance(entry, dict):
-            points_val = float(entry.get("points", 0))
-            reason = entry.get("reason", "Без причины")
-            author_id = entry.get("author_id")
-            timestamp = entry.get("timestamp")
-            sign = "+" if points_val > 0 else ""
-            author_str = f"<@{author_id}>" if author_id else "Неизвестен"
-            time_str = f"({timestamp})" if timestamp else ""
-            field_value = f"{reason}\nАвтор: {author_str} {time_str}"
-        else:
-            # Старый формат (points, reason)
-            points_val, reason = entry
-            sign = "+" if points_val > 0 else ""
-            field_value = reason
-
-        embed.add_field(
-            name=f"{sign}{points_val} баллов",
-            value=field_value,
-            inline=False
-        )
-
-    await ctx.send(embed=embed)
+    embed = format_history_embed(page_history, member.display_name, page, total_entries)
 
 
 @bot.command(name='roles')
