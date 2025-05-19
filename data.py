@@ -13,27 +13,42 @@ history = {}
 
 def load_data():
     global scores, history
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    scores_path = os.path.join(current_dir, "scores.json")
+    history_path = os.path.join(current_dir, "history.json")
+    
+    print("Загрузка данных...")
+    print(f"Текущая директория: {current_dir}")
+    
     try:
-        # Загружаем данные из Supabase
-        scores_data = supabase.table("scores").select("*").execute()
-        history_data = supabase.table("history").select("*").execute()
-        
-        # Преобразуем данные о баллах
-        scores = {int(item['user_id']): float(item['points']) for item in scores_data.data}
-        
-        # Преобразуем данные истории
-        history = {int(item['user_id']): item['history_entries'] for item in history_data.data}
-        
+        # Пробуем загрузить из Supabase только если есть учетные данные
+        if url and key:
+            scores_data = supabase.table("scores").select("*").execute()
+            history_data = supabase.table("history").select("*").execute()
+            
+            scores = {int(item['user_id']): float(item['points']) for item in scores_data.data}
+            history = {int(item['user_id']): item['history_entries'] for item in history_data.data}
+            print("Данные успешно загружены из Supabase")
+        else:
+            raise Exception("Нет учетных данных Supabase")
+            
     except Exception as e:
-        print(f"Ошибка при загрузке из Supabase: {e}")
-        # Резервная загрузка из JSON файлов
-        if os.path.exists("scores.json"):
-            with open("scores.json", "r") as f:
-                scores = {int(k): float(v) for k, v in json.load(f).items()}
+        print(f"Загрузка из Supabase не удалась: {e}")
+        print("Пробуем загрузить из локальных файлов...")
         
-        if os.path.exists("history.json"):
-            with open("history.json", "r") as f:
-                history = json.load(f)
+        try:
+            if os.path.exists(scores_path):
+                with open(scores_path, "r", encoding='utf-8') as f:
+                    scores = {int(k): float(v) for k, v in json.load(f).items()}
+                print(f"Загружены баллы: {len(scores)} записей")
+            
+            if os.path.exists(history_path):
+                with open(history_path, "r", encoding='utf-8') as f:
+                    history = json.load(f)
+                print(f"Загружена история: {len(history)} пользователей")
+            
+        except Exception as load_error:
+            print(f"Ошибка при загрузке локальных файлов: {load_error}")
 
 def save_data():
     try:
