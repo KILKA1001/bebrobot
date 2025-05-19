@@ -102,14 +102,14 @@ async def add_points(ctx, member: discord.Member, points: str, *, reason: str = 
 async def remove_points(ctx, member: discord.Member, points: str, *, reason: str = 'Без причины'):
     try:
         points_float = float(points.replace(',', '.'))
-        
+
         if points_float < 0:
             await ctx.send("Ошибка: нельзя использовать отрицательные числа в команде removepoints.")
             return
-            
+
         user_id = member.id
         current_points = scores.get(user_id, 0)
-        
+
         # Проверяем, сколько баллов можно реально снять
         actual_points_to_remove = min(points_float, current_points)
         scores[user_id] = current_points - actual_points_to_remove
@@ -119,7 +119,7 @@ async def remove_points(ctx, member: discord.Member, points: str, *, reason: str
 
     moscow_tz = pytz.timezone('Europe/Moscow')
     timestamp = datetime.now(moscow_tz).strftime("%H:%M %d-%m-%Y")
-    
+
     # Записываем в историю реальное количество снятых баллов
     history.setdefault(user_id, []).append({
         'points': -actual_points_to_remove,
@@ -273,11 +273,11 @@ async def send_greetings(channel, user_list):
 
     @bot.event
     async def on_ready():
+        print(f'Бот {bot.user} запущен!')
         load_data()  # Загрузка из файла (data.py)
-        print(f'Бот {bot.user} запущен! Команд зарегистрировано: {len(bot.commands)}')
-        for cmd in bot.commands:
-            print(f"- {cmd.name}")
-        bot.loop.create_task(autosave_task())
+        print(f'Команд зарегистрировано: {len(bot.commands)}')
+        print(f'Загружено пользователей: {len(scores)}')
+        print(f'Загружено историй: {len(history)}')
 
 
 async def autosave_task():
@@ -310,7 +310,7 @@ async def undo(ctx, member: discord.Member, count: int = 1):
             if scores[user_id] < 0:
                 scores[user_id] = 0
             undo_entries.append((points_val, reason))
-            
+
             # Добавляем запись об отмене в историю
             moscow_tz = pytz.timezone('Europe/Moscow')
             timestamp = datetime.now(moscow_tz).strftime("%H:%M %d-%m-%Y")
