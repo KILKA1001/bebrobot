@@ -9,18 +9,11 @@ from datetime import datetime, timezone
 import data
 from keep_alive import keep_alive
 from dotenv import load_dotenv
+from roles_and_activities import ACTIVITY_CATEGORIES
+from roles_and_activities import ROLE_THRESHOLDS
 
 # Константы
 COMMAND_PREFIX = '?'
-
-# Роли и их минимальные баллы
-ROLE_THRESHOLDS = {
-    1212624623548768287: 2000,  # @Бог среди волонтеров
-    1105906637824331788: 500,   # @Легендарный среди волонтеров
-    1137775519589466203: 140,   # @Мастер волонтер
-    1105906455233703989: 30,    # @Хороший Помощник Бебр
-    1105906310131744868: 10     # @Новый волонтер
-}
 
 # Файлы для хранения данных
 DATA_FILE = 'scores.json'
@@ -60,10 +53,15 @@ async def update_roles(member: discord.Member):
 
 @bot.command(name='addpoints')
 @commands.has_permissions(administrator=True)
-async def add_points(ctx, member: discord.Member, points: float, *, reason: str = 'Без причины'):
-    user_id = member.id
-    scores[user_id] = scores.get(user_id, 0) + points
-    timestamp = datetime.now(timezone.utc).isoformat()
+async def add_points(ctx, member: discord.Member, points: str, *, reason: str = 'Без причины'):
+    try:
+        points_float = float(points.replace(',', '.'))
+        user_id = member.id
+        scores[user_id] = scores.get(user_id, 0) + points_float
+        timestamp = datetime.now(timezone.utc).isoformat()
+    except ValueError:
+        await ctx.send("Ошибка: введите корректное число")
+        return
 
     history.setdefault(user_id, []).append({
         'points': points,
@@ -89,15 +87,20 @@ async def add_points(ctx, member: discord.Member, points: float, *, reason: str 
 
 @bot.command(name='removepoints')
 @commands.has_permissions(administrator=True)
-async def remove_points(ctx, member: discord.Member, points: float, *, reason: str = 'Без причины'):
-    user_id = member.id
-    scores[user_id] = scores.get(user_id, 0) - points
-    if scores[user_id] < 0:
-        scores[user_id] = 0
+async def remove_points(ctx, member: discord.Member, points: str, *, reason: str = 'Без причины'):
+    try:
+        points_float = float(points.replace(',', '.'))
+        user_id = member.id
+        scores[user_id] = scores.get(user_id, 0) - points_float
+        if scores[user_id] < 0:
+            scores[user_id] = 0
+    except ValueError:
+        await ctx.send("Ошибка: введите корректное число")
+        return
 
     timestamp = datetime.now(timezone.utc).isoformat()
     history.setdefault(user_id, []).append({
-        'points': -points,
+        'points': -float(points.replace(',', '.')),
         'reason': reason,
         'author_id': ctx.author.id,
         'timestamp': timestamp
@@ -237,10 +240,12 @@ async def helpy_cmd(ctx):
 
 `{COMMAND_PREFIX}addpoints @пользователь <баллы> [причина]` — добавить баллы (только для админов)  
 `{COMMAND_PREFIX}removepoints @пользователь <баллы> [причина]` — снять баллы (только для админов)  
+`{COMMAND_PREFIX}undo @пользователь <количество>` — отменить последние изменения для пользователя (только для админов) 
 `{COMMAND_PREFIX}points [@пользователь]` — показать баллы пользователя (по умолчанию автора)  
 `{COMMAND_PREFIX}leaderboard [кол-во]` — показать топ лидеров (по умолчанию 10)  
 `{COMMAND_PREFIX}history [@пользователь] [страница]` — история начисления баллов  
 `{COMMAND_PREFIX}roles` — показать все роли и их стоимость  
+`{COMMAND_PREFIX}activities` — список всех видов деятельности и их стоимость в баллах  
 `{COMMAND_PREFIX}helpy` — показать это сообщение  
 """
     await ctx.send(help_text)
@@ -261,9 +266,9 @@ async def send_greetings(channel, user_list):
     async def on_ready():
         load_data()  # Загрузка из файла (data.py)
         print(f'Бот {bot.user} запущен! Команд зарегистрировано: {len(bot.commands)}')
-    for cmd in bot.commands:
-        print(f"- {cmd.name}")
-    bot.loop.create_task(autosave_task())
+        for cmd in bot.commands:
+            print(f"- {cmd.name}")
+        bot.loop.create_task(autosave_task())
 
 
 async def autosave_task():
@@ -273,9 +278,10 @@ async def autosave_task():
         print("Данные сохранены автоматически.")
         await asyncio.sleep(300)
 
-    @bot.command(name='undo')
-    @commands.has_permissions(administrator=True)
-    async def undo(ctx, member: discord.Member, count: int = 1):
+
+@bot.command(name='undo')
+@commands.has_permissions(administrator=True)
+async def undo(ctx, member: discord.Member, count: int = 1):
         user_id = member.id
         user_history = history.get(user_id, [])
 
@@ -346,5 +352,32 @@ load_dotenv()  # Загружает переменные из .env файла в
 print("TOKEN:", os.getenv("TOKEN"))
 
 TOKEN = os.getenv('DISCORD_TOKEN')
+
+@bot.command(name='activities')
+async def activities_cmd(ctx):
+    embed = discord.Embed(
+        title="📋 Виды помощи клубу",
+        description="Список всех видов деятельности и их стоимость в баллах:",
+        color=discord.Color.blue()
+    )
+
+    for category_name, activities in ACTIVITY_CATEGORIES.items():
+        category_text = ""
+        for activity_name, info in activities.items():
+            category_text += f"**{activity_name}** ({info['points']} баллов)\n"
+            category_text += f"↳ {info['description']}\n"
+            if 'conditions' in info:
+                category_text += "Условия:\n"
+                for condition in info['conditions']:
+                    category_text += f"• {condition}\n"
+            category_text += "\n"
+
+        embed.add_field(
+            name=category_name,
+            value=category_text,
+            inline=False
+        )
+
+    await ctx.send(embed=embed)
 
 bot.run(os.getenv("TOKEN"))
