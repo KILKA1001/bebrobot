@@ -181,9 +181,6 @@ async def leaderboard(ctx, top: int = 10):
             embed.add_field(name=f"{i}. Пользователь с ID {user_id}", value=f"Баллы: {points_val}", inline=False)
     await ctx.send(embed=embed)
 
-
-from history_manager import format_history_embed
-
 @bot.command(name='history')
 async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 1):
     if member is None:
@@ -211,7 +208,7 @@ async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 
     page_history = history[user_id][start:end]
 
     embed = format_history_embed(page_history, member.display_name, page, total_entries)
-
+    await ctx.send(embed=embed)
 
 @bot.command(name='roles')
 async def roles_list(ctx):
