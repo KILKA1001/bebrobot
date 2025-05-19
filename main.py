@@ -6,6 +6,7 @@ from typing import Optional
 import asyncio
 from data import scores, history, save_data, load_data
 from datetime import datetime, timezone
+import pytz
 import data
 from keep_alive import keep_alive
 from dotenv import load_dotenv
@@ -58,7 +59,8 @@ async def add_points(ctx, member: discord.Member, points: str, *, reason: str = 
         points_float = float(points.replace(',', '.'))
         user_id = member.id
         scores[user_id] = scores.get(user_id, 0) + points_float
-        timestamp = datetime.now(timezone.utc).isoformat()
+        moscow_tz = pytz.timezone('Europe/Moscow')
+        timestamp = datetime.now(moscow_tz).isoformat()
     except ValueError:
         await ctx.send("Ошибка: введите корректное число")
         return
@@ -80,6 +82,7 @@ async def add_points(ctx, member: discord.Member, points: str, *, reason: str = 
     embed.add_field(name="👤 Пользователь:", value=member.mention, inline=False)
     embed.add_field(name="➕ Количество:", value=f"**{points}** баллов", inline=False)
     embed.add_field(name="📝 Причина:", value=reason, inline=False)
+    embed.add_field(name="🕒 Время:", value=timestamp, inline=False)
     embed.add_field(name="🎯 Текущий баланс:", value=f"{scores[user_id]} баллов", inline=False)
 
     await ctx.send(embed=embed)
@@ -98,7 +101,8 @@ async def remove_points(ctx, member: discord.Member, points: str, *, reason: str
         await ctx.send("Ошибка: введите корректное число")
         return
 
-    timestamp = datetime.now(timezone.utc).isoformat()
+    moscow_tz = pytz.timezone('Europe/Moscow')
+    timestamp = datetime.now(moscow_tz).isoformat()
     history.setdefault(user_id, []).append({
         'points': -float(points.replace(',', '.')),
         'reason': reason,
@@ -116,6 +120,7 @@ async def remove_points(ctx, member: discord.Member, points: str, *, reason: str
     embed.add_field(name="👤 Пользователь:", value=member.mention, inline=False)
     embed.add_field(name="➖ Количество:", value=f"**{points}** баллов", inline=False)
     embed.add_field(name="📝 Причина:", value=reason, inline=False)
+    embed.add_field(name="🕒 Время:", value=timestamp, inline=False)
     embed.add_field(name="🎯 Текущий баланс:", value=f"{scores[user_id]} баллов", inline=False)
 
     await ctx.send(embed=embed)
@@ -245,7 +250,7 @@ async def helpy_cmd(ctx):
 `{COMMAND_PREFIX}leaderboard [кол-во]` — показать топ лидеров (по умолчанию 10)  
 `{COMMAND_PREFIX}history [@пользователь] [страница]` — история начисления баллов  
 `{COMMAND_PREFIX}roles` — показать все роли и их стоимость  
-`{COMMAND_PREFIX}activities` — список всех виды помощи клубу и их стоимость в баллах  
+`{COMMAND_PREFIX}activities` — список всех видов деятельности и их стоимость в баллах  
 `{COMMAND_PREFIX}helpy` — показать это сообщение  
 """
     await ctx.send(help_text)
