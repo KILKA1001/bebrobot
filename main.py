@@ -66,7 +66,7 @@ async def add_points(ctx, member: discord.Member, points: str, *, reason: str = 
         return
 
     history.setdefault(user_id, []).append({
-        'points': points,
+        'points': points_float,
         'reason': reason,
         'author_id': ctx.author.id,
         'timestamp': timestamp
@@ -167,7 +167,7 @@ async def leaderboard(ctx, top: int = 10):
         if member:
             user_roles = [role for role in member.roles if role.id in ROLE_THRESHOLDS]
             role_names = ', '.join(role.name for role in user_roles) if user_roles else 'Нет роли'
-            embed.add_field(name=f"{i}. {member.display_name}", value=f"Баллы: {points_val}\nРоль: {role_names}", inline=False)
+            embed.add_field(name=f"{i}. {member.display_name}", value=f"Баллы: {points_val}\nРоли: {role_names}", inline=False)
         else:
             embed.add_field(name=f"{i}. Пользователь с ID {user_id}", value=f"Баллы: {points_val}", inline=False)
     await ctx.send(embed=embed)
@@ -205,7 +205,7 @@ async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 
 
     for entry in page_history:
         if isinstance(entry, dict):
-            points_val = entry.get("points", 0)
+            points_val = float(entry.get("points", 0))
             reason = entry.get("reason", "Без причины")
             author_id = entry.get("author_id")
             timestamp = entry.get("timestamp")
@@ -387,6 +387,3 @@ async def activities_cmd(ctx):
     await ctx.send(embed=embed)
 
 bot.run(os.getenv("TOKEN"))
-
-print("Scores:", scores)
-print("History:", history)
