@@ -102,25 +102,46 @@ async def add_points(ctx, member: discord.Member, points: str, *, reason: str = 
 async def remove_points(ctx, member: discord.Member, points: str, *, reason: str = 'Без причины'):
     try:
         points_float = float(points.replace(',', '.'))
+        
+        if points_float < 0:
+            await ctx.send("Ошибка: нельзя использовать отрицательные числа в команде removepoints.")
+            return
+            
         user_id = member.id
-        scores[user_id] = scores.get(user_id, 0) - points_float
-        if scores[user_id] < 0:
-            scores[user_id] = 0
+        current_points = scores.get(user_id, 0)
+        
+        # Проверяем, сколько баллов можно реально снять
+        actual_points_to_remove = min(points_float, current_points)
+        scores[user_id] = current_points - actual_points_to_remove
     except ValueError:
         await ctx.send("Ошибка: введите корректное число")
         return
 
     moscow_tz = pytz.timezone('Europe/Moscow')
     timestamp = datetime.now(moscow_tz).strftime("%H:%M %d-%m-%Y")
+    
+    # Записываем в историю реальное количество снятых баллов
     history.setdefault(user_id, []).append({
-        'points': -float(points.replace(',', '.')),
-        'reason': reason,
+        'points': -actual_points_to_remove,
+        'reason': f"{reason} (запрошено снятие: {points_float} баллов)",
         'author_id': ctx.author.id,
         'timestamp': timestamp
     })
 
     save_data()
     await update_roles(member)
+
+    embed = discord.Embed(
+        title="⚠️ Баллы сняты!",
+        color=discord.Color.red()
+    )
+    embed.add_field(name="👤 Пользователь:", value=member.mention, inline=False)
+    embed.add_field(name="➖ Снято баллов:", value=f"**{actual_points_to_remove}** из запрошенных {points_float}", inline=False)
+    embed.add_field(name="📝 Причина:", value=reason, inline=False)
+    embed.add_field(name="🕒 Время:", value=timestamp, inline=False)
+    embed.add_field(name="🎯 Текущий баланс:", value=f"{scores[user_id]} баллов", inline=False)
+
+    await ctx.send(embed=embed)
 
     embed = discord.Embed(
         title="⚠️ Баллы сняты!",
