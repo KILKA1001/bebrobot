@@ -124,6 +124,7 @@ async def remove_points(ctx, member: discord.Member, points: str, *, reason: str
     embed.add_field(name="🎯 Текущий баланс:", value=f"{scores[user_id]} баллов", inline=False)
 
     await ctx.send(embed=embed)
+
 @bot.command(name='points')
 async def points(ctx, member: Optional[discord.Member] = None):
     if member is None:
@@ -386,3 +387,6 @@ async def activities_cmd(ctx):
     await ctx.send(embed=embed)
 
 bot.run(os.getenv("TOKEN"))
+
+print("Scores:", scores)
+print("History:", history)
