@@ -19,6 +19,16 @@ def load_data():
     # Загружаем данные об истории
     history_data = supabase.table("history").select("*").execute()
 
+    # Assuming data is stored in JSON files
+    if os.path.exists("scores.json"):
+        with open("scores.json", "r") as f:
+            scores = json.load(f)
+
+    if os.path.exists("history.json"):
+        with open("history.json", "r") as f:
+            history = json.load(f)
+            print("Loaded history:", history)  # Debugging output
+    
     # Преобразуем данные о баллах в словарь
     scores = {int(item['user_id']): float(item['points']) for item in scores_data.data}
     # Преобразуем данные об истории в словарь
