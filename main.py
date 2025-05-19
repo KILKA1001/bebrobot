@@ -245,7 +245,7 @@ async def helpy_cmd(ctx):
 `{COMMAND_PREFIX}leaderboard [кол-во]` — показать топ лидеров (по умолчанию 10)  
 `{COMMAND_PREFIX}history [@пользователь] [страница]` — история начисления баллов  
 `{COMMAND_PREFIX}roles` — показать все роли и их стоимость  
-`{COMMAND_PREFIX}activities` — список всех видов деятельности и их стоимость в баллах  
+`{COMMAND_PREFIX}activities` — список всех виды помощи клубу и их стоимость в баллах  
 `{COMMAND_PREFIX}helpy` — показать это сообщение  
 """
     await ctx.send(help_text)
