@@ -3,3 +3,4 @@ flask
 python-dotenv
 supabase
 pytz
+supabase
