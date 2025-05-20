@@ -2,6 +2,7 @@ import json
 import os
 from datetime import datetime
 from supabase import create_client, Client
+from datetime import datetime, timezone
 
 # Учетные данные для Supabase
 url: str = os.getenv("SUPABASE_URL")
@@ -118,11 +119,13 @@ def save_data():
                 # Используем insert вместо upsert
                 response = supabase.table("actions").insert(action_data).execute()
                 print(f"Сохранено действие: {response}")
-
+                print(f"Перед сохранением: {action}") 
+# Для отладки
     except Exception as e:
         print(f"❌ Ошибка сохранения: {str(e)}")
         import traceback
         traceback.print_exc()
+
 
 # Добавьте в конец data.py
 if __name__ == "__main__":
