@@ -74,12 +74,7 @@ async def add_points(ctx, member: discord.Member, points: str, *, reason: str = 
         await ctx.send("Ошибка: введите корректное число")
         return
 
-    history.setdefault(user_id, []).append({
-        'points': points_float,
-        'reason': reason,
-        'author_id': ctx.author.id,
-        'timestamp': timestamp
-    })
+    data.add_action(user_id, points_float, reason, ctx.author.id)
 
     save_data()
     await update_roles(member)
