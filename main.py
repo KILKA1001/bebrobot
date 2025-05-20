@@ -198,7 +198,6 @@ async def leaderboard(ctx, top: int = 10):
 @bot.command(name='history')
 async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 1):
     try:
-        # Получаем пользователя с проверкой
         if member is None:
             member = ctx.author
 
@@ -208,59 +207,67 @@ async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 
 
         user_id = member.id
         entries_per_page = 5
-
-        # Получаем историю с проверкой
         user_history = db.history.get(user_id, [])
 
         if not user_history:
             embed = discord.Embed(
-                title=f"История баллов {member.display_name}",
-                description="Записей не найдено",
+                title="📜 История баллов",
+                description="```Записей не найдено```",
                 color=discord.Color.orange()
             )
-            embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
+            embed.set_author(name=member.display_name, icon_url=member.avatar.url if member.avatar else member.default_avatar.url)
             await ctx.send(embed=embed)
             return
 
-        # Пагинация с проверкой
         total_entries = len(user_history)
         total_pages = max(1, (total_entries + entries_per_page - 1) // entries_per_page)
 
         if page < 1 or page > total_pages:
             embed = discord.Embed(
-                title="Ошибка пагинации",
-                description=f"Доступно страниц: {total_pages}",
+                title="⚠️ Ошибка навигации",
+                description=f"```Доступно страниц: {total_pages}```",
                 color=discord.Color.red()
             )
             await ctx.send(embed=embed)
             return
 
-        # Получаем данные для страницы
         start_idx = (page - 1) * entries_per_page
         page_actions = user_history[start_idx : start_idx + entries_per_page]
 
-        # Формируем embed
         embed = discord.Embed(
-            title=f"История баллов {member.display_name}",
-            description=f"Страница {page}/{total_pages}",
+            title="📜 История баллов",
             color=discord.Color.blue()
         )
-        embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
-
+        embed.set_author(name=member.display_name, icon_url=member.avatar.url if member.avatar else member.default_avatar.url)
+        
+        total_points = db.scores.get(user_id, 0)
+        embed.add_field(name="💰 Текущий баланс", value=f"```{total_points} баллов```", inline=False)
+        
         for action in page_actions:
-            embed.add_field(
-                name=f"{action.get('timestamp', 'N/A')} | {action.get('points', 0):+} баллов",
-                value=f"**Причина:** {action.get('reason', 'Не указана')}\n"
-                      f"**Выдал:** <@{action.get('author_id', 'N/A')}>",
-                inline=False
+            points = action.get('points', 0)
+            emoji = "🟢" if points >= 0 else "🔴"
+            if action.get('is_undo', False):
+                emoji = "⚪"
+            
+            timestamp = action.get('timestamp', 'N/A')
+            author_id = action.get('author_id', 'N/A')
+            reason = action.get('reason', 'Не указана')
+            
+            field_name = f"{emoji} {timestamp}"
+            field_value = (
+                f"```diff\n{'+' if points >= 0 else ''}{points} баллов```\n"
+                f"**Причина:** {reason}\n"
+                f"**Выдал:** <@{author_id}>"
             )
+            embed.add_field(name=field_name, value=field_value, inline=False)
 
+        embed.set_footer(text=f"Страница {page}/{total_pages} • Всего записей: {total_entries}")
         await ctx.send(embed=embed)
 
     except Exception as e:
         error_embed = discord.Embed(
-            title="⚠️ Ошибка при получении истории",
-            description=str(e),
+            title="⚠️ Ошибка",
+            description=f"```{str(e)}```",
             color=discord.Color.red()
         )
         await ctx.send(embed=error_embed)
