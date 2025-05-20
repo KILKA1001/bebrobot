@@ -123,3 +123,12 @@ def save_data():
     except Exception as e:
         print(f"❌ Ошибка при сохранении в Supabase: {e}")
         print("Проверьте подключение к базе данных и правильность учетных данных")
+        
+def check_scores():
+    try:
+        response = supabase.table("scores").select("*").execute()
+        print("Data from scores table:", response.data)
+    except Exception as e:
+        print("Error reading scores:", e)
+
+check_scores()
