@@ -89,7 +89,7 @@ async def add_points(ctx, member: discord.Member, points: str, *, reason: str = 
         await ctx.send(embed=embed)
     except ValueError:
         await ctx.send("Ошибка: введите корректное число")
-    
+
 @bot.command(name='removepoints')
 @commands.has_permissions(administrator=True)
 async def remove_points(ctx, member: discord.Member, points: str, *, reason: str = 'Без причины'):
@@ -213,7 +213,7 @@ async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 
 
     # Получаем историю через функцию из data.py
     user_actions, total_entries = data.get_user_actions(user_id, page, entries_per_page)
-    
+
     if not user_actions:
         await ctx.send(f"История начисления баллов для {member.display_name} пуста.")
         return
@@ -361,10 +361,6 @@ print(bot.all_commands.keys())
 
 print(dir(data))
 print(data.scores)
-
-@bot.event
-async def on_ready():
-    print(f'Logged in as {bot.user}!')
 
 keep_alive()  # Поддерживаем работу через веб-сервер
 
