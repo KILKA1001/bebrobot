@@ -27,10 +27,11 @@ def load_data():
         print(f"Получен ответ от scores: {scores_response}")
         
         if hasattr(scores_response, 'data'):
-            scores = {
-                int(item['user_id']): float(item['points'])
-                for item in scores_response.data
-            }
+            scores.clear()  # Очищаем текущие данные
+            for item in scores_response.data:
+                user_id = int(item['user_id'])
+                points = float(item['points'])
+                scores[user_id] = points
             print(f"Загружены баллы: {len(scores)} записей")
             
         # Загружаем действия
@@ -38,21 +39,23 @@ def load_data():
         print(f"Получен ответ от actions: {actions_response}")
         
         if hasattr(actions_response, 'data'):
-            actions = actions_response.data
+            actions.clear()  # Очищаем текущие данные
+            actions.extend(actions_response.data)
             print(f"Загружены действия: {len(actions)} записей")
             
             # Формируем историю из действий
-            history = {}
+            history.clear()  # Очищаем текущие данные
             for action in actions:
-                user_id = action['user_id']
+                user_id = int(action['user_id'])
                 if user_id not in history:
                     history[user_id] = []
                 history[user_id].append({
-                    'points': action['points'],
+                    'points': float(action['points']),
                     'reason': action['reason'],
-                    'author_id': action['author_id'],
+                    'author_id': int(action['author_id']),
                     'timestamp': action['timestamp']
                 })
+            print(f"Сформирована история для {len(history)} пользователей")
                 
     except Exception as e:
         print(f"Ошибка при загрузке из Supabase: {e}")
@@ -95,7 +98,10 @@ def save_data():
         # Сохраняем баллы
         if scores:
             scores_data = [
-                {"user_id": user_id, "points": points}
+                {
+                    "user_id": int(user_id),
+                    "points": float(points)
+                }
                 for user_id, points in scores.items()
             ]
             scores_response = supabase.table("scores").upsert(scores_data).execute()
@@ -104,6 +110,12 @@ def save_data():
 
         # Сохраняем действия
         if actions:
+            # Убедимся что все данные правильного типа
+            for action in actions:
+                action['user_id'] = int(action['user_id'])
+                action['points'] = float(action['points'])
+                action['author_id'] = int(action['author_id'])
+            
             actions_response = supabase.table("actions").upsert(actions).execute()
             print(f"Действия сохранены: {len(actions)} записей")
             print(f"Ответ actions: {actions_response}")
