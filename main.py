@@ -3,15 +3,15 @@ import discord
 from discord.ext import commands
 
 # Системные импорты
-import json
 import os
 from typing import Optional
 import asyncio
 from datetime import datetime, timezone
 import pytz
+import traceback
 
 # Локальные импорты
-from data import scores, history, save_data, load_data
+from data import db
 import data
 from keep_alive import keep_alive
 from dotenv import load_dotenv
@@ -23,10 +23,6 @@ from history_manager import format_history_embed
 # Константы
 COMMAND_PREFIX = '?'
 
-# Файлы для хранения данных
-DATA_FILE = 'scores.json'
-HISTORY_FILE = 'history.json'
-
 # Интенты — обязательно message_content=True для команд
 intents = discord.Intents.default()
 intents.members = True
@@ -37,7 +33,7 @@ bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
 
 async def update_roles(member: discord.Member):
     user_id = member.id
-    user_points = scores.get(user_id, 0)
+    user_points = db.scores.get(user_id, 0)
 
     user_roles = [role.id for role in member.roles if role.id in ROLE_THRESHOLDS]
 
@@ -65,15 +61,16 @@ async def add_points(ctx, member: discord.Member, points: str, *, reason: str = 
     try:
         points_float = float(points.replace(',', '.'))
         user_id = member.id
-        scores[user_id] = scores.get(user_id, 0) + points_float
+        current = db.scores.get(user_id, 0)
+        db.scores[user_id] = current + points_float
         moscow_tz = pytz.timezone('Europe/Moscow')
         timestamp = datetime.now(moscow_tz).strftime("%H:%M %d-%m-%Y")
         if points_float < 0:
-            scores[user_id] = 0
+            db.scores[user_id] = 0
 
         # Добавляем действие через функцию из data.py
-        data.add_action(user_id, points_float, reason, ctx.author.id, "add")
-        save_data()
+        db.add_action(user_id, points_float, reason, ctx.author.id)
+        db.save_all()
         await update_roles(member)
 
         embed = discord.Embed(
@@ -84,7 +81,7 @@ async def add_points(ctx, member: discord.Member, points: str, *, reason: str = 
         embed.add_field(name="➕ Количество:", value=f"**{points}** баллов", inline=False)
         embed.add_field(name="📝 Причина:", value=reason, inline=False)
         embed.add_field(name="🕒 Время:", value=timestamp, inline=False)
-        embed.add_field(name="🎯 Текущий баланс:", value=f"{scores[user_id]} баллов", inline=False)
+        embed.add_field(name="🎯 Текущий баланс:", value=f"{db.scores[user_id]} баллов", inline=False)
 
         await ctx.send(embed=embed)
     except ValueError:
@@ -101,93 +98,69 @@ async def remove_points(ctx, member: discord.Member, points: str, *, reason: str
             return
 
         user_id = member.id
-        current_points = scores.get(user_id, 0)
-
-        # Проверяем, сколько баллов можно реально снять
+        current_points = db.scores.get(user_id, 0)
         actual_points_to_remove = min(points_float, current_points)
-        scores[user_id] = current_points - actual_points_to_remove
+        db.scores[user_id] = current_points - actual_points_to_remove
 
-        # Добавляем действие через функцию из data.py
-        data.add_action(user_id, -actual_points_to_remove, reason, ctx.author.id, "remove")
-        save_data()
+        # Автоматически сохраняет в actions и history
+        db.add_action(
+            user_id=user_id,
+            points=-actual_points_to_remove,
+            reason=f"{reason} (запрошено снятие: {points_float})",
+            author_id=ctx.author.id
+        )
+
         await update_roles(member)
+        moscow_tz = pytz.timezone('Europe/Moscow')
+        timestamp = datetime.now(moscow_tz).strftime("%H:%M %d-%m-%Y")
+
+        embed = discord.Embed(
+            title="⚠️ Баллы сняты!",
+            color=discord.Color.red()
+        )
+        embed.add_field(name="👤 Пользователь:", value=member.mention, inline=False)
+        embed.add_field(name="➖ Снято баллов:", value=f"**{actual_points_to_remove}** из запрошенных {points_float}", inline=False)
+        embed.add_field(name="📝 Причина:", value=reason, inline=False)
+        embed.add_field(name="🕒 Время:", value=timestamp, inline=False)
+        embed.add_field(name="🎯 Текущий баланс:", value=f"{db.scores[user_id]} баллов", inline=False)
+
+        await ctx.send(embed=embed)
+
     except ValueError:
         await ctx.send("Ошибка: введите корректное число")
-        return
-
-    moscow_tz = pytz.timezone('Europe/Moscow')
-    timestamp = datetime.now(moscow_tz).strftime("%H:%M %d-%m-%Y")
-
-    # Записываем в историю реальное количество снятых баллов
-    history.setdefault(user_id, []).append({
-        'points': -actual_points_to_remove,
-        'reason': f"{reason} (запрошено снятие: {points_float} баллов)",
-        'author_id': ctx.author.id,
-        'timestamp': timestamp
-    })
-
-    save_data()
-    await update_roles(member)
-
-    embed = discord.Embed(
-        title="⚠️ Баллы сняты!",
-        color=discord.Color.red()
-    )
-    embed.add_field(name="👤 Пользователь:", value=member.mention, inline=False)
-    embed.add_field(name="➖ Снято баллов:", value=f"**{actual_points_to_remove}** из запрошенных {points_float}", inline=False)
-    embed.add_field(name="📝 Причина:", value=reason, inline=False)
-    embed.add_field(name="🕒 Время:", value=timestamp, inline=False)
-    embed.add_field(name="🎯 Текущий баланс:", value=f"{scores[user_id]} баллов", inline=False)
-
-    await ctx.send(embed=embed)
-
-    embed = discord.Embed(
-        title="⚠️ Баллы сняты!",
-        color=discord.Color.red()
-    )
-    embed.add_field(name="👤 Пользователь:", value=member.mention, inline=False)
-    embed.add_field(name="➖ Количество:", value=f"**{points}** баллов", inline=False)
-    embed.add_field(name="📝 Причина:", value=reason, inline=False)
-    embed.add_field(name="🕒 Время:", value=timestamp, inline=False)
-    embed.add_field(name="🎯 Текущий баланс:", value=f"{scores[user_id]} баллов", inline=False)
-
-    await ctx.send(embed=embed)
 
 @bot.command(name='points')
 async def points(ctx, member: Optional[discord.Member] = None):
-    if member is None:
-        member = ctx.author
-    if member is None:
+    member = member or ctx.author
+    if not member:
         await ctx.send("Не удалось определить пользователя. Пожалуйста, попробуйте еще раз.")
         return
+
     user_id = member.id
-    user_points = scores.get(user_id, 0)
+    user_points = db.scores.get(user_id, 0)
     user_roles = [role for role in member.roles if role.id in ROLE_THRESHOLDS]
     role_names = ', '.join(role.name for role in user_roles) if user_roles else 'Нет роли'
 
-    sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    place = None
-    for i, (uid, points_val) in enumerate(sorted_scores, start=1):
-        if uid == user_id:
-            place = i
-            break
-    place_text = f"{place}" if place else "Не в топе"
+    # Используем sorted_scores для определения места
+    sorted_scores = sorted(db.scores.items(), key=lambda x: x[1], reverse=True)
+    place = next((i for i, (uid, _) in enumerate(sorted_scores, 1) if uid == user_id), None)
 
     embed = discord.Embed(title=f"Баллы пользователя {member.display_name}", color=discord.Color.blue())
     embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
     embed.add_field(name="Баллы", value=f"{user_points}", inline=True)
     embed.add_field(name="Роли", value=role_names, inline=True)
-    embed.add_field(name="Место в топе", value=place_text, inline=False)
+    embed.add_field(name="Место в топе", value=f"{place}" if place else "Не в топе", inline=False)
 
     await ctx.send(embed=embed)
 
-
 @bot.command(name='leaderboard')
 async def leaderboard(ctx, top: int = 10):
-    if not scores:
+    if not db.scores:
         await ctx.send("Пока нет данных о баллах.")
         return
-    sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top]
+
+    # Сортируем и используем переменную сразу
+    sorted_scores = sorted(db.scores.items(), key=lambda x: x[1], reverse=True)[:top]
 
     embed = discord.Embed(title=f"Топ {top} лидеров по баллам", color=discord.Color.gold())
     for i, (user_id, points_val) in enumerate(sorted_scores, start=1):
@@ -195,42 +168,90 @@ async def leaderboard(ctx, top: int = 10):
         if member:
             user_roles = [role for role in member.roles if role.id in ROLE_THRESHOLDS]
             role_names = ', '.join(role.name for role in user_roles) if user_roles else 'Нет роли'
-            embed.add_field(name=f"{i}. {member.display_name}", value=f"Баллы: {points_val}\nРоли: {role_names}", inline=False)
+            embed.add_field(
+                name=f"{i}. {member.display_name}",
+                value=f"Баллы: {points_val}\nРоли: {role_names}",
+                inline=False
+            )
         else:
-            embed.add_field(name=f"{i}. Пользователь с ID {user_id}", value=f"Баллы: {points_val}", inline=False)
+            embed.add_field(
+                name=f"{i}. Пользователь с ID {user_id}",
+                value=f"Баллы: {points_val}",
+                inline=False
+            )
+
     await ctx.send(embed=embed)
 
 @bot.command(name='history')
 async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 1):
-    if member is None:
-        member = ctx.author
-    if member is None:
-        await ctx.send("Не удалось определить пользователя. Пожалуйста, попробуйте еще раз.")
-        return
+    try:
+        # Получаем пользователя с проверкой
+        if member is None:
+            member = ctx.author
 
-    user_id = member.id
-    entries_per_page = 5
+        if not member:
+            await ctx.send("❌ Пользователь не найден на сервере")
+            return
 
-    # Получаем историю через функцию из data.py
-    user_actions, total_entries = data.get_user_actions(user_id, page, entries_per_page)
+        user_id = member.id
+        entries_per_page = 5
 
-    if not user_actions:
-        await ctx.send(f"История начисления баллов для {member.display_name} пуста.")
-        return
+        # Получаем историю с проверкой
+        user_history = db.history.get(user_id, [])
 
-    total_entries = len(history[user_id])
-    total_pages = (total_entries + entries_per_page - 1) // entries_per_page
+        if not user_history:
+            embed = discord.Embed(
+                title=f"История баллов {member.display_name}",
+                description="Записей не найдено",
+                color=discord.Color.orange()
+            )
+            embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
+            await ctx.send(embed=embed)
+            return
 
-    if page < 1 or page > total_pages:
-        await ctx.send(f"Страница {page} не существует. Доступно всего {total_pages} страниц.")
-        return
+        # Пагинация с проверкой
+        total_entries = len(user_history)
+        total_pages = max(1, (total_entries + entries_per_page - 1) // entries_per_page)
 
-    start = (page - 1) * entries_per_page
-    end = start + entries_per_page
-    page_history = history[user_id][start:end]
+        if page < 1 or page > total_pages:
+            embed = discord.Embed(
+                title="Ошибка пагинации",
+                description=f"Доступно страниц: {total_pages}",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+            return
 
-    embed = format_history_embed(page_history, member.display_name, page, total_entries)
-    await ctx.send(embed=embed)
+        # Получаем данные для страницы
+        start_idx = (page - 1) * entries_per_page
+        page_actions = user_history[start_idx : start_idx + entries_per_page]
+
+        # Формируем embed
+        embed = discord.Embed(
+            title=f"История баллов {member.display_name}",
+            description=f"Страница {page}/{total_pages}",
+            color=discord.Color.blue()
+        )
+        embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
+
+        for action in page_actions:
+            embed.add_field(
+                name=f"{action.get('timestamp', 'N/A')} | {action.get('points', 0):+} баллов",
+                value=f"**Причина:** {action.get('reason', 'Не указана')}\n"
+                      f"**Выдал:** <@{action.get('author_id', 'N/A')}>",
+                inline=False
+            )
+
+        await ctx.send(embed=embed)
+
+    except Exception as e:
+        error_embed = discord.Embed(
+            title="⚠️ Ошибка при получении истории",
+            description=str(e),
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=error_embed)
+        print(f"Ошибка в команде history: {traceback.format_exc()}")
 
 @bot.command(name='roles')
 async def roles_list(ctx):
@@ -272,19 +293,29 @@ async def send_greetings(channel, user_list):
         await asyncio.sleep(1)
 
 
-    @bot.event
-    async def on_ready():
-        print(f'Бот {bot.user} запущен!')
-        load_data()  # Загрузка из файла (data.py)
-        print(f'Команд зарегистрировано: {len(bot.commands)}')
-        print(f'Загружено пользователей: {len(scores)}')
-        print(f'Загружено историй: {len(history)}')
+@bot.event
+async def on_ready():
+    print(f'🟢 Бот {bot.user} запущен!')
+    print(f'Серверов: {len(bot.guilds)}')
 
+    # Инициализация базы данных
+    db.load_data()  # Используем новый метод класса Database
+
+    # Статус бота
+    activity = discord.Activity(
+        name=f"{COMMAND_PREFIX}help",
+        type=discord.ActivityType.listening
+    )
+    await bot.change_presence(activity=activity)
+
+    print('--- Данные успешно загружены ---')
+    print(f'Пользователей: {len(db.scores)}')
+    print(f'Историй действий: {sum(len(v) for v in db.history.values())}')
 
 async def autosave_task():
     await bot.wait_until_ready()
     while not bot.is_closed():
-        save_data()
+        db.save_all()
         print("Данные сохранены автоматически.")
         await asyncio.sleep(300)
 
@@ -292,56 +323,56 @@ async def autosave_task():
 @bot.command(name='undo')
 @commands.has_permissions(administrator=True)
 async def undo(ctx, member: discord.Member, count: int = 1):
-        user_id = member.id
-        user_history = history.get(user_id, [])
+    user_id = member.id
+    user_history = db.history.get(user_id, [])
 
-        if len(user_history) < count:
-            await ctx.send(
-                f"❌ Нельзя отменить **{count}** изменений для {member.display_name}, "
-                f"так как доступно только **{len(user_history)}** записей."
-            )
-            return
-
-        undo_entries = []
-        for _ in range(count):
-            entry = user_history.pop()
-            points_val = entry.get("points", 0)
-            reason = entry.get("reason", "Без причины")
-            scores[user_id] = scores.get(user_id, 0) - points_val
-            if scores[user_id] < 0:
-                scores[user_id] = 0
-            undo_entries.append((points_val, reason))
-
-            # Добавляем запись об отмене в историю
-            moscow_tz = pytz.timezone('Europe/Moscow')
-            timestamp = datetime.now(moscow_tz).strftime("%H:%M %d-%m-%Y")
-            user_history.append({
-                'points': -points_val,
-                'reason': f"Отмена действия: {reason}",
-                'author_id': ctx.author.id,
-                'timestamp': timestamp,
-                'is_undo': True
-            })
-
-        if not user_history:
-            del history[user_id]
-
-        save_data()
-        await update_roles(member)
-
-        embed = discord.Embed(
-            title=f"↩️ Отменено {count} изменений для {member.display_name}",
-            color=discord.Color.orange()
+    if len(user_history) < count:
+        await ctx.send(
+            f"❌ Нельзя отменить **{count}** изменений для {member.display_name}, "
+            f"так как доступно только **{len(user_history)}** записей."
         )
-        for i, (points_val, reason) in enumerate(undo_entries[::-1], start=1):
-            sign = "+" if points_val > 0 else ""
-            embed.add_field(
-                name=f"{i}. {sign}{points_val} баллов",
-                value=reason,
-                inline=False
-            )
-        await ctx.send(embed=embed)
-        await log_action_cancellation(ctx, member, undo_entries)
+        return
+
+    undo_entries = []
+    for _ in range(count):
+        entry = user_history.pop()
+        points_val = entry.get("points", 0)
+        reason = entry.get("reason", "Без причины")
+        db.scores[user_id] = db.scores.get(user_id, 0) - points_val
+        if db.scores[user_id] < 0:
+            db.scores[user_id] = 0
+        undo_entries.append((points_val, reason))
+
+        # Добавляем запись об отмене в историю
+        moscow_tz = pytz.timezone('Europe/Moscow')
+        timestamp = datetime.now(moscow_tz).strftime("%H:%M %d-%m-%Y")
+        user_history.append({
+            'points': -points_val,
+            'reason': f"Отмена действия: {reason}",
+            'author_id': ctx.author.id,
+            'timestamp': timestamp,
+            'is_undo': True
+        })
+
+    if not user_history:
+        del db.history[user_id]
+
+    db.save_all()
+    await update_roles(member)
+
+    embed = discord.Embed(
+        title=f"↩️ Отменено {count} изменений для {member.display_name}",
+        color=discord.Color.orange()
+    )
+    for i, (points_val, reason) in enumerate(undo_entries[::-1], start=1):
+        sign = "+" if points_val > 0 else ""
+        embed.add_field(
+            name=f"{i}. {sign}{points_val} баллов",
+            value=reason,
+            inline=False
+        )
+    await ctx.send(embed=embed)
+    await log_action_cancellation(ctx, member, undo_entries)
 
 
 async def log_action_cancellation(ctx, member: discord.Member, entries: list):
@@ -360,7 +391,7 @@ async def log_action_cancellation(ctx, member: discord.Member, entries: list):
 print(bot.all_commands.keys())
 
 print(dir(data))
-print(data.scores)
+print(data.db.scores)
 
 keep_alive()  # Поддерживаем работу через веб-сервер
 
