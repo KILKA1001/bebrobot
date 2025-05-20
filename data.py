@@ -94,31 +94,45 @@ def get_user_actions(user_id: int, page: int = 1, per_page: int = 5):
 
 def save_data():
     if not supabase:
-        print("Ошибка: отсутствует подключение к Supabase")
+        print("❌ Ошибка: отсутствует подключение к Supabase")
         return
-        
+
     print("Сохранение данных в Supabase...")
     try:
-        # Сохраняем баллы
+        # Сохраняем баллы (оставляем без изменений)
         if scores:
-            scores_data = [
-                {"user_id": user_id, "points": points}
-                for user_id, points in scores.items()
-            ]
+            scores_data = [{"user_id": user_id, "points": points} for user_id, points in scores.items()]
             supabase.table("scores").upsert(scores_data).execute()
-            print(f"Баллы сохранены: {len(scores_data)} записей")
 
-        # Сохраняем действия
+        # Сохраняем действия - ВАЖНОЕ ИЗМЕНЕНИЕ:
         if actions:
-            actions_data = []
             for action in actions:
-                action_copy = action.copy()
-                # Убираем id если он есть
-                action_copy.pop('id', None)
-                actions_data.append(action_copy)
-                
-            supabase.table("actions").upsert(actions_data).execute()
-            print(f"Действия сохранены: {len(actions_data)} записей")
+                # Для каждого действия делаем отдельный insert
+                action_data = {
+                    "user_id": int(action["user_id"]),
+                    "points": float(action["points"]),
+                    "reason": str(action["reason"]),
+                    "author_id": int(action["author_id"]),
+                    "action_type": str(action.get("action_type", "add"))
+                }
+                # Используем insert вместо upsert
+                response = supabase.table("actions").insert(action_data).execute()
+                print(f"Сохранено действие: {response}")
 
     except Exception as e:
-        print(f"Ошибка при сохранении в Supabase: {e}")
+        print(f"❌ Ошибка сохранения: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+# Добавьте в конец data.py
+if __name__ == "__main__":
+    test_data = {
+        "user_id": 999999999,
+        "points": 99.9,
+        "reason": "TEST DIRECT INSERT",
+        "author_id": 888888888,
+        "action_type": "test"
+    }
+    response = supabase.table("actions").insert(test_data).execute()
+    print("Тестовый запрос:", response)
+    print("Проверьте появилась ли запись в БД")
