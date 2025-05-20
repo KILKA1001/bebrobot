@@ -15,48 +15,51 @@ actions = []  # Список всех действий
 
 
 def load_data():
-    global scores, actions
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    scores_path = os.path.join(current_dir, "scores.json")
-    actions_path = os.path.join(current_dir, "actions.json")
-
-    print("Загрузка данных...")
-    print(f"Текущая директория: {current_dir}")
-
+    global scores, actions, history
+    print("Загрузка данных из Supabase...")
+    
     try:
-        if url and key:
-            scores_data = supabase.table("scores").select("*").execute()
-            actions_data = supabase.table("actions").select("*").execute()
-
+        if not url or not key:
+            raise Exception("Отсутствуют учетные данные Supabase")
+            
+        # Загружаем баллы
+        scores_response = supabase.table("scores").select("*").execute()
+        print(f"Получен ответ от scores: {scores_response}")
+        
+        if hasattr(scores_response, 'data'):
             scores = {
                 int(item['user_id']): float(item['points'])
-                for item in scores_data.data
+                for item in scores_response.data
             }
-            actions = actions_data.data
-            print("Данные успешно загружены из Supabase")
-        else:
-            raise Exception("Нет учетных данных Supabase")
-
+            print(f"Загружены баллы: {len(scores)} записей")
+            
+        # Загружаем действия
+        actions_response = supabase.table("actions").select("*").execute()
+        print(f"Получен ответ от actions: {actions_response}")
+        
+        if hasattr(actions_response, 'data'):
+            actions = actions_response.data
+            print(f"Загружены действия: {len(actions)} записей")
+            
+            # Формируем историю из действий
+            history = {}
+            for action in actions:
+                user_id = action['user_id']
+                if user_id not in history:
+                    history[user_id] = []
+                history[user_id].append({
+                    'points': action['points'],
+                    'reason': action['reason'],
+                    'author_id': action['author_id'],
+                    'timestamp': action['timestamp']
+                })
+                
     except Exception as e:
-        print(f"Загрузка из Supabase не удалась: {e}")
-        print("Пробуем загрузить из локальных файлов...")
-
-        try:
-            if os.path.exists(scores_path):
-                with open(scores_path, "r", encoding='utf-8') as f:
-                    scores = {
-                        int(k): float(v)
-                        for k, v in json.load(f).items()
-                    }
-                print(f"Загружены баллы: {len(scores)} записей")
-
-            if os.path.exists(actions_path):
-                with open(actions_path, "r", encoding='utf-8') as f:
-                    actions = json.load(f)
-                print(f"Загружены действия: {len(actions)} записей")
-
-        except Exception as load_error:
-            print(f"Ошибка при загрузке локальных файлов: {load_error}")
+        print(f"Ошибка при загрузке из Supabase: {e}")
+        # Инициализируем пустые структуры данных
+        scores = {}
+        actions = []
+        history = {}
 
 
 def add_action(user_id: int,
@@ -87,25 +90,24 @@ def get_user_actions(user_id: int, page: int = 1, per_page: int = 5):
 
 
 def save_data():
+    print("Сохранение данных в Supabase...")
     try:
-        if actions:
-            supabase.table("actions").upsert(actions).execute()
+        # Сохраняем баллы
+        if scores:
+            scores_data = [
+                {"user_id": user_id, "points": points}
+                for user_id, points in scores.items()
+            ]
+            scores_response = supabase.table("scores").upsert(scores_data).execute()
+            print(f"Баллы сохранены: {len(scores_data)} записей")
+            print(f"Ответ scores: {scores_response}")
 
-        scores_data = [{
-            "user_id": user_id,
-            "points": points
-        } for user_id, points in scores.items()]
-        if scores_data:
-            supabase.table("scores").upsert(scores_data).execute()
+        # Сохраняем действия
+        if actions:
+            actions_response = supabase.table("actions").upsert(actions).execute()
+            print(f"Действия сохранены: {len(actions)} записей")
+            print(f"Ответ actions: {actions_response}")
 
     except Exception as e:
-        print(f"Ошибка при сохранении в Supabase: {e}")
-        try:
-            with open("scores.json", "w", encoding='utf-8') as f:
-                json.dump(scores, f, ensure_ascii=False, indent=2)
-
-            with open("actions.json", "w", encoding='utf-8') as f:
-                json.dump(actions, f, ensure_ascii=False, indent=2)
-            print("Данные успешно сохранены локально")
-        except Exception as e:
-            print(f"Ошибка при локальном сохранении: {e}")
+        print(f"❌ Ошибка при сохранении в Supabase: {e}")
+        print("Проверьте подключение к базе данных и правильность учетных данных")
