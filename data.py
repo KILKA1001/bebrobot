@@ -6,20 +6,19 @@ from supabase import create_client, Client
 # Учетные данные для Supabase
 url: str = os.getenv("SUPABASE_URL")
 key: str = os.getenv("SUPABASE_KEY")
-supabase: Client = create_client(url, key)
+supabase: Client = create_client(url, key) if url and key else None
 
 # Глобальные переменные для хранения баллов и действий
 scores = {}
 history = {}  # История действий по пользователям
 actions = []  # Список всех действий
 
-
 def load_data():
     global scores, actions, history
     print("Загрузка данных из Supabase...")
     
     try:
-        if not url or not key:
+        if not supabase:
             raise Exception("Отсутствуют учетные данные Supabase")
             
         # Загружаем баллы
@@ -60,75 +59,66 @@ def load_data():
     except Exception as e:
         print(f"Ошибка при загрузке из Supabase: {e}")
         # Инициализируем пустые структуры данных
-        scores = {}
-        actions = []
-        history = {}
+        scores.clear()
+        actions.clear()
+        history.clear()
 
-
-def add_action(user_id: int,
-               points: float,
-               reason: str,
-               author_id: int,
-               action_type: str = "add"):
+def add_action(user_id: int, points: float, reason: str, author_id: int, action_type: str = "add"):
     """Добавить новое действие в историю"""
+    timestamp = datetime.now().strftime("%H:%M %d-%m-%Y")
     action = {
-        "id": len(actions) + 1,
         "user_id": user_id,
         "points": points,
         "reason": reason,
         "author_id": author_id,
-        "timestamp": datetime.now().strftime("%H:%M %d-%m-%Y"),
+        "timestamp": timestamp,
         "action_type": action_type
     }
     actions.append(action)
+    
+    # Обновляем историю
+    if user_id not in history:
+        history[user_id] = []
+    history[user_id].append(action)
+    
+    print(f"Добавлено действие в кеш: {action}")
     save_data()
-
 
 def get_user_actions(user_id: int, page: int = 1, per_page: int = 5):
     """Получить действия пользователя с пагинацией"""
-    user_actions = [a for a in actions if a["user_id"] == user_id]
+    user_actions = history.get(user_id, [])
+    total_actions = len(user_actions)
     start_idx = (page - 1) * per_page
     end_idx = start_idx + per_page
-    return user_actions[start_idx:end_idx], len(user_actions)
-
+    return user_actions[start_idx:end_idx], total_actions
 
 def save_data():
+    if not supabase:
+        print("Ошибка: отсутствует подключение к Supabase")
+        return
+        
     print("Сохранение данных в Supabase...")
     try:
         # Сохраняем баллы
         if scores:
             scores_data = [
-                {
-                    "user_id": int(user_id),
-                    "points": float(points)
-                }
+                {"user_id": user_id, "points": points}
                 for user_id, points in scores.items()
             ]
-            scores_response = supabase.table("scores").upsert(scores_data).execute()
+            supabase.table("scores").upsert(scores_data).execute()
             print(f"Баллы сохранены: {len(scores_data)} записей")
-            print(f"Ответ scores: {scores_response}")
 
         # Сохраняем действия
         if actions:
-            # Убедимся что все данные правильного типа
+            actions_data = []
             for action in actions:
-                action['user_id'] = int(action['user_id'])
-                action['points'] = float(action['points'])
-                action['author_id'] = int(action['author_id'])
-            
-            actions_response = supabase.table("actions").upsert(actions).execute()
-            print(f"Действия сохранены: {len(actions)} записей")
-            print(f"Ответ actions: {actions_response}")
+                action_copy = action.copy()
+                # Убираем id если он есть
+                action_copy.pop('id', None)
+                actions_data.append(action_copy)
+                
+            supabase.table("actions").upsert(actions_data).execute()
+            print(f"Действия сохранены: {len(actions_data)} записей")
 
     except Exception as e:
-        print(f"❌ Ошибка при сохранении в Supabase: {e}")
-        print("Проверьте подключение к базе данных и правильность учетных данных")
-        
-def check_scores():
-    try:
-        response = supabase.table("scores").select("*").execute()
-        print("Data from scores table:", response.data)
-    except Exception as e:
-        print("Error reading scores:", e)
-
-check_scores()
+        print(f"Ошибка при сохранении в Supabase: {e}")
