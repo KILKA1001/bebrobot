@@ -70,14 +70,11 @@ async def add_points(ctx, member: discord.Member, points: str, *, reason: str = 
         timestamp = datetime.now(moscow_tz).strftime("%H:%M %d-%m-%Y")
         if points_float < 0:
             scores[user_id] = 0
-    except ValueError:
-        await ctx.send("Ошибка: введите корректное число")
-        return
 
-    data.add_action(user_id, points_float, reason, ctx.author.id)
-
-    save_data()
-    await update_roles(member)
+        # Добавляем действие через функцию из data.py
+        data.add_action(user_id, points_float, reason, ctx.author.id, "add")
+        save_data()
+        await update_roles(member)
 
     embed = discord.Embed(
         title="🎉 Баллы начислены!",
@@ -108,6 +105,11 @@ async def remove_points(ctx, member: discord.Member, points: str, *, reason: str
         # Проверяем, сколько баллов можно реально снять
         actual_points_to_remove = min(points_float, current_points)
         scores[user_id] = current_points - actual_points_to_remove
+
+        # Добавляем действие через функцию из data.py
+        data.add_action(user_id, -actual_points_to_remove, reason, ctx.author.id, "remove")
+        save_data()
+        await update_roles(member)
     except ValueError:
         await ctx.send("Ошибка: введите корректное число")
         return
@@ -208,7 +210,10 @@ async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 
     user_id = member.id
     entries_per_page = 5
 
-    if user_id not in history or not history[user_id]:
+    # Получаем историю через функцию из data.py
+    user_actions, total_entries = data.get_user_actions(user_id, page, entries_per_page)
+    
+    if not user_actions:
         await ctx.send(f"История начисления баллов для {member.display_name} пуста.")
         return
 
