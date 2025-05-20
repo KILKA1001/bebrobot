@@ -65,7 +65,7 @@ def load_data():
 
 def add_action(user_id: int, points: float, reason: str, author_id: int, action_type: str = "add"):
     """Добавить новое действие в историю"""
-    timestamp = datetime.now().strftime("%H:%M %d-%m-%Y")
+    timestamp = datetime.now(timezone.utc).isoformat()
     action = {
         "user_id": user_id,
         "points": points,
