@@ -76,19 +76,20 @@ async def add_points(ctx, member: discord.Member, points: str, *, reason: str = 
         save_data()
         await update_roles(member)
 
-    embed = discord.Embed(
-        title="🎉 Баллы начислены!",
-        color=discord.Color.green()
-    )
-    embed.add_field(name="👤 Пользователь:", value=member.mention, inline=False)
-    embed.add_field(name="➕ Количество:", value=f"**{points}** баллов", inline=False)
-    embed.add_field(name="📝 Причина:", value=reason, inline=False)
-    embed.add_field(name="🕒 Время:", value=timestamp, inline=False)
-    embed.add_field(name="🎯 Текущий баланс:", value=f"{scores[user_id]} баллов", inline=False)
+        embed = discord.Embed(
+            title="🎉 Баллы начислены!",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="👤 Пользователь:", value=member.mention, inline=False)
+        embed.add_field(name="➕ Количество:", value=f"**{points}** баллов", inline=False)
+        embed.add_field(name="📝 Причина:", value=reason, inline=False)
+        embed.add_field(name="🕒 Время:", value=timestamp, inline=False)
+        embed.add_field(name="🎯 Текущий баланс:", value=f"{scores[user_id]} баллов", inline=False)
 
-    await ctx.send(embed=embed)
-
-
+        await ctx.send(embed=embed)
+    except ValueError:
+        await ctx.send("Ошибка: введите корректное число")
+    
 @bot.command(name='removepoints')
 @commands.has_permissions(administrator=True)
 async def remove_points(ctx, member: discord.Member, points: str, *, reason: str = 'Без причины'):
