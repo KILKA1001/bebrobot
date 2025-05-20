@@ -22,6 +22,9 @@ from history_manager import format_history_embed
 
 # Константы
 COMMAND_PREFIX = '?'
+TIME_FORMAT = "%H:%M (%d.%m.%Y)"
+DATE_FORMAT = "%d-%m-%Y"        # 25-12-2023
+DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"  # Для сортировки
 
 # Интенты — обязательно message_content=True для команд
 intents = discord.Intents.default()
@@ -30,6 +33,11 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
 
+def format_moscow_time(dt: Optional[datetime] = None) -> str:
+        """Форматирует UTC-время в московское"""
+        if dt is None:
+            dt = datetime.now(timezone.utc)
+        return dt.astimezone(pytz.timezone('Europe/Moscow')).strftime(TIME_FORMAT)
 
 async def update_roles(member: discord.Member):
     user_id = member.id
@@ -54,7 +62,6 @@ async def update_roles(member: discord.Member):
             if role_to_remove:
                 await member.remove_roles(role_to_remove)
 
-
 @bot.command(name='addpoints')
 @commands.has_permissions(administrator=True)
 async def add_points(ctx, member: discord.Member, points: str, *, reason: str = 'Без причины'):
@@ -62,17 +69,16 @@ async def add_points(ctx, member: discord.Member, points: str, *, reason: str = 
         points_float = float(points.replace(',', '.'))
         user_id = member.id
         current = db.scores.get(user_id, 0)
-        db.scores[user_id] = current + points_float
-        moscow_tz = pytz.timezone('Europe/Moscow')
-        timestamp = datetime.now(moscow_tz).strftime("%H:%M %d-%m-%Y")
-        if points_float < 0:
-            db.scores[user_id] = 0
+        db.scores[user_id] = max(current + points_float, 0)  # Защита от отрицательных
 
-        # Добавляем действие через функцию из data.py
-        db.add_action(user_id, points_float, reason, ctx.author.id)
-        db.save_all()
+        db.add_action(  # Автоматически сохраняет в БД
+            user_id=user_id,
+            points=points_float,
+            reason=reason,
+            author_id=ctx.author.id
+        )
+
         await update_roles(member)
-
         embed = discord.Embed(
             title="🎉 Баллы начислены!",
             color=discord.Color.green()
@@ -80,7 +86,7 @@ async def add_points(ctx, member: discord.Member, points: str, *, reason: str = 
         embed.add_field(name="👤 Пользователь:", value=member.mention, inline=False)
         embed.add_field(name="➕ Количество:", value=f"**{points}** баллов", inline=False)
         embed.add_field(name="📝 Причина:", value=reason, inline=False)
-        embed.add_field(name="🕒 Время:", value=timestamp, inline=False)
+        embed.add_field(name="🕒 Время:", value=format_moscow_time(), inline=False)
         embed.add_field(name="🎯 Текущий баланс:", value=f"{db.scores[user_id]} баллов", inline=False)
 
         await ctx.send(embed=embed)
@@ -93,41 +99,48 @@ async def remove_points(ctx, member: discord.Member, points: str, *, reason: str
     try:
         points_float = float(points.replace(',', '.'))
 
-        if points_float < 0:
-            await ctx.send("Ошибка: нельзя использовать отрицательные числа в команде removepoints.")
+        # Жёсткая проверка на положительное число
+        if points_float <= 0:
+            await ctx.send("❌ Ошибка: введите число больше 0 для снятия баллов.")
             return
 
         user_id = member.id
         current_points = db.scores.get(user_id, 0)
-        actual_points_to_remove = min(points_float, current_points)
-        db.scores[user_id] = current_points - actual_points_to_remove
 
-        # Автоматически сохраняет в actions и history
+        # Защита от снятия большего количества баллов, чем есть
+        if points_float > current_points:
+            embed = discord.Embed(
+                title="⚠️ Недостаточно баллов",
+                description=f"У {member.mention} только {current_points} баллов",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+            return
+
+        # Основная логика
+        db.scores[user_id] = current_points - points_float
         db.add_action(
             user_id=user_id,
-            points=-actual_points_to_remove,
-            reason=f"{reason} (запрошено снятие: {points_float})",
+            points=-points_float,
+            reason=reason,
             author_id=ctx.author.id
         )
-
         await update_roles(member)
-        moscow_tz = pytz.timezone('Europe/Moscow')
-        timestamp = datetime.now(moscow_tz).strftime("%H:%M %d-%m-%Y")
 
         embed = discord.Embed(
             title="⚠️ Баллы сняты!",
             color=discord.Color.red()
         )
         embed.add_field(name="👤 Пользователь:", value=member.mention, inline=False)
-        embed.add_field(name="➖ Снято баллов:", value=f"**{actual_points_to_remove}** из запрошенных {points_float}", inline=False)
+        embed.add_field(name="➖ Снято баллов:", value=f"**{points_float}** из запрошенных {points_float}", inline=False)
         embed.add_field(name="📝 Причина:", value=reason, inline=False)
-        embed.add_field(name="🕒 Время:", value=timestamp, inline=False)
+        embed.add_field(name="🕒 Время:", value=format_moscow_time(), inline=False)
         embed.add_field(name="🎯 Текущий баланс:", value=f"{db.scores[user_id]} баллов", inline=False)
 
         await ctx.send(embed=embed)
 
     except ValueError:
-        await ctx.send("Ошибка: введите корректное число")
+        await ctx.send("Ошибка: введите корректное число больше 0")
 
 @bot.command(name='points')
 async def points(ctx, member: Optional[discord.Member] = None):
