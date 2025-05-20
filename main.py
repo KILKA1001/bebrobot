@@ -195,6 +195,27 @@ async def leaderboard(ctx, top: int = 10):
 
     await ctx.send(embed=embed)
 
+class HistoryView(discord.ui.View):
+    def __init__(self, member: discord.Member, page: int, total_pages: int):
+        super().__init__(timeout=60)
+        self.member = member
+        self.page = page
+        self.total_pages = total_pages
+        
+        # Отключаем кнопки если страница первая/последняя
+        self.prev_button.disabled = page <= 1
+        self.next_button.disabled = page >= total_pages
+
+    @discord.ui.button(label="◀️ Назад", style=discord.ButtonStyle.gray, custom_id="prev")
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        await history_cmd(interaction, self.member, self.page - 1)
+
+    @discord.ui.button(label="Вперед ▶️", style=discord.ButtonStyle.gray, custom_id="next")
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        await history_cmd(interaction, self.member, self.page + 1)
+
 @bot.command(name='history')
 async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 1):
     try:
@@ -262,7 +283,18 @@ async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 
             embed.add_field(name=field_name, value=field_value, inline=False)
 
         embed.set_footer(text=f"Страница {page}/{total_pages} • Всего записей: {total_entries}")
-        await ctx.send(embed=embed)
+        
+        # Создаем view с кнопками навигации
+        view = HistoryView(member, page, total_pages)
+        
+        # Определяем, откуда пришел запрос
+        if isinstance(ctx, discord.Interaction):
+            if ctx.message:
+                await ctx.message.edit(embed=embed, view=view)
+            else:
+                await ctx.response.send_message(embed=embed, view=view)
+        else:
+            await ctx.send(embed=embed, view=view)
 
     except Exception as e:
         error_embed = discord.Embed(
