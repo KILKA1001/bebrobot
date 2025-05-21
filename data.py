@@ -116,7 +116,7 @@ class Database:
             traceback.print_exc()
             return False
 
-    def add_action(self, user_id: int, points: float, reason: str, author_id: int):
+    def add_action(self, user_id: int, points: float, reason: str, author_id: int, is_undo: bool = False):
         """Добавляет действие с гарантированной синхронизацией"""
         try:
             # 1. Обновляем баллы
@@ -129,7 +129,8 @@ class Database:
                 "points": points,
                 "reason": reason,
                 "author_id": author_id,
-                "action_type": "remove" if points < 0 else "add"
+                "action_type": "remove" if points < 0 else "add",
+                "is_undo": False
             }
 
             # 3. Сохраняем действие
@@ -151,7 +152,8 @@ class Database:
                 'points': points,
                 'reason': reason,
                 'author_id': author_id,
-                'timestamp': response.data[0]['timestamp']
+                'timestamp': response.data[0]['timestamp'],
+                'is_undo': is_undo
             })
 
             print(f"✅ Действие сохранено (ID: {response.data[0]['id']})")
