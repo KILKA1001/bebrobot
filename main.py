@@ -26,6 +26,9 @@ TIME_FORMAT = "%H:%M (%d.%m.%Y)"
 DATE_FORMAT = "%d-%m-%Y"        # 25-12-2023
 DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"  # Для сортировки
 
+# Словарь для хранения активных таймеров удаления: message_id -> asyncio.Task
+active_timers = {}
+
 # Интенты — обязательно message_content=True для команд
 intents = discord.Intents.default()
 intents.members = True
@@ -201,31 +204,23 @@ class HistoryView(discord.ui.View):
         self.member = member
         self.page = page
         self.total_pages = total_pages
-        
-        # Отключаем кнопки если страница первая/последняя
+
+        # Кнопки будут отключены на первой и последней страницах
         self.prev_button.disabled = page <= 1
         self.next_button.disabled = page >= total_pages
 
     @discord.ui.button(label="◀️ Назад", style=discord.ButtonStyle.gray, custom_id="prev")
     async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        await history_cmd(interaction, self.member, self.page - 1)
+        await render_history(interaction, self.member, self.page - 1)
 
     @discord.ui.button(label="Вперед ▶️", style=discord.ButtonStyle.gray, custom_id="next")
     async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        await history_cmd(interaction, self.member, self.page + 1)
+        await render_history(interaction, self.member, self.page + 1)
 
-@bot.command(name='history')
-async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 1):
+async def render_history(ctx_or_interaction, member: discord.Member, page: int):
     try:
-        if member is None:
-            member = ctx.author
-
-        if not member:
-            await ctx.send("❌ Пользователь не найден на сервере")
-            return
-
         user_id = member.id
         entries_per_page = 5
         user_history = db.history.get(user_id, [])
@@ -237,7 +232,11 @@ async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 
                 color=discord.Color.orange()
             )
             embed.set_author(name=member.display_name, icon_url=member.avatar.url if member.avatar else member.default_avatar.url)
-            await ctx.send(embed=embed)
+
+            if isinstance(ctx_or_interaction, discord.Interaction):
+                await ctx_or_interaction.response.send_message(embed=embed, ephemeral=True)
+            else:
+                await ctx_or_interaction.send(embed=embed)
             return
 
         total_entries = len(user_history)
@@ -249,7 +248,10 @@ async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 
                 description=f"```Доступно страниц: {total_pages}```",
                 color=discord.Color.red()
             )
-            await ctx.send(embed=embed)
+            if isinstance(ctx_or_interaction, discord.Interaction):
+                await ctx_or_interaction.response.send_message(embed=embed, ephemeral=True)
+            else:
+                await ctx_or_interaction.send(embed=embed)
             return
 
         start_idx = (page - 1) * entries_per_page
@@ -260,20 +262,20 @@ async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 
             color=discord.Color.blue()
         )
         embed.set_author(name=member.display_name, icon_url=member.avatar.url if member.avatar else member.default_avatar.url)
-        
+
         total_points = db.scores.get(user_id, 0)
         embed.add_field(name="💰 Текущий баланс", value=f"```{total_points} баллов```", inline=False)
-        
+
         for action in page_actions:
             points = action.get('points', 0)
             emoji = "🟢" if points >= 0 else "🔴"
             if action.get('is_undo', False):
                 emoji = "⚪"
-            
+
             timestamp = action.get('timestamp', 'N/A')
             author_id = action.get('author_id', 'N/A')
             reason = action.get('reason', 'Не указана')
-            
+
             field_name = f"{emoji} {timestamp}"
             field_value = (
                 f"```diff\n{'+' if points >= 0 else ''}{points} баллов```\n"
@@ -283,18 +285,36 @@ async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 
             embed.add_field(name=field_name, value=field_value, inline=False)
 
         embed.set_footer(text=f"Страница {page}/{total_pages} • Всего записей: {total_entries}")
-        
-        # Создаем view с кнопками навигации
+
         view = HistoryView(member, page, total_pages)
-        
-        # Определяем, откуда пришел запрос
-        if isinstance(ctx, discord.Interaction):
-            if ctx.message:
-                await ctx.message.edit(embed=embed, view=view)
+
+        # Отправка или редактирование сообщения с embed и view
+        if isinstance(ctx_or_interaction, discord.Interaction):
+            if ctx_or_interaction.response.is_done():
+                sent_message = await ctx_or_interaction.edit_original_response(embed=embed, view=view)
             else:
-                await ctx.response.send_message(embed=embed, view=view)
+                await ctx_or_interaction.response.send_message(embed=embed, view=view)
+                sent_message = await ctx_or_interaction.original_response()
         else:
-            await ctx.send(embed=embed, view=view)
+            sent_message = await ctx_or_interaction.send(embed=embed, view=view)
+
+        # Отмена предыдущего таймера для этого сообщения, если есть
+        if sent_message.id in active_timers:
+            active_timers[sent_message.id].cancel()
+
+        # Таймер удаления сообщения через 2 минуты
+        async def delete_later(msg: discord.Message):
+            try:
+                await asyncio.sleep(120)
+                await msg.delete()
+            except (discord.NotFound, discord.Forbidden):
+                pass
+            finally:
+                active_timers.pop(msg.id, None)
+
+        # Запускаем фоновую задачу удаления
+        task = asyncio.create_task(delete_later(sent_message))
+        active_timers[sent_message.id] = task
 
     except Exception as e:
         error_embed = discord.Embed(
@@ -302,8 +322,20 @@ async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 
             description=f"```{str(e)}```",
             color=discord.Color.red()
         )
-        await ctx.send(embed=error_embed)
-        print(f"Ошибка в команде history: {traceback.format_exc()}")
+        if isinstance(ctx_or_interaction, discord.Interaction):
+            await ctx_or_interaction.response.send_message(embed=error_embed, ephemeral=True)
+        else:
+            await ctx_or_interaction.send(embed=error_embed)
+        print(f"Ошибка в render_history: {traceback.format_exc()}")
+
+@bot.command(name='history')
+async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 1):
+    if member is None:
+        member = ctx.author
+    if member:
+        await render_history(ctx, member, page)
+    else:
+        await ctx.send("Не удалось определить пользователя.")
 
 @bot.command(name='roles')
 async def roles_list(ctx):
