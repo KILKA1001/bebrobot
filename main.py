@@ -186,7 +186,7 @@ async def leaderboard(ctx, top: int = 10):
             role_names = ', '.join(role.name for role in user_roles) if user_roles else 'Нет роли'
             embed.add_field(
                 name=f"{i}. {member.display_name}",
-                value=f"Баллы: {points_val}\nРоли: {role_names}",
+                value=f"Баллы: {points_val}\nРоль: {role_names}",
                 inline=False
             )
         else:
@@ -272,11 +272,21 @@ async def render_history(ctx_or_interaction, member: discord.Member, page: int):
             if action.get('is_undo', False):
                 emoji = "⚪"
 
-            timestamp = action.get('timestamp', 'N/A')
+            timestamp = action.get('timestamp')
+            if isinstance(timestamp, str):
+                try:
+                    # Если timestamp в формате ISO (от Supabase)
+                    dt = datetime.fromisoformat(timestamp)
+                    formatted_time = format_moscow_time(dt)
+                except ValueError:
+                    formatted_time = timestamp
+            else:
+                formatted_time = format_moscow_time(timestamp) if timestamp else 'N/A'
+
             author_id = action.get('author_id', 'N/A')
             reason = action.get('reason', 'Не указана')
 
-            field_name = f"{emoji} {timestamp}"
+            field_name = f"{emoji} {formatted_time}"
             field_value = (
                 f"```diff\n{'+' if points >= 0 else ''}{points} баллов```\n"
                 f"**Причина:** {reason}\n"
@@ -302,10 +312,10 @@ async def render_history(ctx_or_interaction, member: discord.Member, page: int):
         if sent_message.id in active_timers:
             active_timers[sent_message.id].cancel()
 
-        # Таймер удаления сообщения через 2 минуты
+        # Таймер удаления сообщения через 3 минуты
         async def delete_later(msg: discord.Message):
             try:
-                await asyncio.sleep(120)
+                await asyncio.sleep(180)
                 await msg.delete()
             except (discord.NotFound, discord.Forbidden):
                 pass
