@@ -191,7 +191,7 @@ async def leaderboard(ctx, top: int = 10):
             )
         else:
             embed.add_field(
-                name=f"{i}. Пользователь с ID {user_id}",
+                name=f"{i}. {member.mention}",
                 value=f"Баллы: {points_val}",
                 inline=False
             )
