@@ -87,24 +87,27 @@ class Database:
             return False
 
         try:
-            # Транзакция для гарантии целостности
-                # 1. Получаем текущие баллы
+            # 1. Получаем текущие баллы
+            try:
                 current = self.supabase.table("scores")\
                     .select("points")\
                     .eq("user_id", user_id)\
-                    .single()\
                     .execute()
+                current_points = float(current.data[0]['points']) if current.data else 0
+            except Exception:
+                current_points = 0
 
-                current_points = float(current.data['points']) if current.data else 0
-                new_points = max(current_points + points_change, 0)  # Не уходим в минус
+            new_points = max(current_points + points_change, 0)  # Не уходим в минус
 
-                # 2. Обновляем баллы
-                self.supabase.from_("scores")\
-                    .upsert({
-                        "user_id": user_id,
-                        "points": new_points
-                    })\
-                    .execute()
+            # 2. Обновляем баллы через upsert
+            result = self.supabase.table("scores")\
+                .upsert({
+                    "user_id": user_id,
+                    "points": new_points
+                })\
+                .execute()
+
+            if result:
                 # Обновляем локальный кеш
                 self.scores[user_id] = new_points
                 return True
