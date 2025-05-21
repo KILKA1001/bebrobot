@@ -129,10 +129,12 @@ class Database:
                 "points": points,
                 "reason": reason,
                 "author_id": author_id,
-                "action_type": "remove" if points < 0 else "add",
-                "is_undo": False
+                "action_type": "remove" if points < 0 else "add"
             }
-
+            # Добавляем is_undo только если True
+            if is_undo:
+                action["is_undo"] = True
+                
             # 3. Сохраняем действие
             if not self.supabase:
                 print("Supabase client is not initialized.")
