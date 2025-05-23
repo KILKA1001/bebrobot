@@ -58,4 +58,13 @@ keep_alive()
 TOKEN = os.getenv('DISCORD_TOKEN')
 
 bot.loop.create_task(autosave_task())
-bot.run(TOKEN)
+
+if not TOKEN:
+    print("❌ Ошибка: переменная DISCORD_TOKEN не задана.")
+else:
+    try:
+        bot.run(TOKEN)
+    except Exception as e:
+        print("❌ Ошибка при запуске бота:", e)
+        import traceback
+        traceback.print_exc()
