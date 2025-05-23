@@ -317,28 +317,20 @@ async def undo(ctx, member: discord.Member, count: int = 1):
         entry = user_history.pop()
         points_val = entry.get("points", 0)
         reason = entry.get("reason", "Без причины")
-        db.scores[user_id] = db.scores.get(user_id, 0) - points_val
-        if db.scores[user_id] < 0:
-            db.scores[user_id] = 0
         undo_entries.append((points_val, reason))
 
-        from datetime import datetime
-        import pytz
-        moscow_tz = pytz.timezone('Europe/Moscow')
-        timestamp = datetime.now(moscow_tz).strftime("%H:%M %d-%m-%Y")
-
-        user_history.append({
-            'points': -points_val,
-            'reason': f"Отмена действия: {reason}",
-            'author_id': ctx.author.id,
-            'timestamp': timestamp,
-            'is_undo': True
-        })
+        # Запись отмены в базу
+        db.add_action(
+            user_id=user_id,
+            points=-points_val,
+            reason=f"Отмена действия: {reason}",
+            author_id=ctx.author.id,
+            is_undo=True
+        )
 
     if not user_history:
         del db.history[user_id]
 
-    db.save_all()
     await update_roles(member)
 
     embed = discord.Embed(
@@ -350,6 +342,7 @@ async def undo(ctx, member: discord.Member, count: int = 1):
         embed.add_field(name=f"{i}. {sign}{points_val} баллов", value=reason, inline=False)
     await ctx.send(embed=embed)
     await log_action_cancellation(ctx, member, undo_entries)
+
 
 async def log_action_cancellation(ctx, member: discord.Member, entries: list):
     channel = discord.utils.get(ctx.guild.channels, name='history-log')
