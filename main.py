@@ -1,12 +1,9 @@
 # Основные импорты Discord
 import discord
-from discord.ext import commands
 
 # Системные импорты
 import os
 import asyncio
-from datetime import datetime, timezone
-import pytz
 from dotenv import load_dotenv
 
 # Локальные импорты
@@ -28,6 +25,13 @@ async def send_greetings(channel, user_list):
         await channel.send(f"Привет, <@{user_id}>!")
         await asyncio.sleep(1)
 
+async def autosave_task():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        db.save_all()
+        print("Данные сохранены автоматически.")
+        await asyncio.sleep(300)
+
 @bot.event
 async def on_ready():
     print(f'🟢 Бот {bot.user} запущен!')
@@ -41,16 +45,12 @@ async def on_ready():
     )
     await bot.change_presence(activity=activity)
 
+    # Запуск задачи автосохранения
+    asyncio.create_task(autosave_task())
+
     print('--- Данные успешно загружены ---')
     print(f'Пользователей: {len(db.scores)}')
     print(f'Историй действий: {sum(len(v) for v in db.history.values())}')
-
-async def autosave_task():
-    await bot.wait_until_ready()
-    while not bot.is_closed():
-        db.save_all()
-        print("Данные сохранены автоматически.")
-        await asyncio.sleep(300)
 
 load_dotenv()
 keep_alive()
