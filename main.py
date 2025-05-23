@@ -52,19 +52,22 @@ async def on_ready():
     print(f'Пользователей: {len(db.scores)}')
     print(f'Историй действий: {sum(len(v) for v in db.history.values())}')
     
-load_dotenv()
-keep_alive()
+# Основной запуск
+def main():
+    load_dotenv()
+    keep_alive()
+    TOKEN = os.getenv('DISCORD_TOKEN')
 
-TOKEN = os.getenv('DISCORD_TOKEN')
+    if not TOKEN:
+        print("❌ Переменная DISCORD_TOKEN не задана.")
+        return
 
-bot.loop.create_task(autosave_task())
-
-if not TOKEN:
-    print("❌ Ошибка: переменная DISCORD_TOKEN не задана.")
-else:
     try:
         bot.run(TOKEN)
     except Exception as e:
         print("❌ Ошибка при запуске бота:", e)
         import traceback
         traceback.print_exc()
+
+if __name__ == "__main__":
+    main()
