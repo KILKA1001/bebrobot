@@ -8,7 +8,7 @@ import traceback
 
 from data import db
 from history_manager import format_history_embed
-from roles_and_activities import ACTIVITY_CATEGORIES, ROLE_THRESHOLDS
+from roles_and_activities import ACTIVITY_CATEGORIES, ROLE_THRESHOLDS, display_last_edit_date
 
 # Константы
 COMMAND_PREFIX = '?'
@@ -286,11 +286,23 @@ async def roles_list(ctx):
 
 @bot.command(name='activities')
 async def activities_cmd(ctx):
-    embed = discord.Embed(title="📋 Виды помощи клубу", description="Список всех видов деятельности и их стоимость в баллах:", color=discord.Color.blue())
+    embed = discord.Embed(
+        title="📋 Виды помощи клубу",
+        description="Список всех видов деятельности и их стоимость в баллах:",
+        color=discord.Color.blue()
+    )
+    def get_points_word(points):
+        if points % 10 == 1 and points % 100 != 11:
+            return "балл"
+        elif 2 <= points % 10 <= 4 and (points % 100 < 10 or points % 100 >= 20):
+            return "балла"
+        else:
+            return "баллов"
+
     for category_name, activities in ACTIVITY_CATEGORIES.items():
         category_text = ""
         for activity_name, info in activities.items():
-            category_text += f"**{activity_name}** ({info['points']} баллов)\n"
+            category_text += f"**{activity_name}** ({info['points']} {get_points_word(info['points'])})\n"
             category_text += f"↳ {info['description']}\n"
             if 'conditions' in info:
                 category_text += "Условия:\n"
@@ -298,7 +310,9 @@ async def activities_cmd(ctx):
                     category_text += f"• {condition}\n"
             category_text += "\n"
         embed.add_field(name=category_name, value=category_text, inline=False)
+    embed.set_footer(text=display_last_edit_date())
     await ctx.send(embed=embed)
+
 
 @bot.command(name='undo')
 @commands.has_permissions(administrator=True)
