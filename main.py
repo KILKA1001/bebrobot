@@ -45,13 +45,13 @@ async def on_ready():
     )
     await bot.change_presence(activity=activity)
 
-    # Запуск задачи автосохранения
+    # 👇 тут будет работать, потому что определена выше
     asyncio.create_task(autosave_task())
 
     print('--- Данные успешно загружены ---')
     print(f'Пользователей: {len(db.scores)}')
     print(f'Историй действий: {sum(len(v) for v in db.history.values())}')
-
+    
 load_dotenv()
 keep_alive()
 
