@@ -6,9 +6,9 @@ import pytz
 import asyncio
 import traceback
 
-from data import db
-from history_manager import format_history_embed
-from roles_and_activities import ACTIVITY_CATEGORIES, ROLE_THRESHOLDS, display_last_edit_date
+from bot.data import db
+from bot.utils.history_manager import format_history_embed
+from bot.utils.roles_and_activities import ACTIVITY_CATEGORIES, ROLE_THRESHOLDS, display_last_edit_date
 from collections import defaultdict
 
 # Константы
