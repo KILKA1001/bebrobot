@@ -5,11 +5,14 @@ import discord
 import os
 import asyncio
 from dotenv import load_dotenv
+import pytz
 
 # Локальные импорты
 from data import db
 from keep_alive import keep_alive
 from commands import bot as command_bot
+from commands import run_monthly_top
+from datetime import datetime
 
 # Константы
 COMMAND_PREFIX = '?'
@@ -51,7 +54,32 @@ async def on_ready():
     print('--- Данные успешно загружены ---')
     print(f'Пользователей: {len(db.scores)}')
     print(f'Историй действий: {sum(len(v) for v in db.history.values())}')
+
+async def monthly_top_task():
+    await bot.wait_until_ready()
     
+    last_ran = None
+
+    while not bot.is_closed():
+        now = datetime.now(pytz.timezone('Europe/Moscow'))
+        if now.day == 1 and (last_ran is None or last_ran.month != now.month):
+            try:
+                # Найти текстовый канал с именем 'top-log'
+                channel = discord.utils.get(bot.get_all_channels(), name='top-log')
+                if not isinstance(channel, discord.TextChannel):
+                    print("❌ Канал #top-log не является TextChannel")
+                    await asyncio.sleep(3600)
+                    continue
+
+                msg = await channel.send("🔁 Запускаем автоматический топ месяца...")
+                ctx = await bot.get_context(msg)
+                await run_monthly_top(ctx)
+
+                last_ran = now
+            except Exception as e:
+                print(f"❌ Ошибка автозапуска топа месяца: {e}")
+        await asyncio.sleep(3600)
+
 # Основной запуск
 def main():
     load_dotenv()
