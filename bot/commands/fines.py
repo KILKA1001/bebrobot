@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 from datetime import datetime, timedelta, timezone
 from bot.data import db
+from bot.systems.fines_logic import build_fine_embed, FineView, FinePaginator
 
 ALLOWED_ROLES = []  # 👉 сюда можно вписать ID ролей, кому разрешено выдавать штрафы
 
@@ -59,3 +60,21 @@ async def fine(ctx, member: discord.Member, amount: str, fine_type: int, *, reas
 
     except ValueError:
         await ctx.send("❌ Введите корректную сумму.")
+
+@commands.command(name="myfines")
+async def myfines(ctx):
+    user_id = ctx.author.id
+    fines = db.get_user_fines(user_id)
+
+    if not fines:
+        await ctx.send("✅ У вас нет активных штрафов!")
+        return
+
+    paginator = FinePaginator(fines)
+    page = 1
+    page_items = paginator.get_page(page)
+
+    for fine in page_items:
+        embed = build_fine_embed(fine)
+        view = FineView(fine)
+        await ctx.send(embed=embed, view=view)
