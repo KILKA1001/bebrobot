@@ -227,10 +227,15 @@ async def topfines(ctx):
 
     embed = discord.Embed(title="📉 Топ по задолженности", color=discord.Color.red())
     medals = ["🥇", "🥈", "🥉"]
+
     for i, (uid, amount) in enumerate(top):
+        member = ctx.guild.get_member(uid)
+        name = member.display_name if member else f"<@{uid}>"
         embed.add_field(
-            name=f"{medals[i]} <@{uid}>",
+            name=f"{medals[i]} {name}",
             value=f"💰 Задолженность: {amount:.2f} баллов",
             inline=False
         )
+
     await ctx.send(embed=embed)
+
