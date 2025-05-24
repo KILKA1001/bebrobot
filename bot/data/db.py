@@ -20,7 +20,8 @@ class Database:
         self.supabase = create_client(self.url, self.key) if self.url and self.key else None
         self._ensure_tables()
         self.load_data()
-
+        self.load_fines()
+        
     def _ensure_tables(self):
         """Проверяет существование обязательных таблиц"""
         if not self.supabase:
@@ -31,6 +32,15 @@ class Database:
             self.supabase.table("scores").select("user_id").limit(1).execute()
         except Exception as e:
             raise RuntimeError(f"Таблица scores не существует или недоступна: {str(e)}")
+        try:
+            self.supabase.table("fines").select("id").limit(1).execute()
+        except Exception as e:
+            raise RuntimeError(f"Таблица fines не существует или недоступна: {str(e)}")
+
+        try:
+            self.supabase.table("fine_payments").select("id").limit(1).execute()
+        except Exception as e:
+            raise RuntimeError(f"Таблица fine_payments не существует или недоступна: {str(e)}")
 
     def load_data(self):
         """Загружает все данные с автоматическим восстановлением связей"""
@@ -222,6 +232,70 @@ class Database:
             print(f"❌ Ошибка записи топа месяца: {e}")
             return False
 
+#Штрафы
+    def load_fines(self):
+        """Загружает штрафы и оплаты из Supabase"""
+        if not self.supabase:
+            self.fines = []
+            self.fine_payments = []
+            return
+
+        try:
+            fines_resp = self.supabase.table("fines").select("*").execute()
+            payments_resp = self.supabase.table("fine_payments").select("*").execute()
+
+            self.fines = fines_resp.data if hasattr(fines_resp, "data") else []
+            self.fine_payments = payments_resp.data if hasattr(payments_resp, "data") else []
+
+            print(f"✅ Загружено штрафов: {len(self.fines)}, оплат: {len(self.fine_payments)}")
+
+        except Exception as e:
+            print(f"❌ Ошибка при загрузке штрафов: {str(e)}")
+            traceback.print_exc()
+            self.fines = []
+            self.fine_payments = []
+
+    def add_fine(self, user_id: int, author_id: int, amount: float, fine_type: int, reason: str, due_date: datetime):
+        """Создаёт штраф"""
+        if not self.supabase:
+            print("⚠️ Supabase не инициализирован")
+            return None
+
+        try:
+            result = self.supabase.table("fines").insert({
+                "user_id": user_id,
+                "author_id": author_id,
+                "amount": amount,
+                "type": fine_type,
+                "reason": reason,
+                "due_date": due_date.isoformat()
+            }).execute()
+
+            if not result.data:
+                raise ValueError("❌ Пустой ответ от Supabase при создании штрафа")
+
+            fine = result.data[0]
+            self.fines.insert(0, fine)
+            return fine
+
+        except Exception as e:
+            print(f"❌ Ошибка добавления штрафа: {str(e)}")
+            traceback.print_exc()
+            return None
+
+    def get_user_fines(self, user_id: int, active_only: bool = True):
+        """Возвращает список штрафов пользователя"""
+        return [
+            fine for fine in self.fines
+            if fine["user_id"] == user_id
+            and (not active_only or (not fine["is_paid"] and not fine["is_canceled"]))
+        ]
+
+    def get_fine_by_id(self, fine_id: int):
+        for fine in self.fines:
+            if fine["id"] == fine_id:
+                return fine
+        return None
 
 # Глобальный экземпляр
 db = Database()
