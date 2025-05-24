@@ -17,6 +17,7 @@ from datetime import datetime
 # Константы
 COMMAND_PREFIX = '?'
 TIME_FORMAT = "%H:%M (%d.%m.%Y)"
+TOP_CHANNEL_ID = int(os.getenv("MONTHLY_TOP_CHANNEL_ID", 0))
 
 # Таймеры удаления сообщений
 active_timers = {}
@@ -65,7 +66,7 @@ async def monthly_top_task():
         if now.day == 1 and (last_ran is None or last_ran.month != now.month):
             try:
                 # Найти текстовый канал с именем 'top-log'
-                channel = discord.utils.get(bot.get_all_channels(), name='top-log')
+                channel = bot.get_channel(TOP_CHANNEL_ID)
                 if not isinstance(channel, discord.TextChannel):
                     print("❌ Канал #top-log не является TextChannel")
                     await asyncio.sleep(3600)
