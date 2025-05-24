@@ -190,5 +190,38 @@ class Database:
         except Exception as e:
             print(f"🔥 Ошибка сохранения: {str(e)}")
             traceback.print_exc()
+
+    class Database:
+        pass
+    def log_monthly_top(self, entries: list):
+        """Запись топа месяца в Supabase"""
+        if not self.supabase:
+            print("Supabase не инициализирован для логирования топа")
+            return False
+
+        now = datetime.now()
+        month = now.month
+        year = now.year
+
+        log_entries = [
+            {
+                "user_id": uid,
+                "month": month,
+                "year": year,
+                "place": i + 1,
+                "bonus": round(points * percent, 2)
+            }
+            for i, (uid, points, percent) in enumerate(entries)
+        ]
+
+        try:
+            self.supabase.table("monthly_top_log").insert(log_entries).execute()
+            print("✅ Лог топа месяца записан")
+            return True
+        except Exception as e:
+            print(f"❌ Ошибка записи топа месяца: {e}")
+            return False
+
+
 # Глобальный экземпляр
 db = Database()
