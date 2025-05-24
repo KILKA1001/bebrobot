@@ -10,8 +10,8 @@ import pytz
 # Локальные импорты
 from bot.data import db
 from keep_alive import keep_alive
-from commands import bot as command_bot
-from commands import run_monthly_top
+from bot.commands import bot as command_bot
+from bot.commands import run_monthly_top
 from datetime import datetime
 
 # Константы
