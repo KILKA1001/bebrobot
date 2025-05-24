@@ -1,12 +1,16 @@
 import os
+import discord
+from discord.ext import commands
+from typing import Optional
 from datetime import datetime, timezone, timedelta
 from supabase import create_client
 from dotenv import load_dotenv
 import traceback
+import asyncio
 
 class Database:
     _instance = None
-
+    
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -15,12 +19,17 @@ class Database:
 
     def init_db(self):
         load_dotenv()
+        self.bot = None
+        self.bot: Optional[commands.Bot] = None
         self.url = os.getenv("SUPABASE_URL")
         self.key = os.getenv("SUPABASE_KEY")
         self.supabase = create_client(self.url, self.key) if self.url and self.key else None
         self._ensure_tables()
         self.load_data()
         self.load_fines()
+        self.quick_pay_streak = {}
+        self.guild_id = int(os.getenv("GUILD_ID", 0))
+        self.fast_payer_role_id = int(os.getenv("FAST_PAYER_ROLE_ID", 0))
         
     def _ensure_tables(self):
         """Проверяет существование обязательных таблиц"""
@@ -360,6 +369,17 @@ class Database:
                     "paid_amount": fine['paid_amount'],
                     "is_paid": fine['is_paid']
                 }).eq("id", fine_id).execute()
+                created = fine.get("created_at")
+                if created:
+                    try:
+                        created_dt = datetime.fromisoformat(created)
+                        now = datetime.now(timezone.utc)
+                        if (now - created_dt).days <= 5:
+                            self._track_quick_payment(user_id)
+                        else:
+                            self.quick_pay_streak[user_id] = 0  # сброс
+                    except Exception:
+                        pass
 
             return True
 
@@ -441,5 +461,53 @@ class Database:
             traceback.print_exc()
             return False
 
+    def log_monthly_fine_top(self, entries: list):
+        if not self.supabase:
+            print("Supabase не инициализирован для штрафного лога")
+            return False
+
+        now = datetime.now()
+        month = now.month
+        year = now.year
+
+        logs = [
+            {
+                "user_id": uid,
+                "month": month,
+                "year": year,
+                "place": i + 1,
+                "penalty": round(total * percent, 2)
+            }
+            for i, ((uid, total), percent) in enumerate(entries)
+        ]
+
+        try:
+            self.supabase.table("monthly_fine_hst").insert(logs).execute()
+            print("✅ История штрафного топа записана")
+            return True
+        except Exception as e:
+            print(f"❌ Ошибка записи штрафного топа: {e}")
+            return False
+
+    def _track_quick_payment(self, user_id: int):
+        self.quick_pay_streak[user_id] = self.quick_pay_streak.get(user_id, 0) + 1
+
+        if self.quick_pay_streak[user_id] >= 10:
+            print(f"🏆 Пользователь {user_id} выполнил 10 быстрых оплат подряд")
+
+            if self.bot:
+                guild = self.bot.get_guild(self.guild_id)
+                if guild:
+                    member = guild.get_member(user_id)
+                    role = guild.get_role(self.fast_payer_role_id)
+                    if member and role and role not in member.roles:
+                        asyncio.create_task(
+                            member.add_roles(role, reason="Быстрая оплата 10 штрафов подряд")
+                        )
+                        print(f"🎖 Роль выдана пользователю {user_id}")
+
+            self.quick_pay_streak[user_id] = 0
+        else:
+            print(f"⏱ Быстрая оплата: {self.quick_pay_streak[user_id]} подряд")
 # Глобальный экземпляр
 db = Database()
