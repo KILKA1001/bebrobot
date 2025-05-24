@@ -7,266 +7,308 @@ import asyncio
 import traceback
 
 from bot.data import db
-from bot.utils.roles_and_activities import ROLE_THRESHOLDS
 from bot.utils.history_manager import format_history_embed
-
+from bot.utils.roles_and_activities import ACTIVITY_CATEGORIES, ROLE_THRESHOLDS, display_last_edit_date
+from collections import defaultdict
+from bot.systems import (
+    update_roles,
+    render_history,
+    log_action_cancellation,
+    run_monthly_top,
+    tophistory
+)
+# Константы
+COMMAND_PREFIX = '?'
 TIME_FORMAT = "%H:%M (%d.%m.%Y)"
+DATE_FORMAT = "%d-%m-%Y"        # 25-12-2023
+DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"  # Для сортировки
+
 active_timers = {}
 
+intents = discord.Intents.default()
+intents.members = True
+intents.message_content = True
+bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents, help_command=None)
+
 def format_moscow_time(dt: Optional[datetime] = None) -> str:
-  if dt is None:
-      dt = datetime.now(timezone.utc)
-  return dt.astimezone(pytz.timezone('Europe/Moscow')).strftime(TIME_FORMAT)
-  
-async def update_roles(member: discord.Member):
+    if dt is None:
+        dt = datetime.now(timezone.utc)
+    return dt.astimezone(pytz.timezone('Europe/Moscow')).strftime(TIME_FORMAT)
+
+@bot.command(name='addpoints')
+@commands.has_permissions(administrator=True)
+async def add_points(ctx, member: discord.Member, points: str, *, reason: str = 'Без причины'):
+    try:
+        points_float = float(points.replace(',', '.'))
+        user_id = member.id
+        current = db.scores.get(user_id, 0)
+        db.scores[user_id] = max(current + points_float, 0)
+        db.add_action(user_id, points_float, reason, ctx.author.id)
+        await update_roles(member)
+        embed = discord.Embed(title="🎉 Баллы начислены!", color=discord.Color.green())
+        embed.add_field(name="👤 Пользователь:", value=member.mention, inline=False)
+        embed.add_field(name="➕ Количество:", value=f"**{points}** баллов", inline=False)
+        embed.add_field(name="📝 Причина:", value=reason, inline=False)
+        embed.add_field(name="🕒 Время:", value=format_moscow_time(), inline=False)
+        embed.add_field(name="🎯 Текущий баланс:", value=f"{db.scores[user_id]} баллов", inline=False)
+        await ctx.send(embed=embed)
+    except ValueError:
+        await ctx.send("Ошибка: введите корректное число")
+
+@bot.command(name='removepoints')
+@commands.has_permissions(administrator=True)
+async def remove_points(ctx, member: discord.Member, points: str, *, reason: str = 'Без причины'):
+    try:
+        points_float = float(points.replace(',', '.'))
+        if points_float <= 0:
+            await ctx.send("❌ Ошибка: введите число больше 0 для снятия баллов.")
+            return
+        user_id = member.id
+        current_points = db.scores.get(user_id, 0)
+        if points_float > current_points:
+            embed = discord.Embed(title="⚠️ Недостаточно баллов", description=f"У {member.mention} только {current_points} баллов", color=discord.Color.red())
+            await ctx.send(embed=embed)
+            return
+        db.scores[user_id] = current_points - points_float
+        db.add_action(user_id, -points_float, reason, ctx.author.id)
+        await update_roles(member)
+        embed = discord.Embed(title="⚠️ Баллы сняты!", color=discord.Color.red())
+        embed.add_field(name="👤 Пользователь:", value=member.mention, inline=False)
+        embed.add_field(name="➖ Снято баллов:", value=f"**{points_float}**", inline=False)
+        embed.add_field(name="📝 Причина:", value=reason, inline=False)
+        embed.add_field(name="🕒 Время:", value=format_moscow_time(), inline=False)
+        embed.add_field(name="🎯 Текущий баланс:", value=f"{db.scores[user_id]} баллов", inline=False)
+        await ctx.send(embed=embed)
+    except ValueError:
+        await ctx.send("Ошибка: введите корректное число больше 0")
+
+@bot.command(name='points')
+async def points(ctx, member: Optional[discord.Member] = None):
+    member = member or ctx.author
+    if not member:
+        await ctx.send("Не удалось определить пользователя. Пожалуйста, попробуйте еще раз.")
+        return
     user_id = member.id
     user_points = db.scores.get(user_id, 0)
-    user_roles = [role.id for role in member.roles if role.id in ROLE_THRESHOLDS]
+    user_roles = [role for role in member.roles if role.id in ROLE_THRESHOLDS]
+    role_names = ', '.join(role.name for role in user_roles) if user_roles else 'Нет роли'
+    sorted_scores = sorted(db.scores.items(), key=lambda x: x[1], reverse=True)
+    place = next((i for i, (uid, _) in enumerate(sorted_scores, 1) if uid == user_id), None)
+    embed = discord.Embed(title=f"Баллы пользователя {member.display_name}", color=discord.Color.blue())
+    embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
+    embed.add_field(name="Баллы", value=f"{user_points}", inline=True)
+    embed.add_field(name="Роли", value=role_names, inline=True)
+    embed.add_field(name="Место в топе", value=f"{place}" if place else "Не в топе", inline=False)
+    top_bonus_count = 0
+    top_bonus_sum = 0.0
+    for action in db.history.get(user_id, []):
+        if action.get("reason", "").startswith("Бонус за "):
+            top_bonus_count += 1
+            top_bonus_sum += action.get("points", 0)
 
-    role_to_add_id = None
-    for role_id, threshold in sorted(ROLE_THRESHOLDS.items(), key=lambda x: x[1], reverse=True):
-        if user_points >= threshold:
-            role_to_add_id = role_id
-            break
-
-    if role_to_add_id and role_to_add_id not in user_roles:
-        role_to_add = member.guild.get_role(role_to_add_id)
-        if role_to_add:
-            await member.add_roles(role_to_add)
-
-    for role_id in user_roles:
-        if role_id != role_to_add_id:
-            role_to_remove = member.guild.get_role(role_id)
-            if role_to_remove:
-                await member.remove_roles(role_to_remove)
-
-
-class HistoryView(discord.ui.View):
-    def __init__(self, member: discord.Member, page: int, total_pages: int):
-        super().__init__(timeout=60)
-        self.member = member
-        self.page = page
-        self.total_pages = total_pages
-
-        self.prev_button.disabled = page <= 1
-        self.next_button.disabled = page >= total_pages
-
-    @discord.ui.button(label="◀️ Назад", style=discord.ButtonStyle.gray, custom_id="prev")
-    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        await render_history(interaction, self.member, self.page - 1)
-
-    @discord.ui.button(label="Вперед ▶️", style=discord.ButtonStyle.gray, custom_id="next")
-    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        await render_history(interaction, self.member, self.page + 1)
-
-
-async def render_history(ctx_or_interaction, member: discord.Member, page: int):
-    try:
-        user_id = member.id
-        entries_per_page = 5
-        user_history = db.history.get(user_id, [])
-
-        if not user_history:
-            embed = discord.Embed(
-                title="📜 История баллов",
-                description="```Записей не найдено```",
-                color=discord.Color.orange()
-            )
-            embed.set_author(name=member.display_name, icon_url=member.avatar.url if member.avatar else member.default_avatar.url)
-
-            if isinstance(ctx_or_interaction, discord.Interaction):
-                await ctx_or_interaction.response.send_message(embed=embed, ephemeral=True)
-            else:
-                await ctx_or_interaction.send(embed=embed)
-            return
-
-        total_entries = len(user_history)
-        total_pages = max(1, (total_entries + entries_per_page - 1) // entries_per_page)
-
-        if page < 1 or page > total_pages:
-            embed = discord.Embed(
-                title="⚠️ Ошибка навигации",
-                description=f"```Доступно страниц: {total_pages}```",
-                color=discord.Color.red()
-            )
-            if isinstance(ctx_or_interaction, discord.Interaction):
-                await ctx_or_interaction.response.send_message(embed=embed, ephemeral=True)
-            else:
-                await ctx_or_interaction.send(embed=embed)
-            return
-
-        start_idx = (page - 1) * entries_per_page
-        page_actions = user_history[start_idx:start_idx + entries_per_page]
-
-        embed = discord.Embed(title="📜 История баллов", color=discord.Color.blue())
-        embed.set_author(name=member.display_name, icon_url=member.avatar.url if member.avatar else member.default_avatar.url)
-
-        total_points = db.scores.get(user_id, 0)
-        embed.add_field(name="💰 Текущий баланс", value=f"```{total_points} баллов```", inline=False)
-
-        for action in page_actions:
-            points = action.get('points', 0)
-            emoji = "🟢" if points >= 0 else "🔴"
-            if action.get('is_undo', False):
-                emoji = "⚪"
-
-            timestamp = action.get('timestamp')
-            if isinstance(timestamp, str):
-                try:
-                    dt = datetime.fromisoformat(timestamp)
-                    formatted_time = dt.astimezone(pytz.timezone('Europe/Moscow')).strftime("%H:%M (%d.%m.%Y)")
-                except ValueError:
-                    formatted_time = timestamp
-            else:
-                formatted_time = timestamp.strftime("%H:%M (%d.%m.%Y)") if timestamp else 'N/A'
-
-            author_id = action.get('author_id', 'N/A')
-            reason = action.get('reason', 'Не указана')
-
-            field_name = f"{emoji} {formatted_time}"
-            field_value = (
-                f"```diff\n{'+' if points >= 0 else ''}{points} баллов```\n"
-                f"**Причина:** {reason}\n"
-                f"**Выдал:** <@{author_id}>"
-            )
-            embed.add_field(name=field_name, value=field_value, inline=False)
-
-        embed.set_footer(text=f"Страница {page}/{total_pages} • Всего записей: {total_entries}")
-
-        view = HistoryView(member, page, total_pages)
-
-        if isinstance(ctx_or_interaction, discord.Interaction):
-            if ctx_or_interaction.response.is_done():
-                sent_message = await ctx_or_interaction.edit_original_response(embed=embed, view=view)
-            else:
-                await ctx_or_interaction.response.send_message(embed=embed, view=view)
-                sent_message = await ctx_or_interaction.original_response()
-        else:
-            sent_message = await ctx_or_interaction.send(embed=embed, view=view)
-
-        async def delete_later(msg: discord.Message):
-            try:
-                await asyncio.sleep(180)
-                await msg.delete()
-            except (discord.NotFound, discord.Forbidden):
-                pass
-
-        asyncio.create_task(delete_later(sent_message))
-
-    except Exception as e:
-        error_embed = discord.Embed(
-            title="⚠️ Ошибка",
-            description=f"```{str(e)}```",
-            color=discord.Color.red()
-        )
-        if isinstance(ctx_or_interaction, discord.Interaction):
-            await ctx_or_interaction.response.send_message(embed=error_embed, ephemeral=True)
-        else:
-            await ctx_or_interaction.send(embed=error_embed)
-        print(f"Ошибка в render_history: {traceback.format_exc()}")
-
-
-async def log_action_cancellation(ctx, member: discord.Member, entries: list):
-    channel = discord.utils.get(ctx.guild.channels, name='history-log')
-    if not channel:
-        return
-
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    lines = [f"**{ctx.author.display_name}** отменил(а) {len(entries)} изменения для **{member.display_name}** ({member.id}) в {now}:"]
-    for i, (points, reason) in enumerate(entries[::-1], start=1):
-        sign = "+" if points > 0 else ""
-        lines.append(f"{i}. {sign}{points} — {reason}")
-
-    await channel.send("\n".join(lines))
-
-
-async def run_monthly_top(ctx):
-    now = datetime.now(pytz.timezone('Europe/Moscow'))
-    current_month = now.month
-    current_year = now.year
-    from collections import defaultdict
-    monthly_scores = defaultdict(float)
-    for action in db.actions:
-        if action.get('is_undo'):
-            continue
-        timestamp = action.get('timestamp')
-        if isinstance(timestamp, str):
-            try:
-                dt = datetime.fromisoformat(timestamp)
-            except ValueError:
-                continue
-            if dt.month == current_month and dt.year == current_year:
-                uid = int(action['user_id'])
-                monthly_scores[uid] += float(action['points'])
-    if not monthly_scores:
-        await ctx.send("❌ Нет данных о баллах за этот месяц.")
-        return
-
-    top_users = sorted(monthly_scores.items(), key=lambda x: x[1], reverse=True)[:3]
-    percentages = [0.125, 0.075, 0.05]
-    descriptions = ["🥇 1 место", "🥈 2 место", "🥉 3 место"]
-
-    entries_to_log = []
-    embed = discord.Embed(title="🏆 Топ месяца", color=discord.Color.gold())
-
-    for i, (uid, score) in enumerate(top_users):
-        percent = percentages[i]
-        bonus = round(score * percent, 2)
-        db.add_action(uid, bonus, f"Бонус за {descriptions[i]} ({score} баллов)", ctx.author.id)
-        member = ctx.guild.get_member(uid)
-        name = member.mention if member else f"<@{uid}>"
-
+    if top_bonus_count:
         embed.add_field(
-            name=f"{descriptions[i]} — {name}",
-            value=f"Заработано: {score} баллов\nБонус: +{bonus} баллов",
+            name="🏆 Бонусы за топ месяца",
+            value=f"{top_bonus_count} наград, {top_bonus_sum:.2f} баллов",
             inline=False
         )
-        entries_to_log.append((uid, score, percent))
+    await ctx.send(embed=embed)
 
-    db.log_monthly_top(entries_to_log)
+@bot.command(name='leaderboard')
+async def leaderboard(ctx, top: int = 10):
+    if not db.scores:
+        await ctx.send("Пока нет данных о баллах.")
+        return
+
+    sorted_scores = sorted(db.scores.items(), key=lambda x: x[1], reverse=True)[:top]
+    embed = discord.Embed(title=f"🏆 Топ {top} по баллам", color=discord.Color.gold())
+    medals = ["🥇", "🥈", "🥉"]
+
+    for i, (user_id, points_val) in enumerate(sorted_scores, start=1):
+        member = ctx.guild.get_member(user_id)
+        medal = medals[i - 1] if i <= 3 else f"{i}."
+        name = member.display_name if member else f"<@{user_id}>"
+        roles = [role.name for role in member.roles if role.id in ROLE_THRESHOLDS] if member else []
+        role_str = ', '.join(roles) if roles else 'Нет роли'
+        embed.add_field(
+            name=f"{medal} {name}",
+            value=f"**Баллы:** {points_val:.2f}\n**Роль:** {role_str}",
+            inline=False
+        )
+
+    await ctx.send(embed=embed)
+
+@bot.command(name='history')
+async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 1):
+    if member is None:
+        member = ctx.author
+    if member:
+        await render_history(ctx, member, page)
+    else:
+        await ctx.send("Не удалось определить пользователя.")
+
+@bot.command(name='roles')
+async def roles_list(ctx):
+    desc = ""
+    for role_id, points_needed in sorted(ROLE_THRESHOLDS.items(), key=lambda x: x[1], reverse=True):
+        role = ctx.guild.get_role(role_id)
+        if role:
+            desc += f"**{role.name}**: {points_needed} баллов\n"
+    embed = discord.Embed(title="Роли и стоимость баллов", description=desc, color=discord.Color.purple())
+    await ctx.send(embed=embed)
+
+@bot.command(name='activities')
+async def activities_cmd(ctx):
+    embed = discord.Embed(
+        title="📋 Виды помощи клубу",
+        description="Список всех видов деятельности и их стоимость в баллах:",
+        color=discord.Color.blue()
+    )
+    def get_points_word(points):
+        if points % 10 == 1 and points % 100 != 11:
+            return "балл"
+        elif 2 <= points % 10 <= 4 and (points % 100 < 10 or points % 100 >= 20):
+            return "балла"
+        else:
+            return "баллов"
+
+    for category_name, activities in ACTIVITY_CATEGORIES.items():
+        category_text = ""
+        for activity_name, info in activities.items():
+            category_text += f"**{activity_name}** ({info['points']} {get_points_word(info['points'])})\n"
+            category_text += f"↳ {info['description']}\n"
+            if 'conditions' in info:
+                category_text += "Условия:\n"
+                for condition in info['conditions']:
+                    category_text += f"• {condition}\n"
+            category_text += "\n"
+        embed.add_field(name=category_name, value=category_text, inline=False)
+    embed.set_footer(text=display_last_edit_date())
     await ctx.send(embed=embed)
 
 
-async def tophistory(ctx, month: Optional[int] = None, year: Optional[int] = None):
-    now = datetime.now()
-    month = month or now.month
-    year = year or now.year
-
-    if not db.supabase:
-        await ctx.send("❌ Supabase не инициализирован.")
+@bot.command(name='undo')
+@commands.has_permissions(administrator=True)
+async def undo(ctx, member: discord.Member, count: int = 1):
+    user_id = member.id
+    user_history = db.history.get(user_id, [])
+    if len(user_history) < count:
+        await ctx.send(
+            f"❌ Нельзя отменить **{count}** изменений для {member.display_name}, "
+            f"так как доступно только **{len(user_history)}** записей."
+        )
         return
 
-    try:
-        response = db.supabase \
-            .table("monthly_top_log") \
-            .select("*") \
-            .eq("month", month) \
-            .eq("year", year) \
-            .order("place") \
-            .execute()
+    undo_entries = []
+    for _ in range(count):
+        entry = user_history.pop()
+        points_val = entry.get("points", 0)
+        reason = entry.get("reason", "Без причины")
+        undo_entries.append((points_val, reason))
 
-        entries = response.data
-        if not entries:
-            await ctx.send(f"📭 Нет записей за {month:02d}.{year}")
-            return
-
-        embed = discord.Embed(
-            title=f"📅 История топа — {month:02d}.{year}",
-            color=discord.Color.green()
+        # Запись отмены в базу
+        db.add_action(
+            user_id=user_id,
+            points=-points_val,
+            reason=f"Отмена действия: {reason}",
+            author_id=ctx.author.id,
+            is_undo=True
         )
-        for entry in entries:
-            uid = entry['user_id']
-            place = entry['place']
-            bonus = entry['bonus']
-            medal = "🥇" if place == 1 else "🥈" if place == 2 else "🥉"
-            embed.add_field(
-                name=f"{medal} Место {place}",
-                value=f"<@{uid}> — +{bonus} баллов",
-                inline=False
-            )
-        await ctx.send(embed=embed)
 
-    except Exception as e:
-        await ctx.send(f"❌ Ошибка при получении данных: {e}")
+    if not user_history:
+        del db.history[user_id]
+
+    await update_roles(member)
+
+    embed = discord.Embed(
+        title=f"↩️ Отменено {count} изменений для {member.display_name}",
+        color=discord.Color.orange()
+    )
+    for i, (points_val, reason) in enumerate(undo_entries[::-1], start=1):
+        sign = "+" if points_val > 0 else ""
+        embed.add_field(name=f"{i}. {sign}{points_val} баллов", value=reason, inline=False)
+    await ctx.send(embed=embed)
+    await log_action_cancellation(ctx, member, undo_entries)
+
+@bot.command(name='monthlytop')
+@commands.has_permissions(administrator=True)
+async def monthly_top(ctx):
+    await run_monthly_top(ctx)
+
+@bot.command(name='tophistory')
+async def tophistory_cmd(ctx, month: Optional[int] = None, year: Optional[int] = None):
+    await tophistory(ctx, month, year)
+
+@bot.command(name='helpy')
+async def helpy_cmd(ctx):
+    embed = discord.Embed(
+        title="🛠️ Справочник по командам",
+        description="Список всех доступных команд, отсортированных по функциям:",
+        color=discord.Color.blue()
+    )
+
+    embed.add_field(
+        name="⚙️ Админские команды",
+        value=(
+            "`?addpoints @пользователь <баллы> [причина]` — начислить баллы\n"
+            "`?removepoints @пользователь <баллы> [причина]` — снять баллы\n"
+            "`?undo @пользователь <кол-во>` — отменить последние действия\n"
+            "`?monthlytop` — начислить бонусы за топ месяца\n"
+            "`?editfine <id> сумма тип дата причина` — изменить штраф\n"
+            "`?cancel_fine <id>` — отменить штраф\n"
+            "`?allfines` — все активные штрафы"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="📊 Баллы и рейтинг",
+        value=(
+            "`?points [@пользователь]` — посмотреть баллы\n"
+            "`?leaderboard [кол-во]` — топ по баллам\n"
+            "`?history [@пользователь] [страница]` — история действий"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🏅 Роли и активности",
+        value=(
+            "`?roles` — список ролей и их требования\n"
+            "`?activities` — баллы за виды помощи"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="📆 Топ месяца",
+        value=(
+            "`?monthlytop` — начислить бонусы (только админы)\n"
+            "`?tophistory [месяц] [год]` — история наград за топ"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="📉 Штрафы",
+        value=(
+            "`?fine @пользователь <сумма> <тип> [причина]` — выдать штраф\n"
+            "`?myfines` — ваши штрафы\n"
+            "`?finehistory [@пользователь] [страница]` — история штрафов\n"
+            "`?finedetails <id>` — подробности штрафа\n"
+            "`?topfines` — топ должников"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🧪 Прочее",
+        value="`?ping` — проверка отклика\n`?helpy` — показать это сообщение",
+        inline=False
+    )
+
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def ping(ctx):
+    await ctx.send('pong')
