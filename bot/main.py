@@ -20,6 +20,7 @@ from datetime import datetime
 from bot.systems import fines_logic
 from bot.systems.fines_logic import check_overdue_fines, debt_repayment_loop
 from bot.systems.fines_logic import get_fine_leaders
+from bot.systems.fines_logic import build_fine_embed
 
 # Константы
 COMMAND_PREFIX = '?'
@@ -75,53 +76,48 @@ async def monthly_top_task():
         now = datetime.now(pytz.timezone('Europe/Moscow'))
         if now.day == 1:
             try:
-                # ⛔ Проверка: начислялся ли бонус уже
-                already_logged = False
                 if db.supabase:
-                    result = db.supabase.table("monthly_top_log") \
+                    check = db.supabase.table("monthly_top_log") \
                         .select("id") \
                         .eq("month", now.month) \
                         .eq("year", now.year) \
                         .execute()
-                    already_logged = bool(result.data)
+                    if check.data:
+                        print("⏳ Топ уже начислен в этом месяце")
+                        await asyncio.sleep(3600)
+                        continue
 
-                if not already_logged:
-                    channel = bot.get_channel(TOP_CHANNEL_ID)
-                    if isinstance(channel, discord.TextChannel):
-                        msg = await channel.send("🔁 Запускаем автоматический топ месяца...")
-                        ctx = await bot.get_context(msg)
-                        await run_monthly_top(ctx)
-                        # 🔥 Штрафной антибонус для топ-должников
-                        from bot.systems.fines_logic import get_fine_leaders
-                        top_fines = get_fine_leaders()
-                        punishments = [0.01, 0.03, 0.05]
+                channel = bot.get_channel(TOP_CHANNEL_ID)
+                if isinstance(channel, discord.TextChannel):
+                    msg = await channel.send("🔁 Запускаем автоматический топ месяца...")
+                    ctx = await bot.get_context(msg)
 
-                        for (uid, total), percent in zip(top_fines, punishments):
-                            penalty = round(total * percent, 2)
-                            db.update_scores(uid, -penalty)
-                            db.add_action(
-                                user_id=uid,
-                                points=-penalty,
-                                reason=f"Антибонус за топ штрафников ({int(percent*100)}%)",
-                                author_id=0
-                            )
+                    from bot.systems.core_logic import run_monthly_top
+                    await run_monthly_top(ctx)
 
-                        db.log_monthly_fine_top(list(zip(top_fines, punishments)))
-                    else:
-                        print("❌ Указанный канал недоступен или не текстовый")
+                    # 🔥 Штрафной антибонус для топ-должников
+                    from bot.systems.fines_logic import get_fine_leaders
+                    top_fines = get_fine_leaders()
+                    punishments = [0.01, 0.03, 0.05]
+
+                    for (uid, total), percent in zip(top_fines, punishments):
+                        penalty = round(total * percent, 2)
+                        db.update_scores(uid, -penalty)
+                        db.add_action(
+                            user_id=uid,
+                            points=-penalty,
+                            reason=f"Антибонус за топ штрафников ({int(percent * 100)}%)",
+                            author_id=0
+                        )
+
+                    db.log_monthly_fine_top(list(zip(top_fines, punishments)))
                 else:
-                    print("⏳ Топ уже начислен в этом месяце")
+                    print("❌ Указанный канал недоступен или не текстовый")
 
             except Exception as e:
                 print(f"❌ Ошибка автозапуска топа месяца: {e}")
 
         await asyncio.sleep(3600)
-
-async def overdue_check_loop():
-    await bot.wait_until_ready()
-    while not bot.is_closed():
-        await check_overdue_fines(bot)
-        await asyncio.sleep(86400)  # 1 раз в 24 часа
 
 # Основной запуск
 def main():
@@ -142,3 +138,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
