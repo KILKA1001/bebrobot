@@ -19,7 +19,7 @@ from bot.commands import run_monthly_top
 from datetime import datetime
 from bot.systems import fines_logic
 from bot.systems.fines_logic import check_overdue_fines, debt_repayment_loop
-
+from bot.systems.fines_logic import get_fine_leaders
 
 # Константы
 COMMAND_PREFIX = '?'
@@ -30,6 +30,7 @@ TOP_CHANNEL_ID = int(os.getenv("MONTHLY_TOP_CHANNEL_ID", 0))
 active_timers = {}
 
 bot = command_bot
+db.bot = bot
 
 async def send_greetings(channel, user_list):
     for user_id in user_list:
@@ -52,6 +53,7 @@ async def on_ready():
     
     asyncio.create_task(fines_logic.check_overdue_fines(bot))
     asyncio.create_task(fines_logic.debt_repayment_loop(bot))
+    asyncio.create_task(fines_logic.reminder_loop(bot))
 
     activity = discord.Activity(
         name=f"{COMMAND_PREFIX}help",
@@ -65,6 +67,7 @@ async def on_ready():
     print('--- Данные успешно загружены ---')
     print(f'Пользователей: {len(db.scores)}')
     print(f'Историй действий: {sum(len(v) for v in db.history.values())}')
+    print("📡 Задачи активированы.")
 
 async def monthly_top_task():
     await bot.wait_until_ready()
@@ -88,6 +91,22 @@ async def monthly_top_task():
                         msg = await channel.send("🔁 Запускаем автоматический топ месяца...")
                         ctx = await bot.get_context(msg)
                         await run_monthly_top(ctx)
+                        # 🔥 Штрафной антибонус для топ-должников
+                        from bot.systems.fines_logic import get_fine_leaders
+                        top_fines = get_fine_leaders()
+                        punishments = [0.01, 0.03, 0.05]
+
+                        for (uid, total), percent in zip(top_fines, punishments):
+                            penalty = round(total * percent, 2)
+                            db.update_scores(uid, -penalty)
+                            db.add_action(
+                                user_id=uid,
+                                points=-penalty,
+                                reason=f"Антибонус за топ штрафников ({int(percent*100)}%)",
+                                author_id=0
+                            )
+
+                        db.log_monthly_fine_top(list(zip(top_fines, punishments)))
                     else:
                         print("❌ Указанный канал недоступен или не текстовый")
                 else:
