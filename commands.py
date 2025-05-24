@@ -9,6 +9,7 @@ import traceback
 from data import db
 from history_manager import format_history_embed
 from roles_and_activities import ACTIVITY_CATEGORIES, ROLE_THRESHOLDS, display_last_edit_date
+from collections import defaultdict
 
 # Константы
 COMMAND_PREFIX = '?'
@@ -114,6 +115,19 @@ async def points(ctx, member: Optional[discord.Member] = None):
     embed.add_field(name="Баллы", value=f"{user_points}", inline=True)
     embed.add_field(name="Роли", value=role_names, inline=True)
     embed.add_field(name="Место в топе", value=f"{place}" if place else "Не в топе", inline=False)
+    top_bonus_count = 0
+    top_bonus_sum = 0.0
+    for action in db.history.get(user_id, []):
+        if action.get("reason", "").startswith("Бонус за "):
+            top_bonus_count += 1
+            top_bonus_sum += action.get("points", 0)
+
+    if top_bonus_count:
+        embed.add_field(
+            name="🏆 Бонусы за топ месяца",
+            value=f"{top_bonus_count} наград, {top_bonus_sum:.2f} баллов",
+            inline=False
+        )
     await ctx.send(embed=embed)
 
 @bot.command(name='leaderboard')
@@ -376,9 +390,6 @@ async def log_action_cancellation(ctx, member: discord.Member, entries: list):
 async def monthly_top(ctx):
     await run_monthly_top(ctx)
 async def run_monthly_top(ctx):
-    from collections import defaultdict
-    from datetime import datetime
-    import pytz
     now = datetime.now(pytz.timezone('Europe/Moscow'))
     current_month = now.month
     current_year = now.year
@@ -410,8 +421,11 @@ async def run_monthly_top(ctx):
         percent = percentages[i]
         bonus = round(score * percent, 2)
         db.add_action(uid, bonus, f"Бонус за {descriptions[i]} ({score} баллов)", ctx.author.id)
+        member = ctx.guild.get_member(uid)
+        name = f"{member.display_name} ({member.mention})" if member else f"<@{uid}>"
+
         embed.add_field(
-            name=f"{descriptions[i]} — <@{uid}>",
+            name=f"{descriptions[i]} — <@{name}>",
             value=f"Заработано: {score} баллов\nБонус: +{bonus} баллов",
             inline=False
         )
