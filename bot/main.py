@@ -17,6 +17,9 @@ from keep_alive import keep_alive
 from bot.commands import bot as command_bot
 from bot.commands import run_monthly_top
 from datetime import datetime
+from bot.systems import fines_logic
+from bot.systems.fines_logic import check_overdue_fines, debt_repayment_loop
+
 
 # Константы
 COMMAND_PREFIX = '?'
@@ -46,6 +49,9 @@ async def on_ready():
     print(f'Серверов: {len(bot.guilds)}')
 
     db.load_data()
+    
+    asyncio.create_task(fines_logic.check_overdue_fines(bot))
+    asyncio.create_task(fines_logic.debt_repayment_loop(bot))
 
     activity = discord.Activity(
         name=f"{COMMAND_PREFIX}help",
@@ -62,10 +68,6 @@ async def on_ready():
 
 async def monthly_top_task():
     await bot.wait_until_ready()
-    import pytz
-    from datetime import datetime
-    from bot.commands import run_monthly_top
-
     while not bot.is_closed():
         now = datetime.now(pytz.timezone('Europe/Moscow'))
         if now.day == 1:
@@ -95,6 +97,13 @@ async def monthly_top_task():
                 print(f"❌ Ошибка автозапуска топа месяца: {e}")
 
         await asyncio.sleep(3600)
+
+async def overdue_check_loop():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        await check_overdue_fines()
+        await asyncio.sleep(86400)  # 1 раз в 24 часа
+
 # Основной запуск
 def main():
     load_dotenv()
