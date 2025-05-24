@@ -371,22 +371,154 @@ async def log_action_cancellation(ctx, member: discord.Member, entries: list):
 
     await channel.send("\n".join(lines))
 
+@bot.command(name='monthlytop')
+@commands.has_permissions(administrator=True)
+async def monthly_top(ctx):
+    await run_monthly_top(ctx)
+async def run_monthly_top(ctx):
+    from collections import defaultdict
+    from datetime import datetime
+    import pytz
+    now = datetime.now(pytz.timezone('Europe/Moscow'))
+    current_month = now.month
+    current_year = now.year
+    monthly_scores = defaultdict(float)
+    for action in db.actions:
+        if action.get('is_undo'):
+            continue
+        timestamp = action.get('timestamp')
+        if isinstance(timestamp, str):  # Check if timestamp is a string
+            try:
+                dt = datetime.fromisoformat(timestamp)
+            except ValueError:
+                continue
+            if dt.month == current_month and dt.year == current_year:
+                uid = int(action['user_id'])
+                monthly_scores[uid] += float(action['points'])
+    if not monthly_scores:
+        await ctx.send("❌ Нет данных о баллах за этот месяц.")
+        return
+
+    top_users = sorted(monthly_scores.items(), key=lambda x: x[1], reverse=True)[:3]
+    percentages = [0.125, 0.075, 0.05]
+    descriptions = ["🥇 1 место", "🥈 2 место", "🥉 3 место"]
+
+    entries_to_log = []
+    embed = discord.Embed(title="🏆 Топ месяца", color=discord.Color.gold())
+
+    for i, (uid, score) in enumerate(top_users):
+        percent = percentages[i]
+        bonus = round(score * percent, 2)
+        db.add_action(uid, bonus, f"Бонус за {descriptions[i]} ({score} баллов)", ctx.author.id)
+        embed.add_field(
+            name=f"{descriptions[i]} — <@{uid}>",
+            value=f"Заработано: {score} баллов\nБонус: +{bonus} баллов",
+            inline=False
+        )
+        entries_to_log.append((uid, score, percent))
+
+    db.log_monthly_top(entries_to_log)
+    await ctx.send(embed=embed)
+
+@bot.command(name='tophistory')
+async def tophistory(ctx, month: Optional[int] = None, year: Optional[int] = None):
+    from datetime import datetime
+
+    now = datetime.now()
+    month = month or now.month
+    year = year or now.year
+
+    if not db.supabase:
+        await ctx.send("❌ Supabase не инициализирован.")
+        return
+    
+    try:
+        response = db.supabase \
+            .table("monthly_top_log") \
+            .select("*") \
+            .eq("month", month) \
+            .eq("year", year) \
+            .order("place") \
+            .execute()
+
+        entries = response.data
+        if not entries:
+            await ctx.send(f"📭 Нет записей за {month:02d}.{year}")
+            return
+
+        embed = discord.Embed(
+            title=f"📅 История топа — {month:02d}.{year}",
+            color=discord.Color.green()
+        )
+        for entry in entries:
+            uid = entry['user_id']
+            place = entry['place']
+            bonus = entry['bonus']
+            medal = "🥇" if place == 1 else "🥈" if place == 2 else "🥉"
+            embed.add_field(
+                name=f"{medal} Место {place}",
+                value=f"<@{uid}> — +{bonus} баллов",
+                inline=False
+            )
+        await ctx.send(embed=embed)
+
+    except Exception as e:
+        await ctx.send(f"❌ Ошибка при получении данных: {e}")
+
+
 @bot.command(name='helpy')
 async def helpy_cmd(ctx):
-    help_text = f"""
-**Список команд:**
+    embed = discord.Embed(
+        title="🛠️ Справочник по командам",
+        description="Вот список всех доступных команд:",
+        color=discord.Color.blue()
+    )
 
-`{COMMAND_PREFIX}addpoints @пользователь <баллы> [причина]` — добавить баллы (только для админов)  
-`{COMMAND_PREFIX}removepoints @пользователь <баллы> [причина]` — снять баллы (только для админов)  
-`{COMMAND_PREFIX}undo @пользователь <количество>` — отменить последние изменения для пользователя (только для админов) 
-`{COMMAND_PREFIX}points [@пользователь]` — показать баллы пользователя (по умолчанию автора)  
-`{COMMAND_PREFIX}leaderboard [кол-во]` — показать топ лидеров (по умолчанию 10)  
-`{COMMAND_PREFIX}history [@пользователь] [страница]` — история начисления баллов  
-`{COMMAND_PREFIX}roles` — показать все роли и их стоимость  
-`{COMMAND_PREFIX}activities` — список всех видов деятельности и их стоимость в баллах  
-`{COMMAND_PREFIX}helpy` — показать это сообщение  
-"""
-    await ctx.send(help_text)
+    embed.add_field(
+        name="⚙️ Админские команды",
+        value=(
+            "`?addpoints @пользователь <баллы> [причина]`\n"
+            "`?removepoints @пользователь <баллы> [причина]`\n"
+            "`?undo @пользователь <кол-во>`"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="📊 Баллы и рейтинг",
+        value=(
+            "`?points [@пользователь]`\n"
+            "`?leaderboard [кол-во]`\n"
+            "`?history [@пользователь] [страница]`"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🏅 Роли и активности",
+        value=(
+            "`?roles` — список ролей и нужных баллов\n"
+            "`?activities` — баллы за виды помощи"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="📆 Топ месяца",
+        value=(
+            "`?monthlytop` — начислить бонусы за месяц (только для админов)\n"
+            "`?tophistory [месяц] [год]` — история топов, пример: `?tophistory 5 2025`"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="❓ Справка",
+        value="`?helpy` — показать это сообщение",
+        inline=False
+    )
+
+    await ctx.send(embed=embed)
 
 @bot.command()
 async def ping(ctx):
