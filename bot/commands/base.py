@@ -28,7 +28,7 @@ active_timers = {}
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
-bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
+bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents, help_command=None)
 
 def format_moscow_time(dt: Optional[datetime] = None) -> str:
     if dt is None:
@@ -119,16 +119,23 @@ async def leaderboard(ctx, top: int = 10):
     if not db.scores:
         await ctx.send("Пока нет данных о баллах.")
         return
+
     sorted_scores = sorted(db.scores.items(), key=lambda x: x[1], reverse=True)[:top]
-    embed = discord.Embed(title=f"Топ {top} лидеров по баллам", color=discord.Color.gold())
+    embed = discord.Embed(title=f"🏆 Топ {top} по баллам", color=discord.Color.gold())
+    medals = ["🥇", "🥈", "🥉"]
+
     for i, (user_id, points_val) in enumerate(sorted_scores, start=1):
         member = ctx.guild.get_member(user_id)
-        if member:
-            user_roles = [role for role in member.roles if role.id in ROLE_THRESHOLDS]
-            role_names = ', '.join(role.name for role in user_roles) if user_roles else 'Нет роли'
-            embed.add_field(name=f"{i}. {member.display_name}", value=f"Баллы: {points_val}\nРоль: {role_names}", inline=False)
-        else:
-            embed.add_field(name=f"{i}. <@{user_id}>", value=f"Баллы: {points_val}", inline=False)
+        medal = medals[i - 1] if i <= 3 else f"{i}."
+        name = member.display_name if member else f"<@{user_id}>"
+        roles = [role.name for role in member.roles if role.id in ROLE_THRESHOLDS] if member else []
+        role_str = ', '.join(roles) if roles else 'Нет роли'
+        embed.add_field(
+            name=f"{medal} {name}",
+            value=f"**Баллы:** {points_val:.2f}\n**Роль:** {role_str}",
+            inline=False
+        )
+
     await ctx.send(embed=embed)
 
 @bot.command(name='history')
@@ -236,16 +243,20 @@ async def tophistory_cmd(ctx, month: Optional[int] = None, year: Optional[int] =
 async def helpy_cmd(ctx):
     embed = discord.Embed(
         title="🛠️ Справочник по командам",
-        description="Вот список всех доступных команд:",
+        description="Список всех доступных команд, отсортированных по функциям:",
         color=discord.Color.blue()
     )
 
     embed.add_field(
         name="⚙️ Админские команды",
         value=(
-            "`?addpoints @пользователь <баллы> [причина]`\n"
-            "`?removepoints @пользователь <баллы> [причина]`\n"
-            "`?undo @пользователь <кол-во>`"
+            "`?addpoints @пользователь <баллы> [причина]` — начислить баллы\n"
+            "`?removepoints @пользователь <баллы> [причина]` — снять баллы\n"
+            "`?undo @пользователь <кол-во>` — отменить последние действия\n"
+            "`?monthlytop` — начислить бонусы за топ месяца\n"
+            "`?editfine <id> сумма тип дата причина` — изменить штраф\n"
+            "`?cancel_fine <id>` — отменить штраф\n"
+            "`?allfines` — все активные штрафы"
         ),
         inline=False
     )
@@ -253,9 +264,9 @@ async def helpy_cmd(ctx):
     embed.add_field(
         name="📊 Баллы и рейтинг",
         value=(
-            "`?points [@пользователь]`\n"
-            "`?leaderboard [кол-во]`\n"
-            "`?history [@пользователь] [страница]`"
+            "`?points [@пользователь]` — посмотреть баллы\n"
+            "`?leaderboard [кол-во]` — топ по баллам\n"
+            "`?history [@пользователь] [страница]` — история действий"
         ),
         inline=False
     )
@@ -263,7 +274,7 @@ async def helpy_cmd(ctx):
     embed.add_field(
         name="🏅 Роли и активности",
         value=(
-            "`?roles` — список ролей и нужных баллов\n"
+            "`?roles` — список ролей и их требования\n"
             "`?activities` — баллы за виды помощи"
         ),
         inline=False
@@ -272,32 +283,30 @@ async def helpy_cmd(ctx):
     embed.add_field(
         name="📆 Топ месяца",
         value=(
-            "`?monthlytop` — начислить бонусы за месяц (только для админов)\n"
-            "`?tophistory [месяц] [год]` — история топов, пример: `?tophistory 5 2025`"
+            "`?monthlytop` — начислить бонусы (только админы)\n"
+            "`?tophistory [месяц] [год]` — история наград за топ"
         ),
         inline=False
     )
 
     embed.add_field(
-        name="📉 Штрафы и задолженность",
+        name="📉 Штрафы",
         value=(
-            "`?fine @пользователь <сумма> <тип> [причина]` — назначить штраф (только админ)\n"
-            "`?myfines` — ваши активные штрафы\n"
+            "`?fine @пользователь <сумма> <тип> [причина]` — выдать штраф\n"
+            "`?myfines` — ваши штрафы\n"
             "`?finehistory [@пользователь] [страница]` — история штрафов\n"
-            "`?finedetails <id>` — подробности по штрафу\n"
-            "`?topfines` — топ по задолженности\n"
-            "`?allfines` — все активные штрафы (только админ)\n"
-            "`?editfine <id> сумма тип дата причина` — редактировать штраф (только админ)\n"
-            "`?cancel_fine <id>` — отменить штраф (только админ)"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="❓ Справка",
-        value=("`?helpy` — показать это сообщение",
+            "`?finedetails <id>` — подробности штрафа\n"
+            "`?topfines` — топ должников"
         ),
         inline=False
     )
+
+    embed.add_field(
+        name="🧪 Прочее",
+        value="`?ping` — проверка отклика\n`?helpy` — показать это сообщение",
+        inline=False
+    )
+
     await ctx.send(embed=embed)
 
 @bot.command()
