@@ -268,3 +268,87 @@ async def debt_repayment_loop(bot):
 
 
         await asyncio.sleep(86400)
+
+class AllFinesView(discord.ui.View):
+    def __init__(self, fines, ctx, per_page=5):
+        super().__init__(timeout=60)
+        self.ctx = ctx
+        self.fines = fines
+        self.page = 1
+        self.per_page = per_page
+        self.total_pages = max(1, (len(fines) + per_page - 1) // per_page)
+
+    def get_page_embed(self):
+        page_fines = self.fines[(self.page - 1)*self.per_page : self.page*self.per_page]
+        total = sum(f["amount"] - f.get("paid_amount", 0) for f in self.fines)
+        embed = discord.Embed(
+            title=f"📊 Активные штрафы — страница {self.page}/{self.total_pages}",
+            description=f"Общая сумма задолженности: **{total:.2f}** баллов",
+            color=discord.Color.orange()
+        )
+        for fine in page_fines:
+            user = self.ctx.guild.get_member(fine["user_id"])
+            name = user.mention if user else f"<@{fine['user_id']}>"
+            rest = fine["amount"] - fine.get("paid_amount", 0)
+            due = fine.get("due_date", "N/A")[:10]
+            status = "⚠️ Просрочен" if fine.get("is_overdue") else "⏳ Активен"
+            embed.add_field(
+                name=f"#{fine['id']} • {name}",
+                value=f"💰 {fine['amount']} → Осталось: **{rest:.2f}**\n📅 До: {due} • {status}",
+                inline=False
+            )
+        return embed
+
+    @discord.ui.button(label="◀️ Назад", style=discord.ButtonStyle.gray)
+    async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page > 1:
+            self.page -= 1
+        await interaction.response.edit_message(embed=self.get_page_embed(), view=self)
+
+    @discord.ui.button(label="Вперёд ▶️", style=discord.ButtonStyle.gray)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page < self.total_pages:
+            self.page += 1
+        await interaction.response.edit_message(embed=self.get_page_embed(), view=self)
+
+# 🔔 Ежедневные напоминания за 3 дня до срока
+async def remind_fines(bot):
+    await bot.wait_until_ready()
+    now = datetime.now(timezone.utc)
+    for fine in db.fines:
+        if fine.get("is_paid") or fine.get("is_canceled"):
+            continue
+        due_raw = fine.get("due_date")
+        if not isinstance(due_raw, str):
+            continue
+        try:
+            due_date = datetime.fromisoformat(due_raw)
+            delta = (due_date - now).days
+            if 0 < delta <= 3:
+                user = discord.utils.get(bot.get_all_members(), id=fine["user_id"])
+                if user:
+                    try:
+                        await user.send(
+                            f"⏰ Напоминание: штраф #{fine['id']} должен быть оплачен до {due_date.strftime('%d.%m.%Y')}. Осталось {delta} дней."
+                        )
+                    except discord.Forbidden:
+                        continue
+        except Exception:
+            continue
+
+# 🔄 Цикл напоминаний
+async def reminder_loop(bot):
+    await bot.wait_until_ready()
+    while True:
+        await remind_fines(bot)
+        await asyncio.sleep(86400)
+
+def get_fine_leaders():
+    from collections import defaultdict
+    user_totals = defaultdict(float)
+    for fine in db.fines:
+        if not fine.get("is_paid") and not fine.get("is_canceled"):
+            rest = fine["amount"] - fine.get("paid_amount", 0)
+            user_totals[fine["user_id"]] += rest
+    top = sorted(user_totals.items(), key=lambda x: x[1], reverse=True)[:3]
+    return top
