@@ -422,7 +422,7 @@ async def run_monthly_top(ctx):
         bonus = round(score * percent, 2)
         db.add_action(uid, bonus, f"Бонус за {descriptions[i]} ({score} баллов)", ctx.author.id)
         member = ctx.guild.get_member(uid)
-        name = f"{member.display_name} ({member.mention})" if member else f"<@{uid}>"
+        name = member.mention if member else f"<@{uid}>"
 
         embed.add_field(
             name=f"{descriptions[i]} — <@{name}>",
