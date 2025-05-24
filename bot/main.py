@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 import pytz
 
 # Локальные импорты
-from data import db
+from bot.data import db
 from keep_alive import keep_alive
 from commands import bot as command_bot
 from commands import run_monthly_top
