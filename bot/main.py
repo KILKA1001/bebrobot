@@ -62,29 +62,39 @@ async def on_ready():
 
 async def monthly_top_task():
     await bot.wait_until_ready()
-    
-    last_ran = None
+    import pytz
+    from datetime import datetime
+    from bot.commands import run_monthly_top
 
     while not bot.is_closed():
         now = datetime.now(pytz.timezone('Europe/Moscow'))
-        if now.day == 1 and (last_ran is None or last_ran.month != now.month):
+        if now.day == 1:
             try:
-                # Найти текстовый канал с именем 'top-log'
-                channel = bot.get_channel(TOP_CHANNEL_ID)
-                if not isinstance(channel, discord.TextChannel):
-                    print("❌ Канал #top-log не является TextChannel")
-                    await asyncio.sleep(3600)
-                    continue
+                # ⛔ Проверка: начислялся ли бонус уже
+                already_logged = False
+                if db.supabase:
+                    result = db.supabase.table("monthly_top_log") \
+                        .select("id") \
+                        .eq("month", now.month) \
+                        .eq("year", now.year) \
+                        .execute()
+                    already_logged = bool(result.data)
 
-                msg = await channel.send("🔁 Запускаем автоматический топ месяца...")
-                ctx = await bot.get_context(msg)
-                await run_monthly_top(ctx)
+                if not already_logged:
+                    channel = bot.get_channel(TOP_CHANNEL_ID)
+                    if isinstance(channel, discord.TextChannel):
+                        msg = await channel.send("🔁 Запускаем автоматический топ месяца...")
+                        ctx = await bot.get_context(msg)
+                        await run_monthly_top(ctx)
+                    else:
+                        print("❌ Указанный канал недоступен или не текстовый")
+                else:
+                    print("⏳ Топ уже начислен в этом месяце")
 
-                last_ran = now
             except Exception as e:
                 print(f"❌ Ошибка автозапуска топа месяца: {e}")
-        await asyncio.sleep(3600)
 
+        await asyncio.sleep(3600)
 # Основной запуск
 def main():
     load_dotenv()
