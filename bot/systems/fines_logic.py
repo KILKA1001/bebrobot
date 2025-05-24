@@ -1,354 +1,275 @@
 import discord
-from discord.ui import View, Button
-from datetime import datetime, timezone, timedelta
-from typing import List
-from bot.data import db
+from discord.ext import commands
+from typing import Optional
+from datetime import datetime, timezone
+import pytz
 import asyncio
+import traceback
+
+from bot.data import db
+from bot.utils.roles_and_activities import ROLE_THRESHOLDS
+from bot.utils.history_manager import format_history_embed
+
+TIME_FORMAT = "%H:%M (%d.%m.%Y)"
+active_timers = {}
+
+def format_moscow_time(dt: Optional[datetime] = None) -> str:
+  if dt is None:
+      dt = datetime.now(timezone.utc)
+  return dt.astimezone(pytz.timezone('Europe/Moscow')).strftime(TIME_FORMAT)
+  
+async def update_roles(member: discord.Member):
+    user_id = member.id
+    user_points = db.scores.get(user_id, 0)
+    user_roles = [role.id for role in member.roles if role.id in ROLE_THRESHOLDS]
+
+    role_to_add_id = None
+    for role_id, threshold in sorted(ROLE_THRESHOLDS.items(), key=lambda x: x[1], reverse=True):
+        if user_points >= threshold:
+            role_to_add_id = role_id
+            break
+
+    if role_to_add_id and role_to_add_id not in user_roles:
+        role_to_add = member.guild.get_role(role_to_add_id)
+        if role_to_add:
+            await member.add_roles(role_to_add)
+
+    for role_id in user_roles:
+        if role_id != role_to_add_id:
+            role_to_remove = member.guild.get_role(role_id)
+            if role_to_remove:
+                await member.remove_roles(role_to_remove)
 
 
-# 💡 Получить статус штрафа
-def get_fine_status(fine: dict) -> str:
-    if fine.get("is_canceled"):
-        return "🚫 Отменён"
-    if fine.get("is_paid"):
-        return "✅ Оплачен"
-    if fine.get("is_overdue"):
-        return "⚠️ Просрочен"
-    return "⏳ Активен"
+class HistoryView(discord.ui.View):
+    def __init__(self, member: discord.Member, page: int, total_pages: int):
+        super().__init__(timeout=60)
+        self.member = member
+        self.page = page
+        self.total_pages = total_pages
+
+        self.prev_button.disabled = page <= 1
+        self.next_button.disabled = page >= total_pages
+
+    @discord.ui.button(label="◀️ Назад", style=discord.ButtonStyle.gray, custom_id="prev")
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        await render_history(interaction, self.member, self.page - 1)
+
+    @discord.ui.button(label="Вперед ▶️", style=discord.ButtonStyle.gray, custom_id="next")
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        await render_history(interaction, self.member, self.page + 1)
 
 
-# 💡 Сформатировать дату
-def format_fine_due_date(fine: dict) -> str:
-    raw = fine.get("due_date")
-    if not isinstance(raw, str):
-        return "N/A"
+async def render_history(ctx_or_interaction, member: discord.Member, page: int):
     try:
-        dt = datetime.fromisoformat(raw)
-        return dt.astimezone(timezone.utc).strftime("%d.%m.%Y")
-    except Exception:
-        return raw
-                
-# 📋 Embed краткой информации о штрафе
-def build_fine_embed(fine: dict) -> discord.Embed:
-    embed = discord.Embed(title=f"📌 Штраф ID #{fine['id']}", color=discord.Color.orange())
-    embed.add_field(name="💰 Сумма", value=f"{fine['amount']} баллов", inline=True)
-    embed.add_field(name="📤 Осталось оплатить", value=f"{fine['amount'] - fine.get('paid_amount', 0):.2f} баллов", inline=True)
-    embed.add_field(name="📅 Срок", value=format_fine_due_date(fine), inline=True)
-    embed.add_field(name="🏷️ Тип", value=f"{'Обычный' if fine['type'] == 1 else 'Усиленный'}", inline=True)
-    embed.add_field(name="📍 Статус", value=get_fine_status(fine), inline=True)
-    embed.add_field(name="📝 Причина", value=fine['reason'], inline=False)
-    return embed
+        user_id = member.id
+        entries_per_page = 5
+        user_history = db.history.get(user_id, [])
 
+        if not user_history:
+            embed = discord.Embed(
+                title="📜 История баллов",
+                description="```Записей не найдено```",
+                color=discord.Color.orange()
+            )
+            embed.set_author(name=member.display_name, icon_url=member.avatar.url if member.avatar else member.default_avatar.url)
 
-# 📋 Embed подробной информации
-def build_fine_detail_embed(fine: dict) -> discord.Embed:
-    embed = build_fine_embed(fine)
-    embed.title = f"ℹ️ Подробности штрафа #{fine['id']}"
-    embed.set_footer(text=f"Назначен: {fine['created_at'][:10]} | Автор: <@{fine['author_id']}>")
-    return embed
-
-
-# 🎛️ View с кнопками под каждым штрафом
-class FineView(View):
-    def __init__(self, fine: dict):
-        super().__init__(timeout=120)
-        self.fine = fine
-
-
-    @discord.ui.button(label="💸 Оплатить", style=discord.ButtonStyle.green, custom_id="pay")
-    async def pay(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_message(
-            f"💰 Выберите сумму оплаты штрафа #{self.fine['id']}",
-            view=PaymentMenuView(self.fine),
-            ephemeral=True
-        )
-
-    @discord.ui.button(label="📅 Отсрочка", style=discord.ButtonStyle.blurple, custom_id="postpone")
-    async def postpone(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.defer(ephemeral=True)
-        guild = interaction.guild
-        member = guild.get_member(interaction.user.id) if guild else None
-        is_admin = member.guild_permissions.administrator if member else False
-
-
-        can_user = db.can_postpone(interaction.user.id)
-        if not is_admin and not can_user:
-            await interaction.followup.send("❌ Вы уже использовали отсрочку за последние 2 месяца.", ephemeral=True)
+            if isinstance(ctx_or_interaction, discord.Interaction):
+                await ctx_or_interaction.response.send_message(embed=embed, ephemeral=True)
+            else:
+                await ctx_or_interaction.send(embed=embed)
             return
 
-        success = db.apply_postponement(self.fine['id'], days=7)
-        if success:
-            self.fine['due_date'] = (datetime.fromisoformat(self.fine['due_date']) + timedelta(days=7)).isoformat()
-            self.fine['postponed_until'] = datetime.now(timezone.utc).isoformat()
-            await interaction.followup.send(f"📅 Срок оплаты штрафа #{self.fine['id']} продлён на 7 дней.", ephemeral=True)
+        total_entries = len(user_history)
+        total_pages = max(1, (total_entries + entries_per_page - 1) // entries_per_page)
+
+        if page < 1 or page > total_pages:
+            embed = discord.Embed(
+                title="⚠️ Ошибка навигации",
+                description=f"```Доступно страниц: {total_pages}```",
+                color=discord.Color.red()
+            )
+            if isinstance(ctx_or_interaction, discord.Interaction):
+                await ctx_or_interaction.response.send_message(embed=embed, ephemeral=True)
+            else:
+                await ctx_or_interaction.send(embed=embed)
+            return
+
+        start_idx = (page - 1) * entries_per_page
+        page_actions = user_history[start_idx:start_idx + entries_per_page]
+
+        embed = discord.Embed(title="📜 История баллов", color=discord.Color.blue())
+        embed.set_author(name=member.display_name, icon_url=member.avatar.url if member.avatar else member.default_avatar.url)
+
+        total_points = db.scores.get(user_id, 0)
+        embed.add_field(name="💰 Текущий баланс", value=f"```{total_points} баллов```", inline=False)
+
+        for action in page_actions:
+            points = action.get('points', 0)
+            emoji = "🟢" if points >= 0 else "🔴"
+            if action.get('is_undo', False):
+                emoji = "⚪"
+
+            timestamp = action.get('timestamp')
+            if isinstance(timestamp, str):
+                try:
+                    dt = datetime.fromisoformat(timestamp)
+                    formatted_time = dt.astimezone(pytz.timezone('Europe/Moscow')).strftime("%H:%M (%d.%m.%Y)")
+                except ValueError:
+                    formatted_time = timestamp
+            else:
+                formatted_time = timestamp.strftime("%H:%M (%d.%m.%Y)") if timestamp else 'N/A'
+
+            author_id = action.get('author_id', 'N/A')
+            reason = action.get('reason', 'Не указана')
+
+            field_name = f"{emoji} {formatted_time}"
+            field_value = (
+                f"```diff\n{'+' if points >= 0 else ''}{points} баллов```\n"
+                f"**Причина:** {reason}\n"
+                f"**Выдал:** <@{author_id}>"
+            )
+            embed.add_field(name=field_name, value=field_value, inline=False)
+
+        embed.set_footer(text=f"Страница {page}/{total_pages} • Всего записей: {total_entries}")
+
+        view = HistoryView(member, page, total_pages)
+
+        if isinstance(ctx_or_interaction, discord.Interaction):
+            if ctx_or_interaction.response.is_done():
+                sent_message = await ctx_or_interaction.edit_original_response(embed=embed, view=view)
+            else:
+                await ctx_or_interaction.response.send_message(embed=embed, view=view)
+                sent_message = await ctx_or_interaction.original_response()
         else:
-            await interaction.followup.send("❌ Не удалось продлить срок штрафа.", ephemeral=True)
+            sent_message = await ctx_or_interaction.send(embed=embed, view=view)
 
-    @discord.ui.button(label="ℹ️ Подробнее", style=discord.ButtonStyle.gray, custom_id="details")
-    async def details(self, interaction: discord.Interaction, button: Button):
-        embed = build_fine_detail_embed(self.fine)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        async def delete_later(msg: discord.Message):
+            try:
+                await asyncio.sleep(180)
+                await msg.delete()
+            except (discord.NotFound, discord.Forbidden):
+                pass
 
+        asyncio.create_task(delete_later(sent_message))
 
-# 🔄 Пагинация списка штрафов
-class FinePaginator:
-    def __init__(self, fines: List[dict], per_page: int = 5):
-        self.fines = fines
-        self.per_page = per_page
-        self.total_pages = max(1, (len(fines) + per_page - 1) // per_page)
-
-    def get_page(self, page: int) -> List[dict]:
-        start = (page - 1) * self.per_page
-        end = start + self.per_page
-        return self.fines[start:end]
-
-
-# 💸 Меню выбора суммы оплаты
-class PaymentMenuView(View):
-    def __init__(self, fine: dict):
-        super().__init__(timeout=90)
-        self.fine = fine
-
-    @discord.ui.button(label="💯 100%", style=discord.ButtonStyle.green, custom_id="pay_100")
-    async def pay_100(self, interaction: discord.Interaction, button: Button):
-        await process_payment(interaction, self.fine, 1.0)
-
-    @discord.ui.button(label="🌓 50%", style=discord.ButtonStyle.blurple, custom_id="pay_50")
-    async def pay_50(self, interaction: discord.Interaction, button: Button):
-        await process_payment(interaction, self.fine, 0.5)
-
-    @discord.ui.button(label="🌗 25%", style=discord.ButtonStyle.gray, custom_id="pay_25")
-    async def pay_25(self, interaction: discord.Interaction, button: Button):
-        await process_payment(interaction, self.fine, 0.25)
-
-    @discord.ui.button(label="✏️ Своя сумма", style=discord.ButtonStyle.secondary, custom_id="pay_custom")
-    async def pay_custom(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_message("✏️ Введите сумму оплаты сообщением в чат. (в разработке)", ephemeral=True)
+    except Exception as e:
+        error_embed = discord.Embed(
+            title="⚠️ Ошибка",
+            description=f"```{str(e)}```",
+            color=discord.Color.red()
+        )
+        if isinstance(ctx_or_interaction, discord.Interaction):
+            await ctx_or_interaction.response.send_message(embed=error_embed, ephemeral=True)
+        else:
+            await ctx_or_interaction.send(embed=error_embed)
+        print(f"Ошибка в render_history: {traceback.format_exc()}")
 
 
-async def process_payment(interaction: discord.Interaction, fine: dict, percent: float):
-    await interaction.response.defer(ephemeral=True)
-    user_id = interaction.user.id
-    user_points = db.scores.get(user_id, 0)
-    amount_remaining = fine['amount'] - fine.get('paid_amount', 0)
-    to_pay = round(amount_remaining * percent, 2)
-
-    if user_points < to_pay:
-        await interaction.followup.send(f"❌ У вас недостаточно баллов для оплаты {to_pay} баллов.", ephemeral=True)
+async def log_action_cancellation(ctx, member: discord.Member, entries: list):
+    channel = discord.utils.get(ctx.guild.channels, name='history-log')
+    if not channel:
         return
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    lines = [f"**{ctx.author.display_name}** отменил(а) {len(entries)} изменения для **{member.display_name}** ({member.id}) в {now}:"]
+    for i, (points, reason) in enumerate(entries[::-1], start=1):
+        sign = "+" if points > 0 else ""
+        lines.append(f"{i}. {sign}{points} — {reason}")
+
+    await channel.send("\n".join(lines))
+
+
+async def run_monthly_top(ctx):
+    now = datetime.now(pytz.timezone('Europe/Moscow'))
+    current_month = now.month
+    current_year = now.year
+    from collections import defaultdict
+    monthly_scores = defaultdict(float)
+    for action in db.actions:
+        if action.get('is_undo'):
+            continue
+        timestamp = action.get('timestamp')
+        if isinstance(timestamp, str):
+            try:
+                dt = datetime.fromisoformat(timestamp)
+            except ValueError:
+                continue
+            if dt.month == current_month and dt.year == current_year:
+                uid = int(action['user_id'])
+                monthly_scores[uid] += float(action['points'])
+    if not monthly_scores:
+        await ctx.send("❌ Нет данных о баллах за этот месяц.")
+        return
+
+    top_users = sorted(monthly_scores.items(), key=lambda x: x[1], reverse=True)[:3]
+    percentages = [0.125, 0.075, 0.05]
+    descriptions = ["🥇 1 место", "🥈 2 место", "🥉 3 место"]
+
+    entries_to_log = []
+    embed = discord.Embed(title="🏆 Топ месяца", color=discord.Color.gold())
+
+    for i, (uid, score) in enumerate(top_users):
+        percent = percentages[i]
+        bonus = round(score * percent, 2)
+        db.add_action(uid, bonus, f"Бонус за {descriptions[i]} ({score} баллов)", ctx.author.id)
+        member = ctx.guild.get_member(uid)
+        name = member.display_name if member else f"<@{uid}>"
+
+
+
+        embed.add_field(
+            name=f"{descriptions[i]} — {name}",
+            value=f"Заработано: {score:.2f} баллов\nБонус: +{bonus:.2f} баллов",
+            inline=False
+        )
+        
+        entries_to_log.append((uid, score, percent))
+
+    db.log_monthly_top(entries_to_log)
+    await ctx.send(embed=embed)
+
+
+async def tophistory(ctx, month: Optional[int] = None, year: Optional[int] = None):
+    now = datetime.now()
+    month = month or now.month
+    year = year or now.year
 
     if not db.supabase:
-        await interaction.followup.send("❌ Supabase не инициализирован.", ephemeral=True)
+        await ctx.send("❌ Supabase не инициализирован.")
         return
 
-    success = db.record_payment(user_id=user_id, fine_id=fine['id'], amount=to_pay, author_id=interaction.user.id)
-    if not success:
-        await interaction.followup.send("❌ Ошибка при записи оплаты.", ephemeral=True)
-        return
-
-    fine['paid_amount'] = round(fine.get('paid_amount', 0) + to_pay, 2)
-    if fine['paid_amount'] >= fine['amount']:
-        fine['is_paid'] = True
-
-    await interaction.followup.send(f"✅ Вы оплатили {to_pay} баллов штрафа #{fine['id']}", ephemeral=True)
-
-
-        # 📐 Расчет пени по просроченному штрафу
-def calculate_penalty(fine: dict) -> float:
     try:
-        if not fine.get("is_overdue") or fine.get("is_paid"):
-            return 0.0
-    
-        due_raw = fine.get("due_date")
-        if not isinstance(due_raw, str):
-            return 0.0
-        due_date = datetime.fromisoformat(due_raw)
-    
-        now = datetime.now(timezone.utc)
-        overdue_days = (now - due_date).days
-        if overdue_days <= 0:
-            return 0.0
-    
-        rate = 0.01 if fine["type"] == 1 else 0.05
-        max_daily = 1.5
-        base = fine["amount"] - fine.get("paid_amount", 0)
-    
-        total_penalty = 0.0
-        for day in range(overdue_days):
-            daily = min(base * rate, max_daily)
-            total_penalty += daily
-    
-        return round(total_penalty, 2)
-    
-    except Exception as e:
-        print(f"Ошибка расчета пени: {e}")
-        return 0.0
+        response = db.supabase \
+            .table("monthly_top_log") \
+            .select("*") \
+            .eq("month", month) \
+            .eq("year", year) \
+            .order("place") \
+            .execute()
 
-# 💣 Создание задолженности на основе штрафа
-def create_debt_from_fine(fine: dict) -> dict:
-    try:
-        base_due = fine['amount'] - fine.get('paid_amount', 0)
-        penalty = calculate_penalty(fine)
-        total_debt = round(base_due + penalty, 2)
+        entries = response.data
+        if not entries:
+            await ctx.send(f"📭 Нет записей за {month:02d}.{year}")
+            return
 
-        return {
-            "user_id": fine['user_id'],
-            "fine_id": fine['id'],
-            "amount_due": base_due,
-            "penalty": penalty,
-            "total_due": total_debt,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "last_attempt": None,
-            "is_resolved": False
-        }
-    except Exception as e:
-        print(f"Ошибка при создании задолженности: {e}")
-        return {}
-
-
-    # ⏰ Проверка просроченных штрафов
-async def check_overdue_fines(bot):
-    await bot.wait_until_ready()
-    now = datetime.now(timezone.utc)
-    for fine in db.fines:
-        if fine.get("is_paid") or fine.get("is_canceled") or fine.get("is_overdue"):
-            continue
-        due_raw = fine.get("due_date")
-        if not isinstance(due_raw, str):
-            continue
-        try:
-            due_date = datetime.fromisoformat(due_raw)
-            if now > due_date:
-                db.mark_overdue(fine)
-        except Exception:
-            continue
-    
-    # 🔁 Ежедневное удержание баллов с должников
-async def debt_repayment_loop(bot):
-    await bot.wait_until_ready()
-    while True:
-        now = datetime.now(timezone.utc)
-        for fine in db.fines:
-            if not fine.get("is_overdue") or fine.get("is_paid") or fine.get("is_canceled"):
-                continue
-
-            due_raw = fine.get("due_date")
-            if not isinstance(due_raw, str):
-                continue
-            due_date = datetime.fromisoformat(due_raw)
-
-            if (now - due_date).days < 10:
-                continue
-
-            debt = create_debt_from_fine(fine)
-            user_id = debt["user_id"]
-            available = db.scores.get(user_id, 0)
-
-            if available > 0:
-                to_deduct = min(available, debt["total_due"])
-                db.update_scores(user_id, -to_deduct)
-                db.add_action(user_id, -to_deduct, f"Погашение долга по штрафу ID #{debt['fine_id']}", fine["author_id"])
-                db.add_to_bank(to_deduct)
-
-                fine['paid_amount'] = round(fine.get('paid_amount', 0) + to_deduct, 2)
-                if fine['paid_amount'] >= fine['amount']:
-                    fine['is_paid'] = True
-                    print(f"✅ Штраф #{fine['id']} полностью закрыт через задолженность")
-
-                if not db.supabase:
-                    print("❌ Supabase не инициализирован (при обновлении штрафа)")
-                    continue
-
-                assert db.supabase is not None
-
-                db.supabase.table("fines").update({
-                    "paid_amount": fine['paid_amount'],
-                    "is_paid": fine['is_paid']
-                }).eq("id", fine['id']).execute()
-
-
-        await asyncio.sleep(86400)
-
-class AllFinesView(discord.ui.View):
-    def __init__(self, fines, ctx, per_page=5):
-        super().__init__(timeout=60)
-        self.ctx = ctx
-        self.fines = fines
-        self.page = 1
-        self.per_page = per_page
-        self.total_pages = max(1, (len(fines) + per_page - 1) // per_page)
-
-    def get_page_embed(self):
-        page_fines = self.fines[(self.page - 1)*self.per_page : self.page*self.per_page]
-        total = sum(f["amount"] - f.get("paid_amount", 0) for f in self.fines)
         embed = discord.Embed(
-            title=f"📊 Активные штрафы — страница {self.page}/{self.total_pages}",
-            description=f"Общая сумма задолженности: **{total:.2f}** баллов",
-            color=discord.Color.orange()
+            title=f"📅 История топа — {month:02d}.{year}",
+            color=discord.Color.green()
         )
-        for fine in page_fines:
-            user = self.ctx.guild.get_member(fine["user_id"])
-            name = user.mention if user else f"<@{fine['user_id']}>"
-            rest = fine["amount"] - fine.get("paid_amount", 0)
-            due = fine.get("due_date", "N/A")[:10]
-            status = "⚠️ Просрочен" if fine.get("is_overdue") else "⏳ Активен"
+        for entry in entries:
+            uid = entry['user_id']
+            place = entry['place']
+            bonus = entry['bonus']
+            medal = "🥇" if place == 1 else "🥈" if place == 2 else "🥉"
             embed.add_field(
-                name=f"#{fine['id']} • {name}",
-                value=f"💰 {fine['amount']} → Осталось: **{rest:.2f}**\n📅 До: {due} • {status}",
+                name=f"{medal} Место {place}",
+                value=f"<@{uid}> — +{bonus} баллов",
                 inline=False
             )
-        return embed
+        await ctx.send(embed=embed)
 
-    @discord.ui.button(label="◀️ Назад", style=discord.ButtonStyle.gray)
-    async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.page > 1:
-            self.page -= 1
-        await interaction.response.edit_message(embed=self.get_page_embed(), view=self)
-
-    @discord.ui.button(label="Вперёд ▶️", style=discord.ButtonStyle.gray)
-    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.page < self.total_pages:
-            self.page += 1
-        await interaction.response.edit_message(embed=self.get_page_embed(), view=self)
-
-# 🔔 Ежедневные напоминания за 3 дня до срока
-async def remind_fines(bot):
-    await bot.wait_until_ready()
-    now = datetime.now(timezone.utc)
-    for fine in db.fines:
-        if fine.get("is_paid") or fine.get("is_canceled"):
-            continue
-        due_raw = fine.get("due_date")
-        if not isinstance(due_raw, str):
-            continue
-        try:
-            due_date = datetime.fromisoformat(due_raw)
-            delta = (due_date - now).days
-            if 0 < delta <= 3:
-                user = discord.utils.get(bot.get_all_members(), id=fine["user_id"])
-                if user:
-                    try:
-                        await user.send(
-                            f"⏰ Напоминание: штраф #{fine['id']} должен быть оплачен до {due_date.strftime('%d.%m.%Y')}. Осталось {delta} дней."
-                        )
-                    except discord.Forbidden:
-                        continue
-        except Exception:
-            continue
-
-# 🔄 Цикл напоминаний
-async def reminder_loop(bot):
-    await bot.wait_until_ready()
-    while True:
-        await remind_fines(bot)
-        await asyncio.sleep(86400)
-
-def get_fine_leaders():
-    from collections import defaultdict
-    user_totals = defaultdict(float)
-    for fine in db.fines:
-        if not fine.get("is_paid") and not fine.get("is_canceled"):
-            rest = fine["amount"] - fine.get("paid_amount", 0)
-            user_totals[fine["user_id"]] += rest
-    top = sorted(user_totals.items(), key=lambda x: x[1], reverse=True)[:3]
-    return top
+    except Exception as e:
+        await ctx.send(f"❌ Ошибка при получении данных: {e}")
