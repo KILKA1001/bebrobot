@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from supabase import create_client
 from dotenv import load_dotenv
 import traceback
@@ -296,6 +296,150 @@ class Database:
             if fine["id"] == fine_id:
                 return fine
         return None
+
+    def get_bank_balance(self):
+        try:
+            if not self.supabase:
+                return 0.0
+            response = self.supabase.table("bank").select("total").limit(1).execute()
+            if response.data and len(response.data) > 0:
+                return float(response.data[0]["total"])
+        except Exception as e:
+            print(f"Ошибка чтения баланса банка: {str(e)}")
+        return 0.0
+
+    def add_to_bank(self, amount: float):
+        try:
+            if not self.supabase:
+                print("❌ Supabase не инициализирован")
+                return False
+            current = self.get_bank_balance()
+            new_total = current + amount
+            self.supabase.table("bank").upsert({
+                "id": 1,
+                "total": new_total,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }).execute()
+            return True
+        except Exception as e:
+            print(f"Ошибка обновления банка: {str(e)}")
+            return False
+
+    def record_payment(self, user_id: int, fine_id: int, amount: float, author_id: int) -> bool:
+        """Записывает оплату штрафа, обновляет банк, баллы, штраф"""
+        try:
+            if not self.supabase:
+                print("❌ Supabase не инициализирован")
+                return False
+
+            # 1. Обновляем баллы пользователя
+            if not self.update_scores(user_id, -amount):
+                return False
+
+            # 2. Добавляем запись в fine_payments
+            self.supabase.table("fine_payments").insert({
+                "fine_id": fine_id,
+                "user_id": user_id,
+                "amount": amount,
+                "author_id": author_id
+            }).execute()
+
+            # 3. Лог действия
+            self.add_action(user_id, -amount, f"Оплата штрафа ID #{fine_id}", author_id)
+
+            # 4. Обновление баланса банка
+            self.add_to_bank(amount)
+
+            # 5. Обновляем данные по штрафу
+            fine = self.get_fine_by_id(fine_id)
+            if fine:
+                fine['paid_amount'] = round(fine.get('paid_amount', 0) + amount, 2)
+                fine['is_paid'] = fine['paid_amount'] >= fine['amount']
+
+                self.supabase.table("fines").update({
+                    "paid_amount": fine['paid_amount'],
+                    "is_paid": fine['is_paid']
+                }).eq("id", fine_id).execute()
+
+            return True
+
+        except Exception as e:
+            print(f"❌ Ошибка при записи оплаты: {e}")
+            traceback.print_exc()
+            return False
+
+    def can_postpone(self, user_id: int) -> bool:
+        """Проверяет, был ли пользователь уже отсрочен за последние 60 дней"""
+        if user_id not in self.history:
+            return True
+        now = datetime.now(timezone.utc)
+        for entry in reversed(self.history[user_id]):
+            if entry.get("reason", "").startswith("Отсрочка штрафа"):
+                try:
+                    ts = entry.get("timestamp")
+                    if isinstance(ts, str):
+                        ts = datetime.fromisoformat(ts)
+                    if (now - ts).days < 60:
+                        return False
+                except Exception:
+                    continue
+        return True
+
+    def apply_postponement(self, fine_id: int, days: int = 7) -> bool:
+        """Добавляет дни к сроку штрафа и записывает в логи"""
+        try:
+            if not self.supabase:
+                return False
+            fine = self.get_fine_by_id(fine_id)
+            if not fine:
+                return False
+            original_due = datetime.fromisoformat(fine["due_date"])
+            new_due = original_due + timedelta(days=days)
+
+            self.supabase.table("fines").update({
+                "due_date": new_due.isoformat(),
+                "postponed_until": datetime.now(timezone.utc).isoformat()
+            }).eq("id", fine_id).execute()
+
+            fine["due_date"] = new_due.isoformat()
+            fine["postponed_until"] = datetime.now(timezone.utc).isoformat()
+
+            self.add_action(
+                user_id=fine["user_id"],
+                points=0,
+                reason=f"Отсрочка штрафа ID #{fine_id} на {days} дн.",
+                author_id=fine["author_id"]
+            )
+            return True
+
+        except Exception as e:
+            print(f"❌ Ошибка при отсрочке штрафа: {e}")
+            traceback.print_exc()
+            return False
+
+    def mark_overdue(self, fine: dict) -> bool:
+        """Помечает штраф как просроченный и логирует"""
+        try:
+            if not self.supabase:
+                return False
+            self.supabase.table("fines").update({
+                "is_overdue": True
+            }).eq("id", fine["id"]).execute()
+
+            fine["is_overdue"] = True
+
+            self.add_action(
+                user_id=fine["user_id"],
+                points=0,
+                reason=f"Просрочка штрафа ID #{fine['id']}",
+                author_id=fine["author_id"]
+            )
+            return True
+
+        except Exception as e:
+            print(f"❌ Ошибка при отметке просрочки штрафа: {e}")
+            traceback.print_exc()
+            return False
 
 # Глобальный экземпляр
 db = Database()
