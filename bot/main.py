@@ -101,7 +101,7 @@ async def monthly_top_task():
 async def overdue_check_loop():
     await bot.wait_until_ready()
     while not bot.is_closed():
-        await check_overdue_fines()
+        await check_overdue_fines(bot)
         await asyncio.sleep(86400)  # 1 раз в 24 часа
 
 # Основной запуск
