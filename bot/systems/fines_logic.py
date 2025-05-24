@@ -224,33 +224,33 @@ async def check_overdue_fines(bot):
             continue
     
     # 🔁 Ежедневное удержание баллов с должников
-    async def debt_repayment_loop(bot):
-        await bot.wait_until_ready()
-        while True:
-            now = datetime.now(timezone.utc)
-            for fine in db.fines:
-                if not fine.get("is_overdue") or fine.get("is_paid") or fine.get("is_canceled"):
-                    continue
+async def debt_repayment_loop(bot):
+    await bot.wait_until_ready()
+    while True:
+        now = datetime.now(timezone.utc)
+        for fine in db.fines:
+            if not fine.get("is_overdue") or fine.get("is_paid") or fine.get("is_canceled"):
+                continue
 
-                due_raw = fine.get("due_date")
-                if not isinstance(due_raw, str):
-                    continue
-                due_date = datetime.fromisoformat(due_raw)
+            due_raw = fine.get("due_date")
+            if not isinstance(due_raw, str):
+                continue
+            due_date = datetime.fromisoformat(due_raw)
 
-                if (now - due_date).days < 10:
-                    continue
+            if (now - due_date).days < 10:
+                continue
 
-                debt = create_debt_from_fine(fine)
-                user_id = debt["user_id"]
-                available = db.scores.get(user_id, 0)
+            debt = create_debt_from_fine(fine)
+            user_id = debt["user_id"]
+            available = db.scores.get(user_id, 0)
 
-                if available > 0:
-                    to_deduct = min(available, debt["total_due"])
-                    db.update_scores(user_id, -to_deduct)
-                    db.add_action(user_id, -to_deduct, f"Погашение долга по штрафу ID #{debt['fine_id']}", fine["author_id"])
-                    db.add_to_bank(to_deduct)
-    
-                    fine['paid_amount'] = round(fine.get('paid_amount', 0) + to_deduct, 2)
+            if available > 0:
+                to_deduct = min(available, debt["total_due"])
+                db.update_scores(user_id, -to_deduct)
+                db.add_action(user_id, -to_deduct, f"Погашение долга по штрафу ID #{debt['fine_id']}", fine["author_id"])
+                db.add_to_bank(to_deduct)
+
+                fine['paid_amount'] = round(fine.get('paid_amount', 0) + to_deduct, 2)
                 if fine['paid_amount'] >= fine['amount']:
                     fine['is_paid'] = True
                     print(f"✅ Штраф #{fine['id']} полностью закрыт через задолженность")
@@ -266,4 +266,5 @@ async def check_overdue_fines(bot):
                     "is_paid": fine['is_paid']
                 }).eq("id", fine['id']).execute()
 
-            await asyncio.sleep(86400)
+
+        await asyncio.sleep(86400)
