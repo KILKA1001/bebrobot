@@ -11,12 +11,17 @@ from bot.data import db
 from bot.utils.history_manager import format_history_embed
 from bot.utils.roles_and_activities import ACTIVITY_CATEGORIES, ROLE_THRESHOLDS, display_last_edit_date
 from collections import defaultdict
-from bot.systems.core_logic import (
-    update_roles,
+from bot.systems import (
     render_history,
     log_action_cancellation,
-    run_monthly_top,
     tophistory
+)
+from bot.systems.core_logic import (
+    update_roles,
+    run_monthly_top,
+    get_help_embed,
+    HelpView,
+    LeaderboardView
 )
 # Константы
 COMMAND_PREFIX = '?'
@@ -116,28 +121,18 @@ async def points(ctx, member: Optional[discord.Member] = None):
     await ctx.send(embed=embed)
 
 @bot.command(name='leaderboard')
-async def leaderboard(ctx, top: int = 10):
-    if not db.scores:
-        await ctx.send("Пока нет данных о баллах.")
-        return
+async def leaderboard(ctx):
+    view = LeaderboardView(ctx)
+    message = await ctx.send(embed=view.get_embed(), view=view)
 
-    sorted_scores = sorted(db.scores.items(), key=lambda x: x[1], reverse=True)[:top]
-    embed = discord.Embed(title=f"🏆 Топ {top} по баллам", color=discord.Color.gold())
-    medals = ["🥇", "🥈", "🥉"]
+    async def delete_later(msg):
+        await asyncio.sleep(300)
+        try:
+            await msg.delete()
+        except (discord.NotFound, discord.Forbidden):
+            pass
 
-    for i, (user_id, points_val) in enumerate(sorted_scores, start=1):
-        member = ctx.guild.get_member(user_id)
-        medal = medals[i - 1] if i <= 3 else f"{i}."
-        name = member.display_name if member else f"<@{user_id}>"
-        roles = [role.name for role in member.roles if role.id in ROLE_THRESHOLDS] if member else []
-        role_str = ', '.join(roles) if roles else 'Нет роли'
-        embed.add_field(
-            name=f"{medal} {name}",
-            value=f"**Баллы:** {points_val:.2f}\n**Роль:** {role_str}",
-            inline=False
-        )
-
-    await ctx.send(embed=embed)
+    asyncio.create_task(delete_later(message))
 
 @bot.command(name='history')
 async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 1):
@@ -242,73 +237,18 @@ async def tophistory_cmd(ctx, month: Optional[int] = None, year: Optional[int] =
 
 @bot.command(name='helpy')
 async def helpy_cmd(ctx):
-    embed = discord.Embed(
-        title="🛠️ Справочник по командам",
-        description="Список всех доступных команд, отсортированных по функциям:",
-        color=discord.Color.blue()
-    )
+    view = HelpView()
+    embed = get_help_embed("points")  # Начальная категория
+    message = await ctx.send(embed=embed, view=view)
 
-    embed.add_field(
-        name="⚙️ Админские команды",
-        value=(
-            "`?addpoints @пользователь <баллы> [причина]` — начислить баллы\n"
-            "`?removepoints @пользователь <баллы> [причина]` — снять баллы\n"
-            "`?undo @пользователь <кол-во>` — отменить последние действия\n"
-            "`?monthlytop` — начислить бонусы за топ месяца\n"
-            "`?editfine <id> сумма тип дата причина` — изменить штраф\n"
-            "`?cancel_fine <id>` — отменить штраф\n"
-            "`?allfines` — все активные штрафы"
-        ),
-        inline=False
-    )
+    async def delete_later():
+        await asyncio.sleep(180)
+        try:
+            await message.delete()
+        except (discord.Forbidden, discord.NotFound):
+            pass
 
-    embed.add_field(
-        name="📊 Баллы и рейтинг",
-        value=(
-            "`?points [@пользователь]` — посмотреть баллы\n"
-            "`?leaderboard [кол-во]` — топ по баллам\n"
-            "`?history [@пользователь] [страница]` — история действий"
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="🏅 Роли и активности",
-        value=(
-            "`?roles` — список ролей и их требования\n"
-            "`?activities` — баллы за виды помощи"
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="📆 Топ месяца",
-        value=(
-            "`?monthlytop` — начислить бонусы (только админы)\n"
-            "`?tophistory [месяц] [год]` — история наград за топ"
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="📉 Штрафы",
-        value=(
-            "`?fine @пользователь <сумма> <тип> [причина]` — выдать штраф\n"
-            "`?myfines` — ваши штрафы\n"
-            "`?finehistory [@пользователь] [страница]` — история штрафов\n"
-            "`?finedetails <id>` — подробности штрафа\n"
-            "`?topfines` — топ должников"
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="🧪 Прочее",
-        value="`?ping` — проверка отклика\n`?helpy` — показать это сообщение",
-        inline=False
-    )
-
-    await ctx.send(embed=embed)
+    asyncio.create_task(delete_later())
 
 @bot.command()
 async def ping(ctx):
