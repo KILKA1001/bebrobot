@@ -1,7 +1,8 @@
 import discord
 from discord.ext import commands
 from typing import Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from collections import defaultdict
 import pytz
 import asyncio
 import traceback
@@ -273,3 +274,190 @@ async def tophistory(ctx, month: Optional[int] = None, year: Optional[int] = Non
 
     except Exception as e:
         await ctx.send(f"❌ Ошибка при получении данных: {e}")
+class HelpView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=120)
+        self.message = None
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # Сохраняем сообщение один раз
+        if not self.message:
+            self.message = interaction.message
+        return True
+    async def update_embed(self, interaction: discord.Interaction, category: str):
+        embed = get_help_embed(category)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="⚙️ Админ", style=discord.ButtonStyle.red)
+    async def admin_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.update_embed(interaction, "admin")
+
+    @discord.ui.button(label="📊 Баллы", style=discord.ButtonStyle.blurple)
+    async def points_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.update_embed(interaction, "points")
+
+    @discord.ui.button(label="🏅 Роли", style=discord.ButtonStyle.green)
+    async def roles_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.update_embed(interaction, "roles")
+
+    @discord.ui.button(label="📆 Топ", style=discord.ButtonStyle.gray)
+    async def top_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.update_embed(interaction, "top")
+
+    @discord.ui.button(label="📉 Штрафы", style=discord.ButtonStyle.gray)
+    async def fines_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.update_embed(interaction, "fines")
+
+    @discord.ui.button(label="🧪 Прочее", style=discord.ButtonStyle.secondary)
+    async def misc_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.update_embed(interaction, "misc")
+
+def get_help_embed(category: str) -> discord.Embed:
+    embed = discord.Embed(title="🛠️ Справка: категории команд", color=discord.Color.blue())
+
+    if category == "admin":
+        embed.title = "⚙️ Админские команды"
+        embed.description = (
+            "`?addpoints @юзер сумма [причина]`\n"
+            "`?removepoints @юзер сумма [причина]`\n"
+            "`?undo @юзер кол-во`\n"
+            "`?monthlytop` — начислить бонусы\n"
+            "`?editfine id сумма тип дата причина`\n"
+            "`?cancel_fine id`\n"
+            "`?allfines` — список штрафов"
+        )
+
+    elif category == "points":
+        embed.title = "📊 Команды баллов и рейтинга"
+        embed.description = (
+            "`?points [@юзер]` — баланс\n"
+            "`?leaderboard [число]` — топ\n"
+            "`?history [@юзер] [стр]` — история"
+        )
+
+    elif category == "roles":
+        embed.title = "🏅 Роли и активности"
+        embed.description = "`?roles` — роли\n`?activities` — баллы за помощь"
+
+    elif category == "top":
+        embed.title = "📆 Топ месяца"
+        embed.description = (
+            "`?monthlytop` — начислить бонусы\n"
+            "`?tophistory [мес] [год]` — история топа"
+        )
+
+    elif category == "fines":
+        embed.title = "📉 Штрафы"
+        embed.description = (
+            "`?fine @юзер сумма тип [причина]`\n"
+            "`?myfines` — мои штрафы\n"
+            "`?finehistory [@юзер] [стр]` — история\n"
+            "`?finedetails id` — детали\n"
+            "`?topfines` — топ должников"
+        )
+
+    elif category == "misc":
+        embed.title = "🧪 Прочее"
+        embed.description = "`?ping` — отклик\n`?helpy` — это меню"
+
+    return embed
+
+class LeaderboardView(discord.ui.View):
+    def __init__(self, ctx, mode="all", page=1):
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.mode = mode
+        self.page = page
+        self.page_size = 5
+        self.update_embed_data()
+
+    def update_embed_data(self):
+        if self.mode == "week":
+            self.entries = self.get_scores_by_range(days=7)
+        elif self.mode == "month":
+            self.entries = self.get_scores_by_range(days=30)
+        else:
+            self.entries = sorted(db.scores.items(), key=lambda x: x[1], reverse=True)
+
+        self.total_pages = max(1, (len(self.entries) + self.page_size - 1) // self.page_size)
+
+    def get_scores_by_range(self, days):
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=days)
+        temp_scores = defaultdict(float)
+        for entry in db.actions:
+            if entry.get("is_undo"):
+                continue
+            ts = entry.get("timestamp")
+            if not ts:
+                continue  # Пропускаем пустые timestamp
+            if isinstance(ts, str):
+                try:
+                    ts = datetime.fromisoformat(ts)
+                except Exception:
+                    continue
+            if not ts or not isinstance(ts, datetime):
+                continue  # Пропускаем если не удалось распарсить
+            if ts >= cutoff:
+                temp_scores[int(entry["user_id"])] += float(entry["points"])
+        return sorted(temp_scores.items(), key=lambda x: x[1], reverse=True)
+
+    def get_embed(self):
+        embed = discord.Embed(title="🏆 Топ участников", color=discord.Color.gold())
+        start = (self.page - 1) * self.page_size
+        entries = self.entries[start:start + self.page_size]
+
+        if not entries:
+            embed.description = "Нет данных для отображения."
+            embed.set_footer(text=f"Страница {self.page}/{self.total_pages} • Режим: {self.mode}")
+            return embed
+
+        for i, (uid, points) in enumerate(entries, start=start + 1):
+            member = self.ctx.guild.get_member(uid)
+            name = member.display_name if member else f"<@{uid}>"
+
+            roles = []
+            if member:
+                roles = [r.name for r in member.roles if r.id in ROLE_THRESHOLDS]
+            role_text = f"\nРоль: {', '.join(roles)}" if roles else ""
+
+            embed.add_field(
+                name=f"{i}. {name}",
+                value=f"**{points:.2f}** баллов{role_text}",
+                inline=False
+            )
+
+        embed.set_footer(text=f"Страница {self.page}/{self.total_pages} • Режим: {self.mode}")
+        return embed
+
+    @discord.ui.button(label="◀️", style=discord.ButtonStyle.gray)
+    async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page > 1:
+            self.page -= 1
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    @discord.ui.button(label="▶️", style=discord.ButtonStyle.gray)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page < self.total_pages:
+            self.page += 1
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    @discord.ui.button(label="Неделя", style=discord.ButtonStyle.blurple)
+    async def mode_week(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.mode = "week"
+        self.page = 1
+        self.update_embed_data()
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    @discord.ui.button(label="Месяц", style=discord.ButtonStyle.blurple)
+    async def mode_month(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.mode = "month"
+        self.page = 1
+        self.update_embed_data()
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    @discord.ui.button(label="Все время", style=discord.ButtonStyle.green)
+    async def mode_all(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.mode = "all"
+        self.page = 1
+        self.update_embed_data()
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
