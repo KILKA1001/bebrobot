@@ -274,18 +274,21 @@ async def tophistory(ctx, month: Optional[int] = None, year: Optional[int] = Non
 
     except Exception as e:
         await ctx.send(f"❌ Ошибка при получении данных: {e}")
+
 class HelpView(discord.ui.View):
     def __init__(self, user: discord.Member):
         super().__init__(timeout=120)
         self.message = None
         self.user = user
 
+        # Основные кнопки
         self.add_item(self.points_btn)
         self.add_item(self.roles_btn)
         self.add_item(self.top_btn)
         self.add_item(self.fines_btn)
         self.add_item(self.misc_btn)
 
+        # Кнопка админ-панели только для админов
         if user.guild_permissions.administrator:
             self.add_item(self.admin_category_btn)
 
@@ -298,34 +301,33 @@ class HelpView(discord.ui.View):
         embed = get_help_embed(category)
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="📊 Баллы", style=discord.ButtonStyle.blurple)
+    @discord.ui.button(label="📊 Баллы", style=discord.ButtonStyle.blurple, row=0, custom_id="help_points")
     async def points_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.update_embed(interaction, "points")
 
-    @discord.ui.button(label="🏅 Роли", style=discord.ButtonStyle.green)
+    @discord.ui.button(label="🏅 Роли", style=discord.ButtonStyle.green, row=0, custom_id="help_roles")
     async def roles_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.update_embed(interaction, "roles")
 
-    @discord.ui.button(label="📆 Топ", style=discord.ButtonStyle.gray)
+    @discord.ui.button(label="📆 Топ", style=discord.ButtonStyle.gray, row=0, custom_id="help_top")
     async def top_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.update_embed(interaction, "top")
 
-    @discord.ui.button(label="📉 Штрафы", style=discord.ButtonStyle.gray)
+    @discord.ui.button(label="📉 Штрафы", style=discord.ButtonStyle.gray, row=1, custom_id="help_fines")
     async def fines_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.update_embed(interaction, "fines")
 
-    @discord.ui.button(label="🧪 Прочее", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="🧪 Прочее", style=discord.ButtonStyle.secondary, row=1, custom_id="help_misc")
     async def misc_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.update_embed(interaction, "misc")
 
-    @discord.ui.button(label="🛡️ Админ-панель", style=discord.ButtonStyle.red)
+    @discord.ui.button(label="🛡️ Админ-панель", style=discord.ButtonStyle.red, row=1, custom_id="help_adminpanel")
     async def admin_category_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = discord.Embed(title="🛡️ Админ-панель: категории", color=discord.Color.red())
         embed.description = (
             "⚙️ **Управление баллами** — `?addpoints`, `?removepoints`, `?undo`\n"
             "📉 **Штрафы** — `?editfine`, `?cancel_fine`, `?allfines`\n"
-            "🏦 **Банк** — `?bankadd`, `?bankspend`, `?bankhistory`\n"
-            "\nВыберите нужную категорию слева, чтобы посмотреть команды."
+            "🏦 **Банк** — `?bankadd`, `?bankspend`, `?bankhistory`"
         )
         await interaction.response.edit_message(embed=embed, view=self)
 
