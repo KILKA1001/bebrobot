@@ -154,9 +154,10 @@ class PaymentMenuView(View):
             )
 
             if success:
-                self.fine["paid_amount"] = round(self.fine.get("paid_amount", 0) + amount, 2)
-                if self.fine["paid_amount"] >= self.fine["amount"]:
-                    self.fine["is_paid"] = True
+                updated = db.get_fine_by_id(self.fine["id"])
+                if updated:
+                    self.fine["paid_amount"] = updated.get("paid_amount", 0)
+                    self.fine["is_paid"] = updated.get("is_paid", False)
                 await interaction.followup.send(f"✅ Вы оплатили {amount:.2f} баллов штрафа #{self.fine['id']}", ephemeral=True)
             else:
                 await interaction.followup.send("❌ Ошибка при записи оплаты.", ephemeral=True)
