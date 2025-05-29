@@ -4,7 +4,10 @@ from datetime import datetime, timezone, timedelta
 from typing import List
 from bot.data import db
 import asyncio
+import os
+import pytz
 
+latest_report_message_id = None  # глобальная переменная
 
 # 💡 Получить статус штрафа
 def get_fine_status(fine: dict) -> str:
@@ -123,7 +126,46 @@ class PaymentMenuView(View):
 
     @discord.ui.button(label="✏️ Своя сумма", style=discord.ButtonStyle.secondary, custom_id="pay_custom")
     async def pay_custom(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_message("✏️ Введите сумму оплаты сообщением в чат. (в разработке)", ephemeral=True)
+        await interaction.response.send_message("✏️ Введите сумму для оплаты в чат (в баллах, например `12.5`). Ожидание 30 сек...", ephemeral=True)
+
+        def check(m):
+            return m.author.id == interaction.user.id and m.channel == interaction.channel
+
+        try:
+            message = await interaction.client.wait_for("message", timeout=30.0, check=check)
+            amount_str = message.content.strip().replace(",", ".")
+            amount = float(amount_str)
+
+            max_amount = self.fine["amount"] - self.fine.get("paid_amount", 0)
+            if amount <= 0 or amount > max_amount:
+                await interaction.followup.send(f"❌ Сумма должна быть от 0 до {max_amount:.2f} баллов.", ephemeral=True)
+                return
+
+            user_points = db.scores.get(interaction.user.id, 0)
+            if user_points < amount:
+                await interaction.followup.send(f"❌ У вас недостаточно баллов. У вас: {user_points:.2f} баллов.", ephemeral=True)
+                return
+
+            success = db.record_payment(
+                user_id=interaction.user.id,
+                fine_id=self.fine["id"],
+                amount=amount,
+                author_id=interaction.user.id
+            )
+
+            if success:
+                self.fine["paid_amount"] = round(self.fine.get("paid_amount", 0) + amount, 2)
+                if self.fine["paid_amount"] >= self.fine["amount"]:
+                    self.fine["is_paid"] = True
+                await interaction.followup.send(f"✅ Вы оплатили {amount:.2f} баллов штрафа #{self.fine['id']}", ephemeral=True)
+            else:
+                await interaction.followup.send("❌ Ошибка при записи оплаты.", ephemeral=True)
+
+        except asyncio.TimeoutError:
+            await interaction.followup.send("⌛ Время ожидания истекло.", ephemeral=True)
+        except ValueError:
+            await interaction.followup.send("❌ Введите корректное число.", ephemeral=True)
+
 
 
 async def process_payment(interaction: discord.Interaction, fine: dict, percent: float):
@@ -331,6 +373,13 @@ async def remind_fines(bot):
                         await user.send(
                             f"⏰ Напоминание: штраф #{fine['id']} должен быть оплачен до {due_date.strftime('%d.%m.%Y')}. Осталось {delta} дней."
                         )
+                        channel_id = int(os.getenv("FINE_ALERT_CHANNEL_ID", 0))
+                        if channel_id:
+                            channel = bot.get_channel(channel_id)
+                            if channel and isinstance(channel, discord.TextChannel):
+                                await channel.send(
+                                    f"📢 Напоминание: {user.mention}, вам нужно оплатить штраф #{fine['id']} до {due_date.strftime('%d.%m.%Y')} (через {delta} дн.)"
+                                )
                     except discord.Forbidden:
                         continue
         except Exception:
@@ -352,3 +401,51 @@ def get_fine_leaders():
             user_totals[fine["user_id"]] += rest
     top = sorted(user_totals.items(), key=lambda x: x[1], reverse=True)[:3]
     return top
+
+async def fines_summary_report(bot):
+    global latest_report_message_id
+
+    await bot.wait_until_ready()
+    channel_id = int(os.getenv("FINE_REPORT_CHANNEL_ID", 0))
+    if not channel_id:
+        print("❌ FINE_REPORT_CHANNEL_ID не задан")
+        return
+
+    channel = bot.get_channel(channel_id)
+    if not channel or not isinstance(channel, discord.TextChannel):
+        print("❌ Указанный канал не найден или не текстовый")
+        return
+
+    # Удаляем предыдущее сообщение, если оно было
+    if latest_report_message_id:
+        try:
+            msg = await channel.fetch_message(latest_report_message_id)
+            await msg.delete()
+        except Exception:
+            pass
+
+    # Статистика
+    active = [f for f in db.fines if not f.get("is_paid") and not f.get("is_canceled")]
+    overdue = [f for f in active if f.get("is_overdue")]
+    total_sum = sum(f["amount"] - f.get("paid_amount", 0) for f in active)
+    bank = db.get_bank_balance()
+
+    now = datetime.now(pytz.timezone("Europe/Moscow")).strftime("%d.%m.%Y")
+
+    embed = discord.Embed(
+        title=f"📢 Актуальная сводка по штрафам на {now}",
+        color=discord.Color.orange()
+    )
+    embed.add_field(name="📋 Активных штрафов", value=str(len(active)), inline=True)
+    embed.add_field(name="⚠️ Просроченных", value=str(len(overdue)), inline=True)
+    embed.add_field(name="💰 Общая сумма долга", value=f"{total_sum:.2f} баллов", inline=False)
+    embed.add_field(name="🏦 Баланс Банка Бебр", value=f"{bank:.2f} баллов", inline=False)
+    embed.set_footer(text="Следующее обновление — через 2 дня")
+
+    msg = await channel.send(embed=embed)
+    latest_report_message_id = msg.id
+
+async def fines_summary_loop(bot):
+    while True:
+        await fines_summary_report(bot)
+        await asyncio.sleep(172800)  # 2 дня в секундах

@@ -358,6 +358,7 @@ class Database:
 
             # 4. Обновление баланса банка
             self.add_to_bank(amount)
+            self.log_bank_income(user_id, amount, f"Оплата штрафа ID #{fine_id}")
 
             # 5. Обновляем данные по штрафу
             fine = self.get_fine_by_id(fine_id)
@@ -365,21 +366,55 @@ class Database:
                 fine['paid_amount'] = round(fine.get('paid_amount', 0) + amount, 2)
                 fine['is_paid'] = fine['paid_amount'] >= fine['amount']
 
-                self.supabase.table("fines").update({
+                update_data = {
                     "paid_amount": fine['paid_amount'],
                     "is_paid": fine['is_paid']
-                }).eq("id", fine_id).execute()
-                created = fine.get("created_at")
-                if created:
+                }
+
+                if fine['is_paid'] and 'was_on_time' not in fine:
+                    paid_now = datetime.now(timezone.utc)
+
+                    due_raw = fine.get("due_date")
+                    post_raw = fine.get("postponed_until")
+
                     try:
-                        created_dt = datetime.fromisoformat(created)
-                        now = datetime.now(timezone.utc)
+                        if isinstance(due_raw, str):
+                            due_dt = datetime.fromisoformat(due_raw)
+                            if paid_now <= due_dt:
+                                update_data["was_on_time"] = True
+                            elif isinstance(post_raw, str):
+                                post_dt = datetime.fromisoformat(post_raw)
+                                update_data["was_on_time"] = paid_now <= post_dt
+                            else:
+                                update_data["was_on_time"] = False
+                        else:
+                            update_data["was_on_time"] = False
+                    except Exception:
+                        update_data["was_on_time"] = False
+
+                self.supabase.table("fines").update(update_data).eq("id", fine_id).execute()
+
+                # 🎯 Быстрая и своевременная оплата (штраф ≥ 3)
+                created_raw = fine.get("created_at")
+                now = datetime.now(timezone.utc)
+
+                try:
+                    if (
+                        fine['is_paid']
+                        and fine.get("was_on_time")
+                        and fine['amount'] >= 3
+                        and isinstance(created_raw, str)
+                    ):
+                        created_dt = datetime.fromisoformat(created_raw)
                         if (now - created_dt).days <= 5:
                             self._track_quick_payment(user_id)
                         else:
-                            self.quick_pay_streak[user_id] = 0  # сброс
-                    except Exception:
-                        pass
+                            self.quick_pay_streak[user_id] = 0
+                    else:
+                        self.quick_pay_streak[user_id] = 0
+                except Exception:
+                    self.quick_pay_streak[user_id] = 0
+
 
             return True
 
@@ -509,5 +544,47 @@ class Database:
             self.quick_pay_streak[user_id] = 0
         else:
             print(f"⏱ Быстрая оплата: {self.quick_pay_streak[user_id]} подряд")
+
+    def spend_from_bank(self, amount: float, user_id: int, reason: str) -> bool:
+        try:
+            if not self.supabase:
+                return False
+            current = self.get_bank_balance()
+            if current < amount:
+                return False
+            new_total = current - amount
+            self.supabase.table("bank").upsert({
+                "id": 1,
+                "total": new_total,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }).execute()
+
+            self.supabase.table("bank_history").insert({
+                "user_id": user_id,
+                "amount": -amount,
+                "reason": reason,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }).execute()
+
+            return True
+        except Exception as e:
+            print(f"Ошибка при трате из банка: {str(e)}")
+            return False
+
+    def log_bank_income(self, user_id: int, amount: float, reason: str) -> bool:
+        try:
+            if not self.supabase:
+                return False
+            self.supabase.table("bank_history").insert({
+                "user_id": user_id,
+                "amount": amount,
+                "reason": reason,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }).execute()
+            return True
+        except Exception as e:
+            print(f"Ошибка записи операции в банк: {e}")
+            return False
+
 # Глобальный экземпляр
 db = Database()

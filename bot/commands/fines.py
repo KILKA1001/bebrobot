@@ -43,7 +43,10 @@ async def fine(ctx, member: discord.Member, amount: str, fine_type: int, *, reas
         if fine:
             embed = discord.Embed(
                 title="📌 Назначен штраф",
-                description=f"{member.mention}, вам назначен штраф.",
+                description=(
+                    f"{member.mention}, вам назначен штраф.\n\n"
+                    f"ℹ️ Чтобы просмотреть и оплатить его, используйте команду `?myfines`"
+                ),
                 color=discord.Color.red()
             )
             embed.add_field(name="Сумма", value=f"{amount_value:.2f} баллов", inline=True)

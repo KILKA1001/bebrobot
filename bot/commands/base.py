@@ -1,4 +1,4 @@
-
+import os
 import discord
 from discord.ext import commands
 from typing import Optional
@@ -23,6 +23,7 @@ from bot.systems.core_logic import (
     HelpView,
     LeaderboardView
 )
+
 # Константы
 COMMAND_PREFIX = '?'
 TIME_FORMAT = "%H:%M (%d.%m.%Y)"
@@ -237,8 +238,8 @@ async def tophistory_cmd(ctx, month: Optional[int] = None, year: Optional[int] =
 
 @bot.command(name='helpy')
 async def helpy_cmd(ctx):
-    view = HelpView()
-    embed = get_help_embed("points")  # Начальная категория
+    view = HelpView(ctx.author)
+    embed = get_help_embed("points")
     message = await ctx.send(embed=embed, view=view)
 
     async def delete_later():
@@ -253,3 +254,57 @@ async def helpy_cmd(ctx):
 @bot.command()
 async def ping(ctx):
     await ctx.send('pong')
+    
+@bot.command(name="bank")
+async def bank_balance(ctx):
+    total = db.get_bank_balance()
+    await ctx.send(f"🏦 Баланс банка: **{total:.2f} баллов**")
+
+@bot.command(name="bankadd")
+@commands.has_permissions(administrator=True)
+async def bank_add(ctx, amount: float, *, reason: str = "Без причины"):
+    if amount <= 0:
+        await ctx.send("❌ Сумма должна быть больше 0")
+        return
+    db.add_to_bank(amount)
+    db.log_bank_income(ctx.author.id, amount, reason)
+    await ctx.send(f"✅ Добавлено **{amount:.2f} баллов** в банк. Причина: {reason}")
+
+@bot.command(name="bankspend")
+@commands.has_permissions(administrator=True)
+async def bank_spend(ctx, amount: float, *, reason: str = "Без причины"):
+    if amount <= 0:
+        await ctx.send("❌ Сумма должна быть больше 0")
+        return
+    success = db.spend_from_bank(amount, ctx.author.id, reason)
+    if success:
+        await ctx.send(f"💸 Из банка потрачено **{amount:.2f} баллов**. Причина: {reason}")
+    else:
+        await ctx.send("❌ Недостаточно средств в банке или ошибка операции")
+
+@bot.command(name="bankhistory")
+@commands.has_permissions(administrator=True)
+async def bank_history(ctx):
+    if not db.supabase:
+        await ctx.send("❌ Supabase не инициализирован")
+        return
+
+    try:
+        result = db.supabase.table("bank_history").select("*").order("timestamp", desc=True).limit(10).execute()
+        if not result.data:
+            await ctx.send("📭 История пуста")
+            return
+        embed = discord.Embed(title="📚 История операций банка", color=discord.Color.teal())
+        for entry in result.data:
+            user = ctx.guild.get_member(entry["user_id"])
+            name = user.display_name if user else f"<@{entry['user_id']}>"
+            amt = entry["amount"]
+            ts = entry["timestamp"][:19].replace("T", " ")
+            embed.add_field(
+                name=f"{'➕' if amt > 0 else '➖'} {amt:.2f} баллов • {ts}",
+                value=f"👤 {name}\n📝 {entry['reason']}",
+                inline=False
+            )
+        await ctx.send(embed=embed)
+    except Exception as e:
+        await ctx.send(f"❌ Ошибка получения истории: {str(e)}")

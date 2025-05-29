@@ -21,7 +21,7 @@ from bot.systems import fines_logic
 from bot.systems.fines_logic import check_overdue_fines, debt_repayment_loop
 from bot.systems.fines_logic import get_fine_leaders
 from bot.systems.fines_logic import build_fine_embed
-
+from bot.systems.fines_logic import fines_summary_loop
 # Константы
 COMMAND_PREFIX = '?'
 TIME_FORMAT = "%H:%M (%d.%m.%Y)"
@@ -55,6 +55,7 @@ async def on_ready():
     asyncio.create_task(fines_logic.check_overdue_fines(bot))
     asyncio.create_task(fines_logic.debt_repayment_loop(bot))
     asyncio.create_task(fines_logic.reminder_loop(bot))
+    asyncio.create_task(fines_logic.fines_summary_loop(bot))
 
     activity = discord.Activity(
         name=f"{COMMAND_PREFIX}help",

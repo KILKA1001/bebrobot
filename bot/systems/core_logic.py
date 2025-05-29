@@ -275,21 +275,28 @@ async def tophistory(ctx, month: Optional[int] = None, year: Optional[int] = Non
     except Exception as e:
         await ctx.send(f"❌ Ошибка при получении данных: {e}")
 class HelpView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, user: discord.Member):
         super().__init__(timeout=120)
         self.message = None
+        self.user = user
+
+        self.add_item(self.points_btn)
+        self.add_item(self.roles_btn)
+        self.add_item(self.top_btn)
+        self.add_item(self.fines_btn)
+        self.add_item(self.misc_btn)
+
+        if user.guild_permissions.administrator:
+            self.add_item(self.admin_category_btn)
+
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        # Сохраняем сообщение один раз
         if not self.message:
             self.message = interaction.message
         return True
+
     async def update_embed(self, interaction: discord.Interaction, category: str):
         embed = get_help_embed(category)
         await interaction.response.edit_message(embed=embed, view=self)
-
-    @discord.ui.button(label="⚙️ Админ", style=discord.ButtonStyle.red)
-    async def admin_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.update_embed(interaction, "admin")
 
     @discord.ui.button(label="📊 Баллы", style=discord.ButtonStyle.blurple)
     async def points_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -311,19 +318,26 @@ class HelpView(discord.ui.View):
     async def misc_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.update_embed(interaction, "misc")
 
+    @discord.ui.button(label="🛡️ Админ-панель", style=discord.ButtonStyle.red)
+    async def admin_category_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(title="🛡️ Админ-панель: категории", color=discord.Color.red())
+        embed.description = (
+            "⚙️ **Управление баллами** — `?addpoints`, `?removepoints`, `?undo`\n"
+            "📉 **Штрафы** — `?editfine`, `?cancel_fine`, `?allfines`\n"
+            "🏦 **Банк** — `?bankadd`, `?bankspend`, `?bankhistory`\n"
+            "\nВыберите нужную категорию слева, чтобы посмотреть команды."
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+
 def get_help_embed(category: str) -> discord.Embed:
     embed = discord.Embed(title="🛠️ Справка: категории команд", color=discord.Color.blue())
 
     if category == "admin":
-        embed.title = "⚙️ Админские команды"
+        embed.title = "🛡️ Админ-панель: категории"
         embed.description = (
-            "`?addpoints @юзер сумма [причина]`\n"
-            "`?removepoints @юзер сумма [причина]`\n"
-            "`?undo @юзер кол-во`\n"
-            "`?monthlytop` — начислить бонусы\n"
-            "`?editfine id сумма тип дата причина`\n"
-            "`?cancel_fine id`\n"
-            "`?allfines` — список штрафов"
+            "⚙️ **Управление баллами** — `?addpoints`, `?removepoints`, `?undo`\n"
+            "📉 **Штрафы** — `?editfine`, `?cancel_fine`, `?allfines`\n"
+            "🏦 **Банк** — `?bankadd`, `?bankspend`, `?bankhistory`"
         )
 
     elif category == "points":
@@ -357,9 +371,14 @@ def get_help_embed(category: str) -> discord.Embed:
 
     elif category == "misc":
         embed.title = "🧪 Прочее"
-        embed.description = "`?ping` — отклик\n`?helpy` — это меню"
+        embed.description = (
+            "`?ping` — отклик\n"
+            "`?bank` — баланс банка\n"
+            "`?helpy` — это меню"
+        )
 
     return embed
+
 
 class LeaderboardView(discord.ui.View):
     def __init__(self, ctx, mode="all", page=1):
