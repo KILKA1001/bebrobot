@@ -281,17 +281,6 @@ class HelpView(discord.ui.View):
         self.message = None
         self.user = user
 
-        # Основные кнопки
-        self.add_item(self.points_btn)
-        self.add_item(self.roles_btn)
-        self.add_item(self.top_btn)
-        self.add_item(self.fines_btn)
-        self.add_item(self.misc_btn)
-
-        # Кнопка админ-панели только для админов
-        if user.guild_permissions.administrator:
-            self.add_item(self.admin_category_btn)
-
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if not self.message:
             self.message = interaction.message
@@ -323,6 +312,9 @@ class HelpView(discord.ui.View):
 
     @discord.ui.button(label="🛡️ Админ-панель", style=discord.ButtonStyle.red, row=1, custom_id="help_adminpanel")
     async def admin_category_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Только для администраторов", ephemeral=True)
+            return
         embed = discord.Embed(title="🛡️ Админ-панель: категории", color=discord.Color.red())
         embed.description = (
             "⚙️ **Управление баллами** — `?addpoints`, `?removepoints`, `?undo`\n"
