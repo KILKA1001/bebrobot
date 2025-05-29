@@ -331,7 +331,7 @@ class AllFinesView(discord.ui.View):
         )
         for fine in page_fines:
             user = self.ctx.guild.get_member(fine["user_id"])
-            name = user.mention if user else f"<@{fine['user_id']}>"
+            name = user.display_name if user else f"<@{fine['user_id']}>"
             rest = fine["amount"] - fine.get("paid_amount", 0)
             due = fine.get("due_date", "N/A")[:10]
             status = "⚠️ Просрочен" if fine.get("is_overdue") else "⏳ Активен"
