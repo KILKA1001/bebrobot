@@ -295,10 +295,6 @@ class HelpView(discord.ui.View):
     async def roles_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.update_embed(interaction, "roles")
 
-    @discord.ui.button(label="📆 Топ", style=discord.ButtonStyle.gray, row=0)
-    async def top_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.update_embed(interaction, "top")
-
     @discord.ui.button(label="📉 Штрафы", style=discord.ButtonStyle.gray, row=1)
     async def fines_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.update_embed(interaction, "fines")
