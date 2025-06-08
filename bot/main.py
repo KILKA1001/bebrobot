@@ -15,6 +15,7 @@ import pytz
 from bot.data import db
 from keep_alive import keep_alive
 from bot.commands import bot as command_bot
+import bot.commands.tournament
 from bot.commands import run_monthly_top
 from datetime import datetime
 from bot.systems import fines_logic
@@ -50,7 +51,12 @@ async def on_ready():
     print(f'Серверов: {len(bot.guilds)}')
 
     db.load_data()
-    
+
+    asyncio.create_task(fines_logic.check_overdue_fines(bot))
+    asyncio.create_task(fines_logic.debt_repayment_loop(bot))
+    asyncio.create_task(fines_logic.reminder_loop(bot))
+    asyncio.create_task(fines_logic.fines_summary_loop(bot))
+
     asyncio.create_task(fines_logic.check_overdue_fines(bot))
     asyncio.create_task(fines_logic.debt_repayment_loop(bot))
     asyncio.create_task(fines_logic.reminder_loop(bot))
