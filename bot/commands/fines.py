@@ -1,12 +1,17 @@
 import discord
 from discord.ext import commands
 from datetime import datetime, timedelta, timezone
-from bot.data import db
-from bot.systems.fines_logic import build_fine_embed, FineView, FinePaginator
-from bot.systems.fines_logic import AllFinesView
 from typing import Optional
-from bot.systems.fines_logic import get_fine_leaders
 
+from bot.data import db
+from bot.systems.fines_logic import (
+    build_fine_embed,
+    build_fine_detail_embed,
+    FineView,
+    FinePaginator,
+    AllFinesView,
+    get_fine_leaders
+)
 ALLOWED_ROLES = []  # 👉 сюда можно вписать ID ролей, кому разрешено выдавать штрафы
 
 def has_permission(ctx):
@@ -109,7 +114,6 @@ async def finedetails(ctx, fine_id: int):
         await ctx.send("❌ Вы не можете просматривать чужие штрафы.")
         return
 
-    from bot.systems.fines_logic import build_fine_detail_embed
     embed = build_fine_detail_embed(fine)
     await ctx.send(embed=embed)
 
@@ -241,4 +245,3 @@ async def topfines(ctx):
         )
 
     await ctx.send(embed=embed)
-
