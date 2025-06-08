@@ -1,9 +1,10 @@
+
 import discord
 from discord.ext import commands
 from typing import Optional
 
 from bot.systems.tournament_logic import create_tournament as create_tournament_logic, Tournament
-from bot.systems.tournament_db import (
+from bot.data.tournament_db import (
     create_tournament as db_create_tournament,
     add_participant as db_add_participant,
     list_participants as db_list_participants,
@@ -13,10 +14,11 @@ from bot.systems.tournament_db import (
     save_tournament_result as db_save_tournament_result
 )
 
+# Import the bot instance from base.py instead of creating a new one
+from bot.commands.base import bot
+
 # В памяти храним экземпляры турниров
 active_tournaments: dict[int, Tournament] = {}
-
-bot = commands.Bot(command_prefix='?', intents=commands.Intents.all())
 
 @bot.command(name='createtournament')
 @commands.has_permissions(administrator=True)
@@ -116,5 +118,3 @@ async def tournamentstatus(ctx, tournament_id: int, round_number: Optional[int] 
                 inline=False
             )
         await ctx.send(embed=embed)
-
-# Регистрация этой команды в основном боте происходит при импорте файла в main.py или командах_bot
