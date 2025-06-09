@@ -215,7 +215,7 @@ style=discord.ButtonStyle.secondary,
             style=discord.ButtonStyle.success,
             custom_id="confirm"
         )
-        btn_confirm.callback = self.on_confirm  # type: ignore
+        btn_confirm.callback = self.on_confirm  
         self.add_item(btn_confirm)
 
         # Кнопка «Отменить»
@@ -224,7 +224,7 @@ style=discord.ButtonStyle.secondary,
             style=discord.ButtonStyle.danger,
             custom_id="cancel"
         )
-        btn_cancel.callback = self.on_cancel # type: ignore
+        btn_cancel.callback = self.on_cancel 
         self.add_item(btn_cancel)
 
     async def interaction_check(self, inter: discord.Interaction) -> bool:
@@ -273,8 +273,7 @@ style=discord.ButtonStyle.secondary,
         self._build_confirm_buttons()
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @ui.button(custom_id="confirm", row=2)
-    async def on_confirm(self, interaction: discord.Interaction, button: ui.Button):
+    async def on_confirm(self, interaction: discord.Interaction):
         # Убедимся, что пользователь действительно выбрал и тип, и размер
         if self.t_type is None or self.size is None:
             # На случай, если кто-то умудрился нажать «Подтвердить» раньше времени
@@ -335,8 +334,7 @@ style=discord.ButtonStyle.secondary,
         # в самом крайнем случае используем interaction.response
             await interaction.response.send_message(embed=announcement, view=reg_view)
         
-    @ui.button(custom_id="cancel", row=2)
-    async def on_cancel(self, interaction: discord.Interaction, button: ui.Button):
+    async def on_cancel(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="❌ Создание турнира отменено",
             color=discord.Color.red()
