@@ -27,13 +27,12 @@ def get_player_by_id(player_id: int) -> Optional[dict]:
     return res.data
 
 def get_player_by_tg(tg_username: str) -> Optional[dict]:
-    """Возвращает запись игрока по Telegram-нику."""
     res = supabase.table("players") \
         .select("*") \
         .eq("tg_username", tg_username) \
-        .single() \
+        .limit(1) \
         .execute()
-    return res.data
+    return res.data[0] if res.data else None
 
 def list_players(page: int = 1, per_page: int = 5) -> Tuple[List[dict], int]:
     """
