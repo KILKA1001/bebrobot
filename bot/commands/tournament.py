@@ -74,7 +74,7 @@ async def deletetournament(ctx, tournament_id: int):
 async def regplayer(ctx: commands.Context, player_id: int, tournament_id: int):
     await handle_regplayer(ctx, player_id, tournament_id)
 
-@bot.command(name="unregister")
+@bot.command(name="tunregister")
 @commands.has_permissions(administrator=True)
-async def unregister(ctx: commands.Context, identifier: str, tournament_id: int):
+async def tournament_unregister(ctx: commands.Context, identifier: str, tournament_id: int):
     await handle_unregister(ctx, identifier, tournament_id)
