@@ -175,8 +175,25 @@ class TournamentSetupView(ui.View):
         
     def _build_type_buttons(self):
         self.clear_items()
-        self.add_item(ui.Button(label="Дуэльный 1×1",  style=discord.ButtonStyle.primary, custom_id="type_duel"))
-        self.add_item(ui.Button(label="Командный 3×3", style=discord.ButtonStyle.primary, custom_id="type_team"))
+        self.clear_items()
+        # создаём кнопку Дуэль
+        btn1 = ui.Button(
+            label="Дуэльный 1×1",
+            style=discord.ButtonStyle.primary,
+            custom_id="type_duel"
+        )
+        # привязываем её колбэк
+        btn1.callback = self.on_type_duel
+        self.add_item(btn1)
+
+        # создаём кнопку Командный
+        btn2 = ui.Button(
+            label="Командный 3×3",
+            style=discord.ButtonStyle.primary,
+            custom_id="type_team"
+        )
+        btn2.callback = self.on_type_team
+        self.add_item(btn2)
 
     def _build_size_buttons(self):
         self.clear_items()
@@ -199,8 +216,7 @@ style=discord.ButtonStyle.secondary,
         # Только автор команды может управлять этим View
         return inter.user.id == self.author_id
 
-    @ui.button(custom_id="type_duel", row=0)
-    async def on_type_duel(self, interaction: discord.Interaction, button: ui.Button):
+    async def on_type_duel(self, interaction: discord.Interaction):
         self.t_type = "duel"
         embed = discord.Embed(
             title="Создание турнира",
@@ -210,8 +226,7 @@ style=discord.ButtonStyle.secondary,
         self._build_size_buttons()
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @ui.button(custom_id="type_team", row=0)
-    async def on_type_team(self, interaction: discord.Interaction, button: ui.Button):
+    async def on_type_team(self, interaction: discord.Interaction):
         self.t_type = "team"
         embed = discord.Embed(
             title="Создание турнира",
