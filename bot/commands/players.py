@@ -4,12 +4,16 @@ from typing import Optional
 
 from bot.systems.players_logic import (
     register_player,
-    register_player_by_id,
     list_players_view,
     edit_player,
-    delete_player_cmd
-    unregister_player,
-    list_player_logs_view
+    delete_player_cmd,
+    list_player_logs_view,
+    unregister_player
+)
+from bot.data.players_db import (
+    get_player_by_id,
+    create_player,
+    add_player_to_tournament,
 )
 
 from bot.commands.base import bot
@@ -18,34 +22,26 @@ from bot.commands.base import bot
 
 @bot.command(name="register")
 @commands.has_permissions(administrator=True)
-async def register(ctx: commands.Context, *args: str):
-    ok = add_player_participant(tournament_id, player_id)
+async def register_player_by_id(
+    ctx: commands.Context,
+    player_id: int,
+    tournament_id: int
+) -> None:
     """
-    Создание нового игрока или привязка существующего:
-    ?register <nick> <@tg_username>
-    или
-    ?register <player_id> <tournament_id>
+    Берёт уже существующего игрока и связывает его с турниром через add_player_to_tournament.
     """
-    if len(args) == 2:
-        # новый игрок
-        nick, tg = args
-        await register_player(ctx, nick, tg)
-    elif len(args) == 2 and args[0].isdigit():
-        # повторная регистрация в турнире
-        player_id = int(args[0])
-        try:
-            tournament_id = int(args[1])
-        except ValueError:
-            await ctx.send("❌ Неверный синтаксис: `?register <player_id> <tournament_id>`.")
-            return
-        await register_player_by_id(ctx, player_id, tournament_id)
-    else:
-        await ctx.send(
-            "❌ Неверный синтаксис. Используйте:\n"
-            "`?register <nick> <@tg_username>` — добавить нового игрока\n"
-            "`?register <player_id> <tournament_id>` — зарегистрировать существующего в турнире"
-        )
+    player = get_player_by_id(player_id)
+    if not player:
+        await ctx.send("❌ Игрок с таким ID не найден.")
+        return
 
+    ok = add_player_to_tournament(player_id, tournament_id)
+    if ok:
+        await ctx.send(
+            f"✅ Игрок #{player_id} (`{player['nick']}`) зарегистрирован в турнире #{tournament_id}."
+        )
+    else:
+        await ctx.send("❌ Не удалось зарегистрировать игрока в турнире.")
 # ─── Список игроков ──────────────────────────────────────────────────────────
 
 @bot.command(name="listplayers")
@@ -55,7 +51,7 @@ async def listplayers(ctx: commands.Context, page: Optional[int] = 1):
     ?listplayers [page]
     """
     try:
-        page_num = int(page)
+        page_num = page if page is not None else 1
     except (TypeError, ValueError):
         page_num = 1
     await list_players_view(ctx, page_num)
@@ -99,7 +95,7 @@ async def playerlogs(ctx: commands.Context, player_id: int, page: Optional[int] 
     Показывает историю правок данных игрока.
     """
     try:
-        pg = int(page)
+        pg = page if page is not None else 1
     except (TypeError, ValueError):
         pg = 1
     await list_player_logs_view(ctx, player_id, pg)
