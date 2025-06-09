@@ -27,14 +27,14 @@ from bot.commands.base import bot
 # В памяти храним экземпляры турниров
 active_tournaments: dict[int, Tournament] = {}
 
-@commands.command(name="createtournament")
+@bot.command(name="createtournament")
 @commands.has_permissions(administrator=True)
 async def createtournament(ctx):
     """Запустить создание нового турнира через мультишаговый UI."""
     view = TournamentSetupView(ctx.author.id)
     await ctx.send(embed=view.initial_embed(), view=view)
     
-@commands.command(name="jointournament")
+@bot.command(name="jointournament")
 async def jointournament(ctx: commands.Context, tournament_id: int):
     await handle_jointournament(ctx, tournament_id)
 
@@ -44,37 +44,37 @@ async def startround(ctx, tournament_id: int):
     """Начать новый раунд турнира."""
     await start_round(ctx, tournament_id)
     
-@commands.command(name="reportresult")
+@bot.command(name="reportresult")
 async def reportresult(ctx, match_id: int, winner: int):
     """Сообщить результат матча."""
     await report_result(ctx, match_id, winner)
 
-@commands.command(name="tournamentstatus")
+@bot.command(name="tournamentstatus")
 async def tournamentstatus(ctx, tournament_id: int, round_number: Optional[int] = None):
     """Показать статус турнира или конкретного раунда."""
     await show_status(ctx, tournament_id, round_number)
 
-@commands.command(name="endtournament")
+@bot.command(name="endtournament")
 @commands.has_permissions(administrator=True)
 async def endtournament(ctx, tid: int, first: int, second: int, third: Optional[int] = None):
     await end_tournament(ctx, tid, first, second, third)
 
-@commands.command(name="tournamenthistory")
+@bot.command(name="tournamenthistory")
 async def tournamenthistory(ctx, limit: int = 10):
     """Показать историю последних турниров."""
     await show_history(ctx, limit)
 
-@commands.command(name="deletetournament")
+@bot.command(name="deletetournament")
 @commands.has_permissions(administrator=True)
 async def deletetournament(ctx, tournament_id: int):
     """Удалить турнир и все связанные с ним записи."""
 
-@commands.command(name="regplayer")
+@bot.command(name="regplayer")
 @commands.has_permissions(administrator=True)
 async def regplayer(ctx: commands.Context, player_id: int, tournament_id: int):
     await handle_regplayer(ctx, player_id, tournament_id)
 
-@commands.command(name="unregister")
+@bot.command(name="unregister")
 @commands.has_permissions(administrator=True)
 async def unregister(ctx: commands.Context, identifier: str, tournament_id: int):
     await handle_unregister(ctx, identifier, tournament_id)
