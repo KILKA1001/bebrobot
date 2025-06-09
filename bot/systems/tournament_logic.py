@@ -209,8 +209,23 @@ style=discord.ButtonStyle.secondary,
 
     def _build_confirm_buttons(self):
         self.clear_items()
-        self.add_item(ui.Button(label="✅ Подтвердить", style=discord.ButtonStyle.success, custom_id="confirm"))
-        self.add_item(ui.Button(label="❌ Отменить",   style=discord.ButtonStyle.danger,  custom_id="cancel"))
+        # Кнопка «Подтвердить»
+        btn_confirm = ui.Button(
+            label="✅ Подтвердить",
+            style=discord.ButtonStyle.success,
+            custom_id="confirm"
+        )
+        btn_confirm.callback = self.on_confirm  # type: ignore
+        self.add_item(btn_confirm)
+
+        # Кнопка «Отменить»
+        btn_cancel = ui.Button(
+            label="❌ Отменить",
+            style=discord.ButtonStyle.danger,
+            custom_id="cancel"
+        )
+        btn_cancel.callback = self.on_cancel # type: ignore
+        self.add_item(btn_cancel)
 
     async def interaction_check(self, inter: discord.Interaction) -> bool:
         # Только автор команды может управлять этим View
