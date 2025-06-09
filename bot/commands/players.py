@@ -8,7 +8,8 @@ from bot.systems.players_logic import (
     edit_player,
     delete_player_cmd,
     list_player_logs_view,
-    unregister_player
+    unregister_player,
+    register_player_by_id
 )
 from bot.data.players_db import (
     get_player_by_id,
@@ -22,26 +23,30 @@ from bot.commands.base import bot
 
 @bot.command(name="register")
 @commands.has_permissions(administrator=True)
-async def register_player_by_id(
-    ctx: commands.Context,
-    player_id: int,
-    tournament_id: int
-) -> None:
+async def register(ctx: commands.Context, *args: str):
     """
-    Берёт уже существующего игрока и связывает его с турниром через add_player_to_tournament.
+    ?register <nick> <@tg_username>
+    или
+    ?register <player_id> <tournament_id>
     """
-    player = get_player_by_id(player_id)
-    if not player:
-        await ctx.send("❌ Игрок с таким ID не найден.")
+    if len(args) != 2:
+        await ctx.send(
+            "❌ Неверный синтаксис. Используйте:\n"
+            "`?register <nick> <@tg_username>` — добавить нового игрока\n"
+            "`?register <player_id> <tournament_id>` — зарегистрировать существующего в турнире"
+        )
         return
 
-    ok = add_player_to_tournament(player_id, tournament_id)
-    if ok:
-        await ctx.send(
-            f"✅ Игрок #{player_id} (`{player['nick']}`) зарегистрирован в турнире #{tournament_id}."
-        )
-    else:
-        await ctx.send("❌ Не удалось зарегистрировать игрока в турнире.")
+    # оба аргумента — числа → регистрация по ID
+    if args[0].isdigit() and args[1].isdigit():
+        player_id = int(args[0])
+        tournament_id = int(args[1])
+        await register_player_by_id(ctx, player_id, tournament_id)
+        return
+
+    # иначе считаем это ник и Telegram
+    nick, tg = args
+    await register_player(ctx, nick, tg)
 # ─── Список игроков ──────────────────────────────────────────────────────────
 
 @bot.command(name="listplayers")
