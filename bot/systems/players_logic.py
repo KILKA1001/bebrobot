@@ -97,7 +97,7 @@ async def list_players_view(
 
     view = ui.View(timeout=120)
 
-    # Кнопки копирования Telegram-ников
+    # Кнопки для копирования Telegram-ника
     for p in rows:
         btn = ui.Button(
             label=f"📋 {p['id']}",
@@ -106,28 +106,57 @@ async def list_players_view(
         )
         async def _copy(interaction: discord.Interaction, tg_username: str):
             await interaction.response.send_message(
-                f"Telegram-ник игрока: {tg_username}", ephemeral=True,
+                f"Telegram-ник игрока: {tg_username}", ephemeral=True
             )
         btn.callback = partial(_copy, tg_username=p['tg_username'])
         view.add_item(btn)
 
     # Навигационные кнопки
     prev_btn = ui.Button(label="◀️", style=discord.ButtonStyle.primary)
-    async def go_prev(interaction: discord.Interaction):
-        await interaction.response.edit_message(view=None)
-        await list_players_view(ctx, max(1, page-1))
-    prev_btn.callback = go_prev
-    view.add_item(prev_btn)
-
     next_btn = ui.Button(label="▶️", style=discord.ButtonStyle.primary)
+
+    # Колбэк «назад»
+    async def go_prev(interaction: discord.Interaction):
+        new_page = max(1, page - 1)
+        new_rows, new_pages = list_players(new_page, per_page)
+        new_embed = Embed(
+            title=f"📋 Список игроков — страница {new_page}/{new_pages}",
+            color=discord.Color.blue()
+        )
+        for p2 in new_rows:
+            new_embed.add_field(
+                name=f"#{p2['id']} • {p2['nick']}",
+                value=p2['tg_username'],
+                inline=False
+            )
+        prev_btn.disabled = new_page <= 1
+        next_btn.disabled = new_page >= new_pages
+        await interaction.response.edit_message(embed=new_embed, view=view)
+
+    # Колбэк «вперед»
     async def go_next(interaction: discord.Interaction):
-        await interaction.response.edit_message(view=None)
-        await list_players_view(ctx, min(pages, page+1))
+        new_page = min(pages, page + 1)
+        new_rows, new_pages = list_players(new_page, per_page)
+        new_embed = Embed(
+            title=f"📋 Список игроков — страница {new_page}/{new_pages}",
+            color=discord.Color.blue()
+        )
+        for p2 in new_rows:
+            new_embed.add_field(
+                name=f"#{p2['id']} • {p2['nick']}",
+                value=p2['tg_username'],
+                inline=False
+            )
+        prev_btn.disabled = new_page <= 1
+        next_btn.disabled = new_page >= new_pages
+        await interaction.response.edit_message(embed=new_embed, view=view)
+
+    prev_btn.callback = go_prev
     next_btn.callback = go_next
+    view.add_item(prev_btn)
     view.add_item(next_btn)
 
     await ctx.send(embed=embed, view=view)
-
 
 async def edit_player(
     ctx: commands.Context,
