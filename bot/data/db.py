@@ -586,5 +586,89 @@ class Database:
             print(f"Ошибка записи операции в банк: {e}")
             return False
 
+    def update_tickets(self, user_id: int, ticket_type: str, amount: int) -> bool:
+        """
+    Обновляет количество билетов у пользователя.
+    ticket_type: 'normal' | 'gold'
+        """
+        if ticket_type not in ("normal", "gold") or not self.supabase:
+            return False
+
+        field = f"tickets_{ticket_type}"
+        try:
+            # Получаем текущее значение
+            response = self.supabase.table("scores").select(field).eq("user_id", user_id).execute()
+            current = int(response.data[0][field]) if response.data else 0
+            new_value = max(current + amount, 0)
+
+            # Обновляем значение
+            self.supabase.table("scores").upsert({
+                "user_id": user_id,
+                field: new_value
+            }).execute()
+
+            return True
+        except Exception as e:
+            print(f"Ошибка обновления билетов: {e}")
+            return False
+
+    def log_ticket_action(self, user_id: int, ticket_type: str, amount: int, reason: str, author_id: int):
+        """Логирует изменение билетов в ticket_actions"""
+        try:
+            self.supabase.table("ticket_actions").insert({
+            "user_id": user_id,
+            "ticket_type": ticket_type,
+            "amount": amount,
+            "reason": reason,
+            "author_id": author_id
+            }).execute()
+        except Exception as e:
+            print(f"Ошибка логирования тикета: {e}")
+
+    def give_ticket(self, user_id: int, ticket_type: str, amount: int, reason: str, author_id: int) -> bool:
+        """
+        Начисляет билеты и логирует
+        """
+        if self.update_tickets(user_id, ticket_type, amount):
+            self.log_ticket_action(user_id, ticket_type, amount, reason, author_id)
+            return True
+        return False
+
+    def remove_ticket(self, user_id: int, ticket_type: str, amount: int, reason: str, author_id: int) -> bool:
+        """
+        Снимает билеты и логирует
+        """
+        if self.update_tickets(user_id, ticket_type, -amount):
+            self.log_ticket_action(user_id, ticket_type, -amount, reason, author_id)
+            return True
+        return False
+
+    def transfer_user_data(self, old_id: int, new_id: int) -> bool:
+        """
+        Переносит все данные (баллы, билеты, логи) от old_id → new_id.
+        """
+        try:
+            # Перенос записи в scores
+            score = self.supabase.table("scores").select("*").eq("user_id", old_id).execute()
+            if score.data:
+                data = score.data[0]
+                self.supabase.table("scores").upsert({
+                    "user_id": new_id,
+                    "points": data.get("points", 0),
+                    "tickets_normal": data.get("tickets_normal", 0),
+                    "tickets_gold": data.get("tickets_gold", 0)
+                }).execute()
+                self.supabase.table("scores").delete().eq("user_id", old_id).execute()
+
+            # Перенос логов
+            self.supabase.table("actions").update({"user_id": new_id}).eq("user_id", old_id).execute()
+            self.supabase.table("ticket_actions").update({"user_id": new_id}).eq("user_id", old_id).execute()
+
+            self.load_data()
+            return True
+        except Exception as e:
+            print(f"Ошибка переноса пользователя: {e}")
+            return False
+
 # Глобальный экземпляр
 db = Database()

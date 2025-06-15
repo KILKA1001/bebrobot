@@ -21,8 +21,11 @@ from bot.systems.core_logic import (
     run_monthly_top,
     get_help_embed,
     HelpView,
-    LeaderboardView
+    LeaderboardView,
+    transfer_data_logic,
+    build_balance_embed
 )
+
 
 # Константы
 COMMAND_PREFIX = '?'
@@ -88,38 +91,6 @@ async def remove_points(ctx, member: discord.Member, points: str, *, reason: str
         await ctx.send(embed=embed)
     except ValueError:
         await ctx.send("Ошибка: введите корректное число больше 0")
-
-@bot.command(name='points')
-async def points(ctx, member: Optional[discord.Member] = None):
-    member = member or ctx.author
-    if not member:
-        await ctx.send("Не удалось определить пользователя. Пожалуйста, попробуйте еще раз.")
-        return
-    user_id = member.id
-    user_points = db.scores.get(user_id, 0)
-    user_roles = [role for role in member.roles if role.id in ROLE_THRESHOLDS]
-    role_names = ', '.join(role.name for role in user_roles) if user_roles else 'Нет роли'
-    sorted_scores = sorted(db.scores.items(), key=lambda x: x[1], reverse=True)
-    place = next((i for i, (uid, _) in enumerate(sorted_scores, 1) if uid == user_id), None)
-    embed = discord.Embed(title=f"Баллы пользователя {member.display_name}", color=discord.Color.blue())
-    embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
-    embed.add_field(name="Баллы", value=f"{user_points}", inline=True)
-    embed.add_field(name="Роли", value=role_names, inline=True)
-    embed.add_field(name="Место в топе", value=f"{place}" if place else "Не в топе", inline=False)
-    top_bonus_count = 0
-    top_bonus_sum = 0.0
-    for action in db.history.get(user_id, []):
-        if action.get("reason", "").startswith("Бонус за "):
-            top_bonus_count += 1
-            top_bonus_sum += action.get("points", 0)
-
-    if top_bonus_count:
-        embed.add_field(
-            name="🏆 Бонусы за топ месяца",
-            value=f"{top_bonus_count} наград, {top_bonus_sum:.2f} баллов",
-            inline=False
-        )
-    await ctx.send(embed=embed)
 
 @bot.command(name='leaderboard')
 async def leaderboard(ctx):
@@ -308,3 +279,51 @@ async def bank_history(ctx):
         await ctx.send(embed=embed)
     except Exception as e:
         await ctx.send(f"❌ Ошибка получения истории: {str(e)}")
+
+def build_balance_embed(member: discord.Member) -> discord.Embed:
+    user_id = member.id
+    points = db.scores.get(user_id, 0)
+    roles = [role for role in member.roles if role.id in ROLE_THRESHOLDS]
+    role_names = ', '.join(role.name for role in roles) if roles else 'Нет роли'
+
+    sorted_scores = sorted(db.scores.items(), key=lambda x: x[1], reverse=True)
+    place = next((i for i, (uid, _) in enumerate(sorted_scores, 1) if uid == user_id), None)
+
+    # Загружаем билеты
+    try:
+        result = db.supabase.table("scores").select("tickets_normal, tickets_gold").eq("user_id", user_id).single().execute()
+        data = result.data or {}
+    except Exception:
+        data = {}
+
+    normal = data.get("tickets_normal", 0)
+    gold = data.get("tickets_gold", 0)
+
+    embed = discord.Embed(
+        title=f"Баланс пользователя {member.display_name}",
+        color=discord.Color.blue()
+    )
+    embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
+
+    embed.add_field(name="🎯 Баллы", value=f"{points}", inline=True)
+    embed.add_field(name="🎟 Обычные билеты", value=f"{normal}", inline=True)
+    embed.add_field(name="🪙 Золотые билеты", value=f"{gold}", inline=True)
+    embed.add_field(name="🏅 Роли", value=role_names, inline=False)
+    embed.add_field(name="📊 Место в топе", value=f"{place}" if place else "Не в топе", inline=False)
+
+    # ➕ Добавим бонусы за топ месяца
+    top_bonus_count = 0
+    top_bonus_sum = 0.0
+    for action in db.history.get(user_id, []):
+        if action.get("reason", "").startswith("Бонус за "):
+            top_bonus_count += 1
+            top_bonus_sum += action.get("points", 0)
+
+    if top_bonus_count:
+        embed.add_field(
+            name="🏆 Бонусы за топ месяца",
+            value=f"{top_bonus_count} наград, {top_bonus_sum:.2f} баллов",
+            inline=False
+        )
+
+    return embed

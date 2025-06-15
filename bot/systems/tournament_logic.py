@@ -21,6 +21,8 @@ from bot.data.tournament_db import (
     remove_discord_participant as db_remove_discord_participant,
     remove_player_from_tournament,
 )
+from bot.systems import tournament_rewards_logic as rewards
+from bot.systems.tournament_bank_logic import validate_and_save_bank
 
 
 
@@ -79,6 +81,8 @@ class Match:
         self.map_id = map_id
         self.result: Optional[int] = None
         self.match_id: Optional[int] = None
+        self.bank_type: Optional[int] = None
+        self.manual_amount: Optional[float] = None
 
 class Tournament:
     """
@@ -94,7 +98,6 @@ class Tournament:
         self.maps_by_mode = maps_by_mode
         self.current_round = 1
         self.matches: Dict[int, List[Match]] = {}
-        self.reward: Optional[str] = None
 
     def generate_round(self) -> List[Match]:
         random.shuffle(self.participants)
@@ -154,7 +157,6 @@ class TournamentSetupView(ui.View):
         self.author_id = author_id
         self.t_type: Optional[str] = None
         self.size:   Optional[int] = None
-        self.reward: Optional[str] = None
         self._build_type_buttons()
 
     @staticmethod
@@ -207,6 +209,21 @@ style=discord.ButtonStyle.secondary,
             btn.callback = self.on_size
             self.add_item(btn)
 
+    def _build_bank_type_selector(self):
+        self.clear_items()
+
+        select = ui.Select(
+            placeholder="Выберите источник банка наград",
+            options=[
+                discord.SelectOption(label="Тип 1 — Пользователь", value="1", description="Пользователь платит 50% (мин. 15 баллов)"),
+                discord.SelectOption(label="Тип 2 — Смешанный", value="2", description="25% платит пользователь, 75% — банк Бебр"),
+                discord.SelectOption(label="Тип 3 — Клуб", value="3", description="100% из банка Бебр"),
+            ],
+            custom_id="bank_type"
+        )
+        select.callback = self.on_select_bank_type
+        self.add_item(select)
+
     def _build_confirm_buttons(self):
         self.clear_items()
         # Кнопка «Подтвердить»
@@ -251,6 +268,24 @@ style=discord.ButtonStyle.secondary,
         self._build_size_buttons()
         await interaction.response.edit_message(embed=embed, view=self)
 
+    async def on_select_bank_type(self, interaction: discord.Interaction):
+        data = interaction.data or {}
+        selected = data.get("values", ["1"])[0]
+        self.bank_type = int(selected)
+
+        embed = discord.Embed(
+            title="Источник банка наград выбран",
+            description=f"Вы выбрали тип: **{self.bank_type}**",
+            color=discord.Color.blue()
+        )
+
+        # Тип 1 требует сумму
+        if self.bank_type == 1:
+            embed.add_field(name="⚠️ Нужно ввести сумму", value="Мин. 15 баллов", inline=False)
+            await interaction.response.send_modal(BankAmountModal(self))
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
     async def on_size(self, interaction: discord.Interaction):
         # достаём custom_id из payload и парсим число
         data = interaction.data or {}
@@ -271,6 +306,7 @@ style=discord.ButtonStyle.secondary,
             color=discord.Color.gold()
         )
         self._build_confirm_buttons()
+        self._build_bank_type_selector()
         await interaction.response.edit_message(embed=embed, view=self)
 
     async def on_confirm(self, interaction: discord.Interaction):
@@ -285,8 +321,16 @@ style=discord.ButtonStyle.secondary,
 
         # Теперь тип и размер — точно str и int
         tour_id = create_tournament_record(self.t_type, self.size)
+        ok, msg = validate_and_save_bank(tour_id, self.bank_type or 1, self.manual_amount)
+        if not ok:
+            await interaction.response.send_message(msg, ephemeral=True)
+        return
         typetxt = "Дуэльный 1×1" if self.t_type == "duel" else "Командный 3×3"
-        prize_text = self.reward or "Будет объявлен позже"
+        prize_text = {
+            1: f"🏅 Тип 1 — {self.manual_amount:.2f} баллов от пользователя",
+            2: "🥈 Тип 2 — 30 баллов (25% платит игрок)",
+            3: "🥇 Тип 3 — 30 баллов (из банка Бебр)"
+        }.get(self.bank_type or 1, "❓ Неизвестно")
         embed = discord.Embed(
             title=f"✅ Турнир #{tour_id} создан!",
             description=(
@@ -312,12 +356,7 @@ style=discord.ButtonStyle.secondary,
         # (можно добавить параметр reward в конструктор, либо оставить пустым)
 
         # прикрепляем нашу RegistrationView
-        reg_view = RegistrationView(
-            tournament_id=tour_id,
-            max_participants=self.size,
-            tour_type=typetxt,
-            reward=prize_text
-        )
+        RegistrationView(tournament_id=tour_id, max_participants=self.size, tour_type=typetxt)
         # отправляем в тот же канал, где был setup
         guild = interaction.guild
         if guild:
@@ -627,17 +666,70 @@ async def end_tournament(
 ) -> None:
     """
     Завершает турнир:
-     1) Сохраняет итоговые места в БД
-     2) Помечает турнир как finished
-     3) Отправляет уведомление
+     1) Формирует банк турнира (тип 1 — временно)
+     2) Списывает баллы с игрока/банка
+     3) Начисляет награды
+     4) Сохраняет в базу
     """
+
+    # Получаем тип банка и сумму
+    bank_row = supabase.table("tournaments").select("bank_type, manual_amount").eq("id", tournament_id).single().execute()
+    bank_data = bank_row.data or {}
+
+    bank_type = bank_data.get("bank_type", 1)
+    manual_amount = bank_data.get("manual_amount", 20.0)
+
+    user_balance = db.scores.get(ctx.author.id, 0.0)
+
+    try:
+        bank_total, user_part, bank_part = rewards.calculate_bank(bank_type, user_balance, manual_amount)
+    except ValueError as e:
+        await ctx.send(f"❌ Ошибка: {e}")
+        return
+
+    # 🔹 Списание с баланса / банка
+    success = rewards.charge_bank_contribution(
+        user_id=ctx.author.id,
+        user_amount=user_part,
+        bank_amount=bank_part,
+        reason=f"Формирование банка турнира #{tournament_id}"
+    )
+    if not success:
+        await ctx.send("❌ Недостаточно баллов у пользователя или ошибка банка.")
+        return
+
+    # 🔹 Получаем участников турнира
+    all_participants = db_list_participants(tournament_id)
+
+    def resolve_team(place_id: int):
+        return [
+            p["discord_user_id"] or p["player_id"]
+            for p in all_participants
+            if (p["discord_user_id"] == place_id or p["player_id"] == place_id)
+        ]
+
+    first_team = resolve_team(first)
+    second_team = resolve_team(second)
+
+    # 🔹 Начисление наград
+    rewards.distribute_rewards(
+        tournament_id=tournament_id,
+        bank_total=bank_total,
+        first_team_ids=first_team,
+        second_team_ids=second_team,
+        author_id=ctx.author.id
+    )
+
+    # 🔹 Обновляем статус и сохраняем результат
     ok1 = db_save_tournament_result(tournament_id, first, second, third)
     ok2 = db_update_tournament_status(tournament_id, "finished")
+
     if ok1 and ok2:
         await ctx.send(
-            f"🏁 Турнир #{tournament_id} завершён:\n"
-            f"🥇 {first}\n"
-            f"🥈 {second}" + (f"\n🥉 {third}" if third is not None else "")
+            f"🏁 Турнир #{tournament_id} завершён и награды выданы:\n"
+            f"🥇 {first} (x{len(first_team)})\n"
+            f"🥈 {second} (x{len(second_team)})" +
+            (f"\n🥉 {third}" if third is not None else "")
         )
     else:
         await ctx.send("❌ Не удалось завершить турнир. Проверьте ID и повторите.")
@@ -790,12 +882,11 @@ async def show_history(ctx: commands.Context, limit: int = 10) -> None:
     await ctx.send(embed=embed)
 
 class RegistrationView(ui.View):
-    def __init__(self, tournament_id: int, max_participants: int, tour_type: Optional[str] = None, reward: Optional[str] = None):
+    def __init__(self, tournament_id: int, max_participants: int, tour_type: Optional[str] = None):
         super().__init__(timeout=None)
         self.tid = tournament_id
         self.max = max_participants
         self.tour_type = tour_type
-        self.reward = reward
         self._build_button()
 
     def _build_button(self):
@@ -879,3 +970,20 @@ async def handle_unregister(ctx: commands.Context, identifier: str, tournament_i
     if not ok:
         return await ctx.send("❌ Не удалось снять с турнира (возможно, нет в списке).")
     await ctx.send(f"✅ {name} удалён из турнира #{tournament_id}.")
+
+class BankAmountModal(ui.Modal, title="Введите сумму банка"):
+    amount = ui.TextInput(label="Сумма (минимум 15)", placeholder="20", required=True)
+
+    def __init__(self, view: TournamentSetupView):
+        super().__init__()
+        self.view = view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            value = float(self.amount.value.replace(",", "."))
+            if value < 15:
+                raise ValueError("Слишком мало")
+            self.view.manual_amount = value
+            await interaction.response.send_message(f"✅ Сумма банка установлена: **{value:.2f}**", ephemeral=True)
+        except Exception:
+            await interaction.response.send_message("❌ Ошибка: введите корректное число (мин. 15)", ephemeral=True)

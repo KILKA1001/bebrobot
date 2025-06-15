@@ -181,3 +181,15 @@ def remove_discord_participant(tournament_id: int, discord_user_id: int) -> bool
         .execute()
     # res.data — это список удалённых строк, пустой если ничего не удалено
     return bool(res.data)
+
+def set_bank_type(tournament_id: int, bank_type: int, manual_amount: Optional[float] = None) -> bool:
+    """Устанавливает тип банка и сумму (если задана)"""
+    data = {"bank_type": bank_type}
+    if manual_amount is not None:
+        data["manual_amount"] = manual_amount
+
+    res = supabase.table("tournaments") \
+        .update(data) \
+        .eq("id", tournament_id) \
+        .execute()
+    return bool(res.data)
