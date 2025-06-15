@@ -324,7 +324,7 @@ style=discord.ButtonStyle.secondary,
         ok, msg = validate_and_save_bank(tour_id, self.bank_type or 1, self.manual_amount)
         if not ok:
             await interaction.response.send_message(msg, ephemeral=True)
-        return
+            return
         typetxt = "Дуэльный 1×1" if self.t_type == "duel" else "Командный 3×3"
         prize_text = {
             1: f"🏅 Тип 1 — {self.manual_amount:.2f} баллов от пользователя",
@@ -356,7 +356,7 @@ style=discord.ButtonStyle.secondary,
         # (можно добавить параметр reward в конструктор, либо оставить пустым)
 
         # прикрепляем нашу RegistrationView
-        RegistrationView(tournament_id=tour_id, max_participants=self.size, tour_type=typetxt)
+        reg_view = RegistrationView(tournament_id=tour_id, max_participants=self.size, tour_type=typetxt)
         # отправляем в тот же канал, где был setup
         guild = interaction.guild
         if guild:
