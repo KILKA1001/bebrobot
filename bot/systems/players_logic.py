@@ -106,7 +106,7 @@ async def list_players_view(
         )
         async def _copy(interaction: discord.Interaction, tg_username: str):
             await interaction.response.send_message(
-                f"Telegram-ник игрока: {tg_username}", ephemeral=True
+                f"Telegram-ник игрока: `{tg_username}`", ephemeral=True
             )
         btn.callback = partial(_copy, tg_username=p['tg_username'])
         view.add_item(btn)
