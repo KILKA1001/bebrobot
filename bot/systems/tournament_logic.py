@@ -290,7 +290,7 @@ style=discord.ButtonStyle.secondary,
                 color=discord.Color.blue()
             )
             self._build_confirm_buttons()
-            await interaction.response.send_message(embed=embed, ephemeral=True, view=self)
+            await interaction.response.edit_message(embed=embed, view=self)
 
     async def on_size(self, interaction: discord.Interaction):
         # достаём custom_id из payload и парсим число
