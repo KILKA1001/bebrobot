@@ -284,7 +284,13 @@ style=discord.ButtonStyle.secondary,
             embed.add_field(name="⚠️ Нужно ввести сумму", value="Мин. 15 баллов", inline=False)
             await interaction.response.send_modal(BankAmountModal(self))
         else:
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            embed = discord.Embed(
+                title="Источник банка наград выбран",
+                description=f"Вы выбрали тип: **{self.bank_type}**",
+                color=discord.Color.blue()
+            )
+            self._build_confirm_buttons()
+            await interaction.response.send_message(embed=embed, ephemeral=True, view=self)
 
     async def on_size(self, interaction: discord.Interaction):
         # достаём custom_id из payload и парсим число
