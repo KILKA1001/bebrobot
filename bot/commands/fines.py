@@ -83,7 +83,7 @@ async def myfines(ctx):
         await ctx.send("✅ У вас нет активных штрафов!")
         return
 
-    for fine in page_items:
+    for fine in fines:
         embed = build_fine_embed(fine)
         view = FineView(fine)
         await ctx.send(embed=embed, view=view)
