@@ -83,14 +83,10 @@ async def myfines(ctx):
         await ctx.send("✅ У вас нет активных штрафов!")
         return
 
-    paginator = FinePaginator(fines)
-    page = 1
-    page_items = paginator.get_page(page)
-
     for fine in page_items:
         embed = build_fine_embed(fine)
-        view = AllFinesView(fines, ctx)
-        await ctx.send(embed=view.get_page_embed(), view=view)
+        view = FineView(fine)
+        await ctx.send(embed=embed, view=view)
 
 @bot.command(name="allfines")
 @commands.has_permissions(administrator=True)
