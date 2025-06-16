@@ -120,14 +120,17 @@ class PaymentMenuView(View):
 
     @discord.ui.button(label="📏 100%", style=discord.ButtonStyle.green)
     async def pay_100(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.defer(ephemeral=True)
         await process_payment(interaction, self.fine, 1.0)
 
     @discord.ui.button(label="🌑 50%", style=discord.ButtonStyle.blurple)
     async def pay_50(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.defer(ephemeral=True)
         await process_payment(interaction, self.fine, 0.5)
 
     @discord.ui.button(label="🌒 25%", style=discord.ButtonStyle.gray)
     async def pay_25(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.defer(ephemeral=True)
         await process_payment(interaction, self.fine, 0.25)
 
     @discord.ui.button(label="✏️ Своя сумма", style=discord.ButtonStyle.secondary)
