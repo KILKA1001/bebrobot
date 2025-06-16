@@ -86,13 +86,3 @@ async def tournament_announce(ctx, tournament_id: int):
     success = await tournament_logic.send_announcement_embed(ctx, tournament_id)
     if not success:
         await ctx.send("❌ Не удалось отправить объявление. Проверь ID турнира.")
-
-@bot.command(name="tournamentstatus")
-@commands.has_permissions(administrator=True)
-async def tournament_status(ctx, tournament_id: int):
-    from bot.systems.tournament_logic import build_tournament_status_embed
-    embed = await build_tournament_status_embed(tournament_id)
-    if embed:
-        await ctx.send(embed=embed)
-    else:
-        await ctx.send("❌ Турнир не найден или ошибка при получении.")
