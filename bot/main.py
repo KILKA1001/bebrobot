@@ -20,6 +20,7 @@ import bot.commands.players
 from bot.commands import run_monthly_top
 from datetime import datetime
 from bot.systems import fines_logic
+import bot.commands.fines
 from bot.systems.fines_logic import get_fine_leaders
 from bot.systems.fines_logic import build_fine_embed
 from bot.systems.fines_logic import fines_summary_loop
