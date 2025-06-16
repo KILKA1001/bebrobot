@@ -59,11 +59,6 @@ async def on_ready():
     asyncio.create_task(fines_logic.reminder_loop(bot))
     asyncio.create_task(fines_logic.fines_summary_loop(bot))
 
-    asyncio.create_task(fines_logic.check_overdue_fines(bot))
-    asyncio.create_task(fines_logic.debt_repayment_loop(bot))
-    asyncio.create_task(fines_logic.reminder_loop(bot))
-    asyncio.create_task(fines_logic.fines_summary_loop(bot))
-
     activity = discord.Activity(
         name="Привет! Напиши команду ?helpy чтобы увидеть все команды 🧠",
         type=discord.ActivityType.listening
