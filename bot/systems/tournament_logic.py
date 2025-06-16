@@ -23,7 +23,6 @@ from bot.data.tournament_db import (
 )
 from bot.systems import tournament_rewards_logic as rewards
 from bot.systems.tournament_bank_logic import validate_and_save_bank
-from bot.systems.core_logic import resolve_name
 
 
 assert db.supabase is not None, "Supabase client not initialized"
