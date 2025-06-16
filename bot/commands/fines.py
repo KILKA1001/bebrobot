@@ -89,8 +89,8 @@ async def myfines(ctx):
 
     for fine in page_items:
         embed = build_fine_embed(fine)
-        view = FineView(fine)
-        await ctx.send(embed=embed, view=view)
+        view = AllFinesView(fines, ctx)
+        await ctx.send(embed=view.get_page_embed(), view=view)
 
 @bot.command(name="allfines")
 @commands.has_permissions(administrator=True)
