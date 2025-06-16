@@ -86,6 +86,32 @@ class FineView(View):
         embed = build_fine_detail_embed(self.fine)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+async def process_payment(interaction: discord.Interaction, fine: dict, percent: float):
+    user_id = interaction.user.id
+    user_points = db.scores.get(user_id, 0)
+    amount_remaining = fine['amount'] - fine.get('paid_amount', 0)
+    to_pay = round(amount_remaining * percent, 2)
+
+    if user_points < to_pay:
+        await interaction.followup.send(f"❌ У вас недостаточно баллов для оплаты {to_pay} баллов.", ephemeral=True)
+        return
+
+    if not db.supabase:
+        await interaction.followup.send("❌ Supabase не инициализирован.", ephemeral=True)
+        return
+
+    success = db.record_payment(user_id=user_id, fine_id=fine['id'], amount=to_pay, author_id=user_id)
+    if not success:
+        await interaction.followup.send("❌ Ошибка при записи оплаты.", ephemeral=True)
+        return
+
+    fine['paid_amount'] = round(fine.get('paid_amount', 0) + to_pay, 2)
+    if fine['paid_amount'] >= fine['amount']:
+        fine['is_paid'] = True
+
+    await interaction.followup.send(f"✅ Вы оплатили {to_pay} баллов штрафа #{fine['id']}", ephemeral=True)
+
+
 
 class PaymentMenuView(View):
     def __init__(self, fine: dict):
