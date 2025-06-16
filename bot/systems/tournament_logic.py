@@ -23,7 +23,7 @@ from bot.data.tournament_db import (
 )
 from bot.systems import tournament_rewards_logic as rewards
 from bot.systems.tournament_bank_logic import validate_and_save_bank
-
+from bot.systems.core_logic import resolve_name
 
 
 assert db.supabase is not None, "Supabase client not initialized"
@@ -993,3 +993,101 @@ class BankAmountModal(ui.Modal, title="Введите сумму банка"):
             await interaction.response.send_message(f"✅ Сумма банка установлена: **{value:.2f}**", ephemeral=True)
         except Exception:
             await interaction.response.send_message("❌ Ошибка: введите корректное число (мин. 15)", ephemeral=True)
+
+async def send_announcement_embed(ctx, tournament_id: int) -> bool:
+    try:
+        res = supabase.table("tournaments")\
+            .select("type, size, bank_type, manual_amount")\
+            .eq("id", tournament_id)\
+            .single()\
+            .execute()
+        data = res.data
+        if not data:
+            return False
+    except Exception:
+        return False
+
+    from bot.data.tournament_db import list_participants_full as db_list_participants_full
+
+    t_type = data["type"]
+    size = data["size"]
+    bank_type = data.get("bank_type", 1)
+    manual = data.get("manual_amount", 20.0)
+    current = len(db_list_participants_full(tournament_id))
+
+    type_text = "Дуэльный 1×1" if t_type == "duel" else "Командный 3×3"
+    prize_text = {
+        1: f"🏅 Тип 1 — {manual:.2f} баллов от пользователя",
+        2: "🥈 Тип 2 — 30 баллов (25% платит игрок)",
+        3: "🥇 Тип 3 — 30 баллов (из банка Бебр)"
+    }.get(bank_type, "❓")
+
+    embed = discord.Embed(
+        title=f"📣 Открыта регистрация — Турнир #{tournament_id}",
+        color=discord.Color.gold()
+    )
+    embed.add_field(name="Тип турнира", value=type_text, inline=True)
+    embed.add_field(name="Участников", value=f"{current}/{size}", inline=True)
+    embed.add_field(name="Приз", value=prize_text, inline=False)
+    embed.set_footer(text="Нажмите на кнопку ниже, чтобы зарегистрироваться")
+
+    view = RegistrationView(tournament_id, size, type_text)
+    await ctx.send(embed=embed, view=view)
+    return True
+
+async def build_tournament_status_embed(tournament_id: int) -> discord.Embed | None:
+    try:
+        res = supabase.table("tournaments")\
+            .select("type, size, bank_type, manual_amount, status")\
+            .eq("id", tournament_id)\
+            .single()\
+            .execute()
+        t = res.data
+        if not t:
+            return None
+    except Exception:
+        return None
+
+    from bot.data.tournament_db import list_participants_full
+
+    participants = list_participants_full(tournament_id)
+    current = len(participants)
+    t_type = t["type"]
+    size = t["size"]
+    bank_type = t.get("bank_type", 1)
+    manual = t.get("manual_amount", 20.0)
+    status = t.get("status", "unknown")
+
+    type_text = "Дуэльный 1×1" if t_type == "duel" else "Командный 3×3"
+    prize_text = {
+        1: f"🏅 Тип 1 — {manual:.2f} баллов от пользователя",
+        2: "🥈 Тип 2 — 30 баллов (25% платит игрок)",
+        3: "🥇 Тип 3 — 30 баллов (из банка Бебр)"
+    }.get(bank_type, "❓")
+
+    # Этап (только по статусу)
+    stage = "❔ Не начат"
+    if status == "active":
+        stage = "🔁 Активен"
+    elif status == "finished":
+        stage = "✅ Завершён"
+
+    embed = discord.Embed(
+        title=f"📋 Турнир #{tournament_id} — Статус",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="Тип", value=type_text, inline=True)
+    embed.add_field(name="Участники", value=f"{current}/{size}", inline=True)
+    embed.add_field(name="Банк", value=prize_text, inline=False)
+    embed.add_field(name="Статус", value=status.capitalize(), inline=True)
+    embed.add_field(name="Этап", value=stage, inline=True)
+
+    # Участники (ID)
+    names = [
+        f"<@{p['discord_user_id']}>" if p.get("discord_user_id") else f"ID: {p['player_id']}"
+        for p in participants[:10]
+    ]
+    name_list = "\n".join(f"• {n}" for n in names) if names else "—"
+    embed.add_field(name="📌 Участники (первые 10)", value=name_list, inline=False)
+
+    return embed
