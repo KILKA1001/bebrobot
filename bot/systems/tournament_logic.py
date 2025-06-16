@@ -315,68 +315,77 @@ style=discord.ButtonStyle.secondary,
         await interaction.response.edit_message(embed=embed, view=self)
 
     async def on_confirm(self, interaction: discord.Interaction):
-        # Убедимся, что пользователь действительно выбрал и тип, и размер
-        if self.t_type is None or self.size is None:
-            # На случай, если кто-то умудрился нажать «Подтвердить» раньше времени
-                await interaction.response.send_message(
-                    "❌ Ошибка: сначала выберите тип и количество участников.", 
-                    ephemeral=True
-                )
+        try:
+            # Убедимся, что пользователь действительно выбрал и тип, и размер
+            if self.t_type is None or self.size is None:
+                # На случай, если кто-то умудрился нажать «Подтвердить» раньше времени
+                    await interaction.response.send_message(
+                        "❌ Ошибка: сначала выберите тип и количество участников.", 
+                        ephemeral=True
+                    )
+                    return
+
+            # Теперь тип и размер — точно str и int
+            tour_id = create_tournament_record(self.t_type, self.size)
+            ok, msg = validate_and_save_bank(tour_id, self.bank_type or 1, self.manual_amount)
+            if not ok:
+                await interaction.response.send_message(msg, ephemeral=True)
                 return
+            typetxt = "Дуэльный 1×1" if self.t_type == "duel" else "Командный 3×3"
+            prize_text = {
+                1: f"🏅 Тип 1 — {self.manual_amount:.2f} баллов от пользователя",
+                2: "🥈 Тип 2 — 30 баллов (25% платит игрок)",
+                3: "🥇 Тип 3 — 30 баллов (из банка Бебр)"
+            }.get(self.bank_type or 1, "❓ Неизвестно")
+            embed = discord.Embed(
+                title=f"✅ Турнир #{tour_id} создан!",
+                description=(
+                    f"🏆 Тип: {'Дуэльный 1×1' if self.t_type=='duel' else 'Командный 3×3'}\n"
+                    f"👥 Участников: {self.size}\n"
+                    f"🎁 Приз: {prize_text}\n"
+                    f"ID турнира: **{tour_id}**"
+                ),
+                color=discord.Color.green()
+            )
+            self.disable_all_items()
+            await interaction.response.edit_message(embed=embed, view=self)
+            announcement = discord.Embed(
+                title=f"📣 Открыта регистрация — Турнир #{tour_id}",
+                color=discord.Color.gold()
+            )
+            # тип турнира
+            announcement.add_field(name="Тип", value=typetxt, inline=True)
+            announcement.add_field(name="Участников", value=str(self.size), inline=True)
+            announcement.add_field(name="Приз", value=prize_text, inline=False)
+            announcement.set_footer(text="Нажмите, чтобы зарегистрироваться")
+            # если есть награда
+            # (можно добавить параметр reward в конструктор, либо оставить пустым)
 
-        # Теперь тип и размер — точно str и int
-        tour_id = create_tournament_record(self.t_type, self.size)
-        ok, msg = validate_and_save_bank(tour_id, self.bank_type or 1, self.manual_amount)
-        if not ok:
-            await interaction.response.send_message(msg, ephemeral=True)
-            return
-        typetxt = "Дуэльный 1×1" if self.t_type == "duel" else "Командный 3×3"
-        prize_text = {
-            1: f"🏅 Тип 1 — {self.manual_amount:.2f} баллов от пользователя",
-            2: "🥈 Тип 2 — 30 баллов (25% платит игрок)",
-            3: "🥇 Тип 3 — 30 баллов (из банка Бебр)"
-        }.get(self.bank_type or 1, "❓ Неизвестно")
-        embed = discord.Embed(
-            title=f"✅ Турнир #{tour_id} создан!",
-            description=(
-                f"🏆 Тип: {'Дуэльный 1×1' if self.t_type=='duel' else 'Командный 3×3'}\n"
-                f"👥 Участников: {self.size}\n"
-                f"🎁 Приз: {prize_text}\n"
-                f"ID турнира: **{tour_id}**"
-            ),
-            color=discord.Color.green()
-        )
-        self.disable_all_items()
-        await interaction.response.edit_message(embed=embed, view=self)
-        announcement = discord.Embed(
-            title=f"📣 Открыта регистрация — Турнир #{tour_id}",
-            color=discord.Color.gold()
-        )
-        # тип турнира
-        announcement.add_field(name="Тип", value=typetxt, inline=True)
-        announcement.add_field(name="Участников", value=str(self.size), inline=True)
-        announcement.add_field(name="Приз", value=prize_text, inline=False)
-        announcement.set_footer(text="Нажмите, чтобы зарегистрироваться")
-        # если есть награда
-        # (можно добавить параметр reward в конструктор, либо оставить пустым)
+            # прикрепляем нашу RegistrationView
+            reg_view = RegistrationView(tournament_id=tour_id, max_participants=self.size, tour_type=typetxt)
+            # отправляем в тот же канал, где был setup
+            guild = interaction.guild
+            if guild:
+                chan = guild.get_channel(ANNOUNCE_CHANNEL_ID)
+                if isinstance(chan, (TextChannel, Thread)):
+                    await chan.send(embed=announcement, view=reg_view)
+                    return
 
-        # прикрепляем нашу RegistrationView
-        reg_view = RegistrationView(tournament_id=tour_id, max_participants=self.size, tour_type=typetxt)
-        # отправляем в тот же канал, где был setup
-        guild = interaction.guild
-        if guild:
-            chan = guild.get_channel(ANNOUNCE_CHANNEL_ID)
-            if isinstance(chan, (TextChannel, Thread)):
-                await chan.send(embed=announcement, view=reg_view)
-                return
+            # fallback на текущий канал
+            msg = interaction.message
+            if msg and isinstance(msg.channel, (TextChannel, Thread, Messageable)):
+                await msg.channel.send(embed=announcement, view=reg_view)
+            else:
+            # в самом крайнем случае используем interaction.response
+                await interaction.response.send_message(embed=announcement, view=reg_view)
+        except Exception as e:
+            await interaction.response.send_message(
+                f"❌ Произошла ошибка при подтверждении: `{e}`",
+                ephemeral=True
+            )
+            import traceback
+            print("Ошибка в on_confirm:\n", traceback.format_exc())
 
-        # fallback на текущий канал
-        msg = interaction.message
-        if msg and isinstance(msg.channel, (TextChannel, Thread, Messageable)):
-            await msg.channel.send(embed=announcement, view=reg_view)
-        else:
-        # в самом крайнем случае используем interaction.response
-            await interaction.response.send_message(embed=announcement, view=reg_view)
         
     async def on_cancel(self, interaction: discord.Interaction):
         embed = discord.Embed(
