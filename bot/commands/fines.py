@@ -21,7 +21,7 @@ def has_permission(ctx):
         return True
     return any(role.id in ALLOWED_ROLES for role in ctx.author.roles)
 
-@commands.command(name="fine")
+@bot.command(name="fine")
 async def fine(ctx, member: discord.Member, amount: str, fine_type: int, *, reason: str = "Без причины"):
     if not has_permission(ctx):
         await ctx.send("❌ У вас нет прав для назначения штрафов.")
@@ -74,7 +74,7 @@ async def fine(ctx, member: discord.Member, amount: str, fine_type: int, *, reas
     except ValueError:
         await ctx.send("❌ Введите корректную сумму.")
 
-@commands.command(name="myfines")
+@bot.command(name="myfines")
 async def myfines(ctx):
     user_id = ctx.author.id
     fines = db.get_user_fines(user_id)
@@ -92,7 +92,7 @@ async def myfines(ctx):
         view = FineView(fine)
         await ctx.send(embed=embed, view=view)
 
-@commands.command(name="allfines")
+@bot.command(name="allfines")
 @commands.has_permissions(administrator=True)
 async def all_fines(ctx):
     fines = [f for f in db.fines if not f.get("is_paid") and not f.get("is_canceled")]
@@ -104,7 +104,7 @@ async def all_fines(ctx):
     view = AllFinesView(fines, ctx)
     await ctx.send(embed=view.get_page_embed(), view=view)
 
-@commands.command(name="finedetails")
+@bot.command(name="finedetails")
 async def finedetails(ctx, fine_id: int):
     fine = db.get_fine_by_id(fine_id)
     if not fine:
@@ -119,7 +119,7 @@ async def finedetails(ctx, fine_id: int):
     embed = build_fine_detail_embed(fine)
     await ctx.send(embed=embed)
 
-@commands.command(name="editfine")
+@bot.command(name="editfine")
 @commands.has_permissions(administrator=True)
 async def editfine(ctx, fine_id: int, amount: float, fine_type: int, due_date_str: str, *, reason: str):
     fine = db.get_fine_by_id(fine_id)
@@ -152,7 +152,7 @@ async def editfine(ctx, fine_id: int, amount: float, fine_type: int, due_date_st
 
     await ctx.send(f"✏️ Штраф #{fine_id} успешно обновлён.")
 
-@commands.command(name="cancel_fine")
+@bot.command(name="cancel_fine")
 @commands.has_permissions(administrator=True)
 async def cancel_fine(ctx, fine_id: int):
     fine = db.get_fine_by_id(fine_id)
@@ -183,7 +183,7 @@ async def cancel_fine(ctx, fine_id: int):
 
     await ctx.send(f"❌ Штраф #{fine_id} успешно отменён.")
 
-@commands.command(name="finehistory")
+@bot.command(name="finehistory")
 async def finehistory(ctx, member: Optional[discord.Member] = None, page: int = 1):
     member = member or ctx.author
     if not member:
@@ -227,7 +227,7 @@ async def finehistory(ctx, member: Optional[discord.Member] = None, page: int = 
     embed.set_footer(text=f"Страница {page}/{total_pages}")
     await ctx.send(embed=embed)
 
-@commands.command(name="topfines")
+@bot.command(name="topfines")
 async def topfines(ctx):
     top = get_fine_leaders()
     if not top:
