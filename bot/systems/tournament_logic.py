@@ -156,7 +156,10 @@ class TournamentSetupView(ui.View):
         self.author_id = author_id
         self.t_type: Optional[str] = None
         self.size:   Optional[int] = None
+        self.manual_amount: Optional[float] = None
+        self.bank_type: Optional[int] = None
         self._build_type_buttons()
+        
 
     @staticmethod
     def initial_embed() -> discord.Embed:
