@@ -3,6 +3,8 @@ from discord.ext import commands
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from bot.commands.base import bot
+
 from bot.data import db
 from bot.systems.fines_logic import (
     build_fine_embed,
