@@ -20,7 +20,7 @@ from bot.data.tournament_db import (
     remove_discord_participant as db_remove_discord_participant,
     remove_player_from_tournament,
 )
-from bot.data.tournament_db import delete_tournament_record
+from bot.data.tournament_db import delete_tournament as delete_tournament_record
 from bot.systems import tournament_rewards_logic as rewards
 from bot.systems.tournament_bank_logic import validate_and_save_bank
 
