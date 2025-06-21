@@ -1,13 +1,13 @@
 import random
 from typing import List, Dict, Optional
 import discord
-from discord import ui, Embed
+from discord import ui, Embed, ButtonStyle
 import os
 from bot.data import db
 from discord.ext import commands
 from discord.abc import Messageable
 from discord import TextChannel, Thread
-from discord import ButtonStyle
+import bot.data.tournament_db as tournament_db
 from bot.data.players_db import get_player_by_id
 from bot.data.tournament_db import count_matches 
 from bot.data.tournament_db import (
@@ -19,7 +19,7 @@ from bot.data.tournament_db import (
     update_tournament_status as db_update_tournament_status,
     list_participants_full as db_list_participants_full,
     remove_discord_participant as db_remove_discord_participant,
-    remove_player_from_tournament, tournament_db
+    remove_player_from_tournament
 )
 from bot.data.tournament_db import delete_tournament as delete_tournament_record
 from bot.systems import tournament_rewards_logic as rewards
