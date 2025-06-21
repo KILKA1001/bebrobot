@@ -7,7 +7,7 @@ from bot.data import db
 from discord.ext import commands
 from discord.abc import Messageable
 from discord import TextChannel, Thread
-from discord.ui import ButtonStyle
+from discord import ButtonStyle
 from bot.data.players_db import get_player_by_id
 from bot.data.tournament_db import count_matches 
 from bot.data.tournament_db import (
