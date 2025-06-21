@@ -16,11 +16,11 @@ from bot.data.tournament_db import (
     record_match_result as db_record_match_result,
     save_tournament_result as db_save_tournament_result,
     update_tournament_status as db_update_tournament_status,
-    delete_tournament as db_delete_tournament,
     list_participants_full as db_list_participants_full,
     remove_discord_participant as db_remove_discord_participant,
     remove_player_from_tournament,
 )
+from bot.data.tournament_db import delete_tournament_record
 from bot.systems import tournament_rewards_logic as rewards
 from bot.systems.tournament_bank_logic import validate_and_save_bank
 
@@ -758,7 +758,7 @@ class ConfirmDeleteView(ui.View):
 
     @ui.button(label="❌ Удалить турнир", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: ui.Button):
-        ok = db_delete_tournament(self.tid)
+        ok = delete_tournament_record(self.tid)
         if ok:
             await interaction.response.edit_message(
                 embed=Embed(
