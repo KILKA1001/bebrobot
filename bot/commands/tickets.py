@@ -3,11 +3,11 @@ from discord.ext import commands
 from bot.data import db
 from bot.systems import tickets_logic
 
-bot = db.bot  # используем глобальный экземпляр
+bot = db.bot  # РёСЃРїРѕР»СЊР·СѓРµРј РіР»РѕР±Р°Р»СЊРЅС‹Р№ СЌРєР·РµРјРїР»СЏСЂ
 
 @bot.command(name="addticket")
 @commands.has_permissions(administrator=True)
-async def add_ticket(ctx, member: discord.Member, ticket_type: str, amount: int, *, reason: str = "Без причины"):
+async def add_ticket(ctx, member: discord.Member, ticket_type: str, amount: int, *, reason: str = "Р‘РµР· РїСЂРёС‡РёРЅС‹"):
     embed = await tickets_logic.give_ticket_logic(
         user_id=member.id,
         ticket_type=ticket_type.lower(),
@@ -19,10 +19,10 @@ async def add_ticket(ctx, member: discord.Member, ticket_type: str, amount: int,
 
 @bot.command(name="removeticket")
 @commands.has_permissions(administrator=True)
-async def remove_ticket(ctx, member: discord.Member, ticket_type: str, amount: int, *, reason: str = "Без причины"):
+async def remove_ticket(ctx, member: discord.Member, ticket_type: str, amount: int, *, reason: str = "Р‘РµР· РїСЂРёС‡РёРЅС‹"):
     """
-    Списать билет у пользователя.
-    Пример: ?removeticket @user normal 2 За нарушение
+    РЎРїРёСЃР°С‚СЊ Р±РёР»РµС‚ Сѓ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ.
+    РџСЂРёРјРµСЂ: ?removeticket @user normal 2 Р—Р° РЅР°СЂСѓС€РµРЅРёРµ
     """
     embed = await tickets_logic.remove_ticket_logic(
         user_id=member.id,
