@@ -109,6 +109,12 @@ async def process_payment(interaction: discord.Interaction, fine: dict, percent:
     if fine['paid_amount'] >= fine['amount']:
         fine['is_paid'] = True
 
+    if db.supabase:
+        db.supabase.table("fines").update({
+            "paid_amount": fine['paid_amount'],
+            "is_paid": fine.get('is_paid', False)
+        }).eq("id", fine['id']).execute()
+
     await interaction.followup.send(f"✅ Вы оплатили {to_pay} баллов штрафа #{fine['id']}", ephemeral=True)
 
 
