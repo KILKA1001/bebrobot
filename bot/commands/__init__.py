@@ -3,6 +3,7 @@ from bot.commands.base import bot, run_monthly_top
 # Import all command modules to register them
 from . import fines
 from . import tournament
+from . import tickets
 
 # Import specific commands for explicit access if needed
 from .fines import (
