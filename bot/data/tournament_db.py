@@ -193,3 +193,11 @@ def set_bank_type(tournament_id: int, bank_type: int, manual_amount: Optional[fl
         .eq("id", tournament_id) \
         .execute()
     return bool(res.data)
+
+def get_active_tournaments() -> list[dict]:
+    # Пример: взять все турниры со статусом “active” и вернуть их ID + сохранённый message_id
+    res = supabase.table("tournaments") \
+        .select("id, announcement_message_id") \
+        .eq("status", "active") \
+        .execute()
+    return res.data or []

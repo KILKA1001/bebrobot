@@ -10,6 +10,7 @@ import os
 import asyncio
 from dotenv import load_dotenv
 import pytz
+from discord.ext import commands
 
 # Локальные импорты
 from bot.data import db
@@ -24,6 +25,9 @@ import bot.commands.fines
 from bot.systems.fines_logic import get_fine_leaders
 from bot.systems.fines_logic import build_fine_embed
 from bot.systems.fines_logic import fines_summary_loop
+import bot.data.tournament_db as tournament_db
+from bot.systems.tournament_logic import RegistrationView
+
 # Константы
 COMMAND_PREFIX = '?'
 TIME_FORMAT = "%H:%M (%d.%m.%Y)"
@@ -63,6 +67,14 @@ async def on_ready():
         name="Привет! Напиши команду ?helpy чтобы увидеть все команды 🧠",
         type=discord.ActivityType.listening
     )
+    active = tournament_db.get_active_tournaments()
+    for tour in active:
+        view = RegistrationView(
+            tournament_id = tour["id"],
+            max_participants = tour["size"],
+            tour_type = tour["type"]
+        )
+        bot.add_view(view, message_id = tour["announcement_message_id"])
     await bot.change_presence(activity=activity)
 
     # 👇 тут будет работать, потому что определена выше

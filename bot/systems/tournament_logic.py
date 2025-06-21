@@ -7,6 +7,7 @@ from bot.data import db
 from discord.ext import commands
 from discord.abc import Messageable
 from discord import TextChannel, Thread
+from discord.ui import ButtonStyle
 from bot.data.players_db import get_player_by_id
 from bot.data.tournament_db import count_matches 
 from bot.data.tournament_db import (
@@ -18,11 +19,12 @@ from bot.data.tournament_db import (
     update_tournament_status as db_update_tournament_status,
     list_participants_full as db_list_participants_full,
     remove_discord_participant as db_remove_discord_participant,
-    remove_player_from_tournament,
+    remove_player_from_tournament, tournament_db
 )
 from bot.data.tournament_db import delete_tournament as delete_tournament_record
 from bot.systems import tournament_rewards_logic as rewards
 from bot.systems.tournament_bank_logic import validate_and_save_bank
+
 
 
 assert db.supabase is not None, "Supabase client not initialized"
@@ -366,12 +368,23 @@ style=discord.ButtonStyle.secondary,
 
             # прикрепляем нашу RegistrationView
             reg_view = RegistrationView(tournament_id=tour_id, max_participants=self.size, tour_type=typetxt)
+
+            # добавляем к нему кнопку управления раундами
+            reg_view.add_item(
+                discord.ui.Button(
+                    label="⚙ Управление раундами",
+                    style=ButtonStyle.primary,
+                    custom_id=f"manage_rounds:{tour_id}"
+                )
+            )
             # отправляем в тот же канал, где был setup
             guild = interaction.guild
             if guild:
                 chan = guild.get_channel(ANNOUNCE_CHANNEL_ID)
                 if isinstance(chan, (TextChannel, Thread)):
-                    await chan.send(embed=announcement, view=reg_view)
+                    sent = await chan.send(embed=announcement, view=reg_view)
+                        # сохраняем sent.id вместе с tour_id в БД
+                    tournament_db.save_announcement_message(tournament_id=tour_id, message_id=sent.id)
                     return
 
             # fallback на текущий канал
@@ -899,6 +912,7 @@ async def show_history(ctx: commands.Context, limit: int = 10) -> None:
     await ctx.send(embed=embed)
 
 class RegistrationView(ui.View):
+    persistent = True
     def __init__(self, tournament_id: int, max_participants: int, tour_type: Optional[str] = None):
         super().__init__(timeout=None)
         self.tid = tournament_id
