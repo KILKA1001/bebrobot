@@ -548,4 +548,19 @@ def build_balance_embed(member: discord.Member) -> discord.Embed:
     embed.add_field(name="🏅 Роли", value=role_names, inline=False)
     embed.add_field(name="📊 Место в топе", value=f"{place}" if place else "Не в топе", inline=False)
 
+    # ➕ Добавим бонусы за топ месяца
+    top_bonus_count = 0
+    top_bonus_sum = 0.0
+    for action in db.history.get(user_id, []):
+        if action.get("reason", "").startswith("Бонус за "):
+            top_bonus_count += 1
+            top_bonus_sum += action.get("points", 0)
+
+    if top_bonus_count:
+        embed.add_field(
+            name="🏆 Бонусы за топ месяца",
+            value=f"{top_bonus_count} наград, {top_bonus_sum:.2f} баллов",
+            inline=False
+        )
+
     return embed
