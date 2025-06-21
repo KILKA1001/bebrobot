@@ -3,7 +3,7 @@ from discord.ext import commands
 from bot.data import db
 from bot.systems import tickets_logic
 
-bot = db.bot  # используем глобальный экземпляр
+from bot.commands import bot  # используем глобальный экземпляр
 
 @bot.command(name="addticket")
 @commands.has_permissions(administrator=True)
