@@ -6,9 +6,6 @@ from typing import Optional
 from bot.systems.tournament_logic import (
     TournamentSetupView,
     join_tournament,
-    start_round,
-    report_result,
-    show_status,
     end_tournament,
     show_history,
     delete_tournament,
@@ -22,6 +19,9 @@ from bot.data.tournament_db import add_discord_participant as db_add_participant
 from bot.systems.tournament_logic import delete_tournament as send_delete_confirmation
 # Import the bot instance from base.py instead of creating a new one
 from bot.commands.base import bot
+from bot.systems.interactive_rounds import announce_round_management, TournamentLogic
+
+logic = TournamentLogic()
 
 # В памяти храним экземпляры турниров
 active_tournaments: dict[int, Tournament] = {}
@@ -36,22 +36,6 @@ async def createtournament(ctx):
 @bot.command(name="jointournament")
 async def jointournament(ctx: commands.Context, tournament_id: int):
     await handle_jointournament(ctx, tournament_id)
-
-@bot.command(name="startround")
-@commands.has_permissions(administrator=True)
-async def startround(ctx, tournament_id: int):
-    """Начать новый раунд турнира."""
-    await start_round(ctx, tournament_id)
-    
-@bot.command(name="reportresult")
-async def reportresult(ctx, match_id: int, winner: int):
-    """Сообщить результат матча."""
-    await report_result(ctx, match_id, winner)
-
-@bot.command(name="tournamentstatus")
-async def tournamentstatus(ctx, tournament_id: int, round_number: Optional[int] = None):
-    """Показать статус турнира или конкретного раунда."""
-    await show_status(ctx, tournament_id, round_number)
 
 @bot.command(name="endtournament")
 @commands.has_permissions(administrator=True)
@@ -86,3 +70,13 @@ async def tournament_announce(ctx, tournament_id: int):
     success = await tournament_logic.send_announcement_embed(ctx, tournament_id)
     if not success:
         await ctx.send("❌ Не удалось отправить объявление. Проверь ID турнира.")
+
+@bot.command(name="managerounds")
+@commands.has_permissions(administrator=True)
+async def managerounds(ctx: commands.Context, tournament_id: int):
+    """
+    ?managerounds <ID> — открывает интерактивную панель
+    управления раундами указанного турнира.
+    """
+    # ctx.channel — канал, из которого админ вызвал команду
+    await announce_round_management(ctx.channel, tournament_id, logic)

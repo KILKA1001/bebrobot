@@ -3,8 +3,15 @@ from discord.ui import View, Button, Select, button
 from discord import ButtonStyle
 
 from tournament_logic import TournamentLogic  # Импорт существующего модуля логики турниров
+from discord import Interaction
+from .interactive_rounds import announce_round_management
 
 class RoundManagementView(View):
+    persistent = True
+    def __init__(self, tournament_id: int, logic: TournamentLogic):
+        super().__init__(timeout=None)
+        self.tournament_id = tournament_id
+        self.logic = logic
     """
     View для интерактивного управления раундами турнира через кнопки и меню.
     """
@@ -37,6 +44,11 @@ class RoundManagementView(View):
             style=ButtonStyle.gray,
             custom_id=f"status_round:{tournament_id}"
         ))
+        self.add_item(Button(
+            label="⚙ Управление раундами",
+            style=ButtonStyle.primary,
+            custom_id=f"manage_rounds:{tournament_id}"
+        ))
 
     @button(custom_id=lambda self: f"start_round:{self.tournament_id}")
     async def start_round_button(self, button: Button, interaction: Interaction):
@@ -64,6 +76,18 @@ class RoundManagementView(View):
         current_matches = self.logic.get_current_matches(self.tournament_id)
         view = MatchResultView(self.tournament_id, self.logic, current_matches)
         await interaction.response.edit_message(embed=embed, view=view)
+
+    @button(custom_id=lambda self: f"manage_rounds:{self.tournament_id}")
+    async def manage_rounds_button(self, button: Button, interaction: Interaction):
+        """
+        Обработчик клика по кнопке ⚙ — просто заново открывает панель управления раундами.
+        """
+        await announce_round_management(
+            interaction.channel,
+            self.tournament_id,
+            self.logic
+        )
+
 
 class MatchResultView(View):
     def __init__(self, tournament_id: int, logic: TournamentLogic, matches: list):

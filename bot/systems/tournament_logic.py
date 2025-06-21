@@ -222,6 +222,7 @@ style=discord.ButtonStyle.secondary,
                 discord.SelectOption(label="Тип 1 — Пользователь", value="1", description="Пользователь платит 50% (мин. 15 баллов)"),
                 discord.SelectOption(label="Тип 2 — Смешанный", value="2", description="25% платит пользователь, 75% — банк Бебр"),
                 discord.SelectOption(label="Тип 3 — Клуб", value="3", description="100% из банка Бебр"),
+                discord.SelectOption(label="🧪 TEST — Без наград (тест)", value="4", description="Никаких выплат и списаний, только для проверки")
             ],
             custom_id="bank_type"
         )
