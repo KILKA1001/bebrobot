@@ -19,7 +19,7 @@ from bot.systems.tournament_logic import (
     handle_unregister
 )
 from bot.data.tournament_db import add_discord_participant as db_add_participant
-from bot.systems.tournament_logic import delete_tournament as delete_tournament_view
+from bot.systems.tournament_logic import delete_tournament as send_delete_confirmation
 # Import the bot instance from base.py instead of creating a new one
 from bot.commands.base import bot
 
@@ -67,7 +67,7 @@ async def tournamenthistory(ctx, limit: int = 10):
 @commands.has_permissions(administrator=True)
 async def deletetournament(ctx, tournament_id: int):
     """Удалить турнир и все связанные с ним записи."""
-    await delete_tournament_view(ctx, tournament_id)
+    await send_delete_confirmation(ctx, tournament_id)
 
 @bot.command(name="regplayer")
 @commands.has_permissions(administrator=True)
