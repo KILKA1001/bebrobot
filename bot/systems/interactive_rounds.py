@@ -1,93 +1,92 @@
-from discord import Embed, Interaction
-from discord import Embed, Interaction, SelectOption, ButtonStyle
-from discord.ui import View, Button, Select, button
+from discord import Embed, Interaction, ButtonStyle
+from discord.ui import View, Button, Select
 
-from bot.systems.tournament_logic import create_tournament_logic, Tournament
+from bot.systems.tournament_logic import Tournament
 
 class RoundManagementView(View):
+    """UI для управления раундами одного турнира."""
+
     persistent = True
-    def __init__(self, tournament_id: int, logic: Tournament):
-        super().__init__(timeout=None)
-        self.tournament_id = tournament_id
-        self.logic = logic
-    """
-    View для интерактивного управления раундами турнира через кнопки и меню.
-    """
+
     def __init__(self, tournament_id: int, logic: Tournament):
         super().__init__(timeout=None)
         self.tournament_id = tournament_id
         self.logic = logic
 
-        # Кнопка начала раунда
-        self.add_item(Button(
+        self.start_round_button = Button(
             label="▶️ Начать раунд",
             style=ButtonStyle.green,
-            custom_id=f"start_round:{tournament_id}"
-        ))
-        # Кнопка перехода к следующему раунду
-        self.add_item(Button(
+            custom_id=f"start_round:{tournament_id}",
+            row=0,
+        )
+        self.start_round_button.callback = self.on_start_round
+        self.add_item(self.start_round_button)
+
+        self.next_round_button = Button(
             label="⏭ Перейти к следующему",
             style=ButtonStyle.blurple,
-            custom_id=f"next_round:{tournament_id}"
-        ))
-        # Кнопка остановки/возврата
-        self.add_item(Button(
+            custom_id=f"next_round:{tournament_id}",
+            row=0,
+        )
+        self.next_round_button.callback = self.on_next_round
+        self.add_item(self.next_round_button)
+
+        self.stop_round_button = Button(
             label="🛑 Остановить раунд",
             style=ButtonStyle.red,
-            custom_id=f"stop_round:{tournament_id}"
-        ))
-        # Кнопка показа статуса
-        self.add_item(Button(
+            custom_id=f"stop_round:{tournament_id}",
+            row=1,
+        )
+        self.stop_round_button.callback = self.on_stop_round
+        self.add_item(self.stop_round_button)
+
+        self.status_round_button = Button(
             label="📊 Показать статус",
             style=ButtonStyle.gray,
-            custom_id=f"status_round:{tournament_id}"
-        ))
-        self.add_item(Button(
+            custom_id=f"status_round:{tournament_id}",
+            row=1,
+        )
+        self.status_round_button.callback = self.on_status_round
+        self.add_item(self.status_round_button)
+
+        self.manage_rounds_button = Button(
             label="⚙ Управление раундами",
             style=ButtonStyle.primary,
-            custom_id=f"manage_rounds:{tournament_id}"
-        ))
+            custom_id=f"manage_rounds:{tournament_id}",
+            row=2,
+        )
+        self.manage_rounds_button.callback = self.on_manage_rounds
+        self.add_item(self.manage_rounds_button)
 
-    @button(custom_id=lambda self: f"start_round:{self.tournament_id}")
-    async def start_round_button(self, button: Button, interaction: Interaction):
-        # Пересекается с командой ?startround – при наличии данной функции команду лучше отключить или перенаправить здесь
+    async def on_start_round(self, interaction: Interaction):
         embed = self.logic.start_round(self.tournament_id)
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @button(custom_id=lambda self: f"next_round:{self.tournament_id}")
-    async def next_round_button(self, button: Button, interaction: Interaction):
-        # Проверяем, что все результаты есть: логика генерации нового раунда уже есть в generate_next_round
+    async def on_next_round(self, interaction: Interaction):
         embed = self.logic.generate_next_round(self.tournament_id)
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @button(custom_id=lambda self: f"stop_round:{self.tournament_id}")
-    async def stop_round_button(self, button: Button, interaction: Interaction):
-        # Позволяет приостановить текущий раунд и вернуться к редактированию
+    async def on_stop_round(self, interaction: Interaction):
         embed = self.logic.get_current_round_embed(self.tournament_id)
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @button(custom_id=lambda self: f"status_round:{self.tournament_id}")
-    async def status_round_button(self, button: Button, interaction: Interaction):
-        # Пересекается с командой ?tournamentstatus — можно либо отключить команду, либо внутри команды отправлять этот же вид
+    async def on_status_round(self, interaction: Interaction):
         embed = self.logic.get_current_round_embed(self.tournament_id)
-        # Добавляем Select меню для каждого матча
         current_matches = self.logic.get_current_matches(self.tournament_id)
         view = MatchResultView(self.tournament_id, self.logic, current_matches)
         await interaction.response.edit_message(embed=embed, view=view)
 
-    @button(custom_id=lambda self: f"manage_rounds:{self.tournament_id}")
-    async def manage_rounds_button(self, button: Button, interaction: Interaction):
-        """
-        Обработчик клика по кнопке ⚙ — просто заново открывает панель управления раундами.
-        """
+    async def on_manage_rounds(self, interaction: Interaction):
         await announce_round_management(
             interaction.channel,
             self.tournament_id,
-            self.logic
+            self.logic,
         )
 
 
 class MatchResultView(View):
+    """Представление для ввода результатов матчей."""
+
     def __init__(self, tournament_id: int, logic: Tournament, matches: list):
         super().__init__(timeout=None)
         self.tournament_id = tournament_id
@@ -104,7 +103,7 @@ class MatchResultView(View):
 
 class MatchResultSelect(Select):
     def __init__(self, tournament_id: int, logic: Tournament, options: list):
-        super().__init__(placeholder="Выберите результат", options=options)
+        super().__init__(placeholder="Выберите исход матча", options=options)
         self.tournament_id = tournament_id
         self.logic = logic
 
@@ -122,8 +121,14 @@ async def announce_round_management(channel, tournament_id: int, logic: Tourname
     """
     Отправляет embed-подложку с кнопками управления раундами.
     """
-    embed = Embed(title=f"Управление Турниром #{tournament_id}")
-    embed.description = "Нажмите ▶️, чтобы начать первый раунд."
+    embed = Embed(
+        title=f"⚙️ Управление турниром #{tournament_id}",
+        description=(
+            "Используйте кнопки ниже для контроля раундов.\n"
+            "Нажмите **▶️** для старта первого раунда."
+        ),
+        color=0xF39C12
+    )
     view = RoundManagementView(tournament_id, logic)
     await channel.send(embed=embed, view=view)
 
