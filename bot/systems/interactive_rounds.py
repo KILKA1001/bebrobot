@@ -1,17 +1,18 @@
 from discord import Embed, Interaction
-from discord.ui import View, Button, Select, button
-from discord import ButtonStyle
-from bot.systems.tournament_logic import announce_tournament as announce_round_management, Tournament as TournamentLogic
+from discord.ui import View, Button, button, Select, SelectOption, ButtonStyle
+
+from bot.systems.tournament_logic import create_tournament_logic, Tournament
+
 class RoundManagementView(View):
     persistent = True
-    def __init__(self, tournament_id: int, logic: TournamentLogic):
+    def __init__(self, tournament_id: int, logic: Tournament):
         super().__init__(timeout=None)
         self.tournament_id = tournament_id
         self.logic = logic
     """
     View для интерактивного управления раундами турнира через кнопки и меню.
     """
-    def __init__(self, tournament_id: int, logic: TournamentLogic):
+    def __init__(self, tournament_id: int, logic: Tournament):
         super().__init__(timeout=None)
         self.tournament_id = tournament_id
         self.logic = logic
@@ -86,7 +87,7 @@ class RoundManagementView(View):
 
 
 class MatchResultView(View):
-    def __init__(self, tournament_id: int, logic: TournamentLogic, matches: list):
+    def __init__(self, tournament_id: int, logic: Tournament, matches: list):
         super().__init__(timeout=None)
         self.tournament_id = tournament_id
         self.logic = logic
@@ -101,7 +102,7 @@ class MatchResultView(View):
             self.add_item(MatchResultSelect(tournament_id, logic, options))
 
 class MatchResultSelect(Select):
-    def __init__(self, tournament_id: int, logic: TournamentLogic, options: list):
+    def __init__(self, tournament_id: int, logic: Tournament, options: list):
         super().__init__(placeholder="Выберите результат", options=options)
         self.tournament_id = tournament_id
         self.logic = logic
@@ -116,7 +117,7 @@ class MatchResultSelect(Select):
         await interaction.response.edit_message(embed=embed, view=self.view)
 
 # Функция-помощник для отправки стартового сообщения турнира
-async def announce_round_management(channel, tournament_id: int, logic: TournamentLogic):
+async def announce_round_management(channel, tournament_id: int, logic: Tournament):
     """
     Отправляет embed-подложку с кнопками управления раундами.
     """
@@ -124,3 +125,4 @@ async def announce_round_management(channel, tournament_id: int, logic: Tourname
     embed.description = "Нажмите ▶️, чтобы начать первый раунд."
     view = RoundManagementView(tournament_id, logic)
     await channel.send(embed=embed, view=view)
+
