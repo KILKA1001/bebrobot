@@ -160,7 +160,6 @@ class TournamentSetupView(ui.View):
         self.manual_amount = 0.0
         self.t_type: Optional[str] = None
         self.size:   Optional[int] = None
-        self.manual_amount: Optional[float] = None
         self.bank_type: Optional[int] = None
         self._build_type_buttons()
         
