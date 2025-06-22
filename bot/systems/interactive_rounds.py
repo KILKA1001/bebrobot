@@ -1,4 +1,4 @@
-from discord import Embed, Interaction, ButtonStyle
+from discord import Embed, Interaction, ButtonStyle, SelectOption
 from discord.ui import View, Button, Select, button
 
 from bot.systems.tournament_logic import Tournament
@@ -71,9 +71,9 @@ class RoundManagementView(View):
         await interaction.response.edit_message(embed=embed, view=self)
 
     async def on_status_round(self, interaction: Interaction):
-=======
-        # Проставляем custom_id после создания кнопок через декораторы
-        self.start_round_button.custom_id = f"start_round:{tournament_id}"
+                SelectOption(label=f"Победа {match.player_a}", value=f"{match.id}:A"),
+                SelectOption(label=f"Победа {match.player_b}", value=f"{match.id}:B"),
+                SelectOption(label="Ничья", value=f"{match.id}:D"),
         self.next_round_button.custom_id = f"next_round:{tournament_id}"
         self.stop_round_button.custom_id = f"stop_round:{tournament_id}"
         self.status_round_button.custom_id = f"status_round:{tournament_id}"
