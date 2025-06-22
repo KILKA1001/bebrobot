@@ -3,7 +3,7 @@ from discord import Embed, Interaction, ButtonStyle, SelectOption
 from discord.ui import View, Button, Select
 =======
 from discord import Embed, Interaction, ButtonStyle
-from discord.ui import View, Button, Select, button
+from discord.ui import View, Button, Select
 
 
 from bot.systems.tournament_logic import Tournament
@@ -92,6 +92,7 @@ class RoundManagementView(View):
         await interaction.response.edit_message(embed=embed, view=self)
 
     async def on_status_round(self, interaction: Interaction):
+
 =======
         # Проставляем custom_id после создания кнопок через декораторы
         self.start_round_button.custom_id = f"start_round:{tournament_id}"
@@ -123,6 +124,8 @@ class RoundManagementView(View):
         # Пересекается с командой ?tournamentstatus — можно либо отключить команду, либо внутри команды отправлять этот же вид
 
 
+=======
+
         embed = self.logic.get_current_round_embed(self.tournament_id)
         current_matches = self.logic.get_current_matches(self.tournament_id)
         view = MatchResultView(self.tournament_id, self.logic, current_matches)
@@ -130,6 +133,7 @@ class RoundManagementView(View):
 
 
     async def on_manage_rounds(self, interaction: Interaction):
+
 =======
 
     async def on_manage_rounds(self, interaction: Interaction):
@@ -140,6 +144,8 @@ class RoundManagementView(View):
         Обработчик клика по кнопке ⚙ — просто заново открывает панель управления раундами.
         """
 
+
+=======
 
         await announce_round_management(
             interaction.channel,
