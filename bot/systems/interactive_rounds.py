@@ -1,14 +1,83 @@
 from discord import Embed, Interaction, ButtonStyle
 from discord.ui import View, Button, Select
+from dataclasses import dataclass
 
 from bot.systems.tournament_logic import Tournament
+
+
+@dataclass
+class MatchInfo:
+    id: int
+    player_a: str
+    player_b: str
+
+
+class InteractiveTournamentLogic:
+    """Wrapper providing high level helpers expected by the UI."""
+
+    def __init__(self, tournament: Tournament):
+        self.tournament = tournament
+
+    # ─── Internal helpers ──────────────────────────────────────────────────
+    def _build_round_embed(self, round_no: int, matches: list) -> Embed:
+        embed = Embed(
+            title=f"Раунд {round_no}",
+            description=f"Всего матчей: {len(matches)}",
+            color=0x3498DB,
+        )
+        for idx, m in enumerate(matches, start=1):
+            embed.add_field(
+                name=f"Матч {idx}",
+                value=(
+                    f"{m.player1_id} vs {m.player2_id}\n"
+                    f"Режим {m.mode_id}\n"
+                    f"Карта {m.map_id}"
+                ),
+                inline=False,
+            )
+        return embed
+
+    # ─── Public API used by RoundManagementView ────────────────────────────
+    def start_round(self, tournament_id: int) -> Embed:
+        matches = self.tournament.generate_round()
+        return self._build_round_embed(self.tournament.current_round - 1, matches)
+
+    def generate_next_round(self, tournament_id: int) -> Embed:
+        prev = self.tournament.current_round - 1
+        winners = self.tournament.get_winners(prev)
+        if len(winners) < 2 or len(winners) % 2 != 0:
+            return Embed(title="Невозможно начать следующий раунд",
+                         description="Недостаточно победителей.")
+        self.tournament.participants = winners
+        matches = self.tournament.generate_round()
+        return self._build_round_embed(self.tournament.current_round - 1, matches)
+
+    def get_current_round_embed(self, tournament_id: int) -> Embed:
+        round_no = self.tournament.current_round - 1
+        matches = self.tournament.matches.get(round_no, [])
+        return self._build_round_embed(round_no, matches)
+
+    def get_current_matches(self, tournament_id: int) -> list[MatchInfo]:
+        round_no = self.tournament.current_round - 1
+        matches = self.tournament.matches.get(round_no, [])
+        info: list[MatchInfo] = []
+        for idx, m in enumerate(matches, start=1):
+            info.append(MatchInfo(idx, str(m.player1_id), str(m.player2_id)))
+        return info
+
+    def record_result(self, tournament_id: int, match_id: int, result_code: str) -> Embed:
+        round_no = self.tournament.current_round - 1
+        winner_map = {"A": 1, "B": 2, "D": 0}
+        winner = winner_map.get(result_code, 0)
+        self.tournament.record_result(round_no, match_id - 1, winner)
+        return self.get_current_round_embed(tournament_id)
 
 class RoundManagementView(View):
     """UI для управления раундами одного турнира."""
 
     persistent = True
 
-    def __init__(self, tournament_id: int, logic: Tournament):
+    def __init__(self, tournament_id: int, logic: InteractiveTournamentLogic):
         super().__init__(timeout=None)
         self.tournament_id = tournament_id
         self.logic = logic
@@ -88,7 +157,7 @@ class RoundManagementView(View):
 class MatchResultView(View):
     """Представление для ввода результатов матчей."""
 
-    def __init__(self, tournament_id: int, logic: Tournament, matches: list):
+    def __init__(self, tournament_id: int, logic: InteractiveTournamentLogic, matches: list[MatchInfo]):
         super().__init__(timeout=None)
         self.tournament_id = tournament_id
         self.logic = logic
@@ -103,7 +172,7 @@ class MatchResultView(View):
             self.add_item(MatchResultSelect(tournament_id, logic, options))
 
 class MatchResultSelect(Select):
-    def __init__(self, tournament_id: int, logic: Tournament, options: list):
+    def __init__(self, tournament_id: int, logic: InteractiveTournamentLogic, options: list):
         super().__init__(placeholder="Выберите исход матча", options=options)
         self.tournament_id = tournament_id
         self.logic = logic
@@ -118,7 +187,7 @@ class MatchResultSelect(Select):
         await interaction.response.edit_message(embed=embed, view=self.view)
 
 # Функция-помощник для отправки стартового сообщения турнира
-async def announce_round_management(channel, tournament_id: int, logic: Tournament):
+async def announce_round_management(channel, tournament_id: int, logic: InteractiveTournamentLogic):
     """
     Отправляет embed-подложку с кнопками управления раундами.
     """

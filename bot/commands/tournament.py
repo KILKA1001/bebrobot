@@ -20,7 +20,11 @@ from bot.data.tournament_db import add_discord_participant as db_add_participant
 from bot.systems.tournament_logic import delete_tournament as send_delete_confirmation
 # Import the bot instance from base.py instead of creating a new one
 from bot.commands.base import bot
-from bot.systems.interactive_rounds import announce_round_management, RoundManagementView
+from bot.systems.interactive_rounds import (
+    announce_round_management,
+    RoundManagementView,
+    InteractiveTournamentLogic,
+)
 from bot.systems.tournament_logic import create_tournament_logic
 from bot.data.tournament_db import list_participants
 
@@ -101,7 +105,8 @@ async def managerounds(ctx: commands.Context, tournament_id: int):
     ]
 
     # 2) создаём объект логики турнира
-    logic = create_tournament_logic(participants)
+    base_logic = create_tournament_logic(participants)
+    logic = InteractiveTournamentLogic(base_logic)
 
     # 3) запускаем интерактивный View
     await announce_round_management(ctx.channel, tournament_id, logic)
