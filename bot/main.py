@@ -11,7 +11,7 @@ import asyncio
 from dotenv import load_dotenv
 import pytz
 from discord.ext import commands
-
+from bot.commands.base import bot  
 # Локальные импорты
 from bot.data import db
 from keep_alive import keep_alive
