@@ -24,7 +24,6 @@ from bot.data.tournament_db import (
 from bot.data.tournament_db import delete_tournament as delete_tournament_record
 from bot.systems import tournament_rewards_logic as rewards
 from bot.systems.tournament_bank_logic import validate_and_save_bank
-from bot.systems.interactive_rounds import TournamentLogic, create_tournament_logic
 
 
 
