@@ -29,7 +29,6 @@ import bot.data.tournament_db as tournament_db
 from bot.systems.tournament_logic import RegistrationView
 from bot.commands.tournament import managerounds
 
-bot.add_command(managerounds)
 
 # Константы
 COMMAND_PREFIX = '?'
