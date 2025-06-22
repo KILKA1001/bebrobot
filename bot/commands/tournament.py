@@ -14,8 +14,7 @@ from bot.systems.tournament_logic import (
     handle_jointournament,
     handle_regplayer,
     handle_unregister,
-    create_tournament_logic,
-    Tournament as TournamentLogic
+    create_tournament_logic
 )
 from bot.data.tournament_db import add_discord_participant as db_add_participant
 from bot.systems.tournament_logic import delete_tournament as send_delete_confirmation
@@ -23,8 +22,7 @@ from bot.systems.tournament_logic import delete_tournament as send_delete_confir
 from bot.commands.base import bot
 from bot.systems.interactive_rounds import announce_round_management, RoundManagementView
 from bot.systems.tournament_logic import create_tournament_logic
-
-logic = TournamentLogic()
+from bot.data.tournament_db import list_participants
 
 # В памяти храним экземпляры турниров
 active_tournaments: dict[int, Tournament] = {}
@@ -41,6 +39,11 @@ async def createtournament(ctx):
 async def manage_tournament(ctx, tournament_id: int):
     from bot.data.tournament_db import list_participants_full
     participants = [p["discord_user_id"] for p in list_participants_full(tournament_id)]
+    raw = list_participants(tournament_id)
+    participants = [
+        entry.get("discord_user_id") or entry.get("player_id")
+        for entry in raw
+    ]
     logic = create_tournament_logic(participants)
     view = RoundManagementView(tournament_id, logic)
     await ctx.send(f"⚙ Управление турниром #{tournament_id}", view=view)
@@ -90,5 +93,15 @@ async def managerounds(ctx: commands.Context, tournament_id: int):
     ?managerounds <ID> — открывает интерактивную панель
     управления раундами указанного турнира.
     """
-    # ctx.channel — канал, из которого админ вызвал команду
+    # 1) подтягиваем участников из БД
+    raw = list_participants(tournament_id)
+    participants = [
+        entry.get("discord_user_id") or entry.get("player_id")
+        for entry in raw
+    ]
+
+    # 2) создаём объект логики турнира
+    logic = create_tournament_logic(participants)
+
+    # 3) запускаем интерактивный View
     await announce_round_management(ctx.channel, tournament_id, logic)
