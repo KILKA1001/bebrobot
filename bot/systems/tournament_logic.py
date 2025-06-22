@@ -6,7 +6,7 @@ import os
 from bot.data import db
 from discord.ext import commands
 from discord.abc import Messageable
-from discord import TextChannel, Thread
+from discord import TextChannel, Thread, Interaction
 import bot.data.tournament_db as tournament_db
 from bot.data.players_db import get_player_by_id
 from bot.data.tournament_db import count_matches 
@@ -555,7 +555,7 @@ async def join_tournament(ctx: commands.Context, tournament_id: int) -> None:
             "(возможно, вы уже в списке или турнир не существует)."
         )
 
-async def start_round(ctx: commands.Context, tournament_id: int) -> None:
+async def start_round(interaction: Interaction, tournament_id: int) -> None:
     """
     1) Берёт участников
     2) Проверяет, что их >=2 и команда в гильдии
@@ -566,26 +566,26 @@ async def start_round(ctx: commands.Context, tournament_id: int) -> None:
     # 1) Участники
     participants = db_list_participants(tournament_id)
     if len(participants) < 2:
-        await ctx.send("❌ Недостаточно участников для начала раунда.")
+        await interaction.response.send_message("❌ Недостаточно участников для начала раунда.")
         return
 
     if len(participants) % 2 != 0:
-        await ctx.send("⚠️ Нечётное число участников — нужно чётное для пар.")
+        await interaction.response.send_message("⚠️ Нечётное число участников — нужно чётное для пар.")
         return
     
     # 2) Только на сервере
-    guild = ctx.guild
+    guild = interaction.guild
     if guild is None:
-        await ctx.send("❌ Эту команду можно использовать только на сервере.")
+        await interaction.response.send_message("❌ Эту команду можно использовать только на сервере.")
         return
 
     # 3) Объект турнира
-    tour = ctx.bot.get_cog("TournamentCog").active_tournaments.get(tournament_id)
+    tour = interaction.client.get_cog("TournamentCog").active_tournaments.get(tournament_id)
     if not tour:
         user_ids = [p["user_id"] for p in participants]
         participants = user_ids  # или формируйте этот список сразу как participants
         tour = create_tournament_logic(participants)
-        ctx.bot.get_cog("TournamentCog").active_tournaments[tournament_id] = tour
+        interaction.client.get_cog("TournamentCog").active_tournaments[tournament_id] = tour
 
     # 4) Генерация и запись
     matches = tour.generate_round()
@@ -614,7 +614,7 @@ async def start_round(ctx: commands.Context, tournament_id: int) -> None:
         view = MatchResultView(match_id=m.match_id)
 
         # Отправляем отдельное сообщение на каждый матч
-        await ctx.send(embed=match_embed, view=view)
+        await interaction.response.send_message(embed=match_embed, view=view)
 
 async def report_result(ctx: commands.Context, match_id: int, winner: int) -> None:
     """
