@@ -42,28 +42,18 @@ async def register_player(
 
 async def register_player_by_id(
     ctx: commands.Context,
-    player_id: int
+    player_id: int,
+    tournament_id: int,
 ) -> None:
     """
-    Берёт уже существующего игрока и связывает его с текущим турниром через add_player_to_tournament.
+    Связывает существующего игрока с указанным турниром.
     """
     player = get_player_by_id(player_id)
     if not player:
         await ctx.send("❌ Игрок с таким ID не найден.")
         return
 
-    # предположим, что текущий турнир указан в аргументах команды jointournament,
-    # здесь просто демонстрация:
-    # Например, берем tournament_id из первого аргумента после player_id
-    args = ctx.message.content.split()
-    if len(args) < 3:
-        await ctx.send("❌ Укажите ID турнира: `?register <player_id> <tournament_id>`")
-        return
-    try:
-        tournament_id = int(args[2])
-    except ValueError:
-        await ctx.send("❌ Неверный ID турнира.")
-        return
+    # Привязываем игрока к указанному турниру
 
     ok = add_player_to_tournament(player_id, tournament_id)
     if ok:
