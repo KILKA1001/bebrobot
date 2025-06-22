@@ -157,11 +157,13 @@ class TournamentSetupView(ui.View):
     def __init__(self, author_id: int):
         super().__init__(timeout=120)
         self.author_id = author_id
+        self.manual_amount = 0.0
         self.t_type: Optional[str] = None
         self.size:   Optional[int] = None
         self.manual_amount: Optional[float] = None
         self.bank_type: Optional[int] = None
         self._build_type_buttons()
+        
         
 
     @staticmethod
@@ -342,7 +344,8 @@ style=discord.ButtonStyle.secondary,
             prize_text = {
                 1: f"🏅 Тип 1 — {self.manual_amount:.2f} баллов от пользователя",
                 2: "🥈 Тип 2 — 30 баллов (25% платит игрок)",
-                3: "🥇 Тип 3 — 30 баллов (из банка Бебр)"
+                3: "🥇 Тип 3 — 30 баллов (из банка Бебр)",
+                4: "🛠️ TEST — тестовый режим, награды не выдаются"
             }.get(self.bank_type or 1, "❓ Неизвестно")
             embed = discord.Embed(
                 title=f"✅ Турнир #{tour_id} создан!",
