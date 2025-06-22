@@ -1,5 +1,5 @@
 from discord import Embed, Interaction, ButtonStyle
-from discord.ui import View, Button, Select
+from discord.ui import View, Button, Select, button
 
 from bot.systems.tournament_logic import Tournament
 
@@ -71,12 +71,50 @@ class RoundManagementView(View):
         await interaction.response.edit_message(embed=embed, view=self)
 
     async def on_status_round(self, interaction: Interaction):
+=======
+        # Проставляем custom_id после создания кнопок через декораторы
+        self.start_round_button.custom_id = f"start_round:{tournament_id}"
+        self.next_round_button.custom_id = f"next_round:{tournament_id}"
+        self.stop_round_button.custom_id = f"stop_round:{tournament_id}"
+        self.status_round_button.custom_id = f"status_round:{tournament_id}"
+        self.manage_rounds_button.custom_id = f"manage_rounds:{tournament_id}"
+
+    @button(label="▶️ Начать раунд", style=ButtonStyle.green, row=0)
+    async def start_round_button(self, interaction: Interaction, button: Button):
+        # Пересекается с командой ?startround – при наличии данной функции команду лучше отключить или перенаправить здесь
+        embed = self.logic.start_round(self.tournament_id)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @button(label="⏭ Перейти к следующему", style=ButtonStyle.blurple, row=0)
+    async def next_round_button(self, interaction: Interaction, button: Button):
+        # Проверяем, что все результаты есть: логика генерации нового раунда уже есть в generate_next_round
+        embed = self.logic.generate_next_round(self.tournament_id)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @button(label="🛑 Остановить раунд", style=ButtonStyle.red, row=1)
+    async def stop_round_button(self, interaction: Interaction, button: Button):
+        # Позволяет приостановить текущий раунд и вернуться к редактированию
+        embed = self.logic.get_current_round_embed(self.tournament_id)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @button(label="📊 Показать статус", style=ButtonStyle.gray, row=1)
+    async def status_round_button(self, interaction: Interaction, button: Button):
+        # Пересекается с командой ?tournamentstatus — можно либо отключить команду, либо внутри команды отправлять этот же вид
+
         embed = self.logic.get_current_round_embed(self.tournament_id)
         current_matches = self.logic.get_current_matches(self.tournament_id)
         view = MatchResultView(self.tournament_id, self.logic, current_matches)
         await interaction.response.edit_message(embed=embed, view=view)
 
+
     async def on_manage_rounds(self, interaction: Interaction):
+=======
+    @button(label="⚙ Управление раундами", style=ButtonStyle.primary, row=2)
+    async def manage_rounds_button(self, interaction: Interaction, button: Button):
+        """
+        Обработчик клика по кнопке ⚙ — просто заново открывает панель управления раундами.
+        """
+
         await announce_round_management(
             interaction.channel,
             self.tournament_id,
