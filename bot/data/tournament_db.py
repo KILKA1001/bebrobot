@@ -201,3 +201,12 @@ def get_active_tournaments() -> list[dict]:
         .eq("status", "active") \
         .execute()
     return res.data or []
+
+
+def save_announcement_message(tournament_id: int, message_id: int) -> bool:
+    """Сохраняет ID сообщения с объявлением турнира."""
+    res = supabase.table("tournaments") \
+        .update({"announcement_message_id": message_id}) \
+        .eq("id", tournament_id) \
+        .execute()
+    return bool(res.data)
