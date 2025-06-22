@@ -1,7 +1,7 @@
 import random
 from typing import List, Dict, Optional
 import discord
-from discord import ui, Embed, ButtonStyle
+from discord import ui, Embed, ButtonStyle, Color
 import os
 from bot.data import db
 from discord.ext import commands

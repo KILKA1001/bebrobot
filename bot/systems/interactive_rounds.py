@@ -1,6 +1,11 @@
 from discord import Embed, Interaction, ButtonStyle, SelectOption
 from discord.ui import View, Button, Select
-
+from bot.systems.tournament_logic import (
+    start_round as cmd_start_round,
+    join_tournament,            # не обязательно, но для примера
+    report_result as cmd_report_result,
+    build_tournament_status_embed,
+)
 
 from bot.systems.tournament_logic import Tournament
 
@@ -61,20 +66,22 @@ class RoundManagementView(View):
 
 
     async def on_start_round(self, interaction: Interaction):
-        embed = self.logic.start_round(self.tournament_id)
-        await interaction.response.edit_message(embed=embed, view=self)
+        await cmd_start_round(interaction, self.tournament_id)
 
     async def on_next_round(self, interaction: Interaction):
-        embed = self.logic.generate_next_round(self.tournament_id)
-        await interaction.response.edit_message(embed=embed, view=self)
+        await cmd_start_round(interaction, self.tournament_id)
 
     async def on_stop_round(self, interaction: Interaction):
-        embed = self.logic.get_current_round_embed(self.tournament_id)
-        await interaction.response.edit_message(embed=embed, view=self)
+        status = await build_tournament_status_embed(self.tournament_id)
+        if status:
+            await interaction.response.edit_message(embed=status, view=self)
+        else:
+            await interaction.response.send_message(
+                "❌ Не удалось получить статус турнира.", ephemeral=True
+            )
 
     async def on_status_round(self, interaction: Interaction):
-        embed = self.logic.get_current_round_embed(self.tournament_id)
-        await interaction.response.edit_message(embed=embed, view=self)
+        await self.on_stop_round(interaction)
 
     async def on_manage_rounds(self, interaction: Interaction):
         """Повторно открывает панель управления раундами."""
@@ -98,12 +105,13 @@ class MatchResultView(View):
 
         # Для каждого матча добавляем select-меню
         for match in matches:
-            options = [
+            opts = [
                 SelectOption(label=f"Победа {match.player_a}", value=f"{match.id}:A"),
                 SelectOption(label=f"Победа {match.player_b}", value=f"{match.id}:B"),
                 SelectOption(label="Ничья", value=f"{match.id}:D"),
             ]
-            self.add_item(MatchResultSelect(tournament_id, logic, options))
+            sel = MatchResultSelect(tournament_id, logic, opts)
+            self.add_item(sel)
 
 class MatchResultSelect(Select):
     def __init__(self, tournament_id: int, logic: Tournament, options: list):
@@ -117,8 +125,8 @@ class MatchResultSelect(Select):
         match_id_str, result_code = raw.split(':', 1)
         match_id = int(match_id_str)
         # record_result пересекается с турниром.recordResult — учесть, чтобы не дублировать записи
-        embed = self.logic.record_result(self.tournament_id, match_id, result_code)
-        await interaction.response.edit_message(embed=embed, view=self.view)
+        await cmd_report_result(interaction, match_id, int(result_code))
+
 
 # Функция-помощник для отправки стартового сообщения турнира
 async def announce_round_management(channel, tournament_id: int, logic: Tournament):
