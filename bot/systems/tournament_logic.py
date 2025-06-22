@@ -27,6 +27,7 @@ from bot.systems.tournament_bank_logic import validate_and_save_bank
 
 
 
+
 assert db.supabase is not None, "Supabase client not initialized"
 supabase = db.supabase
 

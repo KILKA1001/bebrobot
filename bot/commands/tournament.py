@@ -13,15 +13,16 @@ from bot.systems.tournament_logic import (
     Tournament,
     handle_jointournament,
     handle_regplayer,
-    handle_unregister
+    handle_unregister,
+    create_tournament_logic,
+    Tournament as TournamentLogic
 )
 from bot.data.tournament_db import add_discord_participant as db_add_participant
 from bot.systems.tournament_logic import delete_tournament as send_delete_confirmation
 # Import the bot instance from base.py instead of creating a new one
 from bot.commands.base import bot
-from bot.systems.interactive_rounds import announce_round_management, TournamentLogic
+from bot.systems.interactive_rounds import announce_round_management, RoundManagementView
 from bot.systems.tournament_logic import create_tournament_logic
-from bot.systems.interactive_rounds import RoundManagementView
 
 logic = TournamentLogic()
 
@@ -41,7 +42,6 @@ async def manage_tournament(ctx, tournament_id: int):
     from bot.data.tournament_db import list_participants_full
     participants = [p["discord_user_id"] for p in list_participants_full(tournament_id)]
     logic = create_tournament_logic(participants)
-    from bot.systems.interactive_rounds import RoundManagementView
     view = RoundManagementView(tournament_id, logic)
     await ctx.send(f"⚙ Управление турниром #{tournament_id}", view=view)
     
