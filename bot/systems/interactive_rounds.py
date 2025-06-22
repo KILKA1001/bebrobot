@@ -1,5 +1,6 @@
 from discord import Embed, Interaction
-from discord.ui import View, Button, button, Select, SelectOption, ButtonStyle
+from discord import Embed, Interaction, SelectOption, ButtonStyle
+from discord.ui import View, Button, Select, button
 
 from bot.systems.tournament_logic import create_tournament_logic, Tournament
 
