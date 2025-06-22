@@ -2,9 +2,9 @@ from discord import Embed, Interaction
 from discord.ui import View, Button, Select, button
 from discord import ButtonStyle
 
-from tournament_logic import TournamentLogic  # Импорт существующего модуля логики турниров
+from bot.systems.tournament_logic import TournamentLogic
 from discord import Interaction
-from .interactive_rounds import announce_round_management
+from bot.systems.tournament_logic import announce_round_management
 
 class RoundManagementView(View):
     persistent = True
