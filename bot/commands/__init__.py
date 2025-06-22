@@ -21,13 +21,12 @@ from .tournament import (
     createtournament,
     jointournament,
     deletetournament,
-    regplayer,
-    tournamentannounce
+    regplayer
 )
 
 __all__ = [
     "bot", 
     "run_monthly_top",
     "fine", "myfines", "all_fines", "finedetails", "editfine", "cancel_fine", "finehistory", "topfines",
-    "createtournament", "jointournament", "deletetournament", "regplayer", "tournamentannounce"
+    "createtournament", "jointournament", "deletetournament", "regplayer"
 ]
