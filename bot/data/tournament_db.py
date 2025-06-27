@@ -194,8 +194,24 @@ def set_bank_type(tournament_id: int, bank_type: int, manual_amount: Optional[fl
         .execute()
     return bool(res.data)
 
+def get_tournament_status(tournament_id: int) -> str:
+    """Возвращает текущий статус турнира."""
+    res = supabase.table("tournaments") \
+        .select("status") \
+        .eq("id", tournament_id) \
+        .execute()
+    return res.data[0]["status"] if res.data else "registration"
+
+def get_tournament_size(tournament_id: int) -> int:
+    """Возвращает максимальное количество участников турнира."""
+    res = supabase.table("tournaments") \
+        .select("size") \
+        .eq("id", tournament_id) \
+        .execute()
+    return res.data[0]["size"] if res.data else 0
+
 def get_active_tournaments() -> list[dict]:
-    # Пример: взять все турниры со статусом “active” и вернуть их ID + сохранённый message_id
+    """Возвращает список активных турниров."""
     res = supabase.table("tournaments") \
         .select("id, announcement_message_id") \
         .eq("status", "active") \
