@@ -211,9 +211,9 @@ def get_tournament_size(tournament_id: int) -> int:
     return res.data[0]["size"] if res.data else 0
 
 def get_active_tournaments() -> list[dict]:
-    """Возвращает список активных турниров."""
+    """Возвращает список активных турниров с полями id, size, type и announcement_message_id."""
     res = supabase.table("tournaments") \
-        .select("id, announcement_message_id") \
+        .select("id, size, type, announcement_message_id") \
         .eq("status", "active") \
         .execute()
     return res.data or []

@@ -75,13 +75,20 @@ async def on_ready():
     
     active_tournaments = tournament_db.get_active_tournaments()
     for tour in active_tournaments:
-        # Регистрация RegistrationView
-        registration_view = RegistrationView(
-            tournament_id=tour["id"],
-            max_participants=tour["size"],
-            tour_type=tour["type"]
-        )
-        bot.add_view(registration_view, message_id=tour["announcement_message_id"])
+        # Проверяем наличие обязательных полей
+        if not all(key in tour for key in ["id", "size", "type", "announcement_message_id"]):
+            continue
+            
+        try:
+            # Регистрация RegistrationView
+            registration_view = RegistrationView(
+                tournament_id=tour["id"],
+                max_participants=tour.get("size", 0),  # Используем get с default значением
+                tour_type=tour.get("type", "duel")     # Default тип турнира
+            )
+            bot.add_view(registration_view, message_id=tour["announcement_message_id"])
+        except Exception as e:
+            print(f"Ошибка при регистрации турнира {tour.get('id')}: {e}")
 
         # Регистрация RoundManagementView
         participants = [p["user_id"] for p in tournament_db.list_participants(tour["id"])]
