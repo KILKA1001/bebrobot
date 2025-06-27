@@ -91,10 +91,18 @@ async def on_ready():
             print(f"Ошибка при регистрации турнира {tour.get('id')}: {e}")
 
         # Регистрация RoundManagementView
-        participants = [p["user_id"] for p in tournament_db.list_participants(tour["id"])]
-        tournament_logic = create_tournament_logic(participants)
-        round_management_view = RoundManagementView(tour["id"], tournament_logic)
-        bot.add_view(round_management_view)
+        participants_data = tournament_db.list_participants(tour["id"])
+        participants = []
+        for p in participants_data:
+            if "discord_user_id" in p and p["discord_user_id"]:
+                participants.append(p["discord_user_id"])
+            elif "player_id" in p and p["player_id"]:
+                participants.append(p["player_id"])
+                
+        if participants:
+            tournament_logic = create_tournament_logic(participants)
+            round_management_view = RoundManagementView(tour["id"], tournament_logic)
+            bot.add_view(round_management_view)
 
     # 👇 тут будет работать, потому что определена выше
     asyncio.create_task(autosave_task())
