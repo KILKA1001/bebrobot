@@ -57,10 +57,25 @@ def create_tournament_record(t_type: str, size: int) -> int:
     res = supabase.table("tournaments") \
         .insert({
             "type": t_type,
-            "size": size
+            "size": size,
+            "status": "registration"  # Добавляем начальный статус
         }) \
         .execute()
     return res.data[0]["id"]
+
+def set_tournament_status(tournament_id: int, status: str) -> bool:
+    """
+    Изменяет статус турнира (registration/active/finished).
+    Возвращает True при успехе.
+    """
+    try:
+        supabase.table("tournaments") \
+            .update({"status": status}) \
+            .eq("id", tournament_id) \
+            .execute()
+        return True
+    except Exception:
+        return False
 
 def delete_tournament_record(tournament_id: int) -> bool:
     """

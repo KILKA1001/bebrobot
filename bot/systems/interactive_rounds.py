@@ -19,11 +19,18 @@ class RoundManagementView(View):
         self.tournament_id = tournament_id
         self.logic = logic
 
+        # Получаем статус турнира
+        from bot.data.tournament_db import get_tournament_status
+        status = get_tournament_status(tournament_id)
+
+        # Настройка кнопки "Начать раунд"
+        start_disabled = status != "active"
         start_btn = Button(
             label="▶️ Начать раунд",
             style=ButtonStyle.green,
             custom_id=f"start_round:{tournament_id}",
             row=0,
+            disabled=start_disabled
         )
         start_btn.callback = self.on_start_round
         self.add_item(start_btn)
@@ -55,14 +62,43 @@ class RoundManagementView(View):
         status_btn.callback = self.on_status_round
         self.add_item(status_btn)
 
-        manage_btn = Button(
-            label="⚙ Управление раундами",
-            style=ButtonStyle.primary,
-            custom_id=f"manage_rounds:{tournament_id}",
-            row=2,
-        )
-        manage_btn.callback = self.on_manage_rounds
-        self.add_item(manage_btn)
+        # Кнопка активации турнира (если статус "registration")
+        if status == "registration":
+            activate_btn = Button(
+                label="✅ Активировать турнир",
+                style=ButtonStyle.success,
+                custom_id=f"activate_tournament:{tournament_id}",
+                row=2,
+            )
+            activate_btn.callback = self.on_activate_tournament
+            self.add_item(activate_btn)
+        else:
+            manage_btn = Button(
+                label="⚙ Управление раундами",
+                style=ButtonStyle.primary,
+                custom_id=f"manage_rounds:{tournament_id}",
+                row=2,
+            )
+            manage_btn.callback = self.on_manage_rounds
+            self.add_item(manage_btn)
+
+    async def on_activate_tournament(self, interaction: Interaction):
+        """Переводит турнир в активный статус"""
+        from bot.systems.tournament_logic import set_tournament_status
+        if set_tournament_status(self.tournament_id, "active"):
+            await interaction.response.send_message(
+                f"✅ Турнир #{self.tournament_id} активирован!",
+                ephemeral=True
+            )
+            # Обновляем View
+            self.clear_items()
+            await self.__init__(self.tournament_id, self.logic)
+            await interaction.message.edit(view=self)
+        else:
+            await interaction.response.send_message(
+                "❌ Не удалось активировать турнир",
+                ephemeral=True
+            )
 
 
     async def on_start_round(self, interaction: Interaction):

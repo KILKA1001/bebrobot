@@ -37,16 +37,30 @@ async def createtournament(ctx):
 @bot.command(name="managetournament")
 @commands.has_permissions(administrator=True)
 async def manage_tournament(ctx, tournament_id: int):
-    from bot.data.tournament_db import list_participants_full
+    from bot.data.tournament_db import (
+        list_participants_full,
+        get_tournament_status,
+        get_tournament_size
+    )
+    
+    # Получаем данные о турнире
     participants = [p["discord_user_id"] for p in list_participants_full(tournament_id)]
-    raw = list_participants(tournament_id)
-    participants = [
-        entry.get("discord_user_id") or entry.get("player_id")
-        for entry in raw
-    ]
+    status = get_tournament_status(tournament_id)
+    max_participants = get_tournament_size(tournament_id)
+    
+    # Создаем embed с информацией
+    embed = discord.Embed(
+        title=f"⚙ Управление турниром #{tournament_id}",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="Статус", value=status, inline=True)
+    embed.add_field(name="Участники", value=f"{len(participants)}/{max_participants}", inline=True)
+    
+    # Создаем View с кнопками
     logic = create_tournament_logic(participants)
     view = RoundManagementView(tournament_id, logic)
-    await ctx.send(f"⚙ Управление турниром #{tournament_id}", view=view)
+    
+    await ctx.send(embed=embed, view=view)
     
 @bot.command(name="jointournament")
 async def jointournament(ctx: commands.Context, tournament_id: int):
