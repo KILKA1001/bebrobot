@@ -55,17 +55,20 @@ def list_participants(tournament_id: int) -> List[dict]:
 def create_matches(tournament_id: int, round_number: int, matches: List) -> None:
     """
     Сохраняет все матчи раунда в таблицу tournament_matches.
-    Поддерживает объекты Match как с атрибутами, так и со словарями.
+    Универсальная обработка объектов Match разных типов.
     """
     records = []
     for m in matches:
+        # Определяем тип объекта (имеет атрибуты или является словарем)
+        is_dict_like = hasattr(m, 'items') or hasattr(m, 'get') or isinstance(m, dict)
+        
         record = {
             "tournament_id": tournament_id,
             "round_number": round_number,
-            "player1_id": getattr(m, "player1_id", None) or m.get("player1_id"),
-            "player2_id": getattr(m, "player2_id", None) or m.get("player2_id"),
-            "mode": getattr(m, "mode", None) or m.get("mode", "default"),  # Значение по умолчанию
-            "map_id": getattr(m, "map_id", None) or m.get("map_id", 0)    # Значение по умолчанию
+            "player1_id": m["player1_id"] if is_dict_like else m.player1_id,
+            "player2_id": m["player2_id"] if is_dict_like else m.player2_id,
+            "mode": m.get("mode", "default") if is_dict_like else getattr(m, "mode", "default"),
+            "map_id": m.get("map_id", 0) if is_dict_like else getattr(m, "map_id", 0)
         }
         records.append(record)
     
