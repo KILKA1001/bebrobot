@@ -55,18 +55,20 @@ def list_participants(tournament_id: int) -> List[dict]:
 def create_matches(tournament_id: int, round_number: int, matches: List) -> None:
     """
     Сохраняет все матчи раунда в таблицу tournament_matches.
+    Поддерживает объекты Match как с атрибутами, так и со словарями.
     """
-    records = [
-        {
+    records = []
+    for m in matches:
+        record = {
             "tournament_id": tournament_id,
             "round_number": round_number,
-            "player1_id": m.player1_id,
-            "player2_id": m.player2_id,
-            "mode": m.mode,
-            "map_id": m.map_id
+            "player1_id": getattr(m, "player1_id", None) or m.get("player1_id"),
+            "player2_id": getattr(m, "player2_id", None) or m.get("player2_id"),
+            "mode": getattr(m, "mode", None) or m.get("mode", "default"),  # Значение по умолчанию
+            "map_id": getattr(m, "map_id", None) or m.get("map_id", 0)    # Значение по умолчанию
         }
-        for m in matches
-    ]
+        records.append(record)
+    
     supabase.table("tournament_matches").insert(records).execute()
 
 
