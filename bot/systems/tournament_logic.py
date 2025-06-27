@@ -595,7 +595,13 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
         return
 
     # 3) Объект турнира
-    view = discord.utils.get(interaction.client.persistent_views, custom_id=f"manage_rounds:{tournament_id}")
+    # Ищем существующий View или создаем новый
+    view = None
+    for v in interaction.client.persistent_views:
+        if hasattr(v, 'custom_id') and v.custom_id == f"manage_rounds:{tournament_id}":
+            view = v
+            break
+            
     if view and hasattr(view, 'logic'):
         tour = view.logic
     else:

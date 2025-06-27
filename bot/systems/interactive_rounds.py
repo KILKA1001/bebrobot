@@ -18,6 +18,7 @@ class RoundManagementView(View):
         super().__init__(timeout=None)
         self.tournament_id = tournament_id
         self.logic = logic
+        self.custom_id = f"manage_rounds:{tournament_id}"  # Добавляем custom_id
 
         # Получаем статус турнира
         from bot.data.tournament_db import get_tournament_status
