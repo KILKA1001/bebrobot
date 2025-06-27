@@ -580,12 +580,13 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
         return
 
     # 3) Объект турнира
-    tour = interaction.client.get_cog("TournamentCog").active_tournaments.get(tournament_id)
-    if not tour:
+    view = discord.utils.get(interaction.client.persistent_views, custom_id=f"manage_rounds:{tournament_id}")
+    if view and hasattr(view, 'logic'):
+        tour = view.logic
+    else:
         user_ids = [p["user_id"] for p in participants]
-        participants = user_ids  # или формируйте этот список сразу как participants
+        participants = user_ids
         tour = create_tournament_logic(participants)
-        interaction.client.get_cog("TournamentCog").active_tournaments[tournament_id] = tour
 
     # 4) Генерация и запись
     matches = tour.generate_round()
