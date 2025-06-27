@@ -28,7 +28,9 @@ from bot.systems.fines_logic import fines_summary_loop
 import bot.data.tournament_db as tournament_db
 from bot.systems.tournament_logic import RegistrationView
 from bot.commands.tournament import managerounds
-
+from bot.systems.interactive_rounds import RoundManagementView
+from bot.systems.tournament_logic import create_tournament_logic
+from bot.data import tournament_db
 
 # Константы
 COMMAND_PREFIX = '?'
@@ -69,15 +71,23 @@ async def on_ready():
         name="Привет! Напиши команду ?helpy чтобы увидеть все команды 🧠",
         type=discord.ActivityType.listening
     )
-    active = tournament_db.get_active_tournaments()
-    for tour in active:
-        view = RegistrationView(
-            tournament_id = tour["id"],
-            max_participants = tour["size"],
-            tour_type = tour["type"]
-        )
-        bot.add_view(view, message_id = tour["announcement_message_id"])
     await bot.change_presence(activity=activity)
+    
+    active_tournaments = tournament_db.get_active_tournaments()
+    for tour in active_tournaments:
+        # Регистрация RegistrationView
+        registration_view = RegistrationView(
+            tournament_id=tour["id"],
+            max_participants=tour["size"],
+            tour_type=tour["type"]
+        )
+        bot.add_view(registration_view, message_id=tour["announcement_message_id"])
+
+        # Регистрация RoundManagementView
+        participants = [p["user_id"] for p in tournament_db.list_participants(tour["id"])]
+        tournament_logic = create_tournament_logic(participants)
+        round_management_view = RoundManagementView(tour["id"], tournament_logic)
+        bot.add_view(round_management_view)
 
     # 👇 тут будет работать, потому что определена выше
     asyncio.create_task(autosave_task())

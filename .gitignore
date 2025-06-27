@@ -1,1 +1,27 @@
+# Environment files
+.env
+*.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# IDE specific files
+.vscode/
+.idea/
 .vs/
+# Logs
+*.log
+logs/
+
+# Database files
+*.db
+*.sqlite
+
+# Virtual environment
+env/
+venv/
+
+# System files
+.DS_Store
+Thumbs.db.vs/
