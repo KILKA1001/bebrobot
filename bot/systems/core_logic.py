@@ -376,8 +376,7 @@ def get_help_embed(category: str) -> discord.Embed:
             "`?createtournament` — создать турнир\n"
             "`?managetournament id` — управление турниром\n"
             "`?deletetournament id` — удалить турнир\n"
-            "`?tournamentannounce id` — объявить регистрацию\n"
-            "`?managerounds id` — панель раундов"
+            "`?tournamentannounce id` — объявить регистрацию"
         )
     return embed
 

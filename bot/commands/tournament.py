@@ -14,16 +14,16 @@ from bot.systems.tournament_logic import (
     handle_jointournament,
     handle_regplayer,
     handle_unregister,
-    create_tournament_logic
+    create_tournament_logic,
+    build_tournament_status_embed,
+    build_tournament_bracket_embed
 )
 from bot.data.tournament_db import add_discord_participant as db_add_participant
 from bot.systems.tournament_logic import delete_tournament as send_delete_confirmation
 # Import the bot instance from base.py instead of creating a new one
 from bot.commands.base import bot
 from bot.utils import send_temp
-from bot.systems.interactive_rounds import announce_round_management, RoundManagementView
-from bot.systems.tournament_logic import create_tournament_logic
-from bot.data.tournament_db import list_participants
+from bot.systems.interactive_rounds import RoundManagementView
 
 # В памяти храним экземпляры турниров
 active_tournaments: dict[int, Tournament] = {}
@@ -39,29 +39,19 @@ async def createtournament(ctx):
 @bot.command(name="managetournament")
 @commands.has_permissions(administrator=True)
 async def manage_tournament(ctx, tournament_id: int):
-    from bot.data.tournament_db import (
-        list_participants_full,
-        get_tournament_status,
-        get_tournament_size
-    )
-    
-    # Получаем данные о турнире
+    """Открывает расширенную панель управления турниром."""
+    from bot.data.tournament_db import list_participants_full
+
     participants = [p["discord_user_id"] for p in list_participants_full(tournament_id)]
-    status = get_tournament_status(tournament_id)
-    max_participants = get_tournament_size(tournament_id)
-    
-    # Создаем embed с информацией
-    embed = discord.Embed(
-        title=f"⚙ Управление турниром #{tournament_id}",
-        color=discord.Color.blue()
-    )
-    embed.add_field(name="Статус", value=status, inline=True)
-    embed.add_field(name="Участники", value=f"{len(participants)}/{max_participants}", inline=True)
-    
-    # Создаем View с кнопками
     logic = create_tournament_logic(participants)
+
+    embed = await build_tournament_bracket_embed(tournament_id, ctx.guild)
+    if not embed:
+        embed = await build_tournament_status_embed(tournament_id)
+    if not embed:
+        embed = discord.Embed(title=f"⚙ Управление турниром #{tournament_id}", color=discord.Color.blue())
+
     view = RoundManagementView(tournament_id, logic)
-    
     await send_temp(ctx, embed=embed, view=view)
     
 @bot.command(name="jointournament")
@@ -101,23 +91,3 @@ async def tournament_announce(ctx, tournament_id: int):
     success = await tournament_logic.send_announcement_embed(ctx, tournament_id)
     if not success:
         await send_temp(ctx, "❌ Не удалось отправить объявление. Проверь ID турнира.")
-
-@bot.command(name="managerounds")
-@commands.has_permissions(administrator=True)
-async def managerounds(ctx: commands.Context, tournament_id: int):
-    """
-    ?managerounds <ID> — открывает интерактивную панель
-    управления раундами указанного турнира.
-    """
-    # 1) подтягиваем участников из БД
-    raw = list_participants(tournament_id)
-    participants = [
-        entry.get("discord_user_id") or entry.get("player_id")
-        for entry in raw
-    ]
-
-    # 2) создаём объект логики турнира
-    logic = create_tournament_logic(participants)
-
-    # 3) запускаем интерактивный View
-    await announce_round_management(ctx.channel, tournament_id, logic)
