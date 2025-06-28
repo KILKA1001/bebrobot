@@ -101,7 +101,8 @@ async def on_ready():
                 participants.append(p["player_id"])
                 
         if participants:
-            tournament_logic = create_tournament_logic(participants)
+            team_size = 3 if tour.get("type") == "team" else 1
+            tournament_logic = create_tournament_logic(participants, team_size=team_size)
             round_management_view = RoundManagementView(tour["id"], tournament_logic)
             bot.add_view(round_management_view)
 
