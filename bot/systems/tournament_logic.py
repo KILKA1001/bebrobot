@@ -452,6 +452,23 @@ def create_match_records(tournament_id: int, round_number: int, matches: list[Ma
         .execute()
     for m, r in zip(matches, res.data or []):
         m.match_id = r.get("id")
+
+    print("📦 Запрос к Supabase:", recs)
+
+    res = supabase.table("tournament_matches") \
+        .insert(recs) \
+        .execute()
+
+    print("📥 Ответ Supabase:", res.data)
+
+    if not res.data or len(res.data) != len(matches):
+        raise RuntimeError(
+            f"❌ Supabase вернул {len(res.data or [])} записей, ожидалось {len(matches)}"
+        )
+
+    for m, r in zip(matches, res.data):
+        m.match_id = r.get("id")
+        print(f"✅ Назначен match_id={m.match_id} для {m.player1_id} vs {m.player2_id}")
         
 def list_match_records(tournament_id: int, round_number: int) -> list[Match]:
     resp = supabase.table("tournament_matches")\
