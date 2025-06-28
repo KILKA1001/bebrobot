@@ -26,7 +26,7 @@ from bot.data.tournament_db import (
     create_tournament_record as db_create_tournament_record,
     get_tournament_info,
     list_recent_results,
-    delete_tournament,
+    delete_tournament as db_delete_tournament,
 )
 from bot.systems import tournament_rewards_logic as rewards
 from bot.systems.tournament_bank_logic import validate_and_save_bank
@@ -72,7 +72,7 @@ def delete_tournament_record(tournament_id: int) -> bool:
     Удаляет турнир и все связанные с ним записи (ON DELETE CASCADE).
     """
     try:
-        delete_tournament(tournament_id)
+        db_delete_tournament(tournament_id)
         return True
     except Exception:
         return False
