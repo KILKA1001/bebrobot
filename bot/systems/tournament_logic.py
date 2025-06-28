@@ -198,7 +198,6 @@ class TournamentSetupView(ui.View):
         
     def _build_type_buttons(self):
         self.clear_items()
-        self.clear_items()
         # создаём кнопку Дуэль
         btn1 = ui.Button(
             label="Дуэльный 1×1",
