@@ -1,6 +1,7 @@
 import random
 import logging
 from typing import List, Dict, Optional
+import asyncio
 import discord
 from discord import ui, Embed, ButtonStyle, Color
 import os
@@ -55,9 +56,9 @@ MAPS_BY_MODE: Dict[int, List[str]] = {
 
 # ───── База данных ─────
 
-def create_tournament_record(t_type: str, size: int) -> int:
+def create_tournament_record(t_type: str, size: int, start_time: Optional[str] = None) -> int:
     """Создаёт запись о турнире и возвращает его ID."""
-    return db_create_tournament_record(t_type, size)
+    return db_create_tournament_record(t_type, size, start_time)
 
 def set_tournament_status(tournament_id: int, status: str) -> bool:
     """
@@ -165,6 +166,8 @@ class TournamentSetupView(ui.View):
         self.t_type: Optional[str] = None
         self.size:   Optional[int] = None
         self.bank_type: Optional[int] = None
+        self.start_time: Optional[str] = None
+        self.message: Optional[discord.Message] = None
         self._build_type_buttons()
         
         
@@ -236,13 +239,20 @@ style=discord.ButtonStyle.secondary,
 
     def _build_confirm_buttons(self):
         self.clear_items()
+        date_btn = ui.Button(
+            label="📅 Дата старта",
+            style=discord.ButtonStyle.secondary,
+            custom_id="set_date"
+        )
+        date_btn.callback = self.on_set_date
+        self.add_item(date_btn)
         # Кнопка «Подтвердить»
         btn_confirm = ui.Button(
             label="✅ Подтвердить",
             style=discord.ButtonStyle.success,
             custom_id="confirm"
         )
-        btn_confirm.callback = self.on_confirm  
+        btn_confirm.callback = self.on_confirm
         self.add_item(btn_confirm)
 
         # Кнопка «Отменить»
@@ -251,8 +261,11 @@ style=discord.ButtonStyle.secondary,
             style=discord.ButtonStyle.danger,
             custom_id="cancel"
         )
-        btn_cancel.callback = self.on_cancel 
+        btn_cancel.callback = self.on_cancel
         self.add_item(btn_cancel)
+
+    async def on_set_date(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(StartDateModal(self))
 
     async def interaction_check(self, inter: discord.Interaction) -> bool:
         # Только автор команды может управлять этим View
@@ -336,8 +349,15 @@ style=discord.ButtonStyle.secondary,
                     )
                     return
 
+            if self.start_time is None:
+                await interaction.response.send_message(
+                    "❌ Сначала укажите дату начала турнира через кнопку \"📅 Дата старта\".",
+                    ephemeral=True,
+                )
+                return
+
             # Теперь тип и размер — точно str и int
-            tour_id = create_tournament_record(self.t_type, self.size)
+            tour_id = create_tournament_record(self.t_type, self.size, self.start_time)
             ok, msg = validate_and_save_bank(tour_id, self.bank_type or 1, self.manual_amount)
             if not ok:
                 await interaction.response.send_message(msg, ephemeral=True)
@@ -369,6 +389,8 @@ style=discord.ButtonStyle.secondary,
             announcement.add_field(name="Тип", value=typetxt, inline=True)
             announcement.add_field(name="Участников", value=str(self.size), inline=True)
             announcement.add_field(name="Приз", value=prize_text, inline=False)
+            if self.start_time:
+                announcement.add_field(name="Начало", value=self.start_time, inline=False)
             announcement.set_footer(text="Нажмите, чтобы зарегистрироваться")
             # если есть награда
             # (можно добавить параметр reward в конструктор, либо оставить пустым)
@@ -909,6 +931,31 @@ async def handle_unregister(ctx: commands.Context, identifier: str, tournament_i
         return await send_temp(ctx, "❌ Не удалось снять с турнира (возможно, нет в списке).")
     await send_temp(ctx, f"✅ {name} удалён из турнира #{tournament_id}.")
 
+class StartDateModal(ui.Modal, title="Дата начала турнира"):
+    start = ui.TextInput(label="ДД.ММ.ГГГГ ЧЧ:ММ", placeholder="01.12.2023 18:00", required=True)
+
+    def __init__(self, view: TournamentSetupView):
+        super().__init__()
+        self.view = view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        from datetime import datetime
+        try:
+            dt = datetime.strptime(str(self.start), "%d.%m.%Y %H:%M")
+            self.view.start_time = dt.isoformat()
+            await interaction.response.send_message(
+                f"✅ Дата начала установлена: {dt.strftime('%d.%m.%Y %H:%M')}",
+                ephemeral=True,
+            )
+            if self.view.message:
+                self.view._build_confirm_buttons()
+                await self.view.message.edit(view=self.view)
+        except Exception:
+            await interaction.response.send_message(
+                "❌ Неверный формат. Используйте ДД.ММ.ГГГГ ЧЧ:ММ", ephemeral=True
+            )
+
+
 class BankAmountModal(ui.Modal, title="Введите сумму банка"):
     amount = ui.TextInput(label="Сумма (минимум 15)", placeholder="20", required=True)
 
@@ -973,6 +1020,7 @@ async def build_tournament_status_embed(tournament_id: int) -> discord.Embed | N
     bank_type = t.get("bank_type", 1)
     manual = t.get("manual_amount", 20.0)
     status = t.get("status", "unknown")
+    start = t.get("start_time")
 
     type_text = "Дуэльный 1×1" if t_type == "duel" else "Командный 3×3"
     prize_text = {
@@ -997,6 +1045,8 @@ async def build_tournament_status_embed(tournament_id: int) -> discord.Embed | N
     embed.add_field(name="Банк", value=prize_text, inline=False)
     embed.add_field(name="Статус", value=status.capitalize(), inline=True)
     embed.add_field(name="Этап", value=stage, inline=True)
+    if start:
+        embed.add_field(name="Начало", value=start, inline=False)
 
     # Участники (ID)
     names = [
@@ -1007,3 +1057,54 @@ async def build_tournament_status_embed(tournament_id: int) -> discord.Embed | N
     embed.add_field(name="📌 Участники (первые 10)", value=name_list, inline=False)
 
     return embed
+
+
+async def send_tournament_reminders(bot: commands.Bot, hours: int = 24) -> None:
+    """Отправляет участникам напоминания о ближайших турнирах."""
+    from datetime import datetime
+    upcoming = tournament_db.get_upcoming_tournaments(hours)
+    for t in upcoming:
+        start_iso = t.get("start_time")
+        if not start_iso:
+            continue
+        try:
+            dt = datetime.fromisoformat(start_iso)
+            start_text = dt.strftime("%d.%m.%Y %H:%M")
+        except Exception:
+            start_text = start_iso
+        participants = tournament_db.list_participants_full(t["id"])
+        user_ids = [p.get("discord_user_id") for p in participants if p.get("discord_user_id")]
+        teams = []
+        if t.get("type") == "team" and user_ids:
+            for i in range(0, len(user_ids), 3):
+                teams.append(user_ids[i:i+3])
+
+        matches = tournament_db.get_matches(t["id"], 1)
+        for uid in user_ids:
+            user = bot.get_user(uid)
+            if not user:
+                continue
+            mate_list = []
+            if teams:
+                for tm in teams:
+                    if uid in tm:
+                        mate_list = [f"<@{m}>" for m in tm if m != uid]
+                        break
+            maps = [m["map_id"] for m in matches if uid in (m["player1_id"], m["player2_id"])]
+            text_lines = [f"Скоро начнётся турнир #{t['id']} ({start_text})"]
+            if mate_list:
+                text_lines.append("Твои тиммейты: " + ", ".join(mate_list))
+            if maps:
+                text_lines.append("Карты: " + ", ".join(maps))
+            msg = "\n".join(text_lines)
+            try:
+                await user.send(msg)
+            except Exception:
+                continue
+
+
+async def tournament_reminder_loop(bot: commands.Bot) -> None:
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        await send_tournament_reminders(bot)
+        await asyncio.sleep(3600)

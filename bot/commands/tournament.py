@@ -33,7 +33,8 @@ active_tournaments: dict[int, Tournament] = {}
 async def createtournament(ctx):
     """Запустить создание нового турнира через мультишаговый UI."""
     view = TournamentSetupView(ctx.author.id)
-    await send_temp(ctx, embed=view.initial_embed(), view=view)
+    msg = await send_temp(ctx, embed=view.initial_embed(), view=view)
+    view.message = msg
 
 @bot.command(name="managetournament")
 @commands.has_permissions(administrator=True)

@@ -66,6 +66,8 @@ async def on_ready():
     asyncio.create_task(fines_logic.debt_repayment_loop(bot))
     asyncio.create_task(fines_logic.reminder_loop(bot))
     asyncio.create_task(fines_logic.fines_summary_loop(bot))
+    from bot.systems.tournament_logic import tournament_reminder_loop
+    asyncio.create_task(tournament_reminder_loop(bot))
 
     activity = discord.Activity(
         name="Привет! Напиши команду ?helpy чтобы увидеть все команды 🧠",

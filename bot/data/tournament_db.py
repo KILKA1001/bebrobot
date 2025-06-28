@@ -11,11 +11,14 @@ if supabase is None:
 
 
 
-def create_tournament_record(t_type: str, size: int) -> int:
+def create_tournament_record(t_type: str, size: int, start_time: Optional[str] = None) -> int:
     """Создаёт запись о новом турнире и возвращает его ID."""
+    payload = {"type": t_type, "size": size, "status": "registration"}
+    if start_time:
+        payload["start_time"] = start_time
     res = (
         supabase.table("tournaments")
-        .insert({"type": t_type, "size": size, "status": "registration"})
+        .insert(payload)
         .execute()
     )
     return res.data[0]["id"]
@@ -235,6 +238,23 @@ def get_active_tournaments() -> list[dict]:
     return res.data or []
 
 
+def get_upcoming_tournaments(hours: int) -> list[dict]:
+    """Возвращает турниры, которые стартуют в течение указанного числа часов."""
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    later = now + timedelta(hours=hours)
+    res = (
+        supabase.table("tournaments")
+        .select("id, type, start_time")
+        .eq("status", "registration")
+        .gte("start_time", now.isoformat())
+        .lte("start_time", later.isoformat())
+        .execute()
+    )
+    return res.data or []
+
+
 def save_announcement_message(tournament_id: int, message_id: int) -> bool:
     """Сохраняет ID сообщения с объявлением турнира."""
     res = supabase.table("tournaments") \
@@ -249,7 +269,7 @@ def get_tournament_info(tournament_id: int) -> Optional[dict]:
     try:
         res = (
             supabase.table("tournaments")
-            .select("type, size, bank_type, manual_amount, status")
+            .select("type, size, bank_type, manual_amount, status, start_time")
             .eq("id", tournament_id)
             .single()
             .execute()
