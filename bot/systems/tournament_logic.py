@@ -92,26 +92,42 @@ class Match:
         self.manual_amount: Optional[float] = None
 
 class Tournament:
-    """
-    Управление сеткой турнира в оперативке (не в БД).
-    """
-    def __init__(self,
-         participants: List[int],
-         modes: List[int],                  # теперь это MODE_IDS
-         maps_by_mode: Dict[int, List[str]] # ключи — те же ID
-    ):
-        self.participants = participants.copy()
+    """Управление сеткой турнира в оперативной памяти."""
+
+    def __init__(
+        self,
+        participants: List[int],
+        modes: List[int],
+        maps_by_mode: Dict[int, List[str]],
+        team_size: int = 1,
+    ) -> None:
+        self.team_size = max(1, team_size)
         self.modes = modes
         self.maps_by_mode = maps_by_mode
         self.current_round = 1
         self.matches: Dict[int, List[Match]] = {}
+
+        if self.team_size > 1:
+            self.team_map: Dict[int, List[int]] = {}
+            team_ids: List[int] = []
+            tid = 1
+            for i in range(0, len(participants), self.team_size):
+                members = participants[i : i + self.team_size]
+                if len(members) < self.team_size:
+                    break
+                self.team_map[tid] = members
+                team_ids.append(tid)
+                tid += 1
+            self.participants = team_ids
+        else:
+            self.participants = participants.copy()
+            self.team_map = {}
 
     def generate_round(self) -> List[Match]:
         random.shuffle(self.participants)
         round_matches: List[Match] = []
         for i in range(0, len(self.participants), 2):
             p1, p2 = self.participants[i], self.participants[i + 1]
-            # используем последовательность режимов без перемешивания
             picked = self.modes[:3]
             for mode_id in picked:
                 map_list = self.maps_by_mode.get(mode_id, [])
@@ -130,11 +146,22 @@ class Tournament:
 
     def get_winners(self, round_number: int) -> List[int]:
         winners: List[int] = []
+        pairs: Dict[tuple[int, int], list[int]] = {}
         for m in self.matches.get(round_number, []):
-            if m.result == 1:
-                winners.append(m.player1_id)
-            elif m.result == 2:
-                winners.append(m.player2_id)
+            res = m.result
+            if res not in (1, 2):
+                continue
+            key = (m.player1_id, m.player2_id)
+            if key not in pairs:
+                pairs[key] = [0, 0]
+            if res == 1:
+                pairs[key][0] += 1
+            else:
+                pairs[key][1] += 1
+
+        for (p1, p2), (w1, w2) in pairs.items():
+            winners.append(p1 if w1 >= w2 else p2)
+
         return winners
 
 # Предопределённые режимы и карты
@@ -475,10 +502,13 @@ async def start_round_logic(ctx: commands.Context, tournament_id: int) -> None:
         await send_temp(ctx, "⚠️ Нечётное число участников — нужно чётное для пар.")
         return
 
+    info = get_tournament_info(tournament_id) or {}
+    team_size = 3 if info.get("type") == "team" else 1
+
     from bot.commands.tournament import active_tournaments
     tour = active_tournaments.get(tournament_id)
     if tour is None:
-        tour = create_tournament_logic(participants)
+        tour = create_tournament_logic(participants, team_size=team_size)
         active_tournaments[tournament_id] = tour
     else:
         # Обработка результатов предыдущего раунда
@@ -488,7 +518,9 @@ async def start_round_logic(ctx: commands.Context, tournament_id: int) -> None:
                 await send_temp(ctx, "⚠️ Сначала введите результаты предыдущего раунда.")
                 return
             winners, _losers = res
-            _sync_participants_after_round(tournament_id, winners)
+            _sync_participants_after_round(tournament_id, winners, getattr(tour, "team_map", None))
+            if team_size > 1:
+                tour.team_map = {tid: tour.team_map[tid] for tid in winners}
             tour.participants = winners
             participants = winners
             if len(participants) < 2:
@@ -508,6 +540,12 @@ async def start_round_logic(ctx: commands.Context, tournament_id: int) -> None:
     # 3) Сохраняем в БД
     db_create_matches(tournament_id, round_number, matches)
 
+    team_display: dict[int, str] = {}
+    if getattr(tour, "team_map", None):
+        for tid, members in tour.team_map.items():
+            names = [display_map.get(m, f"<@{m}>") for m in members]
+            team_display[tid] = ", ".join(names)
+
     # 4) Формируем и отправляем Embed
     embed = Embed(
         title=f"Раунд {round_number} — Турнир #{tournament_id}",
@@ -515,8 +553,8 @@ async def start_round_logic(ctx: commands.Context, tournament_id: int) -> None:
         color=discord.Color.blurple()
     )
     for idx, m in enumerate(matches, start=1):
-        v1 = display_map.get(m.player1_id, f"<@{m.player1_id}>")
-        v2 = display_map.get(m.player2_id, f"<@{m.player2_id}>")
+        v1 = team_display.get(m.player1_id, display_map.get(m.player1_id, f"<@{m.player1_id}>") )
+        v2 = team_display.get(m.player2_id, display_map.get(m.player2_id, f"<@{m.player2_id}>") )
         mode_name = MODE_NAMES.get(m.mode_id, str(m.mode_id))
         embed.add_field(
             name=f"Матч {idx}",
@@ -531,8 +569,8 @@ async def start_round_logic(ctx: commands.Context, tournament_id: int) -> None:
     await send_temp(ctx, embed=embed)
 
 
-def create_tournament_logic(participants: List[int]) -> Tournament:
-    return Tournament(participants, MODE_IDS, MAPS_BY_MODE)
+def create_tournament_logic(participants: List[int], team_size: int = 1) -> Tournament:
+    return Tournament(participants, MODE_IDS, MAPS_BY_MODE, team_size=team_size)
 
 # ───── Вспомогательные функции ─────
 
@@ -542,29 +580,52 @@ def _get_round_results(tournament_id: int, round_no: int) -> Optional[tuple[list
     Если хотя бы один матч не имеет результата, возвращается ``None``.
     """
     matches = tournament_db.get_matches(tournament_id, round_no)
-    winners: list[int] = []
-    losers: list[int] = []
+    results: Dict[tuple[int, int], list[int]] = {}
     for m in matches:
         res = m.get("result")
         if res not in (1, 2):
             return None
+        pair = (m["player1_id"], m["player2_id"])
+        if pair not in results:
+            results[pair] = [0, 0]
         if res == 1:
-            winners.append(m["player1_id"])
-            losers.append(m["player2_id"])
+            results[pair][0] += 1
         else:
-            winners.append(m["player2_id"])
-            losers.append(m["player1_id"])
+            results[pair][1] += 1
+
+    winners: list[int] = []
+    losers: list[int] = []
+    for (p1, p2), (w1, w2) in results.items():
+        if w1 >= w2:
+            winners.append(p1)
+            losers.append(p2)
+        else:
+            winners.append(p2)
+            losers.append(p1)
+
     return winners, losers
 
 
-def _sync_participants_after_round(tournament_id: int, winners: list[int]) -> None:
-    """Удаляет из таблицы участников всех, кто не вошёл в список ``winners``."""
+def _sync_participants_after_round(
+    tournament_id: int,
+    winners: list[int],
+    team_map: Optional[Dict[int, List[int]]] = None,
+) -> None:
+    """Удаляет из таблицы участников всех, кто не прошёл далее."""
+
+    keep: set[int] = set()
+    if team_map:
+        for tid in winners:
+            keep.update(team_map.get(tid, []))
+    else:
+        keep.update(winners)
+
     current = db_list_participants_full(tournament_id)
     for entry in current:
         disc_id = entry.get("discord_user_id")
         player_id = entry.get("player_id")
         pid = disc_id or player_id
-        if pid not in winners:
+        if pid not in keep:
             if disc_id is not None:
                 remove_discord_participant(tournament_id, disc_id)
             if player_id is not None:
@@ -604,6 +665,9 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
         return
 
     participants = [p.get("discord_user_id") or p.get("player_id") for p in raw_participants]
+
+    info = get_tournament_info(tournament_id) or {}
+    team_size = 3 if info.get("type") == "team" else 1
     
     # 2) Только на сервере
     guild = interaction.guild
@@ -622,7 +686,7 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
     if view and hasattr(view, 'logic'):
         tour = view.logic
     else:
-        tour = create_tournament_logic(participants)
+        tour = create_tournament_logic(participants, team_size=team_size)
 
     # 3a) Обработка результатов предыдущего раунда
     if tour.current_round > 1:
@@ -633,7 +697,9 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
             )
             return
         winners, _losers = res
-        _sync_participants_after_round(tournament_id, winners)
+        _sync_participants_after_round(tournament_id, winners, getattr(tour, "team_map", None))
+        if team_size > 1:
+            tour.team_map = {tid: tour.team_map[tid] for tid in winners}
         tour.participants = winners
         participants = winners
         if len(participants) < 2:
@@ -661,7 +727,16 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
         description="Нажмите кнопку ниже, чтобы начать матчи для выбранной пары.",
         color=discord.Color.orange(),
     )
-    view_pairs = PairSelectionView(tournament_id, pairs, guild, round_no)
+    team_display: dict[int, str] = {}
+    if getattr(tour, "team_map", None):
+        for tid, members in tour.team_map.items():
+            names = [
+                guild.get_member(m).mention if guild.get_member(m) else f"<@{m}>"
+                for m in members
+            ]
+            team_display[tid] = ", ".join(names)
+
+    view_pairs = PairSelectionView(tournament_id, pairs, guild, round_no, team_display)
     await interaction.response.send_message(embed=embed, view=view_pairs)
 
 async def report_result(ctx: commands.Context, match_id: int, winner: int) -> None:
@@ -950,7 +1025,9 @@ class RegistrationView(ui.View):
 
             # Создаём объект логики и генерируем первый раунд
             ids = [p.get("discord_user_id") or p.get("player_id") for p in raw]
-            logic = create_tournament_logic(ids)
+            info = get_tournament_info(self.tid) or {}
+            team_size = 3 if info.get("type") == "team" else 1
+            logic = create_tournament_logic(ids, team_size=team_size)
             matches = logic.generate_round()
             db_create_matches(self.tid, 1, matches)
 

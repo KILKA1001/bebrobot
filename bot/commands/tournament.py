@@ -43,7 +43,10 @@ async def manage_tournament(ctx, tournament_id: int):
     from bot.data.tournament_db import list_participants_full
 
     participants = [p["discord_user_id"] for p in list_participants_full(tournament_id)]
-    logic = create_tournament_logic(participants)
+    from bot.data.tournament_db import get_tournament_info
+    info = get_tournament_info(tournament_id) or {}
+    team_size = 3 if info.get("type") == "team" else 1
+    logic = create_tournament_logic(participants, team_size=team_size)
 
     embed = await build_tournament_bracket_embed(tournament_id, ctx.guild)
     if not embed:
