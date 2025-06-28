@@ -512,6 +512,7 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
     4) Генерирует раунд, сохраняет в БД
     5) Строит Embed и шлёт в канал
     """
+    from bot.systems.interactive_rounds import MatchResultView
     # 1) Участники
     participants = db_list_participants(tournament_id)
     if len(participants) < 2:
@@ -770,63 +771,6 @@ async def delete_tournament(
     view = ConfirmDeleteView(tournament_id)
     await ctx.send(embed=embed, view=view)
 
-class MatchResultView(ui.View):
-    def __init__(self, match_id: int):
-        super().__init__(timeout=60)
-        self.match_id = match_id
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        # Только на сервере
-        guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message(
-                "❌ Эта команда работает только на сервере.",
-                ephemeral=True
-            )
-            return False
-
-        # Получаем Member по ID пользователя
-        member = guild.get_member(interaction.user.id)
-        if member is None:
-            await interaction.response.send_message(
-                "❌ Не удалось определить вас на сервере.",
-                ephemeral=True
-            )
-            return False
-
-        # Проверяем права администратора
-        if not member.guild_permissions.administrator:
-            await interaction.response.send_message(
-                "❌ Только администратор может сообщить результат матча.",
-                ephemeral=True
-            )
-            return False
-
-        return True
-        
-    @ui.button(label="🏆 Игрок 1", style=discord.ButtonStyle.primary)
-    async def win1(self, interaction: discord.Interaction, button: ui.Button):
-        await self._report(interaction, 1)
-
-    @ui.button(label="🏆 Игрок 2", style=discord.ButtonStyle.secondary)
-    async def win2(self, interaction: discord.Interaction, button: ui.Button):
-        await self._report(interaction, 2)
-
-    async def _report(self, interaction: discord.Interaction, winner: int):
-        ok = db_record_match_result(self.match_id, winner)
-        if ok:
-            await interaction.response.edit_message(
-                embed=Embed(
-                    title=f"Матч #{self.match_id}: победитель — игрок {winner}",
-                    color=discord.Color.green()
-                ),
-                view=None
-            )
-        else:
-            await interaction.response.send_message(
-                "❌ Ошибка при сохранении результата.",
-                ephemeral=True
-            )
 
 async def show_history(ctx: commands.Context, limit: int = 10) -> None:
     """

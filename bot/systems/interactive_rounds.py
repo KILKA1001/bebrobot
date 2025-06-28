@@ -1,11 +1,12 @@
-from discord import Embed, Interaction, ButtonStyle, SelectOption
-from discord.ui import View, Button, Select
+import discord
+from discord import Embed, Interaction, ButtonStyle, ui
+from discord.ui import View, Button
 from bot.systems.tournament_logic import (
     start_round as cmd_start_round,
     join_tournament,            # не обязательно, но для примера
-    report_result as cmd_report_result,
     build_tournament_status_embed,
 )
+from bot.data.tournament_db import record_match_result as db_record_match_result
 
 from bot.systems.tournament_logic import Tournament
 
@@ -134,35 +135,61 @@ class RoundManagementView(View):
         await interaction.response.edit_message(embed=embed, view=view)
 
 class MatchResultView(View):
-    """Представление для ввода результатов матчей."""
-    def __init__(self, tournament_id: int, logic: Tournament, matches: list):
-        super().__init__(timeout=None)
-        self.tournament_id = tournament_id
-        self.logic = logic
+    """UI для ввода результата конкретного матча."""
 
-        # Для каждого матча добавляем select-меню
-        for match in matches:
-            opts = [
-                SelectOption(label=f"Победа {match.player_a}", value=f"{match.id}:A"),
-                SelectOption(label=f"Победа {match.player_b}", value=f"{match.id}:B"),
-                SelectOption(label="Ничья", value=f"{match.id}:D"),
-            ]
-            sel = MatchResultSelect(tournament_id, logic, opts)
-            self.add_item(sel)
+    def __init__(self, match_id: int):
+        super().__init__(timeout=60)
+        self.match_id = match_id
 
-class MatchResultSelect(Select):
-    def __init__(self, tournament_id: int, logic: Tournament, options: list):
-        super().__init__(placeholder="Выберите исход матча", options=options)
-        self.tournament_id = tournament_id
-        self.logic = logic
+    async def interaction_check(self, interaction: Interaction) -> bool:
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message(
+                "❌ Эта команда работает только на сервере.",
+                ephemeral=True,
+            )
+            return False
 
-    async def callback(self, interaction: Interaction):
-        # Разбираем выбор: match_id и результат
-        raw = interaction.values[0]
-        match_id_str, result_code = raw.split(':', 1)
-        match_id = int(match_id_str)
-        # record_result пересекается с турниром.recordResult — учесть, чтобы не дублировать записи
-        await cmd_report_result(interaction, match_id, int(result_code))
+        member = guild.get_member(interaction.user.id)
+        if member is None:
+            await interaction.response.send_message(
+                "❌ Не удалось определить вас на сервере.",
+                ephemeral=True,
+            )
+            return False
+
+        if not member.guild_permissions.administrator:
+            await interaction.response.send_message(
+                "❌ Только администратор может сообщить результат матча.",
+                ephemeral=True,
+            )
+            return False
+
+        return True
+
+    @ui.button(label="🏆 Игрок 1", style=ButtonStyle.primary)
+    async def win1(self, interaction: Interaction, button: Button):
+        await self._report(interaction, 1)
+
+    @ui.button(label="🏆 Игрок 2", style=ButtonStyle.secondary)
+    async def win2(self, interaction: Interaction, button: Button):
+        await self._report(interaction, 2)
+
+    async def _report(self, interaction: Interaction, winner: int):
+        ok = db_record_match_result(self.match_id, winner)
+        if ok:
+            await interaction.response.edit_message(
+                embed=Embed(
+                    title=f"Матч #{self.match_id}: победитель — игрок {winner}",
+                    color=discord.Color.green(),
+                ),
+                view=None,
+            )
+        else:
+            await interaction.response.send_message(
+                "❌ Ошибка при сохранении результата.",
+                ephemeral=True,
+            )
 
 
 # Функция-помощник для отправки стартового сообщения турнира
