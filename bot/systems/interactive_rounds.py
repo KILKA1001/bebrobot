@@ -5,6 +5,7 @@ from bot.systems.tournament_logic import (
     start_round as cmd_start_round,
     join_tournament,            # не обязательно, но для примера
     build_tournament_status_embed,
+    MODE_NAMES
 )
 from bot.data.tournament_db import record_match_result as db_record_match_result
 
@@ -190,6 +191,79 @@ class MatchResultView(View):
                 "❌ Ошибка при сохранении результата.",
                 ephemeral=True,
             )
+
+
+class PairSelectionView(View):
+    """Выбор пары для начала матчей."""
+
+    def __init__(self, tournament_id: int, pairs: dict[int, list], guild: discord.Guild, round_no: int):
+        super().__init__(timeout=None)
+        self.tournament_id = tournament_id
+        self.pairs = pairs
+        self.guild = guild
+        self.round_no = round_no
+        self._build_buttons()
+
+    def _build_buttons(self):
+        self.clear_items()
+        row = 0
+        for idx, matches in self.pairs.items():
+            m = matches[0]
+            p1 = self.guild.get_member(m.player1_id)
+            p2 = self.guild.get_member(m.player2_id)
+            label = f"{p1.display_name if p1 else m.player1_id} vs {p2.display_name if p2 else m.player2_id}"
+            btn = ui.Button(label=label, style=ButtonStyle.primary, custom_id=f"pair_{idx}", row=row)
+            btn.callback = self._make_callback(idx)
+            self.add_item(btn)
+            row = (row + 1) % 5
+
+    def _make_callback(self, idx: int):
+        async def callback(interaction: Interaction):
+            await self.send_pair_matches(interaction, idx)
+        return callback
+
+    async def send_pair_matches(self, interaction: Interaction, idx: int):
+        matches = self.pairs.get(idx)
+        if not matches:
+            await interaction.response.send_message("Эта пара уже была выбрана.", ephemeral=True)
+            return
+        self.pairs.pop(idx)
+        # отключаем кнопку
+        for item in self.children:
+            if hasattr(item, "custom_id") and item.custom_id == f"pair_{idx}":
+                item.disabled = True
+        if interaction.message:
+            await interaction.message.edit(view=self)
+
+        await interaction.response.send_message(f"Запускаем пару {idx}", ephemeral=True)
+
+        channel = interaction.channel
+        for n, m in enumerate(matches, start=1):
+            p1 = self.guild.get_member(m.player1_id)
+            p2 = self.guild.get_member(m.player2_id)
+            v1 = p1.mention if p1 else f"<@{m.player1_id}>"
+            v2 = p2.mention if p2 else f"<@{m.player2_id}>"
+
+            mode_name = MODE_NAMES.get(m.mode_id, str(m.mode_id))
+
+            match_embed = discord.Embed(
+                title=f"Матч {n} — Раунд {self.round_no}",
+                description=f"{v1} vs {v2}",
+                color=discord.Color.blue(),
+            )
+            match_embed.add_field(name="Режим", value=mode_name, inline=True)
+            match_embed.add_field(name="Карта", value=f"`{m.map_id}`", inline=True)
+
+            from bot.data.tournament_db import get_map_image_url
+            map_url = get_map_image_url(str(m.map_id))
+            if map_url:
+                match_embed.set_image(url=map_url)
+
+            view = MatchResultView(match_id=m.match_id)
+
+            if channel:
+                await channel.send(embed=match_embed, view=view)
+
 
 
 # Функция-помощник для отправки стартового сообщения турнира
