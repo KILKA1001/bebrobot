@@ -625,6 +625,7 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
     matches = tour.generate_round()
     round_no = tour.current_round - 1
     db_create_matches(tournament_id, round_no, matches)
+    print("✅ db_create_matches вызвана, начинается assert")
 
     for idx, m in enumerate(matches, start=1):
         # Получаем упоминания игроков
