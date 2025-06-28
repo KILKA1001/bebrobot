@@ -4,19 +4,21 @@ from supabase import Client
 assert db.supabase
 # Обёртки для работы с таблицами турниров в Supabase
 # Гарантируем, что клиент Supabase инициализирован
-supabase = db.supabase 
+supabase = db.supabase
 
 if supabase is None:
     raise RuntimeError("Supabase client is not initialized")
 
 
-def create_tournament() -> int:
-    """
-    Создаёт запись о новом турнире и возвращает его ID.
-    """
-    res = supabase.table("tournaments").insert({"type": type}).execute()
-    record = res.data[0]
-    return record["id"]
+
+def create_tournament_record(t_type: str, size: int) -> int:
+    """Создаёт запись о новом турнире и возвращает его ID."""
+    res = (
+        supabase.table("tournaments")
+        .insert({"type": t_type, "size": size, "status": "registration"})
+        .execute()
+    )
+    return res.data[0]["id"]
 
 
 def add_discord_participant(tournament_id: int, discord_user_id: int) -> bool:
@@ -231,3 +233,30 @@ def save_announcement_message(tournament_id: int, message_id: int) -> bool:
         .eq("id", tournament_id) \
         .execute()
     return bool(res.data)
+
+
+def get_tournament_info(tournament_id: int) -> Optional[dict]:
+    """Возвращает основные поля турнира или None."""
+    try:
+        res = (
+            supabase.table("tournaments")
+            .select("type, size, bank_type, manual_amount, status")
+            .eq("id", tournament_id)
+            .single()
+            .execute()
+        )
+        return res.data or None
+    except Exception:
+        return None
+
+
+def list_recent_results(limit: int) -> List[dict]:
+    """Возвращает последние завершённые турниры."""
+    res = (
+        supabase.table("tournament_results")
+        .select("*")
+        .order("finished_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return res.data or []
