@@ -1,6 +1,7 @@
 from typing import List, Optional
 from bot.data.db import db
 from supabase import Client
+import logging
 assert db.supabase
 # Обёртки для работы с таблицами турниров в Supabase
 # Гарантируем, что клиент Supabase инициализирован
@@ -8,6 +9,8 @@ supabase = db.supabase
 
 if supabase is None:
     raise RuntimeError("Supabase client is not initialized")
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -244,15 +247,21 @@ def get_upcoming_tournaments(hours: int) -> list[dict]:
 
     now = datetime.now(timezone.utc)
     later = now + timedelta(hours=hours)
-    res = (
-        supabase.table("tournaments")
-        .select("id, type, start_time")
-        .eq("status", "registration")
-        .gte("start_time", now.isoformat())
-        .lte("start_time", later.isoformat())
-        .execute()
-    )
-    return res.data or []
+    try:
+        res = (
+            supabase.table("tournaments")
+            .select("id, type, start_time")
+            .eq("status", "registration")
+            .gte("start_time", now.isoformat())
+            .lte("start_time", later.isoformat())
+            .execute()
+        )
+        return res.data or []
+    except Exception as e:
+        if getattr(e, "code", None) == "42703":
+            logger.warning("start_time column not found in tournaments table")
+            return []
+        raise
 
 
 def save_announcement_message(tournament_id: int, message_id: int) -> bool:
