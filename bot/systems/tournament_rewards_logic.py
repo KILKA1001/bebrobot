@@ -1,30 +1,5 @@
-﻿from bot.data import db
-from typing import Literal
-import math
-
-from bot.data.tournament_db import set_bank_type
-
-BankType = Literal[1, 2, 3]  # 1 = пользователь, 2 = смешанный, 3 = клуб
-
-# ─────────────────────────────────────────────────────────────
-
-def calculate_bank(bank_type: BankType, user_balance: float = 0, manual_amount: float = 0) -> tuple[float, float, float]:
-    """
-    Возвращает кортеж (итоговый банк, сколько платит пользователь, сколько банк)
-    """
-    if bank_type == 1:
-        if manual_amount < 15:
-            raise ValueError("Минимум 15 баллов при типе 1")
-        user_part = manual_amount * 0.5
-        return manual_amount, user_part, manual_amount - user_part
-    elif bank_type == 2:
-        bank = 30
-        user_part = bank * 0.25
-        return bank, user_part, bank - user_part
-    elif bank_type == 3:
-        return 30, 0.0, 30.0
-    else:
-        raise ValueError("Неверный тип банка")
+from bot.data import db
+from bot.systems.tournament_bank_logic import calculate_bank
 
 # ─────────────────────────────────────────────────────────────
 
