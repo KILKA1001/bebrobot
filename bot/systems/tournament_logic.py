@@ -447,16 +447,11 @@ def create_match_records(tournament_id: int, round_number: int, matches: list[Ma
         "mode": str(m.mode_id),
         "map_id": m.map_id
     } for m in matches]
-    res = supabase.table("tournament_matches") \
-        .insert(recs) \
-        .execute()
-    for m, r in zip(matches, res.data or []):
-        m.match_id = r.get("id")
 
     print("📦 Запрос к Supabase:", recs)
 
     res = supabase.table("tournament_matches") \
-        .insert(recs) \
+        .insert(recs, returning="representation") \
         .execute()
 
     print("📥 Ответ Supabase:", res.data)
