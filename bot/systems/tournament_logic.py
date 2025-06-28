@@ -898,7 +898,7 @@ async def handle_unregister(ctx: commands.Context, identifier: str, tournament_i
         name = f"<@{uid}>"
     else:
         pid = int(identifier)
-        ok = db_remove_discord_participant(pid, tournament_id)
+        ok = remove_player_from_tournament(pid, tournament_id)
         pl = get_player_by_id(pid)
         name = pl["nick"] if pl else f"Игрок#{pid}"
 
