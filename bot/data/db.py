@@ -1,4 +1,5 @@
 import os
+import logging
 import discord
 from discord.ext import commands
 from typing import Optional
@@ -7,6 +8,9 @@ from supabase import create_client
 from dotenv import load_dotenv
 import traceback
 import asyncio
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class Database:
     _instance = None
@@ -53,7 +57,7 @@ class Database:
 
     def load_data(self):
         """Загружает все данные с автоматическим восстановлением связей"""
-        print("⚙️ Синхронизация с Supabase...")
+        logger.info("⚙️ Синхронизация с Supabase...")
         try:
             if not self.supabase:
                 raise ConnectionError("Supabase: нет подключения")
@@ -77,10 +81,10 @@ class Database:
             else:
                 raise ValueError("Некорректный ответ от Supabase при загрузке действий")
 
-            print(f"✅ Данные синхронизированы | Пользователей: {len(self.scores)}")
+            logger.info(f"✅ Данные синхронизированы | Пользователей: {len(self.scores)}")
 
         except Exception as e:
-            print(f"❌ Ошибка синхронизации: {str(e)}")
+            logger.error(f"❌ Ошибка синхронизации: {str(e)}")
             traceback.print_exc()
             self.scores = {}
             self.actions = []
@@ -131,7 +135,7 @@ class Database:
                 self.scores[user_id] = new_points
                 return True
         except Exception as e:
-            print(f"🔥 Ошибка обновления баллов: {str(e)}")
+            logger.error(f"🔥 Ошибка обновления баллов: {str(e)}")
             traceback.print_exc()
             return False
 
@@ -156,7 +160,7 @@ class Database:
                 
             # 3. Сохраняем действие
             if not self.supabase:
-                print("Supabase client is not initialized.")
+                logger.warning("Supabase client is not initialized.")
                 return False
             response = self.supabase.table("actions")\
                 .insert(action)\
@@ -177,11 +181,11 @@ class Database:
                 'is_undo': is_undo
             })
 
-            print(f"✅ Действие сохранено (ID: {response.data[0]['id']})")
+            logger.info(f"✅ Действие сохранено (ID: {response.data[0]['id']})")
             return True
 
         except Exception as e:
-            print(f"❌ Ошибка добавления действия: {str(e)}")
+            logger.error(f"❌ Ошибка добавления действия: {str(e)}")
             traceback.print_exc()
             return False
 
@@ -196,7 +200,7 @@ class Database:
     def save_all(self):
         try:
             if not self.supabase:
-                print("⚠️ Supabase не инициализирован")
+                logger.warning("⚠️ Supabase не инициализирован")
                 return
                 
             if self.scores:
@@ -205,9 +209,9 @@ class Database:
                     self.supabase.table("scores").upsert(scores_data).execute()
                 )
                 if response:
-                    print(f"💾 Данные сохранены: {len(response.data if response.data else [])} записей")
+                    logger.info(f"💾 Данные сохранены: {len(response.data if response.data else [])} записей")
         except Exception as e:
-            print(f"🔥 Ошибка сохранения: {str(e)}")
+            logger.error(f"🔥 Ошибка сохранения: {str(e)}")
             traceback.print_exc()
 
     class Database:
@@ -215,7 +219,7 @@ class Database:
     def log_monthly_top(self, entries: list):
         """Запись топа месяца в Supabase"""
         if not self.supabase:
-            print("Supabase не инициализирован для логирования топа")
+            logger.warning("Supabase не инициализирован для логирования топа")
             return False
 
         now = datetime.now()
@@ -235,10 +239,10 @@ class Database:
 
         try:
             self.supabase.table("monthly_top_log").insert(log_entries).execute()
-            print("✅ Лог топа месяца записан")
+            logger.info("✅ Лог топа месяца записан")
             return True
         except Exception as e:
-            print(f"❌ Ошибка записи топа месяца: {e}")
+            logger.error(f"❌ Ошибка записи топа месяца: {e}")
             return False
 
 #Штрафы
@@ -256,10 +260,10 @@ class Database:
             self.fines = fines_resp.data if hasattr(fines_resp, "data") else []
             self.fine_payments = payments_resp.data if hasattr(payments_resp, "data") else []
 
-            print(f"✅ Загружено штрафов: {len(self.fines)}, оплат: {len(self.fine_payments)}")
+            logger.info(f"✅ Загружено штрафов: {len(self.fines)}, оплат: {len(self.fine_payments)}")
 
         except Exception as e:
-            print(f"❌ Ошибка при загрузке штрафов: {str(e)}")
+            logger.error(f"❌ Ошибка при загрузке штрафов: {str(e)}")
             traceback.print_exc()
             self.fines = []
             self.fine_payments = []
@@ -267,7 +271,7 @@ class Database:
     def add_fine(self, user_id: int, author_id: int, amount: float, fine_type: int, reason: str, due_date: datetime):
         """Создаёт штраф"""
         if not self.supabase:
-            print("⚠️ Supabase не инициализирован")
+            logger.warning("⚠️ Supabase не инициализирован")
             return None
 
         try:
@@ -288,7 +292,7 @@ class Database:
             return fine
 
         except Exception as e:
-            print(f"❌ Ошибка добавления штрафа: {str(e)}")
+            logger.error(f"❌ Ошибка добавления штрафа: {str(e)}")
             traceback.print_exc()
             return None
 
@@ -314,13 +318,13 @@ class Database:
             if response.data and len(response.data) > 0:
                 return float(response.data[0]["total"])
         except Exception as e:
-            print(f"Ошибка чтения баланса банка: {str(e)}")
+            logger.error(f"Ошибка чтения баланса банка: {str(e)}")
         return 0.0
 
     def add_to_bank(self, amount: float):
         try:
             if not self.supabase:
-                print("❌ Supabase не инициализирован")
+                logger.warning("❌ Supabase не инициализирован")
                 return False
             current = self.get_bank_balance()
             new_total = current + amount
@@ -331,14 +335,14 @@ class Database:
             }).execute()
             return True
         except Exception as e:
-            print(f"Ошибка обновления банка: {str(e)}")
+            logger.error(f"Ошибка обновления банка: {str(e)}")
             return False
 
     def record_payment(self, user_id: int, fine_id: int, amount: float, author_id: int) -> bool:
         """Записывает оплату штрафа, обновляет банк, баллы, штраф"""
         try:
             if not self.supabase:
-                print("❌ Supabase не инициализирован")
+                logger.warning("❌ Supabase не инициализирован")
                 return False
 
             # 1. Обновляем баллы пользователя
@@ -419,7 +423,7 @@ class Database:
             return True
 
         except Exception as e:
-            print(f"❌ Ошибка при записи оплаты: {e}")
+            logger.error(f"❌ Ошибка при записи оплаты: {e}")
             traceback.print_exc()
             return False
 
@@ -468,7 +472,7 @@ class Database:
             return True
 
         except Exception as e:
-            print(f"❌ Ошибка при отсрочке штрафа: {e}")
+            logger.error(f"❌ Ошибка при отсрочке штрафа: {e}")
             traceback.print_exc()
             return False
 
@@ -492,13 +496,13 @@ class Database:
             return True
 
         except Exception as e:
-            print(f"❌ Ошибка при отметке просрочки штрафа: {e}")
+            logger.error(f"❌ Ошибка при отметке просрочки штрафа: {e}")
             traceback.print_exc()
             return False
 
     def log_monthly_fine_top(self, entries: list):
         if not self.supabase:
-            print("Supabase не инициализирован для штрафного лога")
+            logger.warning("Supabase не инициализирован для штрафного лога")
             return False
 
         now = datetime.now()
@@ -518,17 +522,17 @@ class Database:
 
         try:
             self.supabase.table("monthly_fine_hst").insert(logs).execute()
-            print("✅ История штрафного топа записана")
+            logger.info("✅ История штрафного топа записана")
             return True
         except Exception as e:
-            print(f"❌ Ошибка записи штрафного топа: {e}")
+            logger.error(f"❌ Ошибка записи штрафного топа: {e}")
             return False
 
     def _track_quick_payment(self, user_id: int):
         self.quick_pay_streak[user_id] = self.quick_pay_streak.get(user_id, 0) + 1
 
         if self.quick_pay_streak[user_id] >= 10:
-            print(f"🏆 Пользователь {user_id} выполнил 10 быстрых оплат подряд")
+            logger.info(f"🏆 Пользователь {user_id} выполнил 10 быстрых оплат подряд")
 
             if self.bot:
                 guild = self.bot.get_guild(self.guild_id)
@@ -539,11 +543,11 @@ class Database:
                         asyncio.create_task(
                             member.add_roles(role, reason="Быстрая оплата 10 штрафов подряд")
                         )
-                        print(f"🎖 Роль выдана пользователю {user_id}")
+                        logger.info(f"🎖 Роль выдана пользователю {user_id}")
 
             self.quick_pay_streak[user_id] = 0
         else:
-            print(f"⏱ Быстрая оплата: {self.quick_pay_streak[user_id]} подряд")
+            logger.info(f"⏱ Быстрая оплата: {self.quick_pay_streak[user_id]} подряд")
 
     def spend_from_bank(self, amount: float, user_id: int, reason: str) -> bool:
         try:
@@ -568,7 +572,7 @@ class Database:
 
             return True
         except Exception as e:
-            print(f"Ошибка при трате из банка: {str(e)}")
+            logger.error(f"Ошибка при трате из банка: {str(e)}")
             return False
 
     def log_bank_income(self, user_id: int, amount: float, reason: str) -> bool:
@@ -583,7 +587,7 @@ class Database:
             }).execute()
             return True
         except Exception as e:
-            print(f"Ошибка записи операции в банк: {e}")
+            logger.error(f"Ошибка записи операции в банк: {e}")
             return False
 
     def update_tickets(self, user_id: int, ticket_type: str, amount: int) -> bool:
@@ -609,7 +613,7 @@ class Database:
 
             return True
         except Exception as e:
-            print(f"Ошибка обновления билетов: {e}")
+            logger.error(f"Ошибка обновления билетов: {e}")
             return False
 
     def log_ticket_action(self, user_id: int, ticket_type: str, amount: int, reason: str, author_id: int):
@@ -623,7 +627,7 @@ class Database:
             "author_id": author_id
             }).execute()
         except Exception as e:
-            print(f"Ошибка логирования тикета: {e}")
+            logger.error(f"Ошибка логирования тикета: {e}")
 
     def give_ticket(self, user_id: int, ticket_type: str, amount: int, reason: str, author_id: int) -> bool:
         """
@@ -667,7 +671,7 @@ class Database:
             self.load_data()
             return True
         except Exception as e:
-            print(f"Ошибка переноса пользователя: {e}")
+            logger.error(f"Ошибка переноса пользователя: {e}")
             return False
 
 # Глобальный экземпляр

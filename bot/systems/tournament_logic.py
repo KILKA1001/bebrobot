@@ -1,4 +1,5 @@
 import random
+import logging
 from typing import List, Dict, Optional
 import discord
 from discord import ui, Embed, ButtonStyle, Color
@@ -27,6 +28,8 @@ from bot.data.tournament_db import (
 )
 from bot.systems import tournament_rewards_logic as rewards
 from bot.systems.tournament_bank_logic import validate_and_save_bank
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -403,7 +406,7 @@ style=discord.ButtonStyle.secondary,
                 ephemeral=True
             )
             import traceback
-            print("Ошибка в on_confirm:\n", traceback.format_exc())
+            logger.error("Ошибка в on_confirm:\n%s", traceback.format_exc())
 
         
     async def on_cancel(self, interaction: discord.Interaction):
