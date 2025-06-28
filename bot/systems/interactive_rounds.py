@@ -1,6 +1,7 @@
 import discord
 from discord import Embed, Interaction, ButtonStyle, ui
 from discord.ui import View, Button
+from typing import Optional
 from bot.systems.tournament_logic import (
     start_round as cmd_start_round,
     join_tournament,            # не обязательно, но для примера
@@ -196,12 +197,20 @@ class MatchResultView(View):
 class PairSelectionView(View):
     """Выбор пары для начала матчей."""
 
-    def __init__(self, tournament_id: int, pairs: dict[int, list], guild: discord.Guild, round_no: int):
+    def __init__(
+        self,
+        tournament_id: int,
+        pairs: dict[int, list],
+        guild: discord.Guild,
+        round_no: int,
+        team_display: Optional[dict[int, str]] = None,
+    ):
         super().__init__(timeout=None)
         self.tournament_id = tournament_id
         self.pairs = pairs
         self.guild = guild
         self.round_no = round_no
+        self.team_display = team_display or {}
         self._build_buttons()
 
     def _build_buttons(self):
@@ -209,9 +218,17 @@ class PairSelectionView(View):
         row = 0
         for idx, matches in self.pairs.items():
             m = matches[0]
-            p1 = self.guild.get_member(m.player1_id)
-            p2 = self.guild.get_member(m.player2_id)
-            label = f"{p1.display_name if p1 else m.player1_id} vs {p2.display_name if p2 else m.player2_id}"
+            if m.player1_id in self.team_display:
+                name1 = self.team_display[m.player1_id]
+            else:
+                p1 = self.guild.get_member(m.player1_id)
+                name1 = p1.display_name if p1 else str(m.player1_id)
+            if m.player2_id in self.team_display:
+                name2 = self.team_display[m.player2_id]
+            else:
+                p2 = self.guild.get_member(m.player2_id)
+                name2 = p2.display_name if p2 else str(m.player2_id)
+            label = f"{name1} vs {name2}"
             btn = ui.Button(label=label, style=ButtonStyle.primary, custom_id=f"pair_{idx}", row=row)
             btn.callback = self._make_callback(idx)
             self.add_item(btn)
@@ -239,10 +256,16 @@ class PairSelectionView(View):
 
         channel = interaction.channel
         for n, m in enumerate(matches, start=1):
-            p1 = self.guild.get_member(m.player1_id)
-            p2 = self.guild.get_member(m.player2_id)
-            v1 = p1.mention if p1 else f"<@{m.player1_id}>"
-            v2 = p2.mention if p2 else f"<@{m.player2_id}>"
+            if m.player1_id in self.team_display:
+                v1 = self.team_display[m.player1_id]
+            else:
+                p1 = self.guild.get_member(m.player1_id)
+                v1 = p1.mention if p1 else f"<@{m.player1_id}>"
+            if m.player2_id in self.team_display:
+                v2 = self.team_display[m.player2_id]
+            else:
+                p2 = self.guild.get_member(m.player2_id)
+                v2 = p2.mention if p2 else f"<@{m.player2_id}>"
 
             mode_name = MODE_NAMES.get(m.mode_id, str(m.mode_id))
 
