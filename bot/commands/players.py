@@ -18,6 +18,7 @@ from bot.data.players_db import (
 )
 
 from bot.commands.base import bot
+from bot.utils import send_temp
 
 # ─── Регистрация игрока в системе ────────────────────────────────────────────
 
@@ -30,7 +31,7 @@ async def register(ctx: commands.Context, *args: str):
     ?register <player_id> <tournament_id>
     """
     if len(args) != 2:
-        await ctx.send(
+        await send_temp(
             "❌ Неверный синтаксис. Используйте:\n"
             "`?register <nick> <@tg_username>` — добавить нового игрока\n"
             "`?register <player_id> <tournament_id>` — зарегистрировать существующего в турнире"

@@ -25,6 +25,7 @@ from bot.systems.core_logic import (
     transfer_data_logic,
     build_balance_embed
 )
+from bot.utils import send_temp
 
 
 # Константы
@@ -61,9 +62,9 @@ async def add_points(ctx, member: discord.Member, points: str, *, reason: str = 
         embed.add_field(name="📝 Причина:", value=reason, inline=False)
         embed.add_field(name="🕒 Время:", value=format_moscow_time(), inline=False)
         embed.add_field(name="🎯 Текущий баланс:", value=f"{db.scores[user_id]} баллов", inline=False)
-        await ctx.send(embed=embed)
+        await send_temp(ctx, embed=embed)
     except ValueError:
-        await ctx.send("Ошибка: введите корректное число")
+        await send_temp(ctx, "Ошибка: введите корректное число")
 
 @bot.command(name='removepoints')
 @commands.has_permissions(administrator=True)
@@ -71,13 +72,13 @@ async def remove_points(ctx, member: discord.Member, points: str, *, reason: str
     try:
         points_float = float(points.replace(',', '.'))
         if points_float <= 0:
-            await ctx.send("❌ Ошибка: введите число больше 0 для снятия баллов.")
+            await send_temp(ctx, "❌ Ошибка: введите число больше 0 для снятия баллов.")
             return
         user_id = member.id
         current_points = db.scores.get(user_id, 0)
         if points_float > current_points:
             embed = discord.Embed(title="⚠️ Недостаточно баллов", description=f"У {member.mention} только {current_points} баллов", color=discord.Color.red())
-            await ctx.send(embed=embed)
+            await send_temp(ctx, embed=embed)
             return
         db.scores[user_id] = current_points - points_float
         db.add_action(user_id, -points_float, reason, ctx.author.id)
@@ -88,23 +89,14 @@ async def remove_points(ctx, member: discord.Member, points: str, *, reason: str
         embed.add_field(name="📝 Причина:", value=reason, inline=False)
         embed.add_field(name="🕒 Время:", value=format_moscow_time(), inline=False)
         embed.add_field(name="🎯 Текущий баланс:", value=f"{db.scores[user_id]} баллов", inline=False)
-        await ctx.send(embed=embed)
+        await send_temp(ctx, embed=embed)
     except ValueError:
-        await ctx.send("Ошибка: введите корректное число больше 0")
+        await send_temp(ctx, "Ошибка: введите корректное число больше 0")
 
 @bot.command(name='leaderboard')
 async def leaderboard(ctx):
     view = LeaderboardView(ctx)
-    message = await ctx.send(embed=view.get_embed(), view=view)
-
-    async def delete_later(msg):
-        await asyncio.sleep(300)
-        try:
-            await msg.delete()
-        except (discord.NotFound, discord.Forbidden):
-            pass
-
-    asyncio.create_task(delete_later(message))
+    await send_temp(ctx, embed=view.get_embed(), view=view)
 
 @bot.command(name='history')
 async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 1):
@@ -113,7 +105,7 @@ async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 
     if member:
         await render_history(ctx, member, page)
     else:
-        await ctx.send("Не удалось определить пользователя.")
+        await send_temp(ctx, "Не удалось определить пользователя.")
 
 @bot.command(name='roles')
 async def roles_list(ctx):
@@ -123,7 +115,7 @@ async def roles_list(ctx):
         if role:
             desc += f"**{role.name}**: {points_needed} баллов\n"
     embed = discord.Embed(title="Роли и стоимость баллов", description=desc, color=discord.Color.purple())
-    await ctx.send(embed=embed)
+    await send_temp(ctx, embed=embed)
 
 @bot.command(name='activities')
 async def activities_cmd(ctx):
@@ -152,7 +144,7 @@ async def activities_cmd(ctx):
             category_text += "\n"
         embed.add_field(name=category_name, value=category_text, inline=False)
     embed.set_footer(text=display_last_edit_date())
-    await ctx.send(embed=embed)
+    await send_temp(ctx, embed=embed)
 
 
 @bot.command(name='undo')
@@ -161,10 +153,7 @@ async def undo(ctx, member: discord.Member, count: int = 1):
     user_id = member.id
     user_history = db.history.get(user_id, [])
     if len(user_history) < count:
-        await ctx.send(
-            f"❌ Нельзя отменить **{count}** изменений для {member.display_name}, "
-            f"так как доступно только **{len(user_history)}** записей."
-        )
+        await send_temp(ctx, f"❌ Нельзя отменить **{count}** изменений для {member.display_name}, так как доступно только **{len(user_history)}** записей.")
         return
 
     undo_entries = []
@@ -195,7 +184,7 @@ async def undo(ctx, member: discord.Member, count: int = 1):
     for i, (points_val, reason) in enumerate(undo_entries[::-1], start=1):
         sign = "+" if points_val > 0 else ""
         embed.add_field(name=f"{i}. {sign}{points_val} баллов", value=reason, inline=False)
-    await ctx.send(embed=embed)
+    await send_temp(ctx, embed=embed)
     await log_action_cancellation(ctx, member, undo_entries)
 
 @bot.command(name='monthlytop')
@@ -211,59 +200,50 @@ async def tophistory_cmd(ctx, month: Optional[int] = None, year: Optional[int] =
 async def helpy_cmd(ctx):
     view = HelpView(ctx.author)
     embed = get_help_embed("points")
-    message = await ctx.send(embed=embed, view=view)
-
-    async def delete_later():
-        await asyncio.sleep(180)
-        try:
-            await message.delete()
-        except (discord.Forbidden, discord.NotFound):
-            pass
-
-    asyncio.create_task(delete_later())
+    await send_temp(ctx, embed=embed, view=view)
 
 @bot.command()
 async def ping(ctx):
-    await ctx.send('pong')
+    await send_temp(ctx, 'pong')
     
 @bot.command(name="bank")
 async def bank_balance(ctx):
     total = db.get_bank_balance()
-    await ctx.send(f"🏦 Баланс банка: **{total:.2f} баллов**")
+    await send_temp(ctx, f"🏦 Баланс банка: **{total:.2f} баллов**")
 
 @bot.command(name="bankadd")
 @commands.has_permissions(administrator=True)
 async def bank_add(ctx, amount: float, *, reason: str = "Без причины"):
     if amount <= 0:
-        await ctx.send("❌ Сумма должна быть больше 0")
+        await send_temp(ctx, "❌ Сумма должна быть больше 0")
         return
     db.add_to_bank(amount)
     db.log_bank_income(ctx.author.id, amount, reason)
-    await ctx.send(f"✅ Добавлено **{amount:.2f} баллов** в банк. Причина: {reason}")
+    await send_temp(ctx, f"✅ Добавлено **{amount:.2f} баллов** в банк. Причина: {reason}")
 
 @bot.command(name="bankspend")
 @commands.has_permissions(administrator=True)
 async def bank_spend(ctx, amount: float, *, reason: str = "Без причины"):
     if amount <= 0:
-        await ctx.send("❌ Сумма должна быть больше 0")
+        await send_temp(ctx, "❌ Сумма должна быть больше 0")
         return
     success = db.spend_from_bank(amount, ctx.author.id, reason)
     if success:
-        await ctx.send(f"💸 Из банка потрачено **{amount:.2f} баллов**. Причина: {reason}")
+        await send_temp(ctx, f"💸 Из банка потрачено **{amount:.2f} баллов**. Причина: {reason}")
     else:
-        await ctx.send("❌ Недостаточно средств в банке или ошибка операции")
+        await send_temp(ctx, "❌ Недостаточно средств в банке или ошибка операции")
 
 @bot.command(name="bankhistory")
 @commands.has_permissions(administrator=True)
 async def bank_history(ctx):
     if not db.supabase:
-        await ctx.send("❌ Supabase не инициализирован")
+        await send_temp(ctx, "❌ Supabase не инициализирован")
         return
 
     try:
         result = db.supabase.table("bank_history").select("*").order("timestamp", desc=True).limit(10).execute()
         if not result.data:
-            await ctx.send("📭 История пуста")
+            await send_temp(ctx, "📭 История пуста")
             return
         embed = discord.Embed(title="📚 История операций банка", color=discord.Color.teal())
         for entry in result.data:
@@ -276,13 +256,13 @@ async def bank_history(ctx):
                 value=f"👤 {name}\n📝 {entry['reason']}",
                 inline=False
             )
-        await ctx.send(embed=embed)
+        await send_temp(ctx, embed=embed)
     except Exception as e:
-        await ctx.send(f"❌ Ошибка получения истории: {str(e)}")
+        await send_temp(ctx, f"❌ Ошибка получения истории: {str(e)}")
 
 @bot.command(name="balance")
 async def balance(ctx, member: discord.Member = None):
     member = member or ctx.author
     embed = build_balance_embed(member)
-    await ctx.send(embed=embed)
+    await send_temp(ctx, embed=embed)
 

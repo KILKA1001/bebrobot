@@ -10,6 +10,7 @@ from discord.abc import Messageable
 from discord import TextChannel, Thread, Interaction
 import bot.data.tournament_db as tournament_db
 from bot.data.players_db import get_player_by_id
+from bot.utils import send_temp
 from bot.data.tournament_db import count_matches 
 from bot.data.tournament_db import (
     add_discord_participant as db_add_participant,
@@ -422,7 +423,7 @@ async def start_round_logic(ctx: commands.Context, tournament_id: int) -> None:
     # 0) Получаем «сырые» записи участников
     raw = db_list_participants_full(tournament_id)
     if not raw:
-        await ctx.send(f"❌ Турнир #{tournament_id} не найден или в нём нет участников.")
+        await send_temp(ctx, f"❌ Турнир #{tournament_id} не найден или в нём нет участников.")
         return
 
     # ─── Формируем participants и display_map ────────────────────────────────
@@ -445,11 +446,11 @@ async def start_round_logic(ctx: commands.Context, tournament_id: int) -> None:
     # ──────────────────────────────────────────────────────────────────────────
     # 1) Недостаточно участников
     if len(participants) < 2:
-        await ctx.send("❌ Недостаточно участников для начала раунда.")
+        await send_temp(ctx, "❌ Недостаточно участников для начала раунда.")
         return
     # Новая проверка на чётность участников
     if len(participants) % 2 != 0:
-        await ctx.send("⚠️ Нечётное число участников — нужно чётное для пар.")
+        await send_temp(ctx, "⚠️ Нечётное число участников — нужно чётное для пар.")
         return
 
     tour = create_tournament_logic(participants)
@@ -458,7 +459,7 @@ async def start_round_logic(ctx: commands.Context, tournament_id: int) -> None:
     # 1) Проверяем, что команда в гильдии
     guild = ctx.guild
     if guild is None:
-        await ctx.send("❌ Эту команду можно использовать только на сервере.")
+        await send_temp(ctx, "❌ Эту команду можно использовать только на сервере.")
         return
 
     matches = tour.generate_round()
@@ -487,7 +488,7 @@ async def start_round_logic(ctx: commands.Context, tournament_id: int) -> None:
             inline=False
         )
 
-    await ctx.send(embed=embed)
+    await send_temp(ctx, embed=embed)
 
 
 def create_tournament_logic(participants: List[int]) -> Tournament:
@@ -500,9 +501,9 @@ async def join_tournament(ctx: commands.Context, tournament_id: int) -> None:
     """
     ok = db_add_participant(tournament_id, ctx.author.id)
     if ok:
-        await ctx.send(f"✅ {ctx.author.mention}, вы зарегистрированы в турнире #{tournament_id}")
+        await send_temp(ctx, f"✅ {ctx.author.mention}, вы зарегистрированы в турнире #{tournament_id}")
     else:
-        await ctx.send(
+        await send_temp(
             "❌ Не удалось зарегистрироваться "
             "(возможно, вы уже в списке или турнир не существует)."
         )
@@ -584,14 +585,14 @@ async def report_result(ctx: commands.Context, match_id: int, winner: int) -> No
      3) Отправляет уведомление об успехе/ошибке
     """
     if winner not in (1, 2):
-        await ctx.send("❌ Укажите победителя: 1 (player1) или 2 (player2).")
+        await send_temp(ctx, "❌ Укажите победителя: 1 (player1) или 2 (player2).")
         return
 
     ok = db_record_match_result(match_id, winner)
     if ok:
-        await ctx.send(f"✅ Результат матча #{match_id} сохранён: победитель — игрок {winner}.")
+        await send_temp(ctx, f"✅ Результат матча #{match_id} сохранён: победитель — игрок {winner}.")
     else:
-        await ctx.send("❌ Не удалось сохранить результат. Проверьте ID матча.")
+        await send_temp(ctx, "❌ Не удалось сохранить результат. Проверьте ID матча.")
 
 async def show_status(
     ctx: commands.Context,
@@ -606,7 +607,7 @@ async def show_status(
         participants = db_list_participants_full(tournament_id)
         tour = ctx.bot.get_cog("TournamentCog").active_tournaments.get(tournament_id)
         last_round = (tour.current_round - 1) if tour else 0
-        await ctx.send(
+        await send_temp(
             f"🏟 Турнир #{tournament_id}: участников {len(participants)}, "
             f"последний раунд {last_round}"
         )
@@ -620,7 +621,7 @@ async def show_status(
         m.result = r.get("result")
         matches.append(m)
     if not matches:
-        await ctx.send(f"❌ Раунд {round_number} не найден.")
+        await send_temp(ctx, f"❌ Раунд {round_number} не найден.")
         return
 
     embed = Embed(
@@ -654,7 +655,7 @@ async def show_status(
             inline=False
         )
 
-    await ctx.send(embed=embed)
+    await send_temp(ctx, embed=embed)
 
 async def end_tournament(
     ctx: commands.Context,
@@ -682,7 +683,7 @@ async def end_tournament(
     try:
         bank_total, user_part, bank_part = rewards.calculate_bank(bank_type, user_balance, manual_amount)
     except ValueError as e:
-        await ctx.send(f"❌ Ошибка: {e}")
+        await send_temp(ctx, f"❌ Ошибка: {e}")
         return
 
     # 🔹 Списание с баланса / банка
@@ -693,7 +694,7 @@ async def end_tournament(
         reason=f"Формирование банка турнира #{tournament_id}"
     )
     if not success:
-        await ctx.send("❌ Недостаточно баллов у пользователя или ошибка банка.")
+        await send_temp(ctx, "❌ Недостаточно баллов у пользователя или ошибка банка.")
         return
 
     # 🔹 Получаем участников турнира
@@ -723,14 +724,14 @@ async def end_tournament(
     ok2 = db_update_tournament_status(tournament_id, "finished")
 
     if ok1 and ok2:
-        await ctx.send(
+        await send_temp(
             f"🏁 Турнир #{tournament_id} завершён и награды выданы:\n"
             f"🥇 {first} (x{len(first_team)})\n"
             f"🥈 {second} (x{len(second_team)})" +
             (f"\n🥉 {third}" if third is not None else "")
         )
     else:
-        await ctx.send("❌ Не удалось завершить турнир. Проверьте ID и повторите.")
+        await send_temp(ctx, "❌ Не удалось завершить турнир. Проверьте ID и повторите.")
 
 class ConfirmDeleteView(ui.View):
     def __init__(self, tournament_id: int):
@@ -771,7 +772,7 @@ async def delete_tournament(
         color=discord.Color.red()
     )
     view = ConfirmDeleteView(tournament_id)
-    await ctx.send(embed=embed, view=view)
+    await send_temp(ctx, embed=embed, view=view)
 
 
 async def show_history(ctx: commands.Context, limit: int = 10) -> None:
@@ -781,7 +782,7 @@ async def show_history(ctx: commands.Context, limit: int = 10) -> None:
     """
     rows = list_recent_results(limit)
     if not rows:
-        await ctx.send("📭 Нет истории завершённых турниров.")
+        await send_temp(ctx, "📭 Нет истории завершённых турниров.")
         return
 
     embed = Embed(
@@ -815,7 +816,7 @@ async def show_history(ctx: commands.Context, limit: int = 10) -> None:
             inline=False
         )
 
-    await ctx.send(embed=embed)
+    await send_temp(ctx, embed=embed)
 
 class RegistrationView(ui.View):
     persistent = True
@@ -875,22 +876,22 @@ async def announce_tournament(
     embed.set_footer(text="Нажмите на кнопку ниже, чтобы зарегистрироваться")
 
     view = RegistrationView(tournament_id, max_participants)
-    await ctx.send(embed=embed, view=view)
+    await send_temp(ctx, embed=embed, view=view)
 
 async def handle_jointournament(ctx: commands.Context, tournament_id: int):
     ok = db_add_participant(tournament_id, ctx.author.id)
     if not ok:
-        return await ctx.send("❌ Не удалось зарегистрироваться (возможно, вы уже в списке).")
-    await ctx.send(f"✅ <@{ctx.author.id}> зарегистрирован в турнире #{tournament_id}.")
+        return await send_temp(ctx, "❌ Не удалось зарегистрироваться (возможно, вы уже в списке).")
+    await send_temp(ctx, f"✅ <@{ctx.author.id}> зарегистрирован в турнире #{tournament_id}.")
     # тут можно ещё обновить RegistrationView, если нужно
 
 async def handle_regplayer(ctx: commands.Context, player_id: int, tournament_id: int):
     ok = db_add_participant(tournament_id, player_id)
     if not ok:
-        return await ctx.send("❌ Не удалось зарегистрировать игрока.")
+        return await send_temp(ctx, "❌ Не удалось зарегистрировать игрока.")
     pl = get_player_by_id(player_id)
     name = pl["nick"] if pl else f"Игрок#{player_id}"
-    await ctx.send(f"✅ {name} зарегистрирован в турнире #{tournament_id}.")
+    await send_temp(ctx, f"✅ {name} зарегистрирован в турнире #{tournament_id}.")
 
 async def handle_unregister(ctx: commands.Context, identifier: str, tournament_id: int):
     # определяем тип идентификатора
@@ -905,8 +906,8 @@ async def handle_unregister(ctx: commands.Context, identifier: str, tournament_i
         name = pl["nick"] if pl else f"Игрок#{pid}"
 
     if not ok:
-        return await ctx.send("❌ Не удалось снять с турнира (возможно, нет в списке).")
-    await ctx.send(f"✅ {name} удалён из турнира #{tournament_id}.")
+        return await send_temp(ctx, "❌ Не удалось снять с турнира (возможно, нет в списке).")
+    await send_temp(ctx, f"✅ {name} удалён из турнира #{tournament_id}.")
 
 class BankAmountModal(ui.Modal, title="Введите сумму банка"):
     amount = ui.TextInput(label="Сумма (минимум 15)", placeholder="20", required=True)
@@ -955,7 +956,7 @@ async def send_announcement_embed(ctx, tournament_id: int) -> bool:
     embed.set_footer(text="Нажмите на кнопку ниже, чтобы зарегистрироваться")
 
     view = RegistrationView(tournament_id, size, type_text)
-    await ctx.send(embed=embed, view=view)
+    await send_temp(ctx, embed=embed, view=view)
     return True
 
 async def build_tournament_status_embed(tournament_id: int) -> discord.Embed | None:

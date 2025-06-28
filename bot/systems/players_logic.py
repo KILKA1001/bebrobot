@@ -15,6 +15,7 @@ from bot.data.players_db import (
     remove_player_from_tournament,
     list_player_logs,
 )
+from bot.utils import send_temp
 
 async def register_player(
     ctx: commands.Context,
@@ -26,19 +27,19 @@ async def register_player(
     """
     # проверяем формат TG-username
     if not tg_username.startswith("@"):
-        await ctx.send("❌ Telegram-ник должен начинаться с `@`.")
+        await send_temp(ctx, "❌ Telegram-ник должен начинаться с `@`.")
         return
 
     # проверяем, что такого TG ещё нет
     if get_player_by_tg(tg_username):
-        await ctx.send("❌ Пользователь с таким Telegram-ником уже зарегистрирован.")
+        await send_temp(ctx, "❌ Пользователь с таким Telegram-ником уже зарегистрирован.")
         return
 
     pid = create_player(nick, tg_username)
     if pid is not None:
-        await ctx.send(f"✅ Игрок #{pid} добавлен: `{nick}`, {tg_username}")
+        await send_temp(ctx, f"✅ Игрок #{pid} добавлен: `{nick}`, {tg_username}")
     else:
-        await ctx.send("❌ Ошибка при создании игрока.")
+        await send_temp(ctx, "❌ Ошибка при создании игрока.")
 
 async def register_player_by_id(
     ctx: commands.Context,
@@ -50,18 +51,18 @@ async def register_player_by_id(
     """
     player = get_player_by_id(player_id)
     if not player:
-        await ctx.send("❌ Игрок с таким ID не найден.")
+        await send_temp(ctx, "❌ Игрок с таким ID не найден.")
         return
 
     # Привязываем игрока к указанному турниру
 
     ok = add_player_to_tournament(player_id, tournament_id)
     if ok:
-        await ctx.send(
+        await send_temp(
             f"✅ Игрок #{player_id} (`{player['nick']}`) зарегистрирован в турнире #{tournament_id}."
         )
     else:
-        await ctx.send("❌ Не удалось зарегистрировать игрока в турнире.")
+        await send_temp(ctx, "❌ Не удалось зарегистрировать игрока в турнире.")
 
 async def list_players_view(
     ctx: commands.Context,
@@ -146,7 +147,7 @@ async def list_players_view(
     view.add_item(prev_btn)
     view.add_item(next_btn)
 
-    await ctx.send(embed=embed, view=view)
+    await send_temp(ctx, embed=embed, view=view)
 
 async def edit_player(
     ctx: commands.Context,
@@ -158,18 +159,18 @@ async def edit_player(
     Редактирует nick или tg_username игрока.
     """
     if field not in ("nick", "tg_username"):
-        await ctx.send("❌ Можно править только `nick` или `tg_username`.")
+        await send_temp(ctx, "❌ Можно править только `nick` или `tg_username`.")
         return
 
     if field == "tg_username" and not new_value.startswith("@"):
-        await ctx.send("❌ Telegram-ник должен начинаться с `@`.")
+        await send_temp(ctx, "❌ Telegram-ник должен начинаться с `@`.")
         return
 
     ok = update_player_field(player_id, field, new_value)
     if ok:
-        await ctx.send(f"✅ Игрок #{player_id} обновлён: {field} = `{new_value}`")
+        await send_temp(ctx, f"✅ Игрок #{player_id} обновлён: {field} = `{new_value}`")
     else:
-        await ctx.send("❌ Ошибка при обновлении или игрок не найден.")
+        await send_temp(ctx, "❌ Ошибка при обновлении или игрок не найден.")
 
 async def delete_player_cmd(
     ctx: commands.Context,
@@ -180,9 +181,9 @@ async def delete_player_cmd(
     """
     ok = delete_player(player_id)
     if ok:
-        await ctx.send(f"✅ Игрок #{player_id} удалён из системы.")
+        await send_temp(ctx, f"✅ Игрок #{player_id} удалён из системы.")
     else:
-        await ctx.send("❌ Игрок не найден или уже удалён.")
+        await send_temp(ctx, "❌ Игрок не найден или уже удалён.")
 
 async def unregister_player(
     ctx: commands.Context,
@@ -194,9 +195,9 @@ async def unregister_player(
     """
     ok = remove_player_from_tournament(player_id, tournament_id)
     if ok:
-        await ctx.send(f"✅ Игрок #{player_id} удалён из турнира #{tournament_id}.")
+        await send_temp(ctx, f"✅ Игрок #{player_id} удалён из турнира #{tournament_id}.")
     else:
-        await ctx.send("❌ Не удалось удалить привязку (возможно, её нет).")
+        await send_temp(ctx, "❌ Не удалось удалить привязку (возможно, её нет).")
 
 async def list_player_logs_view(
     ctx: commands.Context,
@@ -209,7 +210,7 @@ async def list_player_logs_view(
     per_page = 5
     logs, pages = list_player_logs(player_id, page, per_page)
     if not logs:
-        await ctx.send(f"📭 Нет изменений для игрока #{player_id}.")
+        await send_temp(ctx, f"📭 Нет изменений для игрока #{player_id}.")
         return
 
     embed = Embed(
@@ -239,4 +240,4 @@ async def list_player_logs_view(
     next_btn.callback = go_next
     view.add_item(next_btn)
 
-    await ctx.send(embed=embed, view=view)
+    await send_temp(ctx, embed=embed, view=view)
