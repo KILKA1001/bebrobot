@@ -447,6 +447,7 @@ def create_match_records(tournament_id: int, round_number: int, matches: list[Ma
         "mode": str(m.mode_id),
         "map_id": m.map_id
     } for m in matches]
+    print("🚨 ВЫЗОВ create_match_records")
 
     print("📦 Запрос к Supabase:", recs)
 
