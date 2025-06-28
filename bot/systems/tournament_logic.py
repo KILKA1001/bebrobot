@@ -876,6 +876,15 @@ class RegistrationView(ui.View):
         self._build_button()
         assert interaction.message is not None, "interaction.message не может быть None"
         await interaction.message.edit(view=self)
+
+        # Если достигнуто максимальное число участников — показываем сетку
+        raw = db_list_participants_full(self.tid)
+        if len(raw) >= self.max:
+            from bot.systems.interactive_rounds import RoundManagementView
+            bracket = await build_tournament_bracket_embed(self.tid, interaction.guild)
+            logic = create_tournament_logic([p.get("discord_user_id") or p.get("player_id") for p in raw])
+            view = RoundManagementView(self.tid, logic)
+            await interaction.message.edit(embed=bracket, view=view)
         
 async def announce_tournament(
     ctx: commands.Context,
@@ -1055,6 +1064,45 @@ async def build_tournament_status_embed(tournament_id: int) -> discord.Embed | N
     ]
     name_list = "\n".join(f"• {n}" for n in names) if names else "—"
     embed.add_field(name="📌 Участники (первые 10)", value=name_list, inline=False)
+
+    return embed
+
+
+async def build_tournament_bracket_embed(tournament_id: int, guild: discord.Guild | None = None) -> discord.Embed | None:
+    """Строит embed-сетку турнира по имеющимся матчам."""
+    round_no = 1
+    embed = discord.Embed(
+        title=f"🏟️ Сетка турнира #{tournament_id}",
+        color=discord.Color.purple(),
+    )
+
+    any_matches = False
+    while True:
+        matches = tournament_db.get_matches(tournament_id, round_no)
+        if not matches:
+            break
+
+        any_matches = True
+        lines: list[str] = []
+        for idx, m in enumerate(matches, start=1):
+            if guild:
+                p1m = guild.get_member(m["player1_id"])
+                p2m = guild.get_member(m["player2_id"])
+                p1 = p1m.mention if p1m else f"<@{m['player1_id']}>"
+                p2 = p2m.mention if p2m else f"<@{m['player2_id']}>"
+            else:
+                p1 = f"<@{m['player1_id']}>"
+                p2 = f"<@{m['player2_id']}>"
+
+            mode_name = MODE_NAMES.get(m["mode"], str(m["mode"]))
+            status = "⏳" if m.get("result") is None else ("🏆 1" if m["result"] == 1 else "🏆 2")
+            lines.append(f"Матч {idx}: {p1} vs {p2} — `{m['map_id']}` ({mode_name}) {status}")
+
+        embed.add_field(name=f"Раунд {round_no}", value="\n".join(lines), inline=False)
+        round_no += 1
+
+    if not any_matches:
+        embed.description = "Матчи ещё не созданы"
 
     return embed
 

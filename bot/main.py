@@ -27,7 +27,6 @@ from bot.systems.fines_logic import build_fine_embed
 from bot.systems.fines_logic import fines_summary_loop
 import bot.data.tournament_db as tournament_db
 from bot.systems.tournament_logic import RegistrationView
-from bot.commands.tournament import managerounds
 from bot.systems.interactive_rounds import RoundManagementView
 from bot.systems.tournament_logic import create_tournament_logic
 from bot.data import tournament_db
