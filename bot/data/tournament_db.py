@@ -131,13 +131,20 @@ def record_match_result(match_id: int, result: int) -> None:
         .execute()
 
 def delete_tournament(tournament_id: int) -> None:
-    """
-    Удаляет турнир и все связанные с ним записи.
-    """
-    supabase.table("tournaments")\
-      .delete()\
-      .eq("id", tournament_id)\
-      .execute()
+    """Удаляет турнир и все связанные с ним записи."""
+    # Удаляем результаты
+    supabase.table("tournament_results").delete().eq("tournament_id", tournament_id).execute()
+    # Удаляем матчи
+    supabase.table("tournament_matches").delete().eq("tournament_id", tournament_id).execute()
+    # Удаляем участников (discord и player)
+    supabase.table("tournament_participants").delete().eq("tournament_id", tournament_id).execute()
+    # Удаляем связи игроков с турниром, если таблица существует
+    try:
+        supabase.table("tournament_players").delete().eq("tournament_id", tournament_id).execute()
+    except Exception:
+        pass
+    # Наконец удаляем сам турнир
+    supabase.table("tournaments").delete().eq("id", tournament_id).execute()
 
 def save_tournament_result(
     tournament_id: int,
