@@ -20,6 +20,7 @@ from bot.data.tournament_db import add_discord_participant as db_add_participant
 from bot.systems.tournament_logic import delete_tournament as send_delete_confirmation
 # Import the bot instance from base.py instead of creating a new one
 from bot.commands.base import bot
+from bot.utils import send_temp
 from bot.systems.interactive_rounds import announce_round_management, RoundManagementView
 from bot.systems.tournament_logic import create_tournament_logic
 from bot.data.tournament_db import list_participants
@@ -32,7 +33,7 @@ active_tournaments: dict[int, Tournament] = {}
 async def createtournament(ctx):
     """Запустить создание нового турнира через мультишаговый UI."""
     view = TournamentSetupView(ctx.author.id)
-    await ctx.send(embed=view.initial_embed(), view=view)
+    await send_temp(ctx, embed=view.initial_embed(), view=view)
 
 @bot.command(name="managetournament")
 @commands.has_permissions(administrator=True)
@@ -60,7 +61,7 @@ async def manage_tournament(ctx, tournament_id: int):
     logic = create_tournament_logic(participants)
     view = RoundManagementView(tournament_id, logic)
     
-    await ctx.send(embed=embed, view=view)
+    await send_temp(ctx, embed=embed, view=view)
     
 @bot.command(name="jointournament")
 async def jointournament(ctx: commands.Context, tournament_id: int):
@@ -98,7 +99,7 @@ async def tournament_announce(ctx, tournament_id: int):
     from bot.systems import tournament_logic
     success = await tournament_logic.send_announcement_embed(ctx, tournament_id)
     if not success:
-        await ctx.send("❌ Не удалось отправить объявление. Проверь ID турнира.")
+        await send_temp(ctx, "❌ Не удалось отправить объявление. Проверь ID турнира.")
 
 @bot.command(name="managerounds")
 @commands.has_permissions(administrator=True)

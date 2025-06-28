@@ -9,6 +9,7 @@ import traceback
 
 from bot.data import db
 from bot.utils.roles_and_activities import ROLE_THRESHOLDS
+from bot.utils import send_temp
 from bot.utils.history_manager import format_history_embed
 
 TIME_FORMAT = "%H:%M (%d.%m.%Y)"
@@ -145,16 +146,7 @@ async def render_history(ctx_or_interaction, member: discord.Member, page: int):
                 await ctx_or_interaction.response.send_message(embed=embed, view=view)
                 sent_message = await ctx_or_interaction.original_response()
         else:
-            sent_message = await ctx_or_interaction.send(embed=embed, view=view)
-
-        async def delete_later(msg: discord.Message):
-            try:
-                await asyncio.sleep(180)
-                await msg.delete()
-            except (discord.NotFound, discord.Forbidden):
-                pass
-
-        asyncio.create_task(delete_later(sent_message))
+            sent_message = await send_temp(ctx_or_interaction, embed=embed, view=view)
 
     except Exception as e:
         error_embed = discord.Embed(
@@ -202,7 +194,7 @@ async def run_monthly_top(ctx):
                 uid = int(action['user_id'])
                 monthly_scores[uid] += float(action['points'])
     if not monthly_scores:
-        await ctx.send("❌ Нет данных о баллах за этот месяц.")
+        await send_temp(ctx, "❌ Нет данных о баллах за этот месяц.")
         return
 
     top_users = sorted(monthly_scores.items(), key=lambda x: x[1], reverse=True)[:3]
@@ -230,7 +222,7 @@ async def run_monthly_top(ctx):
         entries_to_log.append((uid, score, percent))
 
     db.log_monthly_top(entries_to_log)
-    await ctx.send(embed=embed)
+    await send_temp(ctx, embed=embed)
 
 
 async def tophistory(ctx, month: Optional[int] = None, year: Optional[int] = None):
@@ -239,7 +231,7 @@ async def tophistory(ctx, month: Optional[int] = None, year: Optional[int] = Non
     year = year or now.year
 
     if not db.supabase:
-        await ctx.send("❌ Supabase не инициализирован.")
+        await send_temp(ctx, "❌ Supabase не инициализирован.")
         return
 
     try:
@@ -253,7 +245,7 @@ async def tophistory(ctx, month: Optional[int] = None, year: Optional[int] = Non
 
         entries = response.data
         if not entries:
-            await ctx.send(f"📭 Нет записей за {month:02d}.{year}")
+            await send_temp(ctx, f"📭 Нет записей за {month:02d}.{year}")
             return
 
         embed = discord.Embed(
@@ -270,10 +262,10 @@ async def tophistory(ctx, month: Optional[int] = None, year: Optional[int] = Non
                 value=f"<@{uid}> — +{bonus} баллов",
                 inline=False
             )
-        await ctx.send(embed=embed)
+        await send_temp(ctx, embed=embed)
 
     except Exception as e:
-        await ctx.send(f"❌ Ошибка при получении данных: {e}")
+        await send_temp(ctx, f"❌ Ошибка при получении данных: {e}")
 
 class HelpView(discord.ui.View):
     def __init__(self, user: discord.Member):
@@ -317,37 +309,39 @@ def get_help_embed(category: str) -> discord.Embed:
     if category == "points":
         embed.title = "📊 Баллы и рейтинг"
         embed.description = (
-            "`?points [@пользователь]` — показывает текущие баллы пользователя\n"
-            "`?leaderboard [число]` — выводит топ пользователей по баллам\n"
+            "`?balance [@пользователь]` — показать текущий баланс\n"
+            "`?leaderboard` — топ пользователей по баллам\n"
             "`?history [@пользователь] [страница]` — история изменений баллов"
         )
     elif category == "roles":
         embed.title = "🏅 Роли и активности"
         embed.description = (
-            "`?roles` — список ролей и количество баллов, необходимых для получения\n"
-            "`?activities` — список всех действий, за которые можно получить баллы"
+            "`?roles` — список ролей и стоимость\n"
+            "`?activities` — виды деятельности и их баллы"
         )
     elif category == "fines":
         embed.title = "📉 Штрафы"
         embed.description = (
-            "`?myfines` — посмотреть свои активные штрафы и оплатить их\n"
-            "`?finehistory [@пользователь] [страница]` — история всех штрафов\n"
-            "`?finedetails ID` — подробности по конкретному штрафу"
+            "`?myfines` — ваши активные штрафы\n"
+            "`?finehistory [@пользователь] [страница]` — история штрафов\n"
+            "`?finedetails ID` — детали конкретного штрафа"
         )
     elif category == "misc":
         embed.title = "🧪 Прочее"
         embed.description = (
             "`?ping` — проверить, работает ли бот\n"
             "`?helpy` — открыть меню справки\n"
-            "`?tophistory [месяц] [год]` — история топов месяца (например: `?tophistory 5 2024`)"
+            "`?tophistory [месяц] [год]` — история топов месяца"
         )
     elif category == "admin_points":
-        embed.title = "⚙️ Админ: Управление баллами"
+        embed.title = "⚙️ Админ: Баллы и билеты"
         embed.description = (
             "`?addpoints @пользователь сумма [причина]` — начислить баллы\n"
             "`?removepoints @пользователь сумма [причина]` — снять баллы\n"
-            "`?undo @пользователь [кол-во]` — отменить последние действия (по умолчанию 1)\n"
-            "`?monthlytop` — начислить бонусы за топ месяца (только админы)"
+            "`?undo @пользователь [кол-во]` — отменить последние действия\n"
+            "`?monthlytop` — бонусы за топ месяца\n"
+            "`?addticket @пользователь тип кол-во [причина]` — выдать билет\n"
+            "`?removeticket @пользователь тип кол-во [причина]` — списать билет"
         )
     elif category == "admin_fines":
         embed.title = "📉 Админ: Управление штрафами"
@@ -364,7 +358,26 @@ def get_help_embed(category: str) -> discord.Embed:
             "`?bank` — баланс банка\n"
             "`?bankadd сумма причина` — добавить баллы в банк\n"
             "`?bankspend сумма причина` — потратить баллы из банка\n"
-            "`?bankhistory` — история всех операций с банком"
+            "`?bankhistory` — история операций"
+        )
+    elif category == "admin_players":
+        embed.title = "👥 Админ: Игроки"
+        embed.description = (
+            "`?register <nick> <@tg>` или `?register <id> <tournament>` — добавить игрока\n"
+            "`?listplayers [страница]` — список игроков\n"
+            "`?editplayer id поле значение` — изменить данные игрока\n"
+            "`?deleteplayer id` — удалить игрока\n"
+            "`?unregister id tournament` — убрать игрока из турнира\n"
+            "`?playerlogs id [страница]` — история правок"
+        )
+    elif category == "admin_tournaments":
+        embed.title = "🏟 Админ: Турниры"
+        embed.description = (
+            "`?createtournament` — создать турнир\n"
+            "`?managetournament id` — управление турниром\n"
+            "`?deletetournament id` — удалить турнир\n"
+            "`?tournamentannounce id` — объявить регистрацию\n"
+            "`?managerounds id` — панель раундов"
         )
     return embed
 
@@ -391,6 +404,14 @@ class AdminCategoryView(discord.ui.View):
     @discord.ui.button(label="🏦 Банк", style=discord.ButtonStyle.green, row=0)
     async def bank_admin(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.send_category(interaction, "admin_bank")
+
+    @discord.ui.button(label="👥 Игроки", style=discord.ButtonStyle.blurple, row=0)
+    async def players_admin(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.send_category(interaction, "admin_players")
+
+    @discord.ui.button(label="🏟 Турниры", style=discord.ButtonStyle.green, row=0)
+    async def tournaments_admin(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.send_category(interaction, "admin_tournaments")
 
     @discord.ui.button(label="🔙 Назад", style=discord.ButtonStyle.secondary, row=1)
     async def back_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
