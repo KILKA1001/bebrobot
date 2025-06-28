@@ -502,6 +502,7 @@ async def start_round_logic(ctx: commands.Context, tournament_id: int) -> None:
         await send_temp(ctx, "⚠️ Нечётное число участников — нужно чётное для пар.")
         return
 
+
     info = get_tournament_info(tournament_id) or {}
     team_size = 3 if info.get("type") == "team" else 1
 
@@ -509,6 +510,12 @@ async def start_round_logic(ctx: commands.Context, tournament_id: int) -> None:
     tour = active_tournaments.get(tournament_id)
     if tour is None:
         tour = create_tournament_logic(participants, team_size=team_size)
+
+    from bot.commands.tournament import active_tournaments
+    tour = active_tournaments.get(tournament_id)
+    if tour is None:
+        tour = create_tournament_logic(participants)
+
         active_tournaments[tournament_id] = tour
     else:
         # Обработка результатов предыдущего раунда
@@ -518,9 +525,13 @@ async def start_round_logic(ctx: commands.Context, tournament_id: int) -> None:
                 await send_temp(ctx, "⚠️ Сначала введите результаты предыдущего раунда.")
                 return
             winners, _losers = res
+
             _sync_participants_after_round(tournament_id, winners, getattr(tour, "team_map", None))
             if team_size > 1:
                 tour.team_map = {tid: tour.team_map[tid] for tid in winners}
+
+            _sync_participants_after_round(tournament_id, winners)
+
             tour.participants = winners
             participants = winners
             if len(participants) < 2:
@@ -631,6 +642,42 @@ def _sync_participants_after_round(
             if player_id is not None:
                 remove_player_from_tournament(player_id, tournament_id)
 
+# ───── Вспомогательные функции ─────
+
+def _get_round_results(tournament_id: int, round_no: int) -> Optional[tuple[list[int], list[int]]]:
+    """Возвращает списки победителей и проигравших указанного раунда.
+
+    Если хотя бы один матч не имеет результата, возвращается ``None``.
+    """
+    matches = tournament_db.get_matches(tournament_id, round_no)
+    winners: list[int] = []
+    losers: list[int] = []
+    for m in matches:
+        res = m.get("result")
+        if res not in (1, 2):
+            return None
+        if res == 1:
+            winners.append(m["player1_id"])
+            losers.append(m["player2_id"])
+        else:
+            winners.append(m["player2_id"])
+            losers.append(m["player1_id"])
+    return winners, losers
+
+
+def _sync_participants_after_round(tournament_id: int, winners: list[int]) -> None:
+    """Удаляет из таблицы участников всех, кто не вошёл в список ``winners``."""
+    current = db_list_participants_full(tournament_id)
+    for entry in current:
+        disc_id = entry.get("discord_user_id")
+        player_id = entry.get("player_id")
+        pid = disc_id or player_id
+        if pid not in winners:
+            if disc_id is not None:
+                remove_discord_participant(tournament_id, disc_id)
+            if player_id is not None:
+                remove_player_from_tournament(player_id, tournament_id)
+
 async def join_tournament(ctx: commands.Context, tournament_id: int) -> None:
     """
     Регистрирует автора команды в турнире через запись в БД
@@ -666,8 +713,10 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
 
     participants = [p.get("discord_user_id") or p.get("player_id") for p in raw_participants]
 
+
     info = get_tournament_info(tournament_id) or {}
     team_size = 3 if info.get("type") == "team" else 1
+
     
     # 2) Только на сервере
     guild = interaction.guild
@@ -686,6 +735,7 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
     if view and hasattr(view, 'logic'):
         tour = view.logic
     else:
+
         tour = create_tournament_logic(participants, team_size=team_size)
 
     # 3a) Обработка результатов предыдущего раунда
@@ -700,6 +750,29 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
         _sync_participants_after_round(tournament_id, winners, getattr(tour, "team_map", None))
         if team_size > 1:
             tour.team_map = {tid: tour.team_map[tid] for tid in winners}
+        tour.participants = winners
+        participants = winners
+        if len(participants) < 2:
+            await interaction.response.send_message(
+                f"🏆 Турнир завершён! Победитель — <@{participants[0]}>."
+                if participants else "Турнир завершён."
+            )
+            db_update_tournament_status(tournament_id, "finished")
+            return
+
+        tour = create_tournament_logic(participants)
+
+
+    # 3a) Обработка результатов предыдущего раунда
+    if tour.current_round > 1:
+        res = _get_round_results(tournament_id, tour.current_round - 1)
+        if res is None:
+            await interaction.response.send_message(
+                "⚠️ Сначала внесите результаты предыдущего раунда.", ephemeral=True
+            )
+            return
+        winners, _losers = res
+        _sync_participants_after_round(tournament_id, winners)
         tour.participants = winners
         participants = winners
         if len(participants) < 2:
