@@ -74,7 +74,16 @@ def create_matches(tournament_id: int, round_number: int, matches: List) -> None
         }
         records.append(record)
     
-    supabase.table("tournament_matches").insert(records).execute()
+    res = (
+        supabase.table("tournament_matches")
+        .insert(records, returning="representation")
+        .execute()
+    )
+
+    rows = res.data or []
+    for m, row in zip(matches, rows):
+        if hasattr(m, "match_id"):
+            m.match_id = row.get("id")
 
 
 def get_matches(tournament_id: int, round_number: int) -> List[dict]:
