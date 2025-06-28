@@ -592,12 +592,22 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
         )
         match_embed.add_field(name="Режим", value=mode_name, inline=True)
         match_embed.add_field(name="Карта", value=f"`{m.map_id}`", inline=True)
+
+        # Пробуем прикрепить изображение карты
+        from bot.data.tournament_db import get_map_image_url
+        map_url = get_map_image_url(str(m.map_id))
+        if map_url:
+            match_embed.set_image(url=map_url)
+
         assert m.match_id is not None, "match_id должен быть задан после записи в БД"
         # И создаём View с кнопками для репорта
         view = MatchResultView(match_id=m.match_id)
 
         # Отправляем отдельное сообщение на каждый матч
-        await interaction.response.send_message(embed=match_embed, view=view)
+        if idx == 1:
+            await interaction.response.send_message(embed=match_embed, view=view)
+        else:
+            await interaction.followup.send(embed=match_embed, view=view)
 
 async def report_result(ctx: commands.Context, match_id: int, winner: int) -> None:
     """
@@ -877,12 +887,20 @@ class RegistrationView(ui.View):
         assert interaction.message is not None, "interaction.message не может быть None"
         await interaction.message.edit(view=self)
 
-        # Если достигнуто максимальное число участников — показываем сетку
+        # Если достигнуто максимальное число участников — генерируем 1-й раунд
         raw = db_list_participants_full(self.tid)
         if len(raw) >= self.max:
             from bot.systems.interactive_rounds import RoundManagementView
+            from bot.data.tournament_db import create_matches as db_create_matches
+
+            # Создаём объект логики и генерируем первый раунд
+            ids = [p.get("discord_user_id") or p.get("player_id") for p in raw]
+            logic = create_tournament_logic(ids)
+            matches = logic.generate_round()
+            db_create_matches(self.tid, 1, matches)
+
+            # Показываем актуальную сетку
             bracket = await build_tournament_bracket_embed(self.tid, interaction.guild)
-            logic = create_tournament_logic([p.get("discord_user_id") or p.get("player_id") for p in raw])
             view = RoundManagementView(self.tid, logic)
             await interaction.message.edit(embed=bracket, view=view)
         

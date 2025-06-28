@@ -105,6 +105,21 @@ def get_matches(tournament_id: int, round_number: int) -> List[dict]:
     return res.data or []
 
 
+def get_map_image_url(map_id: str) -> Optional[str]:
+    """Возвращает ссылку на изображение карты по её ID."""
+    try:
+        res = (
+            supabase.table("maps")
+            .select("image_url")
+            .eq("id", map_id)
+            .single()
+            .execute()
+        )
+        return res.data.get("image_url") if res and res.data else None
+    except Exception:
+        return None
+
+
 def record_match_result(match_id: int, result: int) -> None:
     """
     Обновляет поле result у конкретного матча.
