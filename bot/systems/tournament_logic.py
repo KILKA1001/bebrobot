@@ -110,9 +110,9 @@ class Tournament:
         random.shuffle(self.participants)
         round_matches: List[Match] = []
         for i in range(0, len(self.participants), 2):
-            p1, p2 = self.participants[i], self.participants[i+1]
-            # три разных режима
-            picked = random.sample(self.modes, k=3)
+            p1, p2 = self.participants[i], self.participants[i + 1]
+            # используем последовательность режимов без перемешивания
+            picked = self.modes[:3]
             for mode_id in picked:
                 map_list = self.maps_by_mode.get(mode_id, [])
                 map_choice = random.choice(map_list) if map_list else ""
@@ -538,7 +538,7 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
     4) Генерирует раунд, сохраняет в БД
     5) Строит Embed и шлёт в канал
     """
-    from bot.systems.interactive_rounds import MatchResultView
+    from bot.systems.interactive_rounds import MatchResultView, PairSelectionView
     # 1) Участники
     participants = db_list_participants(tournament_id)
     if len(participants) < 2:
@@ -575,39 +575,20 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
     round_no = tour.current_round - 1
     db_create_matches(tournament_id, round_no, matches)
 
-    for idx, m in enumerate(matches, start=1):
-        # Получаем упоминания игроков
-        p1 = guild.get_member(m.player1_id)
-        p2 = guild.get_member(m.player2_id)
-        v1 = p1.mention if p1 else f"<@{m.player1_id}>"
-        v2 = p2.mention if p2 else f"<@{m.player2_id}>"
+    pairs: dict[int, list[Match]] = {}
+    step = len(tour.modes[:3])
+    pid = 1
+    for i in range(0, len(matches), step):
+        pairs[pid] = matches[i:i + step]
+        pid += 1
 
-        mode_name = MODE_NAMES.get(m.mode_id, str(m.mode_id))
-
-        # Для каждого матча создаём собственный Embed
-        match_embed = discord.Embed(
-            title=f"Матч {idx} — Раунд {round_no}",
-            description=f"{v1} vs {v2}",
-            color=discord.Color.blue()
-        )
-        match_embed.add_field(name="Режим", value=mode_name, inline=True)
-        match_embed.add_field(name="Карта", value=f"`{m.map_id}`", inline=True)
-
-        # Пробуем прикрепить изображение карты
-        from bot.data.tournament_db import get_map_image_url
-        map_url = get_map_image_url(str(m.map_id))
-        if map_url:
-            match_embed.set_image(url=map_url)
-
-        assert m.match_id is not None, "match_id должен быть задан после записи в БД"
-        # И создаём View с кнопками для репорта
-        view = MatchResultView(match_id=m.match_id)
-
-        # Отправляем отдельное сообщение на каждый матч
-        if idx == 1:
-            await interaction.response.send_message(embed=match_embed, view=view)
-        else:
-            await interaction.followup.send(embed=match_embed, view=view)
+    embed = discord.Embed(
+        title=f"Раунд {round_no} — выбор пары",
+        description="Нажмите кнопку ниже, чтобы начать матчи для выбранной пары.",
+        color=discord.Color.orange(),
+    )
+    view_pairs = PairSelectionView(tournament_id, pairs, guild, round_no)
+    await interaction.response.send_message(embed=embed, view=view_pairs)
 
 async def report_result(ctx: commands.Context, match_id: int, winner: int) -> None:
     """
