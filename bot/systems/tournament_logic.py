@@ -444,7 +444,7 @@ def create_match_records(tournament_id: int, round_number: int, matches: list[Ma
         "round_number": round_number,
         "player1_id": m.player1_id,
         "player2_id": m.player2_id,
-        "mode_id": m.mode_id,
+        "mode": str(m.mode_id),
         "map_id": m.map_id
     } for m in matches]
     res = supabase.table("tournament_matches") \
