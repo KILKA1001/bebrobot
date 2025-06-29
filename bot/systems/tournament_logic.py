@@ -46,7 +46,7 @@ MODE_NAMES: Dict[int, str] = {
     3: "Захват кристаллов",
     4: "Броулбол",
 }
-ANNOUNCE_CHANNEL_ID = int(os.getenv("MONTHLY_TOP_CHANNEL_ID", 0))
+ANNOUNCE_CHANNEL_ID = int(os.getenv("TOURNAMENT_ANNOUNCE_CHANNEL_ID", 0))
 MODE_IDS = list(MODE_NAMES.keys())
 
 # Карты, теперь сгруппированы по числовому режиму

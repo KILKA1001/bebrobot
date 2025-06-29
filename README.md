@@ -11,9 +11,10 @@ pip install -r requirements.txt
    - Создайте файл `.env` в корне проекта
    - Заполните обязательные переменные:
      ```ini
-     DISCORD_TOKEN=ваш_токен_бота
-     SUPABASE_URL=ваш_url_supabase
-     SUPABASE_KEY=ваш_ключ_supabase
+    DISCORD_TOKEN=ваш_токен_бота
+    SUPABASE_URL=ваш_url_supabase
+    SUPABASE_KEY=ваш_ключ_supabase
+    TOURNAMENT_ANNOUNCE_CHANNEL_ID=ID_канала_анонсов
      ```
 
 3. **Запуск бота**:
