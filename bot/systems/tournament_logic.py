@@ -431,7 +431,16 @@ style=discord.ButtonStyle.secondary,
             # (можно добавить параметр reward в конструктор, либо оставить пустым)
 
             # прикрепляем нашу RegistrationView
-            reg_view = RegistrationView(tournament_id=tour_id, max_participants=self.size, tour_type=typetxt)
+            from bot.commands.tournament import tournament_admins
+
+            tournament_admins[tour_id] = self.author_id
+
+            reg_view = RegistrationView(
+                tournament_id=tour_id,
+                max_participants=self.size,
+                tour_type=typetxt,
+                author_id=self.author_id,
+            )
 
             # добавляем к нему кнопку управления раундами
             reg_view.add_item(
@@ -1063,12 +1072,48 @@ async def show_history(ctx: commands.Context, limit: int = 10) -> None:
 
 class RegistrationView(SafeView):
     persistent = True
-    def __init__(self, tournament_id: int, max_participants: int, tour_type: Optional[str] = None):
+
+    def __init__(
+        self,
+        tournament_id: int,
+        max_participants: int,
+        tour_type: Optional[str] = None,
+        author_id: Optional[int] = None,
+    ):
         super().__init__(timeout=None)
         self.tid = tournament_id
         self.max = max_participants
         self.tour_type = tour_type
+        self.author_id = author_id
         self._build_button()
+
+
+class ParticipationConfirmView(SafeView):
+    def __init__(self, tournament_id: int, user_id: int, admin_id: Optional[int]):
+        super().__init__(timeout=86400)
+        self.tournament_id = tournament_id
+        self.user_id = user_id
+        self.admin_id = admin_id
+
+    @ui.button(label="Да, буду участвовать", style=ButtonStyle.success)
+    async def confirm(self, interaction: Interaction, button: ui.Button):
+        from bot.commands.tournament import confirmed_participants
+        confirmed_participants.setdefault(self.tournament_id, set()).add(self.user_id)
+        await interaction.response.send_message("Участие подтверждено!", ephemeral=True)
+        self.stop()
+
+    @ui.button(label="Нет, передумал", style=ButtonStyle.danger)
+    async def decline(self, interaction: Interaction, button: ui.Button):
+        from bot.commands.tournament import tournament_admins
+        tournament_db.remove_discord_participant(self.tournament_id, self.user_id)
+        await interaction.response.send_message("Вы отказались от участия.", ephemeral=True)
+        admin = interaction.client.get_user(self.admin_id) if self.admin_id else None
+        if admin:
+            try:
+                await admin.send(f"Игрок <@{self.user_id}> отказался от участия в турнире #{self.tournament_id}.")
+            except Exception:
+                pass
+        self.stop()
 
     def _build_button(self):
         self.clear_items()
@@ -1098,31 +1143,46 @@ class RegistrationView(SafeView):
         assert interaction.message is not None, "interaction.message не может быть None"
         await interaction.message.edit(view=self)
 
-        # Если достигнуто максимальное число участников — генерируем 1-й раунд
+        # Если достигнуто максимальное число участников — уведомляем автора
         raw = db_list_participants_full(self.tid)
         if len(raw) >= self.max:
-            from bot.systems.interactive_rounds import RoundManagementView
-            from bot.data.tournament_db import create_matches as db_create_matches
+            from bot.commands.tournament import tournament_admins, confirmed_participants
+            admin_id = tournament_admins.get(self.tid)
+            confirmed_participants[self.tid] = set()
 
-            # Создаём объект логики и генерируем первый раунд
-            ids = [p.get("discord_user_id") or p.get("player_id") for p in raw]
-            info = get_tournament_info(self.tid) or {}
-            team_size = 3 if info.get("type") == "team" else 1
-            logic = create_tournament_logic(ids, team_size=team_size)
-            matches = logic.generate_round()
-            db_create_matches(self.tid, 1, matches)
+            if admin_id:
+                admin_user = interaction.client.get_user(admin_id)
+                if admin_user:
+                    try:
+                        await admin_user.send(
+                            f"Турнир #{self.tid} собрал максимум участников. Подтвердите начало."
+                        )
+                    except Exception:
+                        pass
 
-            # Показываем актуальную сетку
-            bracket = await build_tournament_bracket_embed(self.tid, interaction.guild)
-            view = RoundManagementView(self.tid, logic)
-            await interaction.message.edit(embed=bracket, view=view)
+            # Рассылаем подтверждения участникам
+            for p in raw:
+                uid = p.get("discord_user_id")
+                if not uid:
+                    continue
+                user = interaction.client.get_user(uid)
+                if not user:
+                    continue
+                try:
+                    await user.send(
+                        f"Вы зарегистрированы в турнире #{self.tid}. Подтвердите участие:",
+                        view=ParticipationConfirmView(self.tid, uid, admin_id),
+                    )
+                except Exception:
+                    continue
         
 async def announce_tournament(
     ctx: commands.Context,
     tournament_id: int,
     tour_type: str,
     max_participants: int,
-    reward: Optional[str] = None
+    reward: Optional[str] = None,
+    author_id: Optional[int] = None,
 ) -> None:
     """
     Отправляет в канал Embed с информацией о турнире и кнопкой регистрации.
@@ -1137,7 +1197,12 @@ async def announce_tournament(
         embed.add_field(name="Приз", value=reward, inline=False)
     embed.set_footer(text="Нажмите на кнопку ниже, чтобы зарегистрироваться")
 
-    view = RegistrationView(tournament_id, max_participants)
+    view = RegistrationView(
+        tournament_id,
+        max_participants,
+        tour_type,
+        author_id=author_id,
+    )
     await send_temp(ctx, embed=embed, view=view)
 
 async def handle_jointournament(ctx: commands.Context, tournament_id: int):
@@ -1163,7 +1228,17 @@ async def handle_regplayer(ctx: commands.Context, player_id: int, tournament_id:
             if channel:
                 try:
                     message = await channel.fetch_message(msg_id)
-                    view = RegistrationView(tournament_id, get_tournament_size(tournament_id))
+                    info = get_tournament_info(tournament_id) or {}
+                    t_type = info.get("type", "duel")
+                    type_text = "Дуэльный 1×1" if t_type == "duel" else "Командный 3×3"
+                    from bot.commands.tournament import tournament_admins
+                    admin_id = tournament_admins.get(tournament_id)
+                    view = RegistrationView(
+                        tournament_id,
+                        get_tournament_size(tournament_id),
+                        type_text,
+                        author_id=admin_id,
+                    )
                     await message.edit(view=view)
                 except Exception:
                     pass
@@ -1255,7 +1330,14 @@ async def send_announcement_embed(ctx, tournament_id: int) -> bool:
     embed.add_field(name="Приз", value=prize_text, inline=False)
     embed.set_footer(text="Нажмите на кнопку ниже, чтобы зарегистрироваться")
 
-    view = RegistrationView(tournament_id, size, type_text)
+    from bot.commands.tournament import tournament_admins
+    admin_id = tournament_admins.get(tournament_id)
+    view = RegistrationView(
+        tournament_id,
+        size,
+        type_text,
+        author_id=admin_id,
+    )
     await send_temp(ctx, embed=embed, view=view)
     return True
 
