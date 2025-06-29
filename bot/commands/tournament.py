@@ -25,6 +25,10 @@ from bot.commands.base import bot
 from bot.utils import send_temp
 from bot.systems.interactive_rounds import RoundManagementView
 
+# Дополнительные структуры для хранения авторов турниров и подтверждений
+tournament_admins: dict[int, int] = {}
+confirmed_participants: dict[int, set[int]] = {}
+
 # В памяти храним экземпляры турниров
 active_tournaments: dict[int, Tournament] = {}
 

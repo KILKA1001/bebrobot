@@ -443,8 +443,15 @@ style=discord.ButtonStyle.secondary,
             # если есть награда
             # (можно добавить параметр reward в конструктор, либо оставить пустым)
 
+
             # прикрепляем нашу RegistrationView и запоминаем автора
             set_tournament_author(tour_id, self.author_id)
+
+            # прикрепляем нашу RegistrationView
+            from bot.commands.tournament import tournament_admins
+
+            tournament_admins[tour_id] = self.author_id
+
 
             reg_view = RegistrationView(
                 tournament_id=tour_id,
@@ -1108,12 +1115,20 @@ class ParticipationConfirmView(SafeView):
 
     @ui.button(label="Да, буду участвовать", style=ButtonStyle.success)
     async def confirm(self, interaction: Interaction, button: ui.Button):
+
         confirm_participant(self.tournament_id, self.user_id)
+
+        from bot.commands.tournament import confirmed_participants
+        confirmed_participants.setdefault(self.tournament_id, set()).add(self.user_id)
+
         await interaction.response.send_message("Участие подтверждено!", ephemeral=True)
         self.stop()
 
     @ui.button(label="Нет, передумал", style=ButtonStyle.danger)
     async def decline(self, interaction: Interaction, button: ui.Button):
+
+        from bot.commands.tournament import tournament_admins
+
         tournament_db.remove_discord_participant(self.tournament_id, self.user_id)
         await interaction.response.send_message("Вы отказались от участия.", ephemeral=True)
         admin = interaction.client.get_user(self.admin_id) if self.admin_id else None
@@ -1155,7 +1170,13 @@ class ParticipationConfirmView(SafeView):
         # Если достигнуто максимальное число участников — уведомляем автора
         raw = db_list_participants_full(self.tid)
         if len(raw) >= self.max:
+
             admin_id = get_tournament_author(self.tid)
+
+            from bot.commands.tournament import tournament_admins, confirmed_participants
+            admin_id = tournament_admins.get(self.tid)
+            confirmed_participants[self.tid] = set()
+
 
             if admin_id:
                 admin_user = interaction.client.get_user(admin_id)
@@ -1238,7 +1259,12 @@ async def handle_regplayer(ctx: commands.Context, player_id: int, tournament_id:
                     info = get_tournament_info(tournament_id) or {}
                     t_type = info.get("type", "duel")
                     type_text = "Дуэльный 1×1" if t_type == "duel" else "Командный 3×3"
+
                     admin_id = get_tournament_author(tournament_id)
+
+                    from bot.commands.tournament import tournament_admins
+                    admin_id = tournament_admins.get(tournament_id)
+
                     view = RegistrationView(
                         tournament_id,
                         get_tournament_size(tournament_id),
@@ -1336,7 +1362,12 @@ async def send_announcement_embed(ctx, tournament_id: int) -> bool:
     embed.add_field(name="Приз", value=prize_text, inline=False)
     embed.set_footer(text="Нажмите на кнопку ниже, чтобы зарегистрироваться")
 
+
     admin_id = get_tournament_author(tournament_id)
+
+    from bot.commands.tournament import tournament_admins
+    admin_id = tournament_admins.get(tournament_id)
+
     view = RegistrationView(
         tournament_id,
         size,
