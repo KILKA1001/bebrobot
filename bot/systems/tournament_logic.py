@@ -793,11 +793,16 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
         tour.participants = winners
         participants = winners
         if len(participants) < 2:
-            await interaction.response.send_message(
-                f"🏆 Турнир завершён! Победитель — <@{participants[0]}>."
-                if participants else "Турнир завершён."
+            champ = winners[0] if winners else (participants[0] if participants else None)
+            runner = _losers[0] if _losers else None
+            await request_finish_confirmation(
+                interaction.client,
+                guild,
+                tournament_id,
+                champ,
+                runner,
+                tour,
             )
-            db_update_tournament_status(tournament_id, "finished")
             return
 
         tour = create_tournament_logic(participants)
@@ -816,11 +821,16 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
         tour.participants = winners
         participants = winners
         if len(participants) < 2:
-            await interaction.response.send_message(
-                f"🏆 Турнир завершён! Победитель — <@{participants[0]}>."
-                if participants else "Турнир завершён."
+            champ = winners[0] if winners else (participants[0] if participants else None)
+            runner = _losers[0] if _losers else None
+            await request_finish_confirmation(
+                interaction.client,
+                guild,
+                tournament_id,
+                champ,
+                runner,
+                tour,
             )
-            db_update_tournament_status(tournament_id, "finished")
             return
 
     # 4) Генерация и запись
@@ -1056,6 +1066,141 @@ async def delete_tournament(
     )
     view = ConfirmDeleteView(tournament_id)
     await send_temp(ctx, embed=embed, view=view)
+
+
+class FinishConfirmView(SafeView):
+    """Запрос подтверждения финала турнира."""
+
+    def __init__(self, tid: int, first_id: int | None, second_id: int | None, tour: Tournament, admin_id: int):
+        super().__init__(timeout=86400)
+        self.tid = tid
+        self.first_id = first_id
+        self.second_id = second_id
+        self.tour = tour
+        self.admin_id = admin_id
+
+    async def interaction_check(self, inter: Interaction) -> bool:
+        return inter.user.id == self.admin_id
+
+    @ui.button(label="✅ Подтвердить", style=ButtonStyle.success)
+    async def confirm(self, interaction: Interaction, button: ui.Button):
+        ok, msg = await finalize_tournament_logic(
+            interaction.client,
+            interaction.client.get_guild(db.guild_id),
+            self.tid,
+            self.first_id,
+            self.second_id,
+            self.tour,
+            self.admin_id,
+        )
+        if ok:
+            await interaction.response.edit_message(content="🏁 Турнир завершён и награды выданы.", view=None)
+        else:
+            await interaction.response.edit_message(content=msg or "Ошибка", view=None)
+        self.stop()
+
+    @ui.button(label="Отмена", style=ButtonStyle.danger)
+    async def cancel(self, interaction: Interaction, button: ui.Button):
+        await interaction.response.edit_message(content="Отменено", view=None)
+        self.stop()
+
+
+async def request_finish_confirmation(bot: commands.Bot, guild: discord.Guild, tid: int, first_id: int | None, second_id: int | None, tour: Tournament) -> None:
+    """Отправляет админу запрос на подтверждение финала."""
+
+    admin_id = get_tournament_author(tid)
+    from bot.commands.tournament import tournament_admins
+    admin_id = tournament_admins.get(tid, admin_id)
+    admin = bot.get_user(admin_id) if admin_id else None
+    if not admin:
+        return
+
+    def _mention(pid: int | None) -> str:
+        if pid is None:
+            return "—"
+        if getattr(tour, "team_map", None) and pid in tour.team_map:
+            parts = [guild.get_member(m) for m in tour.team_map[pid]]
+            return ", ".join(p.mention if p else f"<@{m}>" for p, m in zip(parts, tour.team_map[pid]))
+        member = guild.get_member(pid)
+        return member.mention if member else f"<@{pid}>"
+
+    embed = discord.Embed(
+        title=f"Финал турнира #{tid}",
+        description="Подтвердите распределение наград",
+        color=discord.Color.green(),
+    )
+    embed.add_field(name="🥇 1 место", value=_mention(first_id), inline=False)
+    if second_id is not None:
+        embed.add_field(name="🥈 2 место", value=_mention(second_id), inline=False)
+
+    view = FinishConfirmView(tid, first_id, second_id, tour, admin_id)
+    try:
+        await admin.send(embed=embed, view=view)
+    except Exception:
+        pass
+
+
+async def finalize_tournament_logic(
+    bot: commands.Bot,
+    guild: discord.Guild | None,
+    tournament_id: int,
+    first_id: int | None,
+    second_id: int | None,
+    tour: Tournament,
+    admin_id: int,
+) -> tuple[bool, str]:
+    info = get_tournament_info(tournament_id) or {}
+    bank_type = info.get("bank_type", 1)
+    manual = info.get("manual_amount", 20.0)
+    user_balance = db.scores.get(admin_id, 0.0)
+
+    try:
+        bank_total, user_part, bank_part = rewards.calculate_bank(bank_type, user_balance, manual)
+    except Exception as e:
+        return False, f"Ошибка: {e}"
+
+    if not rewards.charge_bank_contribution(admin_id, user_part, bank_part, f"Формирование банка турнира #{tournament_id}"):
+        return False, "Недостаточно средств для формирования банка"
+
+    participants = db_list_participants_full(tournament_id)
+
+    def _resolve(pid: int | None) -> list[int]:
+        if pid is None:
+            return []
+        if getattr(tour, "team_map", None) and pid in tour.team_map:
+            return tour.team_map[pid]
+        return [pid]
+
+    first_team = _resolve(first_id)
+    second_team = _resolve(second_id)
+
+    rewards.distribute_rewards(tournament_id, bank_total, first_team, second_team, admin_id)
+
+    db_save_tournament_result(tournament_id, first_id or 0, second_id or 0, None)
+    db_update_tournament_status(tournament_id, "finished")
+
+    channel = guild.get_channel(ANNOUNCE_CHANNEL_ID) if guild else None
+    if channel:
+        def mlist(ids: list[int]) -> str:
+            return ", ".join(guild.get_member(i).mention if guild.get_member(i) else f"<@{i}>" for i in ids) if ids else "—"
+        emb = discord.Embed(title=f"🏁 Турнир #{tournament_id} завершён!", color=discord.Color.gold())
+        emb.add_field(name="🥇 1 место", value=mlist(first_team), inline=False)
+        if second_team:
+            emb.add_field(name="🥈 2 место", value=mlist(second_team), inline=False)
+        await channel.send(embed=emb)
+
+    for uid in first_team + second_team:
+        user = bot.get_user(uid)
+        if user:
+            try:
+                await user.send(f"Вы получили награду за турнир #{tournament_id}!")
+            except Exception:
+                pass
+
+    if guild:
+        await refresh_bracket_message(guild, tournament_id)
+
+    return True, ""
 
 
 async def show_history(ctx: commands.Context, limit: int = 10) -> None:
