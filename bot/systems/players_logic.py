@@ -15,6 +15,12 @@ from bot.data.players_db import (
     remove_player_from_tournament,
     list_player_logs,
 )
+from bot.data.tournament_db import (
+    add_player_participant,
+    get_announcement_message_id,
+    get_tournament_size,
+)
+from bot.systems.tournament_logic import RegistrationView, ANNOUNCE_CHANNEL_ID
 from bot.utils import send_temp
 
 async def register_player(
@@ -55,12 +61,24 @@ async def register_player_by_id(
         return
 
     # Привязываем игрока к указанному турниру
-
     ok = add_player_to_tournament(player_id, tournament_id)
-    if ok:
+    ok_part = add_player_participant(tournament_id, player_id)
+
+    if ok and ok_part:
         await send_temp(
             f"✅ Игрок #{player_id} (`{player['nick']}`) зарегистрирован в турнире #{tournament_id}."
         )
+        # Обновляем кнопку регистрации, если сообщение доступно
+        msg_id = get_announcement_message_id(tournament_id)
+        if msg_id and ctx.guild:
+            channel = ctx.guild.get_channel(ANNOUNCE_CHANNEL_ID)
+            if channel:
+                try:
+                    message = await channel.fetch_message(msg_id)
+                    view = RegistrationView(tournament_id, get_tournament_size(tournament_id))
+                    await message.edit(view=view)
+                except Exception:
+                    pass
     else:
         await send_temp(ctx, "❌ Не удалось зарегистрировать игрока в турнире.")
 
