@@ -11,7 +11,8 @@ import asyncio
 from dotenv import load_dotenv
 import pytz
 from discord.ext import commands
-from bot.commands.base import bot  
+from bot.commands.base import bot
+from bot import COMMAND_PREFIX
 # Локальные импорты
 from bot.data import db
 from keep_alive import keep_alive
@@ -32,7 +33,6 @@ from bot.systems.tournament_logic import create_tournament_logic
 from bot.data import tournament_db
 
 # Константы
-COMMAND_PREFIX = '?'
 TIME_FORMAT = "%H:%M (%d.%m.%Y)"
 TOP_CHANNEL_ID = int(os.getenv("MONTHLY_TOP_CHANNEL_ID", 0))
 
