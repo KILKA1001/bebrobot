@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from bot.commands.base import bot
-from bot.utils import send_temp
+from bot.utils import send_temp, build_top_embed
 
 from bot.data import db
 from bot.systems.fines_logic import (
@@ -231,16 +231,15 @@ async def topfines(ctx):
         await send_temp(ctx, "📭 Нет должников.")
         return
 
-    embed = discord.Embed(title="📉 Топ по задолженности", color=discord.Color.red())
-    medals = ["🥇", "🥈", "🥉"]
-
-    for i, (uid, amount) in enumerate(top):
+    formatted = []
+    for uid, amount in top:
         member = ctx.guild.get_member(uid)
         name = member.display_name if member else f"<@{uid}>"
-        embed.add_field(
-            name=f"{medals[i]} {name}",
-            value=f"💰 Задолженность: {amount:.2f} баллов",
-            inline=False
-        )
+        formatted.append((name, f"💰 Задолженность: {amount:.2f} баллов"))
 
+    embed = build_top_embed(
+        title="📉 Топ по задолженности",
+        entries=formatted,
+        color=discord.Color.red(),
+    )
     await send_temp(ctx, embed=embed)

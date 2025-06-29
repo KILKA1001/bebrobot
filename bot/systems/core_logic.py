@@ -9,7 +9,7 @@ import traceback
 
 from bot.data import db
 from bot.utils.roles_and_activities import ROLE_THRESHOLDS
-from bot.utils import send_temp
+from bot.utils import send_temp, build_top_embed
 from bot.utils.history_manager import format_history_embed
 
 TIME_FORMAT = "%H:%M (%d.%m.%Y)"
@@ -199,29 +199,24 @@ async def run_monthly_top(ctx):
 
     top_users = sorted(monthly_scores.items(), key=lambda x: x[1], reverse=True)[:3]
     percentages = [0.125, 0.075, 0.05]
-    descriptions = ["🥇 1 место", "🥈 2 место", "🥉 3 место"]
 
     entries_to_log = []
-    embed = discord.Embed(title="🏆 Топ месяца", color=discord.Color.gold())
+    formatted = []
 
     for i, (uid, score) in enumerate(top_users):
         percent = percentages[i]
         bonus = round(score * percent, 2)
-        db.add_action(uid, bonus, f"Бонус за {descriptions[i]} ({score} баллов)", ctx.author.id)
+        db.add_action(uid, bonus, f"Бонус за {i + 1} место ({score} баллов)", ctx.author.id)
         member = ctx.guild.get_member(uid)
         name = member.display_name if member else f"<@{uid}>"
 
-
-
-        embed.add_field(
-            name=f"{descriptions[i]} — {name}",
-            value=f"Заработано: {score:.2f} баллов\nБонус: +{bonus:.2f} баллов",
-            inline=False
+        formatted.append(
+            (name, f"{i + 1} место\nЗаработано: {score:.2f} баллов\nБонус: +{bonus:.2f} баллов")
         )
-        
         entries_to_log.append((uid, score, percent))
 
     db.log_monthly_top(entries_to_log)
+    embed = build_top_embed("🏆 Топ месяца", formatted, color=discord.Color.gold())
     await send_temp(ctx, embed=embed)
 
 
@@ -248,20 +243,20 @@ async def tophistory(ctx, month: Optional[int] = None, year: Optional[int] = Non
             await send_temp(ctx, f"📭 Нет записей за {month:02d}.{year}")
             return
 
-        embed = discord.Embed(
-            title=f"📅 История топа — {month:02d}.{year}",
-            color=discord.Color.green()
-        )
+        formatted = []
         for entry in entries:
             uid = entry['user_id']
             place = entry['place']
             bonus = entry['bonus']
-            medal = "🥇" if place == 1 else "🥈" if place == 2 else "🥉"
-            embed.add_field(
-                name=f"{medal} Место {place}",
-                value=f"<@{uid}> — +{bonus} баллов",
-                inline=False
-            )
+            member = ctx.guild.get_member(uid)
+            name = member.display_name if member else f"<@{uid}>"
+            formatted.append((name, f"{place} место • +{bonus} баллов"))
+
+        embed = build_top_embed(
+            title=f"📅 История топа — {month:02d}.{year}",
+            entries=formatted,
+            color=discord.Color.green(),
+        )
         await send_temp(ctx, embed=embed)
 
     except Exception as e:
@@ -458,16 +453,20 @@ class LeaderboardView(discord.ui.View):
         return sorted(temp_scores.items(), key=lambda x: x[1], reverse=True)
 
     def get_embed(self):
-        embed = discord.Embed(title="🏆 Топ участников", color=discord.Color.gold())
         start = (self.page - 1) * self.page_size
         entries = self.entries[start:start + self.page_size]
 
         if not entries:
-            embed.description = "Нет данных для отображения."
+            embed = discord.Embed(
+                title="🏆 Топ участников",
+                description="Нет данных для отображения.",
+                color=discord.Color.gold(),
+            )
             embed.set_footer(text=f"Страница {self.page}/{self.total_pages} • Режим: {self.mode}")
             return embed
 
-        for i, (uid, points) in enumerate(entries, start=start + 1):
+        formatted = []
+        for uid, points in entries:
             member = self.ctx.guild.get_member(uid)
             name = member.display_name if member else f"<@{uid}>"
 
@@ -475,15 +474,15 @@ class LeaderboardView(discord.ui.View):
             if member:
                 roles = [r.name for r in member.roles if r.id in ROLE_THRESHOLDS]
             role_text = f"\nРоль: {', '.join(roles)}" if roles else ""
+            formatted.append((name, f"**{points:.2f}** баллов{role_text}"))
 
-            embed.add_field(
-                name=f"{i}. {name}",
-                value=f"**{points:.2f}** баллов{role_text}",
-                inline=False
-            )
-
-        embed.set_footer(text=f"Страница {self.page}/{self.total_pages} • Режим: {self.mode}")
-        return embed
+        footer = f"Страница {self.page}/{self.total_pages} • Режим: {self.mode}"
+        return build_top_embed(
+            title="🏆 Топ участников",
+            entries=formatted,
+            color=discord.Color.gold(),
+            footer=footer,
+        )
 
     @discord.ui.button(label="◀️", style=discord.ButtonStyle.gray)
     async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button):
