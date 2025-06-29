@@ -326,7 +326,9 @@ def get_help_embed(category: str) -> discord.Embed:
         embed.description = (
             "`?ping` — проверить, работает ли бот\n"
             "`?helpy` — открыть меню справки\n"
-            "`?tophistory [месяц] [год]` — история топов месяца"
+            "`?tophistory [месяц] [год]` — история топов месяца\n"
+            "`?jointournament id` — заявиться на турнир\n"
+            "`?tournamenthistory [n]` — последние турниры"
         )
     elif category == "admin_points":
         embed.title = "⚙️ Админ: Баллы и билеты"
@@ -358,7 +360,7 @@ def get_help_embed(category: str) -> discord.Embed:
     elif category == "admin_players":
         embed.title = "👥 Админ: Игроки"
         embed.description = (
-            "`?register <nick> <@tg>` или `?register <id> <tournament>` — добавить игрока\n"
+            "`?register <nick> <@tg>` — добавить игрока\n"
             "`?listplayers [страница]` — список игроков\n"
             "`?editplayer id поле значение` — изменить данные игрока\n"
             "`?deleteplayer id` — удалить игрока\n"
@@ -371,6 +373,9 @@ def get_help_embed(category: str) -> discord.Embed:
             "`?createtournament` — создать турнир\n"
             "`?managetournament id` — управление турниром\n"
             "`?deletetournament id` — удалить турнир\n"
+            "`?regplayer id tournament` — зарегистрировать игрока\n"
+            "`?tunregister user/tid tournament` — снять участника\n"
+            "`?endtournament id 1st 2nd [3rd]` — завершить турнир\n"
             "`?tournamentannounce id` — объявить регистрацию"
         )
     return embed
