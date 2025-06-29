@@ -33,12 +33,17 @@ from bot.data.tournament_db import (
     set_tournament_author,
     confirm_participant,
     list_recent_results,
+    get_expired_registrations,
+    update_start_time,
     delete_tournament as db_delete_tournament,
 )
 from bot.systems import tournament_rewards_logic as rewards
 from bot.systems.tournament_bank_logic import validate_and_save_bank
 
 logger = logging.getLogger(__name__)
+
+# Уже уведомлённые о завершении регистрации турниры
+expired_notified: set[int] = set()
 
 
 
@@ -823,6 +828,14 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
     round_no = tour.current_round - 1
     db_create_matches(tournament_id, round_no, matches)
 
+    try:
+        await refresh_bracket_message(guild, tournament_id)
+    except Exception:
+        pass
+
+    if round_no == 1:
+        await notify_first_round_participants(interaction.client, guild, tour, matches, tournament_id)
+
     pairs: dict[int, list[Match]] = {}
     step = len(tour.modes[:3])
     pid = 1
@@ -1333,6 +1346,123 @@ class BankAmountModal(ui.Modal, title="Введите сумму банка"):
         except Exception:
             await interaction.response.send_message("❌ Ошибка: введите корректное число (мин. 15)", ephemeral=True)
 
+
+class ExtendDateModal(ui.Modal, title="Новая дата"):
+    new_date = ui.TextInput(label="ДД.ММ.ГГГГ ЧЧ:ММ", placeholder="02.12.2023 18:00", required=True)
+
+    def __init__(self, view: ui.View, tournament_id: int):
+        super().__init__()
+        self.view = view
+        self.tid = tournament_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        from datetime import datetime
+        try:
+            dt = datetime.strptime(str(self.new_date), "%d.%m.%Y %H:%M")
+            if update_start_time(self.tid, dt.isoformat()):
+                expired_notified.discard(self.tid)
+                await interaction.response.send_message(
+                    f"✅ Регистрация продлена до {dt.strftime('%d.%m.%Y %H:%M')}",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message("❌ Не удалось сохранить дату", ephemeral=True)
+        except Exception:
+            await interaction.response.send_message("❌ Неверный формат даты", ephemeral=True)
+        finally:
+            self.stop()
+
+
+class ExtendRegistrationView(SafeView):
+    def __init__(self, tournament_id: int):
+        super().__init__(timeout=86400)
+        self.tid = tournament_id
+
+    @ui.button(label="+1 день", style=ButtonStyle.primary)
+    async def plus_day(self, interaction: Interaction, button: ui.Button):
+        from datetime import datetime, timedelta
+        info = get_tournament_info(self.tid) or {}
+        start = info.get("start_time")
+        try:
+            dt = datetime.fromisoformat(start) + timedelta(days=1)
+            ok = update_start_time(self.tid, dt.isoformat())
+            if ok:
+                expired_notified.discard(self.tid)
+                await interaction.response.send_message(
+                    f"✅ Новое время: {dt.strftime('%d.%m.%Y %H:%M')}", ephemeral=True
+                )
+            else:
+                await interaction.response.send_message("❌ Не удалось обновить время", ephemeral=True)
+        except Exception:
+            await interaction.response.send_message("❌ Ошибка даты", ephemeral=True)
+        self.stop()
+
+    @ui.button(label="Указать дату", style=ButtonStyle.secondary)
+    async def custom(self, interaction: Interaction, button: ui.Button):
+        await interaction.response.send_modal(ExtendDateModal(self, self.tid))
+
+
+async def send_participation_confirmations(bot: commands.Bot, tournament_id: int, admin_id: Optional[int]) -> None:
+    """Отправляет участникам запрос на подтверждение участия."""
+    raw = db_list_participants_full(tournament_id)
+    for p in raw:
+        uid = p.get("discord_user_id")
+        if not uid or p.get("confirmed"):
+            continue
+        user = bot.get_user(uid)
+        if not user:
+            continue
+        try:
+            await user.send(
+                f"Вы зарегистрированы в турнире #{tournament_id}. Подтвердите участие:",
+                view=ParticipationConfirmView(tournament_id, uid, admin_id),
+            )
+        except Exception:
+            continue
+
+
+async def notify_first_round_participants(bot: commands.Bot, guild: discord.Guild, tour: Tournament, matches: List[Match], tournament_id: int) -> None:
+    """Отправляет участникам информацию о первом раунде."""
+    step = len(tour.modes[:3])
+    pairs: dict[tuple[int, int], list[Match]] = {}
+    for i in range(0, len(matches), step):
+        ms = matches[i:i + step]
+        if ms:
+            pairs[(ms[0].player1_id, ms[0].player2_id)] = ms
+
+    for (p1, p2), ms in pairs.items():
+        disp = {}
+        for pid in (p1, p2):
+            if getattr(tour, "team_map", None) and pid in tour.team_map:
+                members = tour.team_map[pid]
+                names = [
+                    guild.get_member(m).mention if guild.get_member(m) else f"<@{m}>"
+                    for m in members
+                ]
+                disp[pid] = ", ".join(names)
+            else:
+                member = guild.get_member(pid)
+                disp[pid] = member.mention if member else f"<@{pid}>"
+
+        map_lines = [f"{MODE_NAMES.get(m.mode_id, m.mode_id)} — `{m.map_id}`" for m in ms]
+
+        for pid, opp in ((p1, disp[p2]), (p2, disp[p1])):
+            targets = tour.team_map.get(pid, [pid]) if getattr(tour, "team_map", None) else [pid]
+            for uid in targets:
+                user = bot.get_user(uid)
+                if not user:
+                    continue
+                embed = discord.Embed(
+                    title=f"Турнир #{tournament_id} — Раунд 1",
+                    description=f"Твой соперник: {opp}",
+                    color=discord.Color.blue(),
+                )
+                embed.add_field(name="Карты", value="\n".join(map_lines), inline=False)
+                try:
+                    await user.send(embed=embed)
+                except Exception:
+                    continue
+
 async def send_announcement_embed(ctx, tournament_id: int) -> bool:
     data = get_tournament_info(tournament_id)
     if not data:
@@ -1540,4 +1670,28 @@ async def tournament_reminder_loop(bot: commands.Bot) -> None:
     await bot.wait_until_ready()
     while not bot.is_closed():
         await send_tournament_reminders(bot)
+        await asyncio.sleep(3600)
+
+
+async def registration_deadline_loop(bot: commands.Bot) -> None:
+    """Проверяет окончание регистрации турниров и уведомляет админа."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        expired = get_expired_registrations()
+        for t in expired:
+            tid = t.get("id")
+            if tid in expired_notified:
+                continue
+            admin_id = t.get("author_id") or get_tournament_author(tid)
+            admin = bot.get_user(admin_id) if admin_id else None
+            if admin:
+                try:
+                    await admin.send(
+                        f"Регистрация на турнир #{tid} завершилась. Продлить?",
+                        view=ExtendRegistrationView(tid),
+                    )
+                    await send_participation_confirmations(bot, tid, admin_id)
+                    expired_notified.add(tid)
+                except Exception:
+                    pass
         await asyncio.sleep(3600)

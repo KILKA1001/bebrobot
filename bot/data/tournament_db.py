@@ -386,3 +386,31 @@ def list_recent_results(limit: int) -> List[dict]:
         .execute()
     )
     return res.data or []
+
+
+def get_expired_registrations() -> List[dict]:
+    """Возвращает турниры, где истекла дата начала и статус всё ещё registration."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    res = (
+        supabase.table("tournaments")
+        .select("id, author_id, start_time")
+        .eq("status", "registration")
+        .lte("start_time", now.isoformat())
+        .execute()
+    )
+    return res.data or []
+
+
+def update_start_time(tournament_id: int, new_iso: str) -> bool:
+    """Обновляет время начала турнира."""
+    try:
+        res = (
+            supabase.table("tournaments")
+            .update({"start_time": new_iso})
+            .eq("id", tournament_id)
+            .execute()
+        )
+        return bool(res.data)
+    except Exception:
+        return False
