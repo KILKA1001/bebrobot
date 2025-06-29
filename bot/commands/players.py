@@ -9,12 +9,6 @@ from bot.systems.players_logic import (
     delete_player_cmd,
     list_player_logs_view,
     unregister_player,
-    register_player_by_id
-)
-from bot.data.players_db import (
-    get_player_by_id,
-    create_player,
-    add_player_to_tournament,
 )
 
 from bot.commands.base import bot
@@ -24,30 +18,11 @@ from bot.utils import send_temp
 
 @bot.command(name="register")
 @commands.has_permissions(administrator=True)
-async def register(ctx: commands.Context, *args: str):
+async def register(ctx: commands.Context, nick: str, tg_username: str):
     """
     ?register <nick> <@tg_username>
-    или
-    ?register <player_id> <tournament_id>
     """
-    if len(args) != 2:
-        await send_temp(
-            "❌ Неверный синтаксис. Используйте:\n"
-            "`?register <nick> <@tg_username>` — добавить нового игрока\n"
-            "`?register <player_id> <tournament_id>` — зарегистрировать существующего в турнире"
-        )
-        return
-
-    # оба аргумента — числа → регистрация по ID
-    if args[0].isdigit() and args[1].isdigit():
-        player_id = int(args[0])
-        tournament_id = int(args[1])
-        await register_player_by_id(ctx, player_id, tournament_id)
-        return
-
-    # иначе считаем это ник и Telegram
-    nick, tg = args
-    await register_player(ctx, nick, tg)
+    await register_player(ctx, nick, tg_username)
 # ─── Список игроков ──────────────────────────────────────────────────────────
 
 @bot.command(name="listplayers")

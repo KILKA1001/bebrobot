@@ -11,7 +11,7 @@ from discord.ext import commands
 from discord.abc import Messageable
 from discord import TextChannel, Thread, Interaction
 import bot.data.tournament_db as tournament_db
-from bot.data.players_db import get_player_by_id
+from bot.data.players_db import get_player_by_id, add_player_to_tournament
 from bot.utils import send_temp
 from bot.data.tournament_db import count_matches 
 from bot.data.tournament_db import (
@@ -1148,8 +1148,9 @@ async def handle_jointournament(ctx: commands.Context, tournament_id: int):
     # тут можно ещё обновить RegistrationView, если нужно
 
 async def handle_regplayer(ctx: commands.Context, player_id: int, tournament_id: int):
-    ok = add_player_participant(tournament_id, player_id)
-    if not ok:
+    ok_db = add_player_to_tournament(player_id, tournament_id)
+    ok_part = add_player_participant(tournament_id, player_id)
+    if not (ok_db and ok_part):
         return await send_temp(ctx, "❌ Не удалось зарегистрировать игрока.")
     pl = get_player_by_id(player_id)
     name = pl["nick"] if pl else f"Игрок#{player_id}"
