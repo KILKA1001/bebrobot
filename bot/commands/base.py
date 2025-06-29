@@ -26,10 +26,10 @@ from bot.systems.core_logic import (
     build_balance_embed
 )
 from bot.utils import send_temp
+from bot import COMMAND_PREFIX
 
 
 # Константы
-COMMAND_PREFIX = '?'
 TIME_FORMAT = "%H:%M (%d.%m.%Y)"
 DATE_FORMAT = "%d-%m-%Y"        # 25-12-2023
 DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"  # Для сортировки
