@@ -254,6 +254,17 @@ def get_tournament_size(tournament_id: int) -> int:
         .execute()
     return res.data[0]["size"] if res.data else 0
 
+def get_announcement_message_id(tournament_id: int) -> Optional[int]:
+    """Возвращает ID сообщения-объявления турнира."""
+    res = supabase.table("tournaments") \
+        .select("announcement_message_id") \
+        .eq("id", tournament_id) \
+        .single() \
+        .execute()
+    if res and res.data:
+        return res.data.get("announcement_message_id")
+    return None
+
 def get_active_tournaments() -> list[dict]:
     """Возвращает список активных турниров с полями id, size, type и announcement_message_id."""
     res = supabase.table("tournaments") \

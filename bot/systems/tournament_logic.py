@@ -15,6 +15,7 @@ from bot.utils import send_temp
 from bot.data.tournament_db import count_matches 
 from bot.data.tournament_db import (
     add_discord_participant as db_add_participant,
+    add_player_participant,
     list_participants as db_list_participants,
     create_matches as db_create_matches,
     record_match_result as db_record_match_result,
@@ -25,6 +26,8 @@ from bot.data.tournament_db import (
     remove_player_from_tournament,
     create_tournament_record as db_create_tournament_record,
     get_tournament_info,
+    get_announcement_message_id,
+    get_tournament_size,
     list_recent_results,
     delete_tournament as db_delete_tournament,
 )
@@ -131,7 +134,11 @@ class Tournament:
             picked = self.modes[:3]
             for mode_id in picked:
                 map_list = self.maps_by_mode.get(mode_id, [])
-                map_choice = random.choice(map_list) if map_list else ""
+                if map_list:
+                    raw_choice = random.choice(map_list)
+                    map_choice = str(raw_choice).split()[-1]
+                else:
+                    map_choice = ""
                 round_matches.append(Match(p1, p2, mode_id, map_choice))
         self.matches[self.current_round] = round_matches
         self.current_round += 1
@@ -1140,12 +1147,24 @@ async def handle_jointournament(ctx: commands.Context, tournament_id: int):
     # тут можно ещё обновить RegistrationView, если нужно
 
 async def handle_regplayer(ctx: commands.Context, player_id: int, tournament_id: int):
-    ok = db_add_participant(tournament_id, player_id)
+    ok = add_player_participant(tournament_id, player_id)
     if not ok:
         return await send_temp(ctx, "❌ Не удалось зарегистрировать игрока.")
     pl = get_player_by_id(player_id)
     name = pl["nick"] if pl else f"Игрок#{player_id}"
     await send_temp(ctx, f"✅ {name} зарегистрирован в турнире #{tournament_id}.")
+    # Обновляем кнопку регистрации
+    if ctx.guild:
+        msg_id = get_announcement_message_id(tournament_id)
+        if msg_id:
+            channel = ctx.guild.get_channel(ANNOUNCE_CHANNEL_ID)
+            if channel:
+                try:
+                    message = await channel.fetch_message(msg_id)
+                    view = RegistrationView(tournament_id, get_tournament_size(tournament_id))
+                    await message.edit(view=view)
+                except Exception:
+                    pass
 
 async def handle_unregister(ctx: commands.Context, identifier: str, tournament_id: int):
     # определяем тип идентификатора
