@@ -19,6 +19,7 @@ from bot.data.tournament_db import (
     add_player_participant,
     list_participants as db_list_participants,
     create_matches as db_create_matches,
+    get_matches as db_get_matches,
     record_match_result as db_record_match_result,
     save_tournament_result as db_save_tournament_result,
     update_tournament_status as db_update_tournament_status,
@@ -746,19 +747,31 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
             return
 
     # 4) Генерация и запись
-    matches = tour.generate_round()
-    round_no = tour.current_round - 1
-    db_create_matches(tournament_id, round_no, matches)
+    existing = db_get_matches(tournament_id, tour.current_round)
+    if existing:
+        matches = []
+        for r in existing:
+            m = Match(r["player1_id"], r["player2_id"], r["mode"], r["map_id"])
+            m.match_id = r.get("id")
+            m.result = r.get("result")
+            matches.append(m)
+        tour.matches[tour.current_round] = matches
+        round_no = tour.current_round
+        tour.current_round += 1
+    else:
+        matches = tour.generate_round()
+        round_no = tour.current_round - 1
+        db_create_matches(tournament_id, round_no, matches)
 
-    try:
-        await refresh_bracket_message(guild, tournament_id)
-    except Exception:
-        pass
+        try:
+            await refresh_bracket_message(guild, tournament_id)
+        except Exception:
+            pass
 
-    if round_no == 1:
-        await notify_first_round_participants(
-            interaction.client, guild, tour, matches, tournament_id
-        )
+        if round_no == 1:
+            await notify_first_round_participants(
+                interaction.client, guild, tour, matches, tournament_id
+            )
 
     pairs: dict[int, list[Match]] = {}
     step = len(tour.modes[:3])
@@ -1648,6 +1661,46 @@ async def notify_first_round_participants(
                     await user.send(embed=embed)
                 except Exception:
                     continue
+
+
+async def generate_first_round(
+    bot: commands.Bot,
+    guild: discord.Guild,
+    tournament_id: int,
+) -> Tournament | None:
+    """Генерирует первый раунд и обновляет сообщение с сеткой."""
+    from bot.data.tournament_db import (
+        list_participants as db_list_participants,
+        list_participants_full as db_list_participants_full,
+        create_matches as db_create_matches,
+    )
+
+    raw_participants = db_list_participants(tournament_id)
+    if len(raw_participants) < 2 or len(raw_participants) % 2 != 0:
+        return None
+
+    if any(not p.get("confirmed") for p in db_list_participants_full(tournament_id)):
+        return None
+
+    participants = [
+        p.get("discord_user_id") or p.get("player_id") for p in raw_participants
+    ]
+
+    info = get_tournament_info(tournament_id) or {}
+    team_size = 3 if info.get("type") == "team" else 1
+
+    tour = create_tournament_logic(participants, team_size=team_size)
+    matches = tour.generate_round()
+    round_no = tour.current_round - 1
+    db_create_matches(tournament_id, round_no, matches)
+
+    try:
+        await refresh_bracket_message(guild, tournament_id)
+    except Exception:
+        pass
+
+    await notify_first_round_participants(bot, guild, tour, matches, tournament_id)
+    return tour
 
 
 async def send_announcement_embed(ctx, tournament_id: int) -> bool:

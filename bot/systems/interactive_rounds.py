@@ -108,14 +108,24 @@ class RoundManagementView(SafeView):
 
     async def on_activate_tournament(self, interaction: Interaction):
         """Переводит турнир в активный статус"""
-        from bot.systems.tournament_logic import set_tournament_status
+        from bot.systems.tournament_logic import (
+            set_tournament_status,
+            generate_first_round,
+        )
 
         if set_tournament_status(self.tournament_id, "active"):
             await interaction.response.send_message(
-                f"✅ Турнир #{self.tournament_id} активирован!", ephemeral=True
+                f"✅ Турнир #{self.tournament_id} активирован!",
+                ephemeral=True,
             )
+            guild = interaction.guild
+            if guild:
+                tour = await generate_first_round(
+                    interaction.client, guild, self.tournament_id
+                )
+                if tour:
+                    self.logic = tour
             # Обновляем View
-            # Обновляем кнопки в соответствии с новым статусом
             self._setup_view()
             if interaction.message:
                 await interaction.message.edit(view=self)
