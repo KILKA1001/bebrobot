@@ -23,18 +23,23 @@ class RoundManagementView(View):
         self.logic = logic
         self.custom_id = f"manage_rounds:{tournament_id}"  # Добавляем custom_id
 
-        # Получаем статус турнира
-        from bot.data.tournament_db import get_tournament_status
-        status = get_tournament_status(tournament_id)
+        # Первоначальная настройка кнопок
+        self._setup_view()
 
-        # Настройка кнопки "Начать раунд"
+    def _setup_view(self):
+        """Создаёт кнопки управления в соответствии со статусом турнира."""
+        self.clear_items()
+
+        from bot.data.tournament_db import get_tournament_status
+        status = get_tournament_status(self.tournament_id)
+
         start_disabled = status != "active"
         start_btn = Button(
             label="▶️ Начать раунд",
             style=ButtonStyle.green,
-            custom_id=f"start_round:{tournament_id}",
+            custom_id=f"start_round:{self.tournament_id}",
             row=0,
-            disabled=start_disabled
+            disabled=start_disabled,
         )
         start_btn.callback = self.on_start_round
         self.add_item(start_btn)
@@ -42,7 +47,7 @@ class RoundManagementView(View):
         next_btn = Button(
             label="⏭ Перейти к следующему",
             style=ButtonStyle.blurple,
-            custom_id=f"next_round:{tournament_id}",
+            custom_id=f"next_round:{self.tournament_id}",
             row=0,
         )
         next_btn.callback = self.on_next_round
@@ -51,7 +56,7 @@ class RoundManagementView(View):
         stop_btn = Button(
             label="🛑 Остановить раунд",
             style=ButtonStyle.red,
-            custom_id=f"stop_round:{tournament_id}",
+            custom_id=f"stop_round:{self.tournament_id}",
             row=1,
         )
         stop_btn.callback = self.on_stop_round
@@ -60,18 +65,17 @@ class RoundManagementView(View):
         status_btn = Button(
             label="📊 Показать статус",
             style=ButtonStyle.gray,
-            custom_id=f"status_round:{tournament_id}",
+            custom_id=f"status_round:{self.tournament_id}",
             row=1,
         )
         status_btn.callback = self.on_status_round
         self.add_item(status_btn)
 
-        # Кнопка активации турнира (если статус "registration")
         if status == "registration":
             activate_btn = Button(
                 label="✅ Активировать турнир",
                 style=ButtonStyle.success,
-                custom_id=f"activate_tournament:{tournament_id}",
+                custom_id=f"activate_tournament:{self.tournament_id}",
                 row=2,
             )
             activate_btn.callback = self.on_activate_tournament
@@ -80,7 +84,7 @@ class RoundManagementView(View):
             manage_btn = Button(
                 label="⚙ Управление раундами",
                 style=ButtonStyle.primary,
-                custom_id=f"manage_rounds:{tournament_id}",
+                custom_id=f"manage_rounds:{self.tournament_id}",
                 row=2,
             )
             manage_btn.callback = self.on_manage_rounds
@@ -95,9 +99,10 @@ class RoundManagementView(View):
                 ephemeral=True
             )
             # Обновляем View
-            self.clear_items()
-            await self.__init__(self.tournament_id, self.logic)
-            await interaction.message.edit(view=self)
+            # Обновляем кнопки в соответствии с новым статусом
+            self._setup_view()
+            if interaction.message:
+                await interaction.message.edit(view=self)
         else:
             await interaction.response.send_message(
                 "❌ Не удалось активировать турнир",
