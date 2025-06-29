@@ -531,125 +531,6 @@ class TournamentSetupView(SafeView):
         await interaction.response.edit_message(embed=embed, view=self)
 
 
-async def start_round_logic(ctx: commands.Context, tournament_id: int) -> None:
-    # 0) Получаем «сырые» записи участников
-    raw = db_list_participants_full(tournament_id)
-    if not raw:
-        await send_temp(
-            ctx, f"❌ Турнир #{tournament_id} не найден или в нём нет участников."
-        )
-        return
-
-    # ─── Формируем participants и display_map ────────────────────────────────
-    participants: list[int] = []
-    display_map: dict[int, str] = {}
-
-    for entry in raw:
-        d = entry.get("discord_user_id")
-        p = entry.get("player_id")
-        if d is not None:
-            participants.append(d)
-            display_map[d] = f"<@{d}>"
-        elif p is not None:
-            participants.append(p)
-            pl = get_player_by_id(p)
-            display_map[p] = pl["nick"] if pl else f"Игрок#{p}"
-        else:
-            # Ни того ни другого — пропускаем запись
-            continue
-    # ──────────────────────────────────────────────────────────────────────────
-    # 1) Недостаточно участников
-    if len(participants) < 2:
-        await send_temp(ctx, "❌ Недостаточно участников для начала раунда.")
-        return
-    # Новая проверка на чётность участников
-    if len(participants) % 2 != 0:
-        await send_temp(ctx, "⚠️ Нечётное число участников — нужно чётное для пар.")
-        return
-
-    info = get_tournament_info(tournament_id) or {}
-    team_size = 3 if info.get("type") == "team" else 1
-
-    from bot.commands.tournament import active_tournaments
-
-    tour = active_tournaments.get(tournament_id)
-    if tour is None:
-        tour = create_tournament_logic(participants, team_size=team_size)
-
-    from bot.commands.tournament import active_tournaments
-
-    tour = active_tournaments.get(tournament_id)
-    if tour is None:
-        tour = create_tournament_logic(participants)
-
-        active_tournaments[tournament_id] = tour
-    else:
-        # Обработка результатов предыдущего раунда
-        if tour.current_round > 1:
-            res = _get_round_results(tournament_id, tour.current_round - 1)
-            if res is None:
-                await send_temp(ctx, "⚠️ Сначала введите результаты предыдущего раунда.")
-                return
-            winners, _losers = res
-
-            _sync_participants_after_round(
-                tournament_id, winners, getattr(tour, "team_map", None)
-            )
-            if team_size > 1:
-                tour.team_map = {tid: tour.team_map[tid] for tid in winners}
-
-            _sync_participants_after_round(tournament_id, winners)
-
-            tour.participants = winners
-            participants = winners
-            if len(participants) < 2:
-                await send_temp(
-                    ctx, f"🏆 Турнир завершён! Победитель — <@{participants[0]}>."
-                )
-                db_update_tournament_status(tournament_id, "finished")
-                return
-
-    # 1) Проверяем, что команда в гильдии
-    guild = ctx.guild
-    if guild is None:
-        await send_temp(ctx, "❌ Эту команду можно использовать только на сервере.")
-        return
-
-    matches = tour.generate_round()
-    round_number = tour.current_round - 1
-
-    # 3) Сохраняем в БД
-    db_create_matches(tournament_id, round_number, matches)
-
-    team_display: dict[int, str] = {}
-    if getattr(tour, "team_map", None):
-        for tid, members in tour.team_map.items():
-            names = [display_map.get(m, f"<@{m}>") for m in members]
-            team_display[tid] = ", ".join(names)
-
-    # 4) Формируем и отправляем Embed
-    embed = Embed(
-        title=f"Раунд {round_number} — Турнир #{tournament_id}",
-        description=f"Сгенерировано {len(matches)} матчей:",
-        color=discord.Color.blurple(),
-    )
-    for idx, m in enumerate(matches, start=1):
-        v1 = team_display.get(
-            m.player1_id, display_map.get(m.player1_id, f"<@{m.player1_id}>")
-        )
-        v2 = team_display.get(
-            m.player2_id, display_map.get(m.player2_id, f"<@{m.player2_id}>")
-        )
-        mode_name = MODE_NAMES.get(m.mode_id, str(m.mode_id))
-        embed.add_field(
-            name=f"Матч {idx}",
-            value=(
-                f"{v1} vs {v2}\n" f"**Режим:** {mode_name}\n" f"**Карта:** {m.map_id}"
-            ),
-            inline=False,
-        )
-
-    await send_temp(ctx, embed=embed)
 
 
 def create_tournament_logic(participants: List[int], team_size: int = 1) -> Tournament:
@@ -719,44 +600,6 @@ def _sync_participants_after_round(
                 remove_player_from_tournament(player_id, tournament_id)
 
 
-# ───── Вспомогательные функции ─────
-
-
-def _get_round_results(
-    tournament_id: int, round_no: int
-) -> Optional[tuple[list[int], list[int]]]:
-    """Возвращает списки победителей и проигравших указанного раунда.
-
-    Если хотя бы один матч не имеет результата, возвращается ``None``.
-    """
-    matches = tournament_db.get_matches(tournament_id, round_no)
-    winners: list[int] = []
-    losers: list[int] = []
-    for m in matches:
-        res = m.get("result")
-        if res not in (1, 2):
-            return None
-        if res == 1:
-            winners.append(m["player1_id"])
-            losers.append(m["player2_id"])
-        else:
-            winners.append(m["player2_id"])
-            losers.append(m["player1_id"])
-    return winners, losers
-
-
-def _sync_participants_after_round(tournament_id: int, winners: list[int]) -> None:
-    """Удаляет из таблицы участников всех, кто не вошёл в список ``winners``."""
-    current = db_list_participants_full(tournament_id)
-    for entry in current:
-        disc_id = entry.get("discord_user_id")
-        player_id = entry.get("player_id")
-        pid = disc_id or player_id
-        if pid not in winners:
-            if disc_id is not None:
-                remove_discord_participant(tournament_id, disc_id)
-            if player_id is not None:
-                remove_player_from_tournament(player_id, tournament_id)
 
 
 async def join_tournament(ctx: commands.Context, tournament_id: int) -> None:
@@ -785,7 +628,11 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
     4) Генерирует раунд, сохраняет в БД
     5) Строит Embed и шлёт в канал
     """
-    from bot.systems.interactive_rounds import MatchResultView, PairSelectionView
+    from bot.systems.interactive_rounds import (
+        MatchResultView,
+        PairSelectionView,
+        get_stage_name,
+    )
 
     # 1) Участники
     raw_participants = db_list_participants(tournament_id)
@@ -798,6 +645,14 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
     if len(raw_participants) % 2 != 0:
         await interaction.response.send_message(
             "⚠️ Нечётное число участников — нужно чётное для пар."
+        )
+        return
+
+    full_participants = db_list_participants_full(tournament_id)
+    if any(not p.get("confirmed") for p in full_participants):
+        await interaction.response.send_message(
+            "❌ Не все участники подтвердили участие.",
+            ephemeral=True,
         )
         return
 
@@ -912,6 +767,8 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
         pairs[pid] = matches[i : i + step]
         pid += 1
 
+    stage_name = get_stage_name(len(participants))
+
     embed = discord.Embed(
         title=f"Раунд {round_no} — выбор пары",
         description="Нажмите кнопку ниже, чтобы начать матчи для выбранной пары.",
@@ -926,7 +783,14 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
             ]
             team_display[tid] = ", ".join(names)
 
-    view_pairs = PairSelectionView(tournament_id, pairs, guild, round_no, team_display)
+    view_pairs = PairSelectionView(
+        tournament_id,
+        pairs,
+        guild,
+        round_no,
+        stage_name,
+        team_display,
+    )
     await interaction.response.send_message(embed=embed, view=view_pairs)
 
 
@@ -1202,7 +1066,10 @@ async def request_finish_confirmation(
                 p.mention if p else f"<@{m}>" for p, m in zip(parts, tour.team_map[pid])
             )
         member = guild.get_member(pid)
-        return member.mention if member else f"<@{pid}>"
+        if member:
+            return member.mention
+        pl = get_player_by_id(pid)
+        return pl["nick"] if pl else f"ID:{pid}"
 
     embed = discord.Embed(
         title=f"Финал турнира #{tid}",
@@ -1262,6 +1129,11 @@ async def finalize_tournament_logic(
         tournament_id, bank_total, first_team, second_team, admin_id
     )
 
+    reward_first_each = bank_total * 0.5 / max(1, len(first_team))
+    reward_second_each = (
+        bank_total * 0.25 / max(1, len(second_team)) if second_team else 0
+    )
+
     db_save_tournament_result(tournament_id, first_id or 0, second_id or 0, None)
     db_update_tournament_status(tournament_id, "finished")
 
@@ -1279,18 +1151,40 @@ async def finalize_tournament_logic(
             )
 
         emb = discord.Embed(
-            title=f"🏁 Турнир #{tournament_id} завершён!", color=discord.Color.gold()
+            title=f"🏁 Турнир #{tournament_id} завершён!",
+            color=discord.Color.gold(),
         )
-        emb.add_field(name="🥇 1 место", value=mlist(first_team), inline=False)
+        emb.add_field(
+            name="🥇 1 место",
+            value=f"{mlist(first_team)} — {reward_first_each:.1f} баллов каждому",
+            inline=False,
+        )
         if second_team:
-            emb.add_field(name="🥈 2 место", value=mlist(second_team), inline=False)
+            emb.add_field(
+                name="🥈 2 место",
+                value=f"{mlist(second_team)} — {reward_second_each:.1f} баллов каждому",
+                inline=False,
+            )
         await channel.send(embed=emb)
+
+    class RewardConfirmView(SafeView):
+        def __init__(self, tid: int):
+            super().__init__(timeout=86400)
+            self.tid = tid
+
+        @ui.button(label="Получил", style=ButtonStyle.success)
+        async def confirm(self, interaction: Interaction, button: ui.Button):
+            await interaction.response.send_message("Награда подтверждена!", ephemeral=True)
+            self.stop()
 
     for uid in first_team + second_team:
         user = bot.get_user(uid)
         if user:
             try:
-                await user.send(f"Вы получили награду за турнир #{tournament_id}!")
+                await user.send(
+                    f"Вы получили награду за турнир #{tournament_id}!",
+                    view=RewardConfirmView(tournament_id),
+                )
             except Exception:
                 pass
 
@@ -1888,20 +1782,21 @@ async def build_tournament_bracket_embed(
             if guild:
                 p1m = guild.get_member(p1_id)
                 p2m = guild.get_member(p2_id)
-                name1 = p1m.mention if p1m else f"<@{p1_id}>"
-                name2 = p2m.mention if p2m else f"<@{p2_id}>"
+                name1 = p1m.mention if p1m else (get_player_by_id(p1_id) or {}).get("nick", f"ID:{p1_id}")
+                name2 = p2m.mention if p2m else (get_player_by_id(p2_id) or {}).get("nick", f"ID:{p2_id}")
             else:
-                name1 = f"<@{p1_id}>"
-                name2 = f"<@{p2_id}>"
+                pl1 = get_player_by_id(p1_id)
+                pl2 = get_player_by_id(p2_id)
+                name1 = pl1["nick"] if pl1 else f"ID:{p1_id}"
+                name2 = pl2["nick"] if pl2 else f"ID:{p2_id}"
 
             wins1 = sum(1 for m in ms if m.get("result") == 1)
             wins2 = sum(1 for m in ms if m.get("result") == 2)
 
-            if wins1 or wins2:
-                line = f"{name1} [{wins1}] ── {wins2} [{name2}]"
-            else:
-                line = f"{name1} ── {name2}"
-
+            line = (
+                f"{name1} [{wins1}] ─┐\n"
+                f"{name2} [{wins2}] ─┘"
+            )
             lines.append(line)
 
         embed.add_field(name=f"Раунд {round_no}", value="\n".join(lines), inline=False)

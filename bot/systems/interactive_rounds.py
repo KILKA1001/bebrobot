@@ -3,6 +3,7 @@ from discord import Embed, Interaction, ButtonStyle, ui
 from discord.ui import Button
 from bot.utils import SafeView
 from typing import Optional
+from bot.data.players_db import get_player_by_id
 from bot.systems.tournament_logic import (
     start_round as cmd_start_round,
     join_tournament,  # не обязательно, но для примера
@@ -13,6 +14,17 @@ from bot.systems.tournament_logic import (
 from bot.data.tournament_db import record_match_result as db_record_match_result
 
 from bot.systems.tournament_logic import Tournament
+
+
+def get_stage_name(participants: int) -> str:
+    mapping = {
+        2: "Финал",
+        4: "1/2 финала",
+        8: "1/4 финала",
+        16: "1/8 финала",
+        32: "1/16 финала",
+    }
+    return mapping.get(participants, f"Топ-{participants}")
 
 
 class RoundManagementView(SafeView):
@@ -188,13 +200,20 @@ class MatchResultView(SafeView):
     async def win2(self, interaction: Interaction, button: Button):
         await self._report(interaction, 2)
 
+    @ui.button(label="🤝 Ничья", style=ButtonStyle.gray)
+    async def draw(self, interaction: Interaction, button: Button):
+        await self._report(interaction, 0)
+
     async def _report(self, interaction: Interaction, winner: int):
         ok = db_record_match_result(self.match_id, winner)
         if ok:
             self.winner = winner
             await interaction.response.edit_message(
                 embed=Embed(
-                    title=f"Матч #{self.match_id}: победитель — игрок {winner}",
+                    title=(
+                        f"Матч #{self.match_id}: "
+                        + ("ничья" if winner == 0 else f"победитель — игрок {winner}")
+                    ),
                     color=discord.Color.green(),
                 ),
                 view=None,
@@ -221,6 +240,7 @@ class PairSelectionView(SafeView):
         pairs: dict[int, list],
         guild: discord.Guild,
         round_no: int,
+        stage_name: str,
         team_display: Optional[dict[int, str]] = None,
     ):
         super().__init__(timeout=None)
@@ -228,6 +248,7 @@ class PairSelectionView(SafeView):
         self.pairs = pairs
         self.guild = guild
         self.round_no = round_no
+        self.stage_name = stage_name
         self.team_display = team_display or {}
         self._build_buttons()
 
@@ -240,12 +261,20 @@ class PairSelectionView(SafeView):
                 name1 = self.team_display[m.player1_id]
             else:
                 p1 = self.guild.get_member(m.player1_id)
-                name1 = p1.display_name if p1 else str(m.player1_id)
+                if p1:
+                    name1 = p1.display_name
+                else:
+                    pl = get_player_by_id(m.player1_id)
+                    name1 = pl["nick"] if pl else f"Игрок#{m.player1_id}"
             if m.player2_id in self.team_display:
                 name2 = self.team_display[m.player2_id]
             else:
                 p2 = self.guild.get_member(m.player2_id)
-                name2 = p2.display_name if p2 else str(m.player2_id)
+                if p2:
+                    name2 = p2.display_name
+                else:
+                    pl = get_player_by_id(m.player2_id)
+                    name2 = pl["nick"] if pl else f"Игрок#{m.player2_id}"
             label = f"{name1} vs {name2}"
             btn = ui.Button(
                 label=label, style=ButtonStyle.primary, custom_id=f"pair_{idx}", row=row
@@ -284,17 +313,25 @@ class PairSelectionView(SafeView):
                 v1 = self.team_display[m.player1_id]
             else:
                 p1 = self.guild.get_member(m.player1_id)
-                v1 = p1.mention if p1 else f"<@{m.player1_id}>"
+                if p1:
+                    v1 = p1.mention
+                else:
+                    pl = get_player_by_id(m.player1_id)
+                    v1 = pl["nick"] if pl else f"Игрок#{m.player1_id}"
             if m.player2_id in self.team_display:
                 v2 = self.team_display[m.player2_id]
             else:
                 p2 = self.guild.get_member(m.player2_id)
-                v2 = p2.mention if p2 else f"<@{m.player2_id}>"
+                if p2:
+                    v2 = p2.mention
+                else:
+                    pl = get_player_by_id(m.player2_id)
+                    v2 = pl["nick"] if pl else f"Игрок#{m.player2_id}"
 
             mode_name = MODE_NAMES.get(m.mode_id, str(m.mode_id))
 
             match_embed = discord.Embed(
-                title=f"Матч {n} — Раунд {self.round_no}",
+                title=f"Матч {n} — {self.stage_name}",
                 description=f"{v1} vs {v2}",
                 color=discord.Color.blue(),
             )
