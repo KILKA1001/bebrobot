@@ -14,11 +14,18 @@ logger = logging.getLogger(__name__)
 
 
 
-def create_tournament_record(t_type: str, size: int, start_time: Optional[str] = None) -> int:
+def create_tournament_record(
+    t_type: str,
+    size: int,
+    start_time: Optional[str] = None,
+    author_id: Optional[int] = None,
+) -> int:
     """Создаёт запись о новом турнире и возвращает его ID."""
     payload = {"type": t_type, "size": size, "status": "registration"}
     if start_time:
         payload["start_time"] = start_time
+    if author_id is not None:
+        payload["author_id"] = author_id
     res = (
         supabase.table("tournaments")
         .insert(payload)
@@ -33,7 +40,8 @@ def add_discord_participant(tournament_id: int, discord_user_id: int) -> bool:
         .insert({
             "tournament_id": tournament_id,
             "discord_user_id": discord_user_id,
-            "player_id": None
+            "player_id": None,
+            "confirmed": False,
         })\
         .execute()
     return bool(res.data)
@@ -44,7 +52,8 @@ def add_player_participant(tournament_id: int, player_id: int) -> bool:
         .insert({
             "tournament_id": tournament_id,
             "discord_user_id": None,
-            "player_id": player_id
+            "player_id": player_id,
+            "confirmed": True,
         })\
         .execute()
     return bool(res.data)
@@ -55,7 +64,7 @@ def list_participants(tournament_id: int) -> List[dict]:
     {discord_user_id, player_id}.
     """
     res = supabase.table("tournament_participants")\
-        .select("discord_user_id, player_id")\
+        .select("discord_user_id, player_id, confirmed")\
         .eq("tournament_id", tournament_id)\
         .execute()
     return res.data or []
@@ -198,7 +207,7 @@ def list_participants_full(tournament_id: int) -> List[dict]:
     [{"discord_user_id": int|None, "player_id": int|None}, ...]
     """
     res = supabase.table("tournament_participants") \
-        .select("discord_user_id, player_id") \
+        .select("discord_user_id, player_id, confirmed") \
         .eq("tournament_id", tournament_id) \
         .execute()
     return res.data or []
@@ -225,6 +234,21 @@ def remove_discord_participant(tournament_id: int, discord_user_id: int) -> bool
         .execute()
     # res.data — это список удалённых строк, пустой если ничего не удалено
     return bool(res.data)
+
+
+def confirm_participant(tournament_id: int, discord_user_id: int) -> bool:
+    """Помечает участника как подтвердившего участие."""
+    try:
+        res = (
+            supabase.table("tournament_participants")
+            .update({"confirmed": True})
+            .eq("tournament_id", tournament_id)
+            .eq("discord_user_id", discord_user_id)
+            .execute()
+        )
+        return bool(res.data)
+    except Exception:
+        return False
 
 def set_bank_type(tournament_id: int, bank_type: int, manual_amount: Optional[float] = None) -> bool:
     """Устанавливает тип банка и сумму (если задана)"""
@@ -319,6 +343,37 @@ def get_tournament_info(tournament_id: int) -> Optional[dict]:
         return res.data or None
     except Exception:
         return None
+
+
+def get_tournament_author(tournament_id: int) -> Optional[int]:
+    """Возвращает ID автора турнира или None."""
+    try:
+        res = (
+            supabase.table("tournaments")
+            .select("author_id")
+            .eq("id", tournament_id)
+            .single()
+            .execute()
+        )
+        if res and res.data:
+            return res.data.get("author_id")
+        return None
+    except Exception:
+        return None
+
+
+def set_tournament_author(tournament_id: int, author_id: int) -> bool:
+    """Сохраняет автора для указанного турнира."""
+    try:
+        res = (
+            supabase.table("tournaments")
+            .update({"author_id": author_id})
+            .eq("id", tournament_id)
+            .execute()
+        )
+        return bool(res.data)
+    except Exception:
+        return False
 
 
 def list_recent_results(limit: int) -> List[dict]:
