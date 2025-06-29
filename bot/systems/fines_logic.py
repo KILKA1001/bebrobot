@@ -1,5 +1,6 @@
 import discord
-from discord.ui import View, Button
+from discord.ui import Button
+from bot.utils import SafeView
 from datetime import datetime, timezone, timedelta
 from typing import List
 from bot.data import db
@@ -50,7 +51,7 @@ def build_fine_detail_embed(fine: dict) -> discord.Embed:
     return embed
 
 
-class FineView(View):
+class FineView(SafeView):
     def __init__(self, fine: dict):
         super().__init__(timeout=120)
         self.fine = fine
@@ -119,7 +120,7 @@ async def process_payment(interaction: discord.Interaction, fine: dict, percent:
 
 
 
-class PaymentMenuView(View):
+class PaymentMenuView(SafeView):
     def __init__(self, fine: dict):
         super().__init__(timeout=90)
         self.fine = fine
@@ -195,7 +196,7 @@ class FinePaginator:
         return self.fines[start:end]
 
 
-class AllFinesView(discord.ui.View):
+class AllFinesView(SafeView):
     def __init__(self, fines, ctx, per_page=5):
         super().__init__(timeout=60)
         self.ctx = ctx
