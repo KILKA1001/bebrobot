@@ -1,5 +1,6 @@
 import discord
 from discord import ui, Embed
+from bot.utils import SafeView
 from discord.ext import commands
 from typing import Optional, List, Tuple
 from functools import partial
@@ -104,7 +105,7 @@ async def list_players_view(
             inline=False
         )
 
-    view = ui.View(timeout=120)
+    view = SafeView(timeout=120)
 
     # Кнопки для копирования Telegram-ника
     for p in rows:
@@ -243,7 +244,7 @@ async def list_player_logs_view(
             inline=False
         )
 
-    view = ui.View(timeout=120)
+    view = SafeView(timeout=120)
     prev_btn = ui.Button(label="◀️", style=discord.ButtonStyle.secondary)
     async def go_prev(interaction: discord.Interaction):
         await interaction.response.edit_message(view=None)

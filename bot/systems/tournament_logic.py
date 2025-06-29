@@ -4,6 +4,7 @@ from typing import List, Dict, Optional
 import asyncio
 import discord
 from discord import ui, Embed, ButtonStyle, Color
+from bot.utils import SafeView
 import os
 from bot.data import db
 from discord.ext import commands
@@ -189,7 +190,7 @@ def create_tournament_object(participants: List[int]) -> Tournament:
 
 # ───── UI для создания турнира ─────
 
-class TournamentSetupView(ui.View):
+class TournamentSetupView(SafeView):
     """
     Многошаговый UI: выбор типа, размера, подтверждение, а затем запись в БД.
     """
@@ -975,7 +976,7 @@ async def end_tournament(
     else:
         await send_temp(ctx, "❌ Не удалось завершить турнир. Проверьте ID и повторите.")
 
-class ConfirmDeleteView(ui.View):
+class ConfirmDeleteView(SafeView):
     def __init__(self, tournament_id: int):
         super().__init__(timeout=60)
         self.tid = tournament_id
@@ -1060,7 +1061,7 @@ async def show_history(ctx: commands.Context, limit: int = 10) -> None:
 
     await send_temp(ctx, embed=embed)
 
-class RegistrationView(ui.View):
+class RegistrationView(SafeView):
     persistent = True
     def __init__(self, tournament_id: int, max_participants: int, tour_type: Optional[str] = None):
         super().__init__(timeout=None)

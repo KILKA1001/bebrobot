@@ -1,6 +1,7 @@
 import discord
 from discord import Embed, Interaction, ButtonStyle, ui
-from discord.ui import View, Button
+from discord.ui import Button
+from bot.utils import SafeView
 from typing import Optional
 from bot.systems.tournament_logic import (
     start_round as cmd_start_round,
@@ -12,7 +13,7 @@ from bot.data.tournament_db import record_match_result as db_record_match_result
 
 from bot.systems.tournament_logic import Tournament
 
-class RoundManagementView(View):
+class RoundManagementView(SafeView):
     """UI для управления раундами одного турнира."""
 
     persistent = True
@@ -141,7 +142,7 @@ class RoundManagementView(View):
         view = RoundManagementView(self.tournament_id, self.logic)
         await interaction.response.edit_message(embed=embed, view=view)
 
-class MatchResultView(View):
+class MatchResultView(SafeView):
     """UI для ввода результата конкретного матча."""
 
     def __init__(self, match_id: int):
@@ -199,7 +200,7 @@ class MatchResultView(View):
             )
 
 
-class PairSelectionView(View):
+class PairSelectionView(SafeView):
     """Выбор пары для начала матчей."""
 
     def __init__(

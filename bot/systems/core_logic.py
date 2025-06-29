@@ -9,7 +9,7 @@ import traceback
 
 from bot.data import db
 from bot.utils.roles_and_activities import ROLE_THRESHOLDS
-from bot.utils import send_temp, build_top_embed
+from bot.utils import send_temp, build_top_embed, SafeView
 from bot.utils.history_manager import format_history_embed
 
 TIME_FORMAT = "%H:%M (%d.%m.%Y)"
@@ -43,7 +43,7 @@ async def update_roles(member: discord.Member):
                 await member.remove_roles(role_to_remove)
 
 
-class HistoryView(discord.ui.View):
+class HistoryView(SafeView):
     def __init__(self, member: discord.Member, page: int, total_pages: int):
         super().__init__(timeout=60)
         self.member = member
@@ -262,7 +262,7 @@ async def tophistory(ctx, month: Optional[int] = None, year: Optional[int] = Non
     except Exception as e:
         await send_temp(ctx, f"❌ Ошибка при получении данных: {e}")
 
-class HelpView(discord.ui.View):
+class HelpView(SafeView):
     def __init__(self, user: discord.Member):
         super().__init__(timeout=120)
         self.user = user
@@ -375,7 +375,7 @@ def get_help_embed(category: str) -> discord.Embed:
         )
     return embed
 
-class AdminCategoryView(discord.ui.View):
+class AdminCategoryView(SafeView):
     def __init__(self, user: discord.Member):
         super().__init__(timeout=120)
         self.user = user
@@ -412,7 +412,7 @@ class AdminCategoryView(discord.ui.View):
         embed = get_help_embed("points")
         await interaction.response.edit_message(embed=embed, view=HelpView(self.user))
 
-class LeaderboardView(discord.ui.View):
+class LeaderboardView(SafeView):
     def __init__(self, ctx, mode="all", page=1):
         super().__init__(timeout=120)
         self.ctx = ctx
