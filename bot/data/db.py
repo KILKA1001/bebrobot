@@ -214,8 +214,6 @@ class Database:
             logger.error(f"🔥 Ошибка сохранения: {str(e)}")
             traceback.print_exc()
 
-    class Database:
-        pass
     def log_monthly_top(self, entries: list):
         """Запись топа месяца в Supabase"""
         if not self.supabase:
