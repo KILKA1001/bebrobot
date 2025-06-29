@@ -5,14 +5,15 @@ from bot.utils import SafeView
 from typing import Optional
 from bot.systems.tournament_logic import (
     start_round as cmd_start_round,
-    join_tournament,            # не обязательно, но для примера
+    join_tournament,  # не обязательно, но для примера
     build_tournament_status_embed,
     MODE_NAMES,
-    refresh_bracket_message
+    refresh_bracket_message,
 )
 from bot.data.tournament_db import record_match_result as db_record_match_result
 
 from bot.systems.tournament_logic import Tournament
+
 
 class RoundManagementView(SafeView):
     """UI для управления раундами одного турнира."""
@@ -33,6 +34,7 @@ class RoundManagementView(SafeView):
         self.clear_items()
 
         from bot.data.tournament_db import get_tournament_status
+
         status = get_tournament_status(self.tournament_id)
 
         start_disabled = status != "active"
@@ -95,10 +97,10 @@ class RoundManagementView(SafeView):
     async def on_activate_tournament(self, interaction: Interaction):
         """Переводит турнир в активный статус"""
         from bot.systems.tournament_logic import set_tournament_status
+
         if set_tournament_status(self.tournament_id, "active"):
             await interaction.response.send_message(
-                f"✅ Турнир #{self.tournament_id} активирован!",
-                ephemeral=True
+                f"✅ Турнир #{self.tournament_id} активирован!", ephemeral=True
             )
             # Обновляем View
             # Обновляем кнопки в соответствии с новым статусом
@@ -107,10 +109,8 @@ class RoundManagementView(SafeView):
                 await interaction.message.edit(view=self)
         else:
             await interaction.response.send_message(
-                "❌ Не удалось активировать турнир",
-                ephemeral=True
+                "❌ Не удалось активировать турнир", ephemeral=True
             )
-
 
     async def on_start_round(self, interaction: Interaction):
         await cmd_start_round(interaction, self.tournament_id)
@@ -138,10 +138,11 @@ class RoundManagementView(SafeView):
                 "Используйте кнопки ниже для контроля раундов.\n"
                 "Нажмите **▶️** для старта первого раунда."
             ),
-            color=0xF39C12
+            color=0xF39C12,
         )
         view = RoundManagementView(self.tournament_id, self.logic)
         await interaction.response.edit_message(embed=embed, view=view)
+
 
 class MatchResultView(SafeView):
     """UI для ввода результата конкретного матча."""
@@ -246,7 +247,9 @@ class PairSelectionView(SafeView):
                 p2 = self.guild.get_member(m.player2_id)
                 name2 = p2.display_name if p2 else str(m.player2_id)
             label = f"{name1} vs {name2}"
-            btn = ui.Button(label=label, style=ButtonStyle.primary, custom_id=f"pair_{idx}", row=row)
+            btn = ui.Button(
+                label=label, style=ButtonStyle.primary, custom_id=f"pair_{idx}", row=row
+            )
             btn.callback = self._make_callback(idx)
             self.add_item(btn)
             row = (row + 1) % 5
@@ -254,12 +257,15 @@ class PairSelectionView(SafeView):
     def _make_callback(self, idx: int):
         async def callback(interaction: Interaction):
             await self.send_pair_matches(interaction, idx)
+
         return callback
 
     async def send_pair_matches(self, interaction: Interaction, idx: int):
         matches = self.pairs.get(idx)
         if not matches:
-            await interaction.response.send_message("Эта пара уже была выбрана.", ephemeral=True)
+            await interaction.response.send_message(
+                "Эта пара уже была выбрана.", ephemeral=True
+            )
             return
         self.pairs.pop(idx)
         # отключаем кнопку
@@ -296,11 +302,14 @@ class PairSelectionView(SafeView):
             match_embed.add_field(name="Карта", value=f"`{m.map_id}`", inline=True)
 
             from bot.data.tournament_db import get_map_image_url
+
             map_url = get_map_image_url(str(m.map_id))
             if map_url:
                 match_embed.set_image(url=map_url)
 
-            view = MatchResultView(match_id=m.match_id, tournament_id=self.tournament_id, guild=self.guild)
+            view = MatchResultView(
+                match_id=m.match_id, tournament_id=self.tournament_id, guild=self.guild
+            )
 
             if channel:
                 msg = await channel.send(embed=match_embed, view=view)
@@ -322,6 +331,10 @@ class PairSelectionView(SafeView):
                 result_text = "Ничья"
             await channel.send(f"Результат пары {idx}: {result_text}")
 
+            try:
+                await refresh_bracket_message(self.guild, self.tournament_id)
+            except Exception:
+                pass
 
 
 # Функция-помощник для отправки стартового сообщения турнира
@@ -335,8 +348,7 @@ async def announce_round_management(channel, tournament_id: int, logic: Tourname
             "Используйте кнопки ниже для контроля раундов.\n"
             "Нажмите **▶️** для старта первого раунда."
         ),
-        color=0xF39C12
+        color=0xF39C12,
     )
     view = RoundManagementView(tournament_id, logic)
     await channel.send(embed=embed, view=view)
-
