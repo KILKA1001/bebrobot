@@ -1351,6 +1351,29 @@ async def build_tournament_bracket_embed(tournament_id: int, guild: discord.Guil
     return embed
 
 
+async def refresh_bracket_message(guild: discord.Guild, tournament_id: int) -> bool:
+    """Обновляет сообщение с сеткой турнира."""
+    msg_id = get_announcement_message_id(tournament_id)
+    if not msg_id:
+        return False
+    channel = guild.get_channel(ANNOUNCE_CHANNEL_ID)
+    if not channel:
+        return False
+    try:
+        message = await channel.fetch_message(msg_id)
+    except Exception:
+        return False
+
+    embed = await build_tournament_bracket_embed(tournament_id, guild)
+    if not embed:
+        return False
+    try:
+        await message.edit(embed=embed)
+        return True
+    except Exception:
+        return False
+
+
 async def send_tournament_reminders(bot: commands.Bot, hours: int = 24) -> None:
     """Отправляет участникам напоминания о ближайших турнирах."""
     from datetime import datetime

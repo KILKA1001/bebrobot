@@ -7,7 +7,8 @@ from bot.systems.tournament_logic import (
     start_round as cmd_start_round,
     join_tournament,            # не обязательно, но для примера
     build_tournament_status_embed,
-    MODE_NAMES
+    MODE_NAMES,
+    refresh_bracket_message
 )
 from bot.data.tournament_db import record_match_result as db_record_match_result
 
@@ -145,9 +146,12 @@ class RoundManagementView(SafeView):
 class MatchResultView(SafeView):
     """UI для ввода результата конкретного матча."""
 
-    def __init__(self, match_id: int):
+    def __init__(self, match_id: int, tournament_id: int, guild: discord.Guild):
         super().__init__(timeout=60)
         self.match_id = match_id
+        self.tournament_id = tournament_id
+        self.guild = guild
+        self.winner: Optional[int] = None
 
     async def interaction_check(self, interaction: Interaction) -> bool:
         guild = interaction.guild
@@ -186,6 +190,7 @@ class MatchResultView(SafeView):
     async def _report(self, interaction: Interaction, winner: int):
         ok = db_record_match_result(self.match_id, winner)
         if ok:
+            self.winner = winner
             await interaction.response.edit_message(
                 embed=Embed(
                     title=f"Матч #{self.match_id}: победитель — игрок {winner}",
@@ -193,6 +198,12 @@ class MatchResultView(SafeView):
                 ),
                 view=None,
             )
+            try:
+                if self.guild:
+                    await refresh_bracket_message(self.guild, self.tournament_id)
+            except Exception:
+                pass
+            self.stop()
         else:
             await interaction.response.send_message(
                 "❌ Ошибка при сохранении результата.",
@@ -261,6 +272,7 @@ class PairSelectionView(SafeView):
         await interaction.response.send_message(f"Запускаем пару {idx}", ephemeral=True)
 
         channel = interaction.channel
+        wins = {1: 0, 2: 0}
         for n, m in enumerate(matches, start=1):
             if m.player1_id in self.team_display:
                 v1 = self.team_display[m.player1_id]
@@ -288,10 +300,27 @@ class PairSelectionView(SafeView):
             if map_url:
                 match_embed.set_image(url=map_url)
 
-            view = MatchResultView(match_id=m.match_id)
+            view = MatchResultView(match_id=m.match_id, tournament_id=self.tournament_id, guild=self.guild)
 
             if channel:
-                await channel.send(embed=match_embed, view=view)
+                msg = await channel.send(embed=match_embed, view=view)
+                await view.wait()
+                if view.winner == 1:
+                    wins[1] += 1
+                elif view.winner == 2:
+                    wins[2] += 1
+
+                if wins[1] == 2 or wins[2] == 2:
+                    break
+
+        if channel:
+            if wins[1] > wins[2]:
+                result_text = "Победила команда 1"
+            elif wins[2] > wins[1]:
+                result_text = "Победила команда 2"
+            else:
+                result_text = "Ничья"
+            await channel.send(f"Результат пары {idx}: {result_text}")
 
 
 
