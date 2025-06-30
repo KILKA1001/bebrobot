@@ -346,13 +346,20 @@ class PairSelectionView(SafeView):
                 color=discord.Color.blue(),
             )
             match_embed.add_field(name="Режим", value=mode_name, inline=True)
-            match_embed.add_field(name="Карта", value=f"`{m.map_id}`", inline=True)
 
-            from bot.data.tournament_db import get_map_image_url
+            from bot.data.tournament_db import get_map_info
 
-            map_url = get_map_image_url(str(m.map_id))
-            if map_url:
-                match_embed.set_image(url=map_url)
+            info = get_map_info(str(m.map_id))
+            if info:
+                match_embed.add_field(
+                    name="Карта",
+                    value=f"{info.get('name', '')} (`{m.map_id}`)",
+                    inline=True,
+                )
+                if info.get("image_url"):
+                    match_embed.set_image(url=info["image_url"])
+            else:
+                match_embed.add_field(name="Карта", value=f"`{m.map_id}`", inline=True)
 
             view = MatchResultView(
                 match_id=m.match_id, tournament_id=self.tournament_id, guild=self.guild

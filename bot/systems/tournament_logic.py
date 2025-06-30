@@ -56,13 +56,17 @@ MODE_NAMES: Dict[int, str] = {
 ANNOUNCE_CHANNEL_ID = int(os.getenv("TOURNAMENT_ANNOUNCE_CHANNEL_ID", 0))
 MODE_IDS = list(MODE_NAMES.keys())
 
-# Карты, теперь сгруппированы по числовому режиму
-MAPS_BY_MODE: Dict[int, List[str]] = {
-    1: ["1.1 1", "1.2 2", "1.3 3"],
-    2: ["2.1 4", "2.2 5", "2.3 6"],
-    3: ["3.1 7", "3.2 8", "3.3 9"],
-    4: ["4.1 10", "4.2 11", "4.3 12"],
-}
+# Карты сгруппированы по режиму; по возможности берём из базы
+from bot.data.tournament_db import list_maps_by_mode
+
+MAPS_BY_MODE: Dict[int, List[str]] = list_maps_by_mode()
+if not MAPS_BY_MODE:
+    MAPS_BY_MODE = {
+        1: ["1.1 1", "1.2 2", "1.3 3"],
+        2: ["2.1 4", "2.2 5", "2.3 6"],
+        3: ["3.1 7", "3.2 8", "3.3 9"],
+        4: ["4.1 10", "4.2 11", "4.3 12"],
+    }
 
 # ───── База данных ─────
 

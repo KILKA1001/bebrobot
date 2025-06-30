@@ -129,6 +129,39 @@ def get_map_image_url(map_id: str) -> Optional[str]:
         return None
 
 
+def get_map_info(map_id: str) -> Optional[dict]:
+    """Возвращает полную информацию о карте по её ID."""
+    try:
+        res = (
+            supabase.table("maps")
+            .select("name, image_url, mode_id")
+            .eq("id", map_id)
+            .single()
+            .execute()
+        )
+        return res.data if res and res.data else None
+    except Exception:
+        return None
+
+
+def list_maps_by_mode() -> Dict[int, List[str]]:
+    """Возвращает карты, сгруппированные по mode_id."""
+    try:
+        res = supabase.table("maps").select("mode_id, name").execute()
+        data = res.data or []
+        result: Dict[int, List[str]] = {}
+        for entry in data:
+            mode = entry.get("mode_id")
+            name = entry.get("name")
+            if mode is None or name is None:
+                continue
+            result.setdefault(int(mode), []).append(name)
+        return result
+    except Exception as e:
+        logger.error(f"Failed to load maps: {e}")
+        return {}
+
+
 def record_match_result(match_id: int, result: int) -> None:
     """
     Обновляет поле result у конкретного матча.
