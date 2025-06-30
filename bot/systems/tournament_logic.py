@@ -841,7 +841,7 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
 
 async def report_result(ctx: commands.Context, match_id: int, winner: int) -> None:
     """
-    Обрабатывает команду ?reportresult:
+    Обрабатывает команду /reportresult:
      1) Проверяет, что winner == 1 или 2
      2) Записывает в БД через db_record_match_result
      3) Отправляет уведомление об успехе/ошибке
@@ -1267,7 +1267,7 @@ async def show_history(ctx: commands.Context, limit: int = 10) -> None:
         stats_line = (
             f"👥 Участников: {total_participants}\n"
             f"🎲 Матчей сыграно: {total_matches}\n"
-            f"ℹ️ Подробно: `?tournamentstatus {tid}`"
+            f"ℹ️ Подробно: `/tournamentstatus {tid}`"
         )
 
         # объединяем всё в одно поле

@@ -20,7 +20,7 @@ from bot.utils import send_temp
 @commands.has_permissions(administrator=True)
 async def register(ctx: commands.Context, nick: str, tg_username: str):
     """
-    ?register <nick> <@tg_username>
+    /register <nick> <@tg_username>
     """
     await register_player(ctx, nick, tg_username)
 # ─── Список игроков ──────────────────────────────────────────────────────────
@@ -29,7 +29,7 @@ async def register(ctx: commands.Context, nick: str, tg_username: str):
 async def listplayers(ctx: commands.Context, page: Optional[int] = 1):
     """
     Показывает постраничный список игроков:
-    ?listplayers [page]
+    /listplayers [page]
     """
     try:
         page_num = page if page is not None else 1
@@ -44,7 +44,7 @@ async def listplayers(ctx: commands.Context, page: Optional[int] = 1):
 async def editplayer(ctx: commands.Context, player_id: int, field: str, *, new_value: str):
     """
     Редактирует поле игрока:
-    ?editplayer <player_id> <nick|tg_username> <new_value>
+    /editplayer <player_id> <nick|tg_username> <new_value>
     """
     await edit_player(ctx, player_id, field, new_value)
 
@@ -55,7 +55,7 @@ async def editplayer(ctx: commands.Context, player_id: int, field: str, *, new_v
 async def deleteplayer(ctx: commands.Context, player_id: int):
     """
     Удаляет игрока из системы:
-    ?deleteplayer <player_id>
+    /deleteplayer <player_id>
     """
     await delete_player_cmd(ctx, player_id)
 
@@ -63,7 +63,7 @@ async def deleteplayer(ctx: commands.Context, player_id: int):
 @commands.has_permissions(administrator=True)
 async def unregister(ctx: commands.Context, player_id: int, tournament_id: int):
     """
-    ?unregister <player_id> <tournament_id>
+    /unregister <player_id> <tournament_id>
     Убирает игрока из указанного турнира.
     """
     await unregister_player(ctx, player_id, tournament_id)
@@ -72,7 +72,7 @@ async def unregister(ctx: commands.Context, player_id: int, tournament_id: int):
 @commands.has_permissions(administrator=True)
 async def playerlogs(ctx: commands.Context, player_id: int, page: Optional[int] = 1):
     """
-    ?playerlogs <player_id> [page]
+    /playerlogs <player_id> [page]
     Показывает историю правок данных игрока.
     """
     try:
