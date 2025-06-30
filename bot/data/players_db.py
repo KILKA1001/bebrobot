@@ -94,7 +94,7 @@ def add_player_to_tournament(player_id: int, tournament_id: int) -> bool:
             .insert(
                 {
                     "tournament_id": tournament_id,
-                    "discord_user_id": None,
+                    "discord_user_id": player_id,
                     "player_id": player_id,
                     "confirmed": True,
                 }
