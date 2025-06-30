@@ -89,18 +89,23 @@ def update_player_field(
     return True
 
 def add_player_to_tournament(player_id: int, tournament_id: int) -> bool:
-    """
-    Связывает игрока с турниром.
-    """
+    """Регистрирует игрока в турнире."""
     try:
         res = (
-            supabase.table("tournament_players")
-            .insert({"player_id": player_id, "tournament_id": tournament_id})
+            supabase.table("tournament_participants")
+            .insert(
+                {
+                    "tournament_id": tournament_id,
+                    "discord_user_id": None,
+                    "player_id": player_id,
+                    "confirmed": True,
+                }
+            )
             .execute()
         )
         return bool(res.data)
     except APIError as e:
-        if e.code == "23505":  # уникальная пара уже существует
+        if e.code == "23505":
             return False
         logger.error("add_player_to_tournament failed: %s", e)
         return False
@@ -111,7 +116,7 @@ def add_player_to_tournament(player_id: int, tournament_id: int) -> bool:
 def delete_player(player_id: int) -> bool:
     """
     Удаляет игрока из таблицы players.
-    Благодаря ON DELETE CASCADE удалятся и связанные записи в tournament_players и player_logs.
+    Благодаря ON DELETE CASCADE удалятся и связанные записи в tournament_participants и player_logs.
     """
     res = supabase.table("players") \
         .delete() \
@@ -123,11 +128,13 @@ def remove_player_from_tournament(player_id: int, tournament_id: int) -> bool:
     """
     Удаляет связь игрока с турниром.
     """
-    res = supabase.table("tournament_players") \
-        .delete() \
-        .eq("player_id", player_id) \
-        .eq("tournament_id", tournament_id) \
+    res = (
+        supabase.table("tournament_participants")
+        .delete()
+        .eq("player_id", player_id)
+        .eq("tournament_id", tournament_id)
         .execute()
+    )
     return bool(res.data)
 
 def list_player_logs(player_id: int, page: int = 1, per_page: int = 5) -> Tuple[List[dict], int]:

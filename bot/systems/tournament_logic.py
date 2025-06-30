@@ -16,7 +16,6 @@ from bot.utils import send_temp
 from bot.data.tournament_db import count_matches
 from bot.data.tournament_db import (
     add_discord_participant as db_add_participant,
-    add_player_participant,
     list_participants as db_list_participants,
     create_matches as db_create_matches,
     get_matches as db_get_matches,
@@ -1451,8 +1450,7 @@ async def handle_jointournament(ctx: commands.Context, tournament_id: int):
 
 async def handle_regplayer(ctx: commands.Context, player_id: int, tournament_id: int):
     ok_db = add_player_to_tournament(player_id, tournament_id)
-    ok_part = add_player_participant(tournament_id, player_id)
-    if not (ok_db and ok_part):
+    if not ok_db:
         return await send_temp(
             ctx, "❌ Игрок уже зарегистрирован или произошла ошибка."
         )
