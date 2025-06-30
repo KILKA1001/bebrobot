@@ -8,22 +8,18 @@ from bot.systems.tournament_logic import (
     join_tournament,
     end_tournament,
     show_history,
-    delete_tournament,
-    ConfirmDeleteView,
     Tournament,
     handle_jointournament,
     handle_regplayer,
     handle_unregister,
-    create_tournament_logic,
     build_tournament_status_embed,
     build_tournament_bracket_embed
 )
-from bot.data.tournament_db import add_discord_participant as db_add_participant
+from bot.systems.manage_tournament_view import ManageTournamentView
 from bot.systems.tournament_logic import delete_tournament as send_delete_confirmation
 # Import the bot instance from base.py instead of creating a new one
 from bot.commands.base import bot
 from bot.utils import send_temp
-from bot.systems.interactive_rounds import RoundManagementView
 
 # Дополнительные структуры для хранения авторов турниров и подтверждений
 tournament_admins: dict[int, int] = {}
@@ -53,21 +49,13 @@ async def manage_tournament(ctx, tournament_id: int):
 
     `tournament_id` — это номер турнира из базы (смотрите `/tournamenthistory`).
     """
-    from bot.data.tournament_db import list_participants_full
-
-    participants = [p["discord_user_id"] for p in list_participants_full(tournament_id)]
-    from bot.data.tournament_db import get_tournament_info
-    info = get_tournament_info(tournament_id) or {}
-    team_size = 3 if info.get("type") == "team" else 1
-    logic = create_tournament_logic(participants, team_size=team_size)
-
     embed = await build_tournament_bracket_embed(tournament_id, ctx.guild)
     if not embed:
         embed = await build_tournament_status_embed(tournament_id)
     if not embed:
         embed = discord.Embed(title=f"⚙ Управление турниром #{tournament_id}", color=discord.Color.blue())
 
-    view = RoundManagementView(tournament_id, logic)
+    view = ManageTournamentView(tournament_id, ctx)
     await send_temp(ctx, embed=embed, view=view)
     
 @bot.hybrid_command(
