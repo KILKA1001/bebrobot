@@ -1,6 +1,10 @@
 from typing import List, Optional, Tuple
 from bot.data import db
 from datetime import datetime, timezone
+import logging
+from postgrest.exceptions import APIError
+
+logger = logging.getLogger(__name__)
 
 assert db.supabase, "Supabase client not initialized"
 supabase = db.supabase
@@ -88,13 +92,21 @@ def add_player_to_tournament(player_id: int, tournament_id: int) -> bool:
     """
     Связывает игрока с турниром.
     """
-    res = supabase.table("tournament_players") \
-        .insert({
-            "player_id": player_id,
-            "tournament_id": tournament_id
-        }) \
-        .execute()
-    return bool(res.data)
+    try:
+        res = (
+            supabase.table("tournament_players")
+            .insert({"player_id": player_id, "tournament_id": tournament_id})
+            .execute()
+        )
+        return bool(res.data)
+    except APIError as e:
+        if e.code == "23505":  # уникальная пара уже существует
+            return False
+        logger.error("add_player_to_tournament failed: %s", e)
+        return False
+    except Exception as e:
+        logger.error("Unexpected error in add_player_to_tournament: %s", e)
+        return False
 
 def delete_player(player_id: int) -> bool:
     """
