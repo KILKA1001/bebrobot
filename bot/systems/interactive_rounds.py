@@ -8,6 +8,7 @@ from bot.systems.tournament_logic import (
     start_round as cmd_start_round,
     join_tournament,  # не обязательно, но для примера
     build_tournament_status_embed,
+    build_participants_embed,
     MODE_NAMES,
     refresh_bracket_message,
 )
@@ -87,6 +88,15 @@ class RoundManagementView(SafeView):
         status_btn.callback = self.on_status_round
         self.add_item(status_btn)
 
+        participants_btn = Button(
+            label="👥 Участники",
+            style=ButtonStyle.gray,
+            custom_id=f"list_participants:{self.tournament_id}",
+            row=2,
+        )
+        participants_btn.callback = self.on_list_participants
+        self.add_item(participants_btn)
+
         if status == "registration":
             activate_btn = Button(
                 label="✅ Активировать турнир",
@@ -164,6 +174,17 @@ class RoundManagementView(SafeView):
         )
         view = RoundManagementView(self.tournament_id, self.logic)
         await interaction.response.edit_message(embed=embed, view=view)
+
+    async def on_list_participants(self, interaction: Interaction):
+        embed = await build_participants_embed(
+            self.tournament_id, interaction.guild
+        )
+        if embed:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message(
+                "❌ Не удалось получить список участников.", ephemeral=True
+            )
 
 
 class MatchResultView(SafeView):

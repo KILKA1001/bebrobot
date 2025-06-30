@@ -1902,6 +1902,40 @@ async def build_tournament_bracket_embed(
     return embed
 
 
+async def build_participants_embed(
+    tournament_id: int, guild: discord.Guild | None = None
+) -> discord.Embed | None:
+    """Строит embed со списком участников турнира."""
+    participants = tournament_db.list_participants_full(tournament_id)
+    if not participants:
+        return None
+
+    embed = discord.Embed(
+        title=f"👥 Участники турнира #{tournament_id}",
+        color=discord.Color.dark_teal(),
+    )
+
+    lines: list[str] = []
+    for idx, p in enumerate(participants, start=1):
+        if p.get("discord_user_id"):
+            uid = p["discord_user_id"]
+            if guild:
+                member = guild.get_member(uid)
+                name = member.mention if member else f"<@{uid}>"
+            else:
+                name = f"<@{uid}>"
+        else:
+            pid = p.get("player_id")
+            pl = get_player_by_id(pid)
+            name = pl["nick"] if pl else f"Игрок#{pid}"
+
+        mark = "✅" if p.get("confirmed") else "❔"
+        lines.append(f"{idx}. {mark} {name}")
+
+    embed.description = "\n".join(lines) if lines else "—"
+    return embed
+
+
 async def refresh_bracket_message(guild: discord.Guild, tournament_id: int) -> bool:
     """Обновляет сообщение с сеткой турнира."""
     msg_id = get_announcement_message_id(tournament_id)
