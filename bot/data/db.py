@@ -5,6 +5,7 @@ from discord.ext import commands
 from typing import Optional
 from datetime import datetime, timezone, timedelta
 from supabase import create_client
+from postgrest.exceptions import APIError
 from dotenv import load_dotenv
 import traceback
 import asyncio
@@ -28,6 +29,7 @@ class Database:
         self.url = os.getenv("SUPABASE_URL")
         self.key = os.getenv("SUPABASE_KEY")
         self.supabase = create_client(self.url, self.key) if self.url and self.key else None
+        self.has_was_on_time = True
         self._ensure_tables()
         self.load_data()
         self.load_fines()
@@ -47,6 +49,12 @@ class Database:
             raise RuntimeError(f"Таблица scores не существует или недоступна: {str(e)}")
         try:
             self.supabase.table("fines").select("id").limit(1).execute()
+            try:
+                self.supabase.table("fines").select("was_on_time").limit(1).execute()
+                self.has_was_on_time = True
+            except Exception:
+                self.has_was_on_time = False
+                logger.warning("Столбец 'was_on_time' отсутствует в таблице fines")
         except Exception as e:
             raise RuntimeError(f"Таблица fines не существует или недоступна: {str(e)}")
 
@@ -373,7 +381,7 @@ class Database:
                     "is_paid": fine['is_paid']
                 }
 
-                if fine['is_paid'] and 'was_on_time' not in fine:
+                if self.has_was_on_time and fine['is_paid'] and 'was_on_time' not in fine:
                     paid_now = datetime.now(timezone.utc)
 
                     due_raw = fine.get("due_date")
@@ -394,7 +402,15 @@ class Database:
                     except Exception:
                         update_data["was_on_time"] = False
 
-                self.supabase.table("fines").update(update_data).eq("id", fine_id).execute()
+                try:
+                    self.supabase.table("fines").update(update_data).eq("id", fine_id).execute()
+                except APIError as e:
+                    if "was_on_time" in str(e) and getattr(e, "code", "") == "PGRST204":
+                        self.has_was_on_time = False
+                        update_data.pop("was_on_time", None)
+                        self.supabase.table("fines").update(update_data).eq("id", fine_id).execute()
+                    else:
+                        raise
 
                 # 🎯 Быстрая и своевременная оплата (штраф ≥ 3)
                 created_raw = fine.get("created_at")
