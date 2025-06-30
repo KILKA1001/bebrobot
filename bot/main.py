@@ -19,6 +19,7 @@ from keep_alive import keep_alive
 from bot.commands import bot as command_bot
 import bot.commands.tournament
 import bot.commands.players
+import bot.commands.maps
 from bot.commands import run_monthly_top
 from datetime import datetime
 from bot.systems import fines_logic
