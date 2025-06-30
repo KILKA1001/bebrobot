@@ -62,6 +62,7 @@ from bot.data.tournament_db import list_maps_by_mode
 MAPS_BY_MODE: Dict[int, List[str]] = list_maps_by_mode()
 if not MAPS_BY_MODE:
     MAPS_BY_MODE = {
+
         1: [
             "1.1 1",
             "1.2 2",
@@ -88,6 +89,11 @@ if not MAPS_BY_MODE:
             "4.1 10",
             "4.2 14",
         ],
+
+        1: ["1.1 1", "1.2 2", "1.3 3"],
+        2: ["2.1 4", "2.2 5", "2.3 6"],
+        3: ["3.1 7", "3.2 8", "3.3 9"],
+        4: ["4.1 10", "4.2 11", "4.3 12"],
     }
 
 # ───── База данных ─────
