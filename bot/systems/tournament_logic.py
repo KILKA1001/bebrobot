@@ -1971,7 +1971,8 @@ async def tournament_reminder_loop(bot: commands.Bot) -> None:
     await bot.wait_until_ready()
     while not bot.is_closed():
         await send_tournament_reminders(bot)
-        await asyncio.sleep(3600)
+        # Run less frequently to avoid spamming users
+        await asyncio.sleep(21600)
 
 
 async def registration_deadline_loop(bot: commands.Bot) -> None:
