@@ -246,8 +246,8 @@ async def finehistory(ctx, member: Optional[discord.Member] = None, page: int = 
     await send_temp(ctx, embed=embed)
 
 @bot.hybrid_command(
-    name="finehistory",
-    description='История штрафов пользователя'
+    name="topfines",
+    description='Список топ-должников по сумме штрафов'
 )
 async def topfines(ctx):
     top = get_fine_leaders()
