@@ -936,7 +936,7 @@ async def end_tournament(
     info = get_tournament_info(tournament_id) or {}
 
     bank_type = info.get("bank_type", 1)
-    manual_amount = info.get("manual_amount", 20.0)
+    manual_amount = info.get("manual_amount") or 20.0
 
     user_balance = db.scores.get(ctx.author.id, 0.0)
 
@@ -1143,7 +1143,7 @@ async def finalize_tournament_logic(
 ) -> tuple[bool, str]:
     info = get_tournament_info(tournament_id) or {}
     bank_type = info.get("bank_type", 1)
-    manual = info.get("manual_amount", 20.0)
+    manual = info.get("manual_amount") or 20.0
     user_balance = db.scores.get(admin_id, 0.0)
 
     try:
@@ -1749,15 +1749,18 @@ async def send_announcement_embed(ctx, tournament_id: int) -> bool:
     t_type = data["type"]
     size = data["size"]
     bank_type = data.get("bank_type", 1)
-    manual = data.get("manual_amount", 20.0)
+    manual = data.get("manual_amount") or 20.0
     current = len(db_list_participants_full(tournament_id))
 
     type_text = "Дуэльный 1×1" if t_type == "duel" else "Командный 3×3"
-    prize_text = {
-        1: f"🏅 Тип 1 — {manual:.2f} баллов от пользователя",
-        2: "🥈 Тип 2 — 30 баллов (25% платит игрок)",
-        3: "🥇 Тип 3 — 30 баллов (из банка Бебр)",
-    }.get(bank_type, "❓")
+    if bank_type == 1:
+        prize_text = f"🏅 Тип 1 — {manual:.2f} баллов от пользователя"
+    elif bank_type == 2:
+        prize_text = "🥈 Тип 2 — 30 баллов (25% платит игрок)"
+    elif bank_type == 3:
+        prize_text = "🥇 Тип 3 — 30 баллов (из банка Бебр)"
+    else:
+        prize_text = "❓"
 
     embed = discord.Embed(
         title=f"📣 Открыта регистрация — Турнир #{tournament_id}",
@@ -1796,16 +1799,19 @@ async def build_tournament_status_embed(tournament_id: int) -> discord.Embed | N
     t_type = t["type"]
     size = t["size"]
     bank_type = t.get("bank_type", 1)
-    manual = t.get("manual_amount", 20.0)
+    manual = t.get("manual_amount") or 20.0
     status = t.get("status", "unknown")
     start = t.get("start_time")
 
     type_text = "Дуэльный 1×1" if t_type == "duel" else "Командный 3×3"
-    prize_text = {
-        1: f"🏅 Тип 1 — {manual:.2f} баллов от пользователя",
-        2: "🥈 Тип 2 — 30 баллов (25% платит игрок)",
-        3: "🥇 Тип 3 — 30 баллов (из банка Бебр)",
-    }.get(bank_type, "❓")
+    if bank_type == 1:
+        prize_text = f"🏅 Тип 1 — {manual:.2f} баллов от пользователя"
+    elif bank_type == 2:
+        prize_text = "🥈 Тип 2 — 30 баллов (25% платит игрок)"
+    elif bank_type == 3:
+        prize_text = "🥇 Тип 3 — 30 баллов (из банка Бебр)"
+    else:
+        prize_text = "❓"
 
     # Этап (только по статусу)
     stage = "❔ Не начат"
