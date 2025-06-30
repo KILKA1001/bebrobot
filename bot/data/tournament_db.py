@@ -3,6 +3,7 @@ from bot.data.db import db
 from supabase import Client
 import logging
 from postgrest.exceptions import APIError
+
 assert db.supabase
 # Обёртки для работы с таблицами турниров в Supabase
 # Гарантируем, что клиент Supabase инициализирован
@@ -12,7 +13,6 @@ if supabase is None:
     raise RuntimeError("Supabase client is not initialized")
 
 logger = logging.getLogger(__name__)
-
 
 
 def create_tournament_record(
@@ -27,11 +27,7 @@ def create_tournament_record(
         payload["start_time"] = start_time
     if author_id is not None:
         payload["author_id"] = author_id
-    res = (
-        supabase.table("tournaments")
-        .insert(payload)
-        .execute()
-    )
+    res = supabase.table("tournaments").insert(payload).execute()
     return res.data[0]["id"]
 
 
@@ -60,6 +56,7 @@ def add_discord_participant(tournament_id: int, discord_user_id: int) -> bool:
         logger.error("Unexpected error in add_discord_participant: %s", e)
         return False
 
+
 def add_player_participant(tournament_id: int, player_id: int) -> bool:
     """Для админской регистрации (по player_id)."""
     try:
@@ -68,7 +65,7 @@ def add_player_participant(tournament_id: int, player_id: int) -> bool:
             .insert(
                 {
                     "tournament_id": tournament_id,
-                    "discord_user_id": 0,
+                    "discord_user_id": None,
                     "player_id": player_id,
                     "confirmed": True,
                 }
@@ -85,16 +82,20 @@ def add_player_participant(tournament_id: int, player_id: int) -> bool:
         logger.error("Unexpected error in add_player_participant: %s", e)
         return False
 
+
 def list_participants(tournament_id: int) -> List[dict]:
     """
     Возвращает список участников как словари с полями
     {discord_user_id, player_id}.
     """
-    res = supabase.table("tournament_participants")\
-        .select("discord_user_id, player_id, confirmed")\
-        .eq("tournament_id", tournament_id)\
+    res = (
+        supabase.table("tournament_participants")
+        .select("discord_user_id, player_id, confirmed")
+        .eq("tournament_id", tournament_id)
         .execute()
+    )
     return res.data or []
+
 
 def create_matches(tournament_id: int, round_number: int, matches: List) -> None:
     """
@@ -104,18 +105,22 @@ def create_matches(tournament_id: int, round_number: int, matches: List) -> None
     records = []
     for m in matches:
         # Определяем тип объекта (имеет атрибуты или является словарем)
-        is_dict_like = hasattr(m, 'items') or hasattr(m, 'get') or isinstance(m, dict)
-        
+        is_dict_like = hasattr(m, "items") or hasattr(m, "get") or isinstance(m, dict)
+
         record = {
             "tournament_id": tournament_id,
             "round_number": round_number,
             "player1_id": m["player1_id"] if is_dict_like else m.player1_id,
             "player2_id": m["player2_id"] if is_dict_like else m.player2_id,
-            "mode": m.get("mode", "default") if is_dict_like else getattr(m, "mode", "default"),
-            "map_id": m.get("map_id", 0) if is_dict_like else getattr(m, "map_id", 0)
+            "mode": (
+                m.get("mode", "default")
+                if is_dict_like
+                else getattr(m, "mode", "default")
+            ),
+            "map_id": m.get("map_id", 0) if is_dict_like else getattr(m, "map_id", 0),
         }
         records.append(record)
-    
+
     res = (
         supabase.table("tournament_matches")
         .insert(records, returning="representation")
@@ -132,12 +137,14 @@ def get_matches(tournament_id: int, round_number: int) -> List[dict]:
     """
     Возвращает список матчей с полями id, player1_id, player2_id, mode, map_id, result.
     """
-    res = supabase.table("tournament_matches") \
-        .select("id, player1_id, player2_id, mode, map_id, result") \
-        .eq("tournament_id", tournament_id) \
-        .eq("round_number", round_number) \
-        .order("id") \
+    res = (
+        supabase.table("tournament_matches")
+        .select("id, player1_id, player2_id, mode, map_id, result")
+        .eq("tournament_id", tournament_id)
+        .eq("round_number", round_number)
+        .order("id")
         .execute()
+    )
     return res.data or []
 
 
@@ -194,32 +201,41 @@ def record_match_result(match_id: int, result: int) -> None:
     Обновляет поле result у конкретного матча.
     result: 1 или 2
     """
-    supabase.table("tournament_matches") \
-        .update({"result": result}) \
-        .eq("id", match_id) \
-        .execute()
+    supabase.table("tournament_matches").update({"result": result}).eq(
+        "id", match_id
+    ).execute()
+
 
 def delete_tournament(tournament_id: int) -> None:
     """Удаляет турнир и все связанные с ним записи."""
     # Удаляем результаты
-    supabase.table("tournament_results").delete().eq("tournament_id", tournament_id).execute()
+    supabase.table("tournament_results").delete().eq(
+        "tournament_id", tournament_id
+    ).execute()
     # Удаляем матчи
-    supabase.table("tournament_matches").delete().eq("tournament_id", tournament_id).execute()
+    supabase.table("tournament_matches").delete().eq(
+        "tournament_id", tournament_id
+    ).execute()
     # Удаляем участников (discord и player)
-    supabase.table("tournament_participants").delete().eq("tournament_id", tournament_id).execute()
+    supabase.table("tournament_participants").delete().eq(
+        "tournament_id", tournament_id
+    ).execute()
     # Удаляем связи игроков с турниром, если таблица существует
     try:
-        supabase.table("tournament_players").delete().eq("tournament_id", tournament_id).execute()
+        supabase.table("tournament_players").delete().eq(
+            "tournament_id", tournament_id
+        ).execute()
     except Exception:
         pass
     # Наконец удаляем сам турнир
     supabase.table("tournaments").delete().eq("id", tournament_id).execute()
 
+
 def save_tournament_result(
     tournament_id: int,
     first_place_id: int,
     second_place_id: int,
-    third_place_id: Optional[int] = None
+    third_place_id: Optional[int] = None,
 ) -> bool:
     """
     Сохраняет итоговые места турнира в таблицу tournament_results.
@@ -231,67 +247,80 @@ def save_tournament_result(
             "second_place_id": second_place_id,
             "third_place_id": third_place_id,
         }
-        res = supabase.table("tournament_results") \
-            .upsert(payload) \
-            .execute()
+        res = supabase.table("tournament_results").upsert(payload).execute()
         return bool(res.data)
     except Exception:
         return False
+
 
 def update_tournament_status(tournament_id: int, status: str) -> bool:
     """
     Обновляет поле status в записи tournaments.
     """
     try:
-        res = supabase.table("tournaments") \
-            .update({"status": status}) \
-            .eq("id", tournament_id) \
+        res = (
+            supabase.table("tournaments")
+            .update({"status": status})
+            .eq("id", tournament_id)
             .execute()
+        )
         return bool(res.data)
     except Exception:
         return False
+
 
 def count_matches(tournament_id: int) -> int:
     """
     Возвращает общее число матчей для данного турнира.
     """
-    res = supabase.table("tournament_matches") \
-        .select("id") \
-        .eq("tournament_id", tournament_id) \
+    res = (
+        supabase.table("tournament_matches")
+        .select("id")
+        .eq("tournament_id", tournament_id)
         .execute()
+    )
     return len(res.data or [])
+
 
 def list_participants_full(tournament_id: int) -> List[dict]:
     """
     Возвращает список записей участников турнира:
     [{"discord_user_id": int|None, "player_id": int|None}, ...]
     """
-    res = supabase.table("tournament_participants") \
-        .select("discord_user_id, player_id, confirmed") \
-        .eq("tournament_id", tournament_id) \
+    res = (
+        supabase.table("tournament_participants")
+        .select("discord_user_id, player_id, confirmed")
+        .eq("tournament_id", tournament_id)
         .execute()
+    )
     return res.data or []
+
 
 def remove_player_from_tournament(player_id: int, tournament_id: int) -> bool:
     """
     Удаляет связь игрока (по player_id) с турниром.
     """
-    res = supabase.table("tournament_participants") \
-        .delete() \
-        .eq("player_id", player_id) \
-        .eq("tournament_id", tournament_id) \
+    res = (
+        supabase.table("tournament_participants")
+        .delete()
+        .eq("player_id", player_id)
+        .eq("tournament_id", tournament_id)
         .execute()
+    )
     return bool(res.data)
+
 
 def remove_discord_participant(tournament_id: int, discord_user_id: int) -> bool:
     """
     Удаляет запись участника по его Discord-ID из турнира.
     """
-    res = supabase.table("tournament_participants") \
-        .delete() \
-        .eq("tournament_id", tournament_id) \
-        .eq("discord_user_id", discord_user_id) \
+    res = (
+        supabase.table("tournament_participants")
+        .delete()
+        .eq("tournament_id", tournament_id)
+        .eq("discord_user_id", discord_user_id)
         .execute()
+    )
     # res.data — это список удалённых строк, пустой если ничего не удалено
     return bool(res.data)
 
@@ -310,51 +339,55 @@ def confirm_participant(tournament_id: int, discord_user_id: int) -> bool:
     except Exception:
         return False
 
-def set_bank_type(tournament_id: int, bank_type: int, manual_amount: Optional[float] = None) -> bool:
+
+def set_bank_type(
+    tournament_id: int, bank_type: int, manual_amount: Optional[float] = None
+) -> bool:
     """Устанавливает тип банка и сумму (если задана)"""
     data = {"bank_type": bank_type}
     if manual_amount is not None:
         data["manual_amount"] = manual_amount
 
-    res = supabase.table("tournaments") \
-        .update(data) \
-        .eq("id", tournament_id) \
-        .execute()
+    res = supabase.table("tournaments").update(data).eq("id", tournament_id).execute()
     return bool(res.data)
+
 
 def get_tournament_status(tournament_id: int) -> str:
     """Возвращает текущий статус турнира."""
-    res = supabase.table("tournaments") \
-        .select("status") \
-        .eq("id", tournament_id) \
-        .execute()
+    res = (
+        supabase.table("tournaments").select("status").eq("id", tournament_id).execute()
+    )
     return res.data[0]["status"] if res.data else "registration"
+
 
 def get_tournament_size(tournament_id: int) -> int:
     """Возвращает максимальное количество участников турнира."""
-    res = supabase.table("tournaments") \
-        .select("size") \
-        .eq("id", tournament_id) \
-        .execute()
+    res = supabase.table("tournaments").select("size").eq("id", tournament_id).execute()
     return res.data[0]["size"] if res.data else 0
+
 
 def get_announcement_message_id(tournament_id: int) -> Optional[int]:
     """Возвращает ID сообщения-объявления турнира."""
-    res = supabase.table("tournaments") \
-        .select("announcement_message_id") \
-        .eq("id", tournament_id) \
-        .single() \
+    res = (
+        supabase.table("tournaments")
+        .select("announcement_message_id")
+        .eq("id", tournament_id)
+        .single()
         .execute()
+    )
     if res and res.data:
         return res.data.get("announcement_message_id")
     return None
 
+
 def get_active_tournaments() -> list[dict]:
     """Возвращает список активных турниров с полями id, size, type и announcement_message_id."""
-    res = supabase.table("tournaments") \
-        .select("id, size, type, announcement_message_id") \
-        .eq("status", "active") \
+    res = (
+        supabase.table("tournaments")
+        .select("id, size, type, announcement_message_id")
+        .eq("status", "active")
         .execute()
+    )
     return res.data or []
 
 
@@ -383,10 +416,12 @@ def get_upcoming_tournaments(hours: int) -> list[dict]:
 
 def save_announcement_message(tournament_id: int, message_id: int) -> bool:
     """Сохраняет ID сообщения с объявлением турнира."""
-    res = supabase.table("tournaments") \
-        .update({"announcement_message_id": message_id}) \
-        .eq("id", tournament_id) \
+    res = (
+        supabase.table("tournaments")
+        .update({"announcement_message_id": message_id})
+        .eq("id", tournament_id)
         .execute()
+    )
     return bool(res.data)
 
 
@@ -451,6 +486,7 @@ def list_recent_results(limit: int) -> List[dict]:
 def get_expired_registrations() -> List[dict]:
     """Возвращает турниры, где истекла дата начала и статус всё ещё registration."""
     from datetime import datetime, timezone
+
     now = datetime.now(timezone.utc)
     res = (
         supabase.table("tournaments")
