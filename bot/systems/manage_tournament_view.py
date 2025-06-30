@@ -7,7 +7,6 @@ from bot.data.tournament_db import (
     get_tournament_status,
     get_tournament_size,
     list_participants_full,
-    add_player_participant,
     remove_player_from_tournament,
 )
 from bot.systems.tournament_logic import (
@@ -146,8 +145,7 @@ class ManageTournamentView(SafeView):
 
     async def _register(self, interaction: Interaction, pid: int):
         ok_db = add_player_to_tournament(pid, self.tid)
-        ok_part = add_player_participant(self.tid, pid)
-        if ok_db and ok_part:
+        if ok_db:
             await interaction.response.send_message("Игрок добавлен", ephemeral=True)
         else:
             await interaction.response.send_message("Не удалось добавить", ephemeral=True)
