@@ -43,7 +43,10 @@ async def createtournament(ctx):
 @bot.command(name="managetournament")
 @commands.has_permissions(administrator=True)
 async def manage_tournament(ctx, tournament_id: int):
-    """Открывает расширенную панель управления турниром."""
+    """Открывает расширенную панель управления турниром.
+
+    `tournament_id` — это номер турнира из базы (смотрите `?tournamenthistory`).
+    """
     from bot.data.tournament_db import list_participants_full
 
     participants = [p["discord_user_id"] for p in list_participants_full(tournament_id)]
@@ -63,6 +66,7 @@ async def manage_tournament(ctx, tournament_id: int):
     
 @bot.command(name="jointournament")
 async def jointournament(ctx: commands.Context, tournament_id: int):
+    """Заявиться на участие в турнире по его номеру."""
     await handle_jointournament(ctx, tournament_id)
 
 @bot.command(name="endtournament")
