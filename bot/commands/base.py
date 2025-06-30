@@ -46,7 +46,10 @@ def format_moscow_time(dt: Optional[datetime] = None) -> str:
         dt = datetime.now(timezone.utc)
     return dt.astimezone(pytz.timezone('Europe/Moscow')).strftime(TIME_FORMAT)
 
-@bot.command(name='addpoints')
+@bot.hybrid_command(
+    name='addpoints',
+    description='Начислить баллы участнику'
+)
 @commands.has_permissions(administrator=True)
 async def add_points(ctx, member: discord.Member, points: str, *, reason: str = 'Без причины'):
     try:
@@ -66,7 +69,10 @@ async def add_points(ctx, member: discord.Member, points: str, *, reason: str = 
     except ValueError:
         await send_temp(ctx, "Ошибка: введите корректное число")
 
-@bot.command(name='removepoints')
+@bot.hybrid_command(
+    name='removepoints',
+    description='Снять баллы у участника'
+)
 @commands.has_permissions(administrator=True)
 async def remove_points(ctx, member: discord.Member, points: str, *, reason: str = 'Без причины'):
     try:
@@ -93,12 +99,18 @@ async def remove_points(ctx, member: discord.Member, points: str, *, reason: str
     except ValueError:
         await send_temp(ctx, "Ошибка: введите корректное число больше 0")
 
-@bot.command(name='leaderboard')
+@bot.hybrid_command(
+    name='leaderboard',
+    description='Показать общий рейтинг по баллам'
+)
 async def leaderboard(ctx):
     view = LeaderboardView(ctx)
     await send_temp(ctx, embed=view.get_embed(), view=view)
 
-@bot.command(name='history')
+@bot.hybrid_command(
+    name='history',
+    description='История действий пользователя'
+)
 async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 1):
     if member is None:
         member = ctx.author
@@ -107,7 +119,10 @@ async def history_cmd(ctx, member: Optional[discord.Member] = None, page: int = 
     else:
         await send_temp(ctx, "Не удалось определить пользователя.")
 
-@bot.command(name='roles')
+@bot.hybrid_command(
+    name='roles',
+    description='Список ролей и стоимость в баллах'
+)
 async def roles_list(ctx):
     desc = ""
     for role_id, points_needed in sorted(ROLE_THRESHOLDS.items(), key=lambda x: x[1], reverse=True):
@@ -117,7 +132,10 @@ async def roles_list(ctx):
     embed = discord.Embed(title="Роли и стоимость баллов", description=desc, color=discord.Color.purple())
     await send_temp(ctx, embed=embed)
 
-@bot.command(name='activities')
+@bot.hybrid_command(
+    name='activities',
+    description='Виды помощи клубу и их стоимость'
+)
 async def activities_cmd(ctx):
     embed = discord.Embed(
         title="📋 Виды помощи клубу",
@@ -147,7 +165,10 @@ async def activities_cmd(ctx):
     await send_temp(ctx, embed=embed)
 
 
-@bot.command(name='undo')
+@bot.hybrid_command(
+    name='undo',
+    description='Отменить последние начисления или списания'
+)
 @commands.has_permissions(administrator=True)
 async def undo(ctx, member: discord.Member, count: int = 1):
     user_id = member.id
@@ -187,31 +208,46 @@ async def undo(ctx, member: discord.Member, count: int = 1):
     await send_temp(ctx, embed=embed)
     await log_action_cancellation(ctx, member, undo_entries)
 
-@bot.command(name='monthlytop')
+@bot.hybrid_command(
+    name='monthlytop',
+    description='Запустить начисление топа месяца'
+)
 @commands.has_permissions(administrator=True)
 async def monthly_top(ctx):
     await run_monthly_top(ctx)
 
-@bot.command(name='tophistory')
+@bot.hybrid_command(
+    name='tophistory',
+    description='История начислений топов месяца'
+)
 async def tophistory_cmd(ctx, month: Optional[int] = None, year: Optional[int] = None):
     await tophistory(ctx, month, year)
 
-@bot.command(name='helpy')
+@bot.hybrid_command(
+    name='helpy',
+    description='Показать список команд'
+)
 async def helpy_cmd(ctx):
     view = HelpView(ctx.author)
     embed = get_help_embed("points")
     await send_temp(ctx, embed=embed, view=view)
 
-@bot.command()
+@bot.hybrid_command(description='Проверить работу бота')
 async def ping(ctx):
     await send_temp(ctx, 'pong')
     
-@bot.command(name="bank")
+@bot.hybrid_command(
+    name="bank",
+    description='Показать баланс клуба'
+)
 async def bank_balance(ctx):
     total = db.get_bank_balance()
     await send_temp(ctx, f"🏦 Баланс банка: **{total:.2f} баллов**")
 
-@bot.command(name="bankadd")
+@bot.hybrid_command(
+    name="bankadd",
+    description='Добавить баллы в клубный банк'
+)
 @commands.has_permissions(administrator=True)
 async def bank_add(ctx, amount: float, *, reason: str = "Без причины"):
     if amount <= 0:
@@ -221,7 +257,10 @@ async def bank_add(ctx, amount: float, *, reason: str = "Без причины")
     db.log_bank_income(ctx.author.id, amount, reason)
     await send_temp(ctx, f"✅ Добавлено **{amount:.2f} баллов** в банк. Причина: {reason}")
 
-@bot.command(name="bankspend")
+@bot.hybrid_command(
+    name="bankspend",
+    description='Потратить баллы из банка'
+)
 @commands.has_permissions(administrator=True)
 async def bank_spend(ctx, amount: float, *, reason: str = "Без причины"):
     if amount <= 0:
@@ -233,7 +272,10 @@ async def bank_spend(ctx, amount: float, *, reason: str = "Без причины
     else:
         await send_temp(ctx, "❌ Недостаточно средств в банке или ошибка операции")
 
-@bot.command(name="bankhistory")
+@bot.hybrid_command(
+    name="bankhistory",
+    description='История операций клуба'
+)
 @commands.has_permissions(administrator=True)
 async def bank_history(ctx):
     if not db.supabase:
@@ -260,7 +302,10 @@ async def bank_history(ctx):
     except Exception as e:
         await send_temp(ctx, f"❌ Ошибка получения истории: {str(e)}")
 
-@bot.command(name="balance")
+@bot.hybrid_command(
+    name="balance",
+    description='Показать баланс пользователя'
+)
 async def balance(ctx, member: discord.Member = None):
     member = member or ctx.author
     embed = build_balance_embed(member)

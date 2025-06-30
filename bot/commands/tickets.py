@@ -6,7 +6,10 @@ from bot.systems import tickets_logic
 from bot.commands import bot  # используем глобальный экземпляр
 from bot.utils import send_temp
 
-@bot.command(name="addticket")
+@bot.hybrid_command(
+    name="addticket",
+    description='Выдать билет участнику'
+)
 @commands.has_permissions(administrator=True)
 async def add_ticket(ctx, member: discord.Member, ticket_type: str, amount: int, *, reason: str = "Без причины"):
     embed = await tickets_logic.give_ticket_logic(
@@ -18,7 +21,10 @@ async def add_ticket(ctx, member: discord.Member, ticket_type: str, amount: int,
     )
     await send_temp(ctx, embed=embed)
 
-@bot.command(name="removeticket")
+@bot.hybrid_command(
+    name="removeticket",
+    description='Списать билет у пользователя'
+)
 @commands.has_permissions(administrator=True)
 async def remove_ticket(ctx, member: discord.Member, ticket_type: str, amount: int, *, reason: str = "Без причины"):
     """
