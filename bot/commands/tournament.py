@@ -32,7 +32,7 @@ confirmed_participants: dict[int, set[int]] = {}
 # В памяти храним экземпляры турниров
 active_tournaments: dict[int, Tournament] = {}
 
-@bot.command(name="createtournament")
+@bot.hybrid_command(name="createtournament")
 @commands.has_permissions(administrator=True)
 async def createtournament(ctx):
     """Запустить создание нового турнира через мультишаговый UI."""
@@ -40,7 +40,7 @@ async def createtournament(ctx):
     msg = await send_temp(ctx, embed=view.initial_embed(), view=view)
     view.message = msg
 
-@bot.command(name="managetournament")
+@bot.hybrid_command(name="managetournament")
 @commands.has_permissions(administrator=True)
 async def manage_tournament(ctx, tournament_id: int):
     """Открывает расширенную панель управления турниром.
@@ -64,38 +64,38 @@ async def manage_tournament(ctx, tournament_id: int):
     view = RoundManagementView(tournament_id, logic)
     await send_temp(ctx, embed=embed, view=view)
     
-@bot.command(name="jointournament")
+@bot.hybrid_command(name="jointournament")
 async def jointournament(ctx: commands.Context, tournament_id: int):
     """Заявиться на участие в турнире по его номеру."""
     await handle_jointournament(ctx, tournament_id)
 
-@bot.command(name="endtournament")
+@bot.hybrid_command(name="endtournament")
 @commands.has_permissions(administrator=True)
 async def endtournament(ctx, tid: int, first: int, second: int, third: Optional[int] = None):
     await end_tournament(ctx, tid, first, second, third)
 
-@bot.command(name="tournamenthistory")
+@bot.hybrid_command(name="tournamenthistory")
 async def tournamenthistory(ctx, limit: int = 10):
     """Показать историю последних турниров."""
     await show_history(ctx, limit)
 
-@bot.command(name="deletetournament")
+@bot.hybrid_command(name="deletetournament")
 @commands.has_permissions(administrator=True)
 async def deletetournament(ctx, tournament_id: int):
     """Удалить турнир и все связанные с ним записи."""
     await send_delete_confirmation(ctx, tournament_id)
 
-@bot.command(name="regplayer")
+@bot.hybrid_command(name="regplayer")
 @commands.has_permissions(administrator=True)
 async def regplayer(ctx: commands.Context, player_id: int, tournament_id: int):
     await handle_regplayer(ctx, player_id, tournament_id)
 
-@bot.command(name="tunregister")
+@bot.hybrid_command(name="tunregister")
 @commands.has_permissions(administrator=True)
 async def tournament_unregister(ctx: commands.Context, identifier: str, tournament_id: int):
     await handle_unregister(ctx, identifier, tournament_id)
 
-@bot.command(name="tournamentannounce")
+@bot.hybrid_command(name="tournamentannounce")
 @commands.has_permissions(administrator=True)
 async def tournament_announce(ctx, tournament_id: int):
     from bot.systems import tournament_logic
