@@ -6,7 +6,10 @@ from bot.utils import send_temp
 from bot.systems.tournament_logic import MODE_NAMES
 from bot.data.tournament_db import get_map_info
 
-@bot.command(name="mapinfo")
+@bot.hybrid_command(
+    name="mapinfo",
+    description='Информация о карте по её ID'
+)
 async def mapinfo(ctx: commands.Context, map_id: str):
     """Показать информацию о карте по её ID."""
     info = get_map_info(map_id)

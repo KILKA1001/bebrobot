@@ -16,7 +16,10 @@ from bot.utils import send_temp
 
 # ─── Регистрация игрока в системе ────────────────────────────────────────────
 
-@bot.command(name="register")
+@bot.hybrid_command(
+    name="register",
+    description='Добавить игрока в систему'
+)
 @commands.has_permissions(administrator=True)
 async def register(ctx: commands.Context, nick: str, tg_username: str):
     """
@@ -25,7 +28,10 @@ async def register(ctx: commands.Context, nick: str, tg_username: str):
     await register_player(ctx, nick, tg_username)
 # ─── Список игроков ──────────────────────────────────────────────────────────
 
-@bot.command(name="listplayers")
+@bot.hybrid_command(
+    name="listplayers",
+    description='Показать список игроков'
+)
 async def listplayers(ctx: commands.Context, page: Optional[int] = 1):
     """
     Показывает постраничный список игроков:
@@ -39,7 +45,10 @@ async def listplayers(ctx: commands.Context, page: Optional[int] = 1):
 
 # ─── Редактирование информации об игроке ───────────────────────────────────────
 
-@bot.command(name="editplayer")
+@bot.hybrid_command(
+    name="editplayer",
+    description='Изменить данные игрока'
+)
 @commands.has_permissions(administrator=True)
 async def editplayer(ctx: commands.Context, player_id: int, field: str, *, new_value: str):
     """
@@ -50,7 +59,10 @@ async def editplayer(ctx: commands.Context, player_id: int, field: str, *, new_v
 
 # ─── Удаление игрока ──────────────────────────────────────────────────────────
 
-@bot.command(name="deleteplayer")
+@bot.hybrid_command(
+    name="deleteplayer",
+    description='Удалить игрока из системы'
+)
 @commands.has_permissions(administrator=True)
 async def deleteplayer(ctx: commands.Context, player_id: int):
     """
@@ -59,7 +71,10 @@ async def deleteplayer(ctx: commands.Context, player_id: int):
     """
     await delete_player_cmd(ctx, player_id)
 
-@bot.command(name="unregister")
+@bot.hybrid_command(
+    name="unregister",
+    description='Убрать игрока из турнира'
+)
 @commands.has_permissions(administrator=True)
 async def unregister(ctx: commands.Context, player_id: int, tournament_id: int):
     """
@@ -68,7 +83,10 @@ async def unregister(ctx: commands.Context, player_id: int, tournament_id: int):
     """
     await unregister_player(ctx, player_id, tournament_id)
 
-@bot.command(name="playerlogs")
+@bot.hybrid_command(
+    name="playerlogs",
+    description='История изменений игрока'
+)
 @commands.has_permissions(administrator=True)
 async def playerlogs(ctx: commands.Context, player_id: int, page: Optional[int] = 1):
     """
