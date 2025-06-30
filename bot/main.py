@@ -40,6 +40,9 @@ TOP_CHANNEL_ID = int(os.getenv("MONTHLY_TOP_CHANNEL_ID", 0))
 # Таймеры удаления сообщений
 active_timers = {}
 
+# Prevent duplicate background tasks if on_ready fires multiple times
+tasks_started = False
+
 bot = command_bot
 db.bot = bot
 
@@ -60,15 +63,19 @@ async def on_ready():
     print(f'🟢 Бот {bot.user} запущен!')
     print(f'Серверов: {len(bot.guilds)}')
 
-    db.load_data()
+    global tasks_started
+    if not tasks_started:
+        tasks_started = True
 
-    asyncio.create_task(fines_logic.check_overdue_fines(bot))
-    asyncio.create_task(fines_logic.debt_repayment_loop(bot))
-    asyncio.create_task(fines_logic.reminder_loop(bot))
-    asyncio.create_task(fines_logic.fines_summary_loop(bot))
-    from bot.systems.tournament_logic import tournament_reminder_loop, registration_deadline_loop
-    asyncio.create_task(tournament_reminder_loop(bot))
-    asyncio.create_task(registration_deadline_loop(bot))
+        db.load_data()
+
+        asyncio.create_task(fines_logic.check_overdue_fines(bot))
+        asyncio.create_task(fines_logic.debt_repayment_loop(bot))
+        asyncio.create_task(fines_logic.reminder_loop(bot))
+        asyncio.create_task(fines_logic.fines_summary_loop(bot))
+        from bot.systems.tournament_logic import tournament_reminder_loop, registration_deadline_loop
+        asyncio.create_task(tournament_reminder_loop(bot))
+        asyncio.create_task(registration_deadline_loop(bot))
 
     activity = discord.Activity(
         name="Привет! Напиши команду ?helpy чтобы увидеть все команды 🧠",
