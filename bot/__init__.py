@@ -1,5 +1,5 @@
 # Global configuration constants for the bot package
 
-COMMAND_PREFIX = '?'
+COMMAND_PREFIX = '/'
 
 __all__ = ['COMMAND_PREFIX']

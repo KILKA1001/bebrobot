@@ -23,7 +23,7 @@ async def add_ticket(ctx, member: discord.Member, ticket_type: str, amount: int,
 async def remove_ticket(ctx, member: discord.Member, ticket_type: str, amount: int, *, reason: str = "Без причины"):
     """
     Списать билет у пользователя.
-    Пример: ?removeticket @user normal 2 За нарушение
+    Пример: /removeticket @user normal 2 За нарушение
     """
     embed = await tickets_logic.remove_ticket_logic(
         user_id=member.id,

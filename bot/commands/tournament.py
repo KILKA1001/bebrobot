@@ -45,7 +45,7 @@ async def createtournament(ctx):
 async def manage_tournament(ctx, tournament_id: int):
     """Открывает расширенную панель управления турниром.
 
-    `tournament_id` — это номер турнира из базы (смотрите `?tournamenthistory`).
+    `tournament_id` — это номер турнира из базы (смотрите `/tournamenthistory`).
     """
     from bot.data.tournament_db import list_participants_full
 

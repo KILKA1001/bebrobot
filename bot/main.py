@@ -78,7 +78,7 @@ async def on_ready():
         asyncio.create_task(registration_deadline_loop(bot))
 
     activity = discord.Activity(
-        name="Привет! Напиши команду ?helpy чтобы увидеть все команды 🧠",
+        name="Привет! Напиши команду /helpy чтобы увидеть все команды 🧠",
         type=discord.ActivityType.listening
     )
     await bot.change_presence(activity=activity)
