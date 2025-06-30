@@ -61,7 +61,9 @@ class FinishModal(ui.Modal, title="Завершить турнир"):
             return
         ctx = await self.ctx.bot.get_context(interaction)
         await endtournament(ctx, self.tid, first, second, third)
-        await interaction.response.send_message("Попытка завершить турнир", ephemeral=True)
+        await interaction.response.send_message(
+            "Попытка завершить турнир", ephemeral=True
+        )
 
 
 class ManageTournamentView(SafeView):
@@ -148,7 +150,9 @@ class ManageTournamentView(SafeView):
         if ok_db:
             await interaction.response.send_message("Игрок добавлен", ephemeral=True)
         else:
-            await interaction.response.send_message("Не удалось добавить", ephemeral=True)
+            await interaction.response.send_message(
+                "Не удалось добавить", ephemeral=True
+            )
         self.refresh_buttons()
         if interaction.message:
             await interaction.message.edit(view=self)
@@ -179,14 +183,20 @@ class ManageTournamentView(SafeView):
     async def on_notify(self, interaction: Interaction):
         admin_id = self.ctx.author.id
         await send_participation_confirmations(interaction.client, self.tid, admin_id)
-        await interaction.response.send_message("Уведомления отправлены", ephemeral=True)
+        await interaction.response.send_message(
+            "Уведомления отправлены", ephemeral=True
+        )
 
     async def on_activate(self, interaction: Interaction):
-        guild = interaction.guild or (self.ctx.guild if hasattr(self.ctx, "guild") else None)
+        guild = interaction.guild or (
+            self.ctx.guild if hasattr(self.ctx, "guild") else None
+        )
         if set_tournament_status(self.tid, "active"):
             if guild:
                 await generate_first_round(interaction.client, guild, self.tid)
-            await interaction.response.send_message("Турнир активирован", ephemeral=True)
+            await interaction.response.send_message(
+                "Турнир активирован", ephemeral=True
+            )
             self.refresh_buttons()
             if interaction.message:
                 await interaction.message.edit(view=self)
@@ -195,13 +205,19 @@ class ManageTournamentView(SafeView):
 
     async def on_delete(self, interaction: Interaction):
         await send_delete_confirmation(self.ctx, self.tid)
-        await interaction.response.send_message("Диалог удаления отправлен", ephemeral=True)
+        await interaction.response.send_message(
+            "Диалог удаления отправлен", ephemeral=True
+        )
 
     async def on_manage_rounds(self, interaction: Interaction):
         from bot.data.tournament_db import get_tournament_info
+
         info = get_tournament_info(self.tid) or {}
         team_size = 3 if info.get("type") == "team" else 1
-        participants = [p["discord_user_id"] for p in list_participants_full(self.tid)]
+        participants = [
+            p.get("discord_user_id") or p.get("player_id")
+            for p in list_participants_full(self.tid)
+        ]
         logic = create_tournament_logic(participants, team_size=team_size)
         view = RoundManagementView(self.tid, logic)
         embed = await build_tournament_bracket_embed(self.tid, interaction.guild)
@@ -219,7 +235,9 @@ class ManageTournamentView(SafeView):
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def on_bets(self, interaction: Interaction):
-        await interaction.response.send_message("Система ставок в разработке", ephemeral=True)
+        await interaction.response.send_message(
+            "Система ставок в разработке", ephemeral=True
+        )
 
     async def on_pause(self, interaction: Interaction):
         self.paused = not self.paused
@@ -227,7 +245,9 @@ class ManageTournamentView(SafeView):
         for item in self.children:
             if isinstance(item, ui.Button) and item.label in ("Пауза", "Возобновить"):
                 item.label = label
-        await interaction.response.send_message("Пауза" if self.paused else "Возобновлено", ephemeral=True)
+        await interaction.response.send_message(
+            "Пауза" if self.paused else "Возобновлено", ephemeral=True
+        )
         if interaction.message:
             await interaction.message.edit(view=self)
 
