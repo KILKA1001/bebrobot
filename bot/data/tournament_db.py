@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Dict
 from bot.data.db import db
 from supabase import Client
 import logging
