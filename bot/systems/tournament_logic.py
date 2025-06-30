@@ -1452,7 +1452,9 @@ async def handle_regplayer(ctx: commands.Context, player_id: int, tournament_id:
     ok_db = add_player_to_tournament(player_id, tournament_id)
     ok_part = add_player_participant(tournament_id, player_id)
     if not (ok_db and ok_part):
-        return await send_temp(ctx, "❌ Не удалось зарегистрировать игрока.")
+        return await send_temp(
+            ctx, "❌ Игрок уже зарегистрирован или произошла ошибка."
+        )
     pl = get_player_by_id(player_id)
     name = pl["nick"] if pl else f"Игрок#{player_id}"
     await send_temp(ctx, f"✅ {name} зарегистрирован в турнире #{tournament_id}.")

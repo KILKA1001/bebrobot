@@ -2,6 +2,7 @@ from typing import List, Optional, Dict
 from bot.data.db import db
 from supabase import Client
 import logging
+from postgrest.exceptions import APIError
 assert db.supabase
 # Обёртки для работы с таблицами турниров в Supabase
 # Гарантируем, что клиент Supabase инициализирован
@@ -36,27 +37,53 @@ def create_tournament_record(
 
 def add_discord_participant(tournament_id: int, discord_user_id: int) -> bool:
     """Для саморегистрации участника (по Discord ID)."""
-    res = supabase.table("tournament_participants")\
-        .insert({
-            "tournament_id": tournament_id,
-            "discord_user_id": discord_user_id,
-            "player_id": None,
-            "confirmed": False,
-        })\
-        .execute()
-    return bool(res.data)
+    try:
+        res = (
+            supabase.table("tournament_participants")
+            .insert(
+                {
+                    "tournament_id": tournament_id,
+                    "discord_user_id": discord_user_id,
+                    "player_id": None,
+                    "confirmed": False,
+                }
+            )
+            .execute()
+        )
+        return bool(res.data)
+    except APIError as e:
+        if e.code == "23505":
+            return False
+        logger.error("add_discord_participant failed: %s", e)
+        return False
+    except Exception as e:
+        logger.error("Unexpected error in add_discord_participant: %s", e)
+        return False
 
 def add_player_participant(tournament_id: int, player_id: int) -> bool:
     """Для админской регистрации (по player_id)."""
-    res = supabase.table("tournament_participants")\
-        .insert({
-            "tournament_id": tournament_id,
-            "discord_user_id": None,
-            "player_id": player_id,
-            "confirmed": True,
-        })\
-        .execute()
-    return bool(res.data)
+    try:
+        res = (
+            supabase.table("tournament_participants")
+            .insert(
+                {
+                    "tournament_id": tournament_id,
+                    "discord_user_id": None,
+                    "player_id": player_id,
+                    "confirmed": True,
+                }
+            )
+            .execute()
+        )
+        return bool(res.data)
+    except APIError as e:
+        if e.code == "23505":
+            return False
+        logger.error("add_player_participant failed: %s", e)
+        return False
+    except Exception as e:
+        logger.error("Unexpected error in add_player_participant: %s", e)
+        return False
 
 def list_participants(tournament_id: int) -> List[dict]:
     """
