@@ -82,6 +82,11 @@ async def on_ready():
         type=discord.ActivityType.listening
     )
     await bot.change_presence(activity=activity)
+    try:
+        await bot.tree.sync()
+        print("🔁 Slash-команды синхронизированы")
+    except Exception as e:
+        print(f"❌ Ошибка синхронизации команд: {e}")
     
     active_tournaments = tournament_db.get_active_tournaments()
     for tour in active_tournaments:
