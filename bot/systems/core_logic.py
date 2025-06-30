@@ -327,7 +327,7 @@ def get_help_embed(category: str) -> discord.Embed:
             "`?ping` — проверить, работает ли бот\n"
             "`?helpy` — открыть меню справки\n"
             "`?tophistory [месяц] [год]` — история топов месяца\n"
-            "`?mapinfo id` — информация о карте по ID\n"
+            "`?mapinfo id` — информация о карте по ID (ID — последняя цифра в названии карты)\n"
             "`?jointournament id` — заявиться на турнир\n"
             "`?tournamenthistory [n]` — последние турниры"
         )
