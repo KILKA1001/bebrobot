@@ -372,7 +372,7 @@ def get_help_embed(category: str) -> discord.Embed:
         embed.title = "🏟 Админ: Турниры"
         embed.description = (
             "`?createtournament` — создать турнир\n"
-            "`?managetournament id` — управление турниром\n"
+            "`?managetournament id` — панель управления (кнопка 👥 покажет участников; `id` — номер турнира)\n"
             "`?deletetournament id` — удалить турнир\n"
             "`?regplayer id tournament` — зарегистрировать игрока\n"
             "`?tunregister user/tid tournament` — снять участника\n"
