@@ -1784,7 +1784,13 @@ async def send_announcement_embed(ctx, tournament_id: int) -> bool:
         type_text,
         author_id=admin_id,
     )
-    await send_temp(ctx, embed=embed, view=view)
+
+    channel = None
+    if getattr(ctx, "guild", None):
+        channel = ctx.guild.get_channel(ANNOUNCE_CHANNEL_ID)
+
+    target = channel or ctx
+    await send_temp(target, embed=embed, view=view, delete_after=None)
     return True
 
 
