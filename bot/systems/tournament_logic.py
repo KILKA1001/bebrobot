@@ -1295,45 +1295,6 @@ class RegistrationView(SafeView):
         self.author_id = author_id
         self._build_button()
 
-
-class ParticipationConfirmView(SafeView):
-    def __init__(self, tournament_id: int, user_id: int, admin_id: Optional[int]):
-        super().__init__(timeout=86400)
-        self.tournament_id = tournament_id
-        self.user_id = user_id
-        self.admin_id = admin_id
-
-    @ui.button(label="Да, буду участвовать", style=ButtonStyle.success)
-    async def confirm(self, interaction: Interaction, button: ui.Button):
-
-        confirm_participant(self.tournament_id, self.user_id)
-
-        from bot.commands.tournament import confirmed_participants
-
-        confirmed_participants.setdefault(self.tournament_id, set()).add(self.user_id)
-
-        await interaction.response.send_message("Участие подтверждено!", ephemeral=True)
-        self.stop()
-
-    @ui.button(label="Нет, передумал", style=ButtonStyle.danger)
-    async def decline(self, interaction: Interaction, button: ui.Button):
-
-        from bot.commands.tournament import tournament_admins
-
-        tournament_db.remove_discord_participant(self.tournament_id, self.user_id)
-        await interaction.response.send_message(
-            "Вы отказались от участия.", ephemeral=True
-        )
-        admin = interaction.client.get_user(self.admin_id) if self.admin_id else None
-        if admin:
-            try:
-                await admin.send(
-                    f"Игрок <@{self.user_id}> отказался от участия в турнире #{self.tournament_id}."
-                )
-            except Exception:
-                pass
-        self.stop()
-
     def _build_button(self):
         self.clear_items()
         raw = db_list_participants_full(self.tid)
@@ -1402,6 +1363,46 @@ class ParticipationConfirmView(SafeView):
                     )
                 except Exception:
                     continue
+
+
+class ParticipationConfirmView(SafeView):
+    def __init__(self, tournament_id: int, user_id: int, admin_id: Optional[int]):
+        super().__init__(timeout=86400)
+        self.tournament_id = tournament_id
+        self.user_id = user_id
+        self.admin_id = admin_id
+
+    @ui.button(label="Да, буду участвовать", style=ButtonStyle.success)
+    async def confirm(self, interaction: Interaction, button: ui.Button):
+
+        confirm_participant(self.tournament_id, self.user_id)
+
+        from bot.commands.tournament import confirmed_participants
+
+        confirmed_participants.setdefault(self.tournament_id, set()).add(self.user_id)
+
+        await interaction.response.send_message("Участие подтверждено!", ephemeral=True)
+        self.stop()
+
+    @ui.button(label="Нет, передумал", style=ButtonStyle.danger)
+    async def decline(self, interaction: Interaction, button: ui.Button):
+
+        from bot.commands.tournament import tournament_admins
+
+        tournament_db.remove_discord_participant(self.tournament_id, self.user_id)
+        await interaction.response.send_message(
+            "Вы отказались от участия.", ephemeral=True
+        )
+        admin = interaction.client.get_user(self.admin_id) if self.admin_id else None
+        if admin:
+            try:
+                await admin.send(
+                    f"Игрок <@{self.user_id}> отказался от участия в турнире #{self.tournament_id}."
+                )
+            except Exception:
+                pass
+        self.stop()
+
 
 
 async def announce_tournament(
