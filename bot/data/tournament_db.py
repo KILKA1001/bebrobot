@@ -310,7 +310,7 @@ def get_team_info(tournament_id: int) -> tuple[Dict[int, List[int]], Dict[int, s
         supabase.table("tournament_participants")
         .select("discord_user_id, player_id, team_id, team_name")
         .eq("tournament_id", tournament_id)
-        .not_("team_id", "is", "null")
+        .not_.is_("team_id", "null")
         .execute()
     )
     mapping: Dict[int, List[int]] = {}
