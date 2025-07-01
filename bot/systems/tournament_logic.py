@@ -733,6 +733,7 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
                 "⚠️ Сначала внесите результаты предыдущего раунда.", ephemeral=True
             )
             return
+
         winners, _losers = res
         _sync_participants_after_round(
             tournament_id, winners, getattr(tour, "team_map", None)
@@ -755,6 +756,11 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
                 tour,
             )
             return
+
+
+        if team_size > 1:
+            tour = create_tournament_logic(participants)
+
 
 
 
