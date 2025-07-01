@@ -820,12 +820,9 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
     )
     team_display: dict[int, str] = {}
     if getattr(tour, "team_map", None):
-        for tid, members in tour.team_map.items():
-            names = [
-                guild.get_member(m).mention if guild.get_member(m) else f"<@{m}>"
-                for m in members
-            ]
-            team_display[tid] = ", ".join(names)
+        for tid in tour.team_map.keys():
+            # Temporary placeholder for team names
+            team_display[tid] = f"Команда {tid}"
 
     view_pairs = PairSelectionView(
         tournament_id,

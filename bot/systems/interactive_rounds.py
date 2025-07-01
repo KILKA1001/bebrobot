@@ -4,6 +4,7 @@ from discord.ui import Button
 from bot.utils import SafeView
 from typing import Optional
 from bot.data.players_db import get_player_by_id
+from bot.data.tournament_db import get_tournament_info
 from bot.systems.tournament_logic import (
     start_round as cmd_start_round,
     join_tournament,  # не обязательно, но для примера
@@ -196,6 +197,11 @@ class MatchResultView(SafeView):
         self.tournament_id = tournament_id
         self.guild = guild
         self.winner: Optional[int] = None
+        info = get_tournament_info(tournament_id) or {}
+        self.is_team = info.get("type") == "team"
+        if self.is_team:
+            self.win1.label = "\U0001F3C6 Команда 1"
+            self.win2.label = "\U0001F3C6 Команда 2"
 
     async def interaction_check(self, interaction: Interaction) -> bool:
         guild = interaction.guild
@@ -243,7 +249,13 @@ class MatchResultView(SafeView):
                 embed=Embed(
                     title=(
                         f"Матч #{self.match_id}: "
-                        + ("ничья" if winner == 0 else f"победитель — игрок {winner}")
+                        + (
+                            "ничья"
+                            if winner == 0
+                            else (
+                                f"победитель — {'команда' if self.is_team else 'игрок'} {winner}"
+                            )
+                        )
                     ),
                     color=discord.Color.green(),
                 ),
