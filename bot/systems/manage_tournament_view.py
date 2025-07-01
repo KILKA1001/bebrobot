@@ -26,9 +26,13 @@ from bot.data.players_db import add_player_to_tournament
 class PlayerIdModal(ui.Modal, title="ID игрока"):
     player_id = ui.TextInput(label="ID игрока", required=True)
 
-    def __init__(self, callback):
+    def __init__(self, callback, *, ask_team: bool = False):
         super().__init__()
         self._callback = callback
+        self.ask_team = ask_team
+        if ask_team:
+            self.team_name = ui.TextInput(label="Название команды", required=True)
+            self.add_item(self.team_name)
 
     async def on_submit(self, interaction: Interaction):
         try:
@@ -36,7 +40,11 @@ class PlayerIdModal(ui.Modal, title="ID игрока"):
         except ValueError:
             await interaction.response.send_message("Неверный ID", ephemeral=True)
             return
-        await self._callback(interaction, pid)
+        team = str(self.team_name) if self.ask_team else None
+        if self.ask_team:
+            await self._callback(interaction, pid, team)
+        else:
+            await self._callback(interaction, pid)
 
 
 class FinishModal(ui.Modal, title="Завершить турнир"):
@@ -75,6 +83,9 @@ class ManageTournamentView(SafeView):
         self.ctx = ctx
         self.custom_id = f"manage_tour:{tournament_id}"
         self.paused = False
+        from bot.data.tournament_db import get_tournament_info
+        info = get_tournament_info(tournament_id) or {}
+        self.is_team = info.get("type") == "team"
         self.refresh_buttons()
 
     def refresh_buttons(self):
@@ -143,10 +154,26 @@ class ManageTournamentView(SafeView):
 
     # ----- Callbacks -----
     async def on_register_player(self, interaction: Interaction):
-        await interaction.response.send_modal(PlayerIdModal(self._register))
+        await interaction.response.send_modal(
+            PlayerIdModal(self._register, ask_team=self.is_team)
+        )
 
-    async def _register(self, interaction: Interaction, pid: int):
-        ok_db = add_player_to_tournament(pid, self.tid)
+    async def _register(self, interaction: Interaction, pid: int, team: str | None):
+        if self.is_team and team:
+            from bot.data.tournament_db import (
+                get_team_id_by_name,
+                get_next_team_id,
+            )
+
+            tid = get_team_id_by_name(self.tid, team)
+            if tid is None:
+                tid = get_next_team_id(self.tid)
+        else:
+            tid = None
+
+        ok_db = add_player_to_tournament(
+            pid, self.tid, team_id=tid, team_name=team if tid else None
+        )
         if ok_db:
             await interaction.response.send_message("Игрок добавлен", ephemeral=True)
         else:
@@ -210,15 +237,19 @@ class ManageTournamentView(SafeView):
         )
 
     async def on_manage_rounds(self, interaction: Interaction):
-        from bot.data.tournament_db import get_tournament_info
+        from bot.data.tournament_db import get_tournament_info, get_team_info
 
         info = get_tournament_info(self.tid) or {}
-        team_size = 3 if info.get("type") == "team" else 1
-        participants = [
-            p.get("discord_user_id") or p.get("player_id")
-            for p in list_participants_full(self.tid)
-        ]
-        logic = create_tournament_logic(participants, team_size=team_size)
+        if info.get("type") == "team":
+            team_map, _ = get_team_info(self.tid)
+            logic = create_tournament_logic(list(team_map.keys()))
+            logic.team_map = team_map
+        else:
+            participants = [
+                p.get("discord_user_id") or p.get("player_id")
+                for p in list_participants_full(self.tid)
+            ]
+            logic = create_tournament_logic(participants)
         view = RoundManagementView(self.tid, logic)
         embed = await build_tournament_bracket_embed(self.tid, interaction.guild)
         if not embed:
