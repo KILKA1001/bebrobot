@@ -48,6 +48,23 @@ class PlayerIdModal(ui.Modal, title="ID игрока"):
             await self._callback(interaction, pid)
 
 
+class TeamRenameModal(ui.Modal, title="Переименовать команду"):
+    team_id = ui.TextInput(label="ID команды", required=True)
+    new_name = ui.TextInput(label="Новое название", required=True)
+
+    def __init__(self, callback):
+        super().__init__()
+        self._callback = callback
+
+    async def on_submit(self, interaction: Interaction):
+        try:
+            tid = int(str(self.team_id))
+        except ValueError:
+            await interaction.response.send_message("Неверный ID", ephemeral=True)
+            return
+        await self._callback(interaction, tid, str(self.new_name))
+
+
 class FinishModal(ui.Modal, title="Завершить турнир"):
     """Modal with dropdowns to select winners."""
 
@@ -147,6 +164,13 @@ class ManageTournamentView(SafeView):
         notify_btn.callback = self.on_notify
         self.add_item(notify_btn)
 
+        if self.is_team:
+            rename_btn = ui.Button(
+                label="Переименовать команду", style=ButtonStyle.secondary
+            )
+            rename_btn.callback = self.on_rename_team
+            self.add_item(rename_btn)
+
         activate_btn = ui.Button(label="Активировать", style=ButtonStyle.success)
         activate_btn.callback = self.on_activate
         size = get_tournament_size(self.tid)
@@ -242,6 +266,28 @@ class ManageTournamentView(SafeView):
         await interaction.response.send_message(
             "Уведомления отправлены", ephemeral=True
         )
+
+    async def on_rename_team(self, interaction: Interaction):
+        await interaction.response.send_modal(TeamRenameModal(self._rename_team))
+
+    async def _rename_team(self, interaction: Interaction, team_id: int, name: str):
+        from bot.data.tournament_db import update_team_name
+
+        ok = update_team_name(self.tid, team_id, name)
+        if ok:
+            await interaction.response.send_message(
+                "Название обновлено", ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                "Не удалось обновить", ephemeral=True
+            )
+        embed = await build_tournament_status_embed(self.tid)
+        if embed:
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        self.refresh_buttons()
+        if interaction.message:
+            await interaction.message.edit(view=self)
 
     async def on_activate(self, interaction: Interaction):
         guild = interaction.guild or (
