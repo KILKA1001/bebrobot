@@ -289,6 +289,13 @@ class ManageTournamentView(SafeView):
         embed = await build_tournament_bracket_embed(self.tid, interaction.guild)
         if not embed:
             embed = await build_tournament_status_embed(self.tid)
+
+        if embed is None:
+            await interaction.response.send_message(
+                "Турнир не найден", ephemeral=True
+            )
+            return
+
         msg = interaction.message
         # Don't try to edit ephemeral or missing messages
         if msg is None or (getattr(msg, "flags", None) and msg.flags.ephemeral):
