@@ -17,6 +17,7 @@ from bot.systems.tournament_logic import (
     send_announcement_embed,
     send_participation_confirmations,
     delete_tournament as send_delete_confirmation,
+    _get_round_results,
 )
 from bot.systems.interactive_rounds import RoundManagementView
 from bot.systems.tournament_logic import create_tournament_logic
@@ -85,9 +86,7 @@ class FinishModal(ui.Modal, title="Завершить турнир"):
             third_val = self.third_select.values[0]
             third = int(third_val) if third_val != "0" else None
         except Exception:
-            await interaction.response.send_message(
-                "Неверные данные", ephemeral=True
-            )
+            await interaction.response.send_message("Неверные данные", ephemeral=True)
             return
 
         if first == second or (third is not None and third in {first, second}):
@@ -113,6 +112,7 @@ class ManageTournamentView(SafeView):
         self.custom_id = f"manage_tour:{tournament_id}"
         self.paused = False
         from bot.data.tournament_db import get_tournament_info
+
         info = get_tournament_info(tournament_id) or {}
         self.is_team = info.get("type") == "team"
         self.refresh_buttons()
@@ -320,11 +320,20 @@ class ManageTournamentView(SafeView):
             await interaction.message.edit(view=self)
 
     async def on_finish(self, interaction: Interaction):
+
         from bot.data.tournament_db import get_tournament_info, get_team_info
+
+        from bot.data.tournament_db import (
+            get_tournament_info,
+            get_team_info,
+            get_matches,
+        )
+
         from bot.data.players_db import get_player_by_id
 
         info = get_tournament_info(self.tid) or {}
         team_mode = info.get("type") == "team"
+
 
         if team_mode:
             team_map, team_names = get_team_info(self.tid)
@@ -337,10 +346,34 @@ class ManageTournamentView(SafeView):
             ]
             logic = create_tournament_logic(participants)
 
-        guild = interaction.guild or (self.ctx.guild if hasattr(self.ctx, "guild") else None)
+        guild = interaction.guild or (
+            self.ctx.guild if hasattr(self.ctx, "guild") else None
+        )
+
+
+        winners: list[int] | None = None
+        round_no = 1
+        while True:
+            data = get_matches(self.tid, round_no)
+            if not data:
+                break
+            if any(m.get("result") not in (1, 2) for m in data):
+                break
+            res = _get_round_results(self.tid, round_no)
+            if res is None:
+                break
+            winners = res[0]
+            round_no += 1
+
+        if winners is None:
+            winners = [
+                p.get("discord_user_id") or p.get("player_id")
+                for p in list_participants_full(self.tid)
+            ]
 
         options: list[discord.SelectOption] = []
         if team_mode:
+
             for tid in logic.team_map.keys():
                 name = team_names.get(tid)
                 if not name:
@@ -359,9 +392,26 @@ class ManageTournamentView(SafeView):
                     else:
                         name = str(tid)
                 label = f"Команда {name}"
+
+            team_map, _ = get_team_info(self.tid)
+            for tid in winners:
+                members = team_map.get(int(tid), [])
+                names: list[str] = []
+                for m in members:
+                    name = None
+                    if guild:
+                        member = guild.get_member(m)
+                        if member:
+                            name = member.display_name
+                    if name is None:
+                        pl = get_player_by_id(m)
+                        name = pl["nick"] if pl else f"ID:{m}"
+                    names.append(name)
+                label = f"Команда {tid}: {', '.join(names)}"
+
                 options.append(discord.SelectOption(label=label[:100], value=str(tid)))
         else:
-            for pid in participants:
+            for pid in winners:
                 name = None
                 if guild:
                     member = guild.get_member(pid)
