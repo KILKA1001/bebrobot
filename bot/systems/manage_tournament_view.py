@@ -119,6 +119,48 @@ class FinishModal(ui.Modal, title="Завершить турнир"):
         )
 
 
+class FinishChoiceView(SafeView):
+    """Offers automatic or manual finalization."""
+
+    def __init__(
+        self,
+        tid: int,
+        ctx: commands.Context,
+        auto_first: int | None,
+        auto_second: int | None,
+        options: list[discord.SelectOption],
+    ):
+        super().__init__(timeout=60)
+        self.tid = tid
+        self.ctx = ctx
+        self.auto_first = auto_first
+        self.auto_second = auto_second
+        self.options = options
+
+    @ui.button(label="Автоматически", style=ButtonStyle.success)
+    async def auto_finish(self, interaction: Interaction, button: ui.Button):
+        if self.auto_first is None or self.auto_second is None:
+            await interaction.response.send_message(
+                "Недостаточно данных для автозавершения", ephemeral=True
+            )
+            return
+        from bot.commands.tournament import endtournament
+
+        ctx = await self.ctx.bot.get_context(interaction)
+        await endtournament(ctx, self.tid, self.auto_first, self.auto_second)
+        await interaction.response.edit_message(
+            content="Попытка завершить турнир", view=None
+        )
+        self.stop()
+
+    @ui.button(label="Выбрать вручную", style=ButtonStyle.secondary)
+    async def manual_finish(self, interaction: Interaction, button: ui.Button):
+        await interaction.response.send_modal(
+            FinishModal(self.tid, self.ctx, self.options)
+        )
+        self.stop()
+
+
 class ManageTournamentView(SafeView):
     persistent = True
 
@@ -405,7 +447,9 @@ class ManageTournamentView(SafeView):
 
 
         winners: list[int] | None = None
+        losers: list[int] | None = None
         round_no = 1
+        winners_found = False
         while True:
             data = get_matches(self.tid, round_no)
             if not data:
@@ -415,17 +459,43 @@ class ManageTournamentView(SafeView):
             res = _get_round_results(self.tid, round_no)
             if res is None:
                 break
-            winners = res[0]
+            winners, losers = res
+            winners_found = True
             round_no += 1
 
-        if winners is None:
-            winners = [
-                p.get("discord_user_id") or p.get("player_id")
-                for p in list_participants_full(self.tid)
-            ]
+        if not winners_found:
+            set_tournament_status(self.tid, "finished")
+            await interaction.response.send_message(
+                "🏁 Турнир завершён без наград.", ephemeral=True
+            )
+            self.refresh_buttons()
+            if interaction.message:
+                await interaction.message.edit(view=self)
+            return
+
+        auto_first = winners[0] if winners else None
+        auto_second = losers[0] if losers else None
 
         options: list[discord.SelectOption] = []
         if team_mode:
+
+            team_map, _ = get_team_info(self.tid)
+            for tid in winners:
+                members = team_map.get(int(tid), [])
+                names: list[str] = []
+                for m in members:
+                    name = None
+                    if guild:
+                        member = guild.get_member(m)
+                        if member:
+                            name = member.display_name
+                    if name is None:
+                        pl = get_player_by_id(m)
+                        name = pl["nick"] if pl else f"ID:{m}"
+                    names.append(name)
+                label = f"Команда {tid}: {', '.join(names)}"
+
+                options.append(discord.SelectOption(label=label[:100], value=str(tid)))
 
             team_map, team_names = get_team_info(self.tid)
             for tid in winners:
@@ -436,6 +506,7 @@ class ManageTournamentView(SafeView):
                 options.append(
                     discord.SelectOption(label=name[:100], value=str(tid))
                 )
+
         else:
             for pid in winners:
                 name = None
@@ -448,4 +519,9 @@ class ManageTournamentView(SafeView):
                     name = pl["nick"] if pl else f"ID:{pid}"
                 options.append(discord.SelectOption(label=name[:100], value=str(pid)))
 
-        await interaction.response.send_modal(FinishModal(self.tid, self.ctx, options))
+        view = FinishChoiceView(
+            self.tid, self.ctx, auto_first, auto_second, options
+        )
+        await interaction.response.send_message(
+            "Выберите способ завершения", ephemeral=True, view=view
+        )
