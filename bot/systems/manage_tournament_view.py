@@ -289,10 +289,18 @@ class ManageTournamentView(SafeView):
         embed = await build_tournament_bracket_embed(self.tid, interaction.guild)
         if not embed:
             embed = await build_tournament_status_embed(self.tid)
-        if interaction.message:
-            await interaction.message.edit(embed=embed, view=self)
-        else:
+        msg = interaction.message
+        # Don't try to edit ephemeral or missing messages
+        if msg is None or (getattr(msg, "flags", None) and msg.flags.ephemeral):
             await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        try:
+            await msg.edit(embed=embed, view=self)
+        except Exception:
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def on_bets(self, interaction: Interaction):
         await interaction.response.send_message(
