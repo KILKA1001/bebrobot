@@ -725,6 +725,7 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
                 "⚠️ Сначала внесите результаты предыдущего раунда.", ephemeral=True
             )
             return
+
         winners, _losers = res
         _sync_participants_after_round(
             tournament_id, winners, getattr(tour, "team_map", None)
@@ -748,34 +749,8 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
             )
             return
 
-        tour = create_tournament_logic(participants)
-
-    # 3a) Обработка результатов предыдущего раунда
-    if tour.current_round > 1:
-        res = _get_round_results(tournament_id, tour.current_round - 1)
-        if res is None:
-            await interaction.response.send_message(
-                "⚠️ Сначала внесите результаты предыдущего раунда.", ephemeral=True
-            )
-            return
-        winners, _losers = res
-        _sync_participants_after_round(tournament_id, winners)
-        tour.participants = winners
-        participants = winners
-        if len(participants) < 2:
-            champ = (
-                winners[0] if winners else (participants[0] if participants else None)
-            )
-            runner = _losers[0] if _losers else None
-            await request_finish_confirmation(
-                interaction.client,
-                guild,
-                tournament_id,
-                champ,
-                runner,
-                tour,
-            )
-            return
+        if team_size > 1:
+            tour = create_tournament_logic(participants)
 
     # 4) Генерация и запись
     existing = db_get_matches(tournament_id, tour.current_round)
