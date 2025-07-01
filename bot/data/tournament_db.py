@@ -356,6 +356,21 @@ def get_next_team_id(tournament_id: int) -> int:
     return max(ids or [0]) + 1
 
 
+def update_team_name(tournament_id: int, team_id: int, new_name: str) -> bool:
+    """Обновляет название команды во всех связанных записях."""
+    try:
+        res = (
+            supabase.table("tournament_participants")
+            .update({"team_name": new_name})
+            .eq("tournament_id", tournament_id)
+            .eq("team_id", team_id)
+            .execute()
+        )
+        return bool(res.data)
+    except Exception:
+        return False
+
+
 def remove_player_from_tournament(player_id: int, tournament_id: int) -> bool:
     """
     Удаляет связь игрока (по player_id) с турниром.
