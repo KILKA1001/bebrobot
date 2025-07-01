@@ -191,7 +191,13 @@ class RoundManagementView(SafeView):
 class MatchResultView(SafeView):
     """UI для ввода результата конкретного матча."""
 
-    def __init__(self, match_id: int, tournament_id: int, guild: discord.Guild):
+    def __init__(
+        self,
+        match_id: int,
+        tournament_id: int,
+        guild: discord.Guild,
+        team_display: Optional[dict[int, str]] = None,
+    ):
         super().__init__(timeout=60)
         self.match_id = match_id
         self.tournament_id = tournament_id
@@ -199,6 +205,7 @@ class MatchResultView(SafeView):
         self.winner: Optional[int] = None
         info = get_tournament_info(tournament_id) or {}
         self.is_team = info.get("type") == "team"
+        self.team_display = team_display or {}
         if self.is_team:
             self.win1.label = "\U0001F3C6 Команда 1"
             self.win2.label = "\U0001F3C6 Команда 2"
@@ -245,18 +252,18 @@ class MatchResultView(SafeView):
         ok = db_record_match_result(self.match_id, winner)
         if ok:
             self.winner = winner
+            if winner == 0:
+                text = "ничья"
+            else:
+                if self.is_team:
+                    name = self.team_display.get(winner, f"Команда {winner}")
+                    text = f"победитель — {name}"
+                else:
+                    text = f"победитель — игрок {winner}"
+
             await interaction.response.edit_message(
                 embed=Embed(
-                    title=(
-                        f"Матч #{self.match_id}: "
-                        + (
-                            "ничья"
-                            if winner == 0
-                            else (
-                                f"победитель — {'команда' if self.is_team else 'игрок'} {winner}"
-                            )
-                        )
-                    ),
+                    title=f"Матч #{self.match_id}: {text}",
                     color=discord.Color.green(),
                 ),
                 view=None,
@@ -395,7 +402,10 @@ class PairSelectionView(SafeView):
                 match_embed.add_field(name="Карта", value=f"`{m.map_id}`", inline=True)
 
             view = MatchResultView(
-                match_id=m.match_id, tournament_id=self.tournament_id, guild=self.guild
+                match_id=m.match_id,
+                tournament_id=self.tournament_id,
+                guild=self.guild,
+                team_display=self.team_display,
             )
 
             if channel:

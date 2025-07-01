@@ -31,21 +31,24 @@ def create_tournament_record(
     return res.data[0]["id"]
 
 
-def add_discord_participant(tournament_id: int, discord_user_id: int) -> bool:
+def add_discord_participant(
+    tournament_id: int,
+    discord_user_id: int,
+    team_id: Optional[int] = None,
+    team_name: Optional[str] = None,
+) -> bool:
     """Для саморегистрации участника (по Discord ID)."""
+    payload = {
+        "tournament_id": tournament_id,
+        "discord_user_id": discord_user_id,
+        "player_id": None,
+        "confirmed": False,
+    }
+    if team_id is not None:
+        payload["team_id"] = team_id
+        payload["team_name"] = team_name
     try:
-        res = (
-            supabase.table("tournament_participants")
-            .insert(
-                {
-                    "tournament_id": tournament_id,
-                    "discord_user_id": discord_user_id,
-                    "player_id": None,
-                    "confirmed": False,
-                }
-            )
-            .execute()
-        )
+        res = supabase.table("tournament_participants").insert(payload).execute()
         return bool(res.data)
     except APIError as e:
         if e.code == "23505":
@@ -57,21 +60,24 @@ def add_discord_participant(tournament_id: int, discord_user_id: int) -> bool:
         return False
 
 
-def add_player_participant(tournament_id: int, player_id: int) -> bool:
+def add_player_participant(
+    tournament_id: int,
+    player_id: int,
+    team_id: Optional[int] = None,
+    team_name: Optional[str] = None,
+) -> bool:
     """Для админской регистрации (по player_id)."""
+    payload = {
+        "tournament_id": tournament_id,
+        "discord_user_id": player_id,
+        "player_id": player_id,
+        "confirmed": True,
+    }
+    if team_id is not None:
+        payload["team_id"] = team_id
+        payload["team_name"] = team_name
     try:
-        res = (
-            supabase.table("tournament_participants")
-            .insert(
-                {
-                    "tournament_id": tournament_id,
-                    "discord_user_id": player_id,
-                    "player_id": player_id,
-                    "confirmed": True,
-                }
-            )
-            .execute()
-        )
+        res = supabase.table("tournament_participants").insert(payload).execute()
         return bool(res.data)
     except APIError as e:
         if e.code == "23505":
@@ -90,7 +96,7 @@ def list_participants(tournament_id: int) -> List[dict]:
     """
     res = (
         supabase.table("tournament_participants")
-        .select("discord_user_id, player_id, confirmed")
+        .select("discord_user_id, player_id, confirmed, team_id, team_name")
         .eq("tournament_id", tournament_id)
         .execute()
     )
@@ -289,11 +295,65 @@ def list_participants_full(tournament_id: int) -> List[dict]:
     """
     res = (
         supabase.table("tournament_participants")
-        .select("discord_user_id, player_id, confirmed")
+        .select(
+            "discord_user_id, player_id, confirmed, team_id, team_name"
+        )
         .eq("tournament_id", tournament_id)
         .execute()
     )
     return res.data or []
+
+
+def get_team_info(tournament_id: int) -> tuple[Dict[int, List[int]], Dict[int, str]]:
+    """Возвращает отображение team_id->участники и их названия."""
+    res = (
+        supabase.table("tournament_participants")
+        .select("discord_user_id, player_id, team_id, team_name")
+        .eq("tournament_id", tournament_id)
+        .not_("team_id", "is", "null")
+        .execute()
+    )
+    mapping: Dict[int, List[int]] = {}
+    names: Dict[int, str] = {}
+    for row in res.data or []:
+        tid = row.get("team_id")
+        if tid is None:
+            continue
+        pid = row.get("discord_user_id") or row.get("player_id")
+        if pid is None:
+            continue
+        mapping.setdefault(int(tid), []).append(pid)
+        name = row.get("team_name")
+        if name:
+            names[int(tid)] = name
+    return mapping, names
+
+
+def get_team_id_by_name(tournament_id: int, team_name: str) -> Optional[int]:
+    """Возвращает team_id по названию, если существует."""
+    res = (
+        supabase.table("tournament_participants")
+        .select("team_id")
+        .eq("tournament_id", tournament_id)
+        .eq("team_name", team_name)
+        .limit(1)
+        .execute()
+    )
+    if res.data:
+        return res.data[0].get("team_id")
+    return None
+
+
+def get_next_team_id(tournament_id: int) -> int:
+    """Возвращает следующий свободный team_id для турнира."""
+    res = (
+        supabase.table("tournament_participants")
+        .select("team_id")
+        .eq("tournament_id", tournament_id)
+        .execute()
+    )
+    ids = [r.get("team_id") for r in res.data or [] if r.get("team_id") is not None]
+    return max(ids or [0]) + 1
 
 
 def remove_player_from_tournament(player_id: int, tournament_id: int) -> bool:

@@ -86,21 +86,24 @@ def update_player_field(player_id: int, field_name: str, new_value: str) -> bool
     return True
 
 
-def add_player_to_tournament(player_id: int, tournament_id: int) -> bool:
+def add_player_to_tournament(
+    player_id: int,
+    tournament_id: int,
+    team_id: Optional[int] = None,
+    team_name: Optional[str] = None,
+) -> bool:
     """Регистрирует игрока в турнире."""
+    payload = {
+        "tournament_id": tournament_id,
+        "discord_user_id": player_id,
+        "player_id": player_id,
+        "confirmed": True,
+    }
+    if team_id is not None:
+        payload["team_id"] = team_id
+        payload["team_name"] = team_name
     try:
-        res = (
-            supabase.table("tournament_participants")
-            .insert(
-                {
-                    "tournament_id": tournament_id,
-                    "discord_user_id": player_id,
-                    "player_id": player_id,
-                    "confirmed": True,
-                }
-            )
-            .execute()
-        )
+        res = supabase.table("tournament_participants").insert(payload).execute()
         return bool(res.data)
     except APIError as e:
         if e.code == "23505":

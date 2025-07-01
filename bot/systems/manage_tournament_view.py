@@ -26,9 +26,13 @@ from bot.data.players_db import add_player_to_tournament
 class PlayerIdModal(ui.Modal, title="ID игрока"):
     player_id = ui.TextInput(label="ID игрока", required=True)
 
-    def __init__(self, callback):
+    def __init__(self, callback, *, ask_team: bool = False):
         super().__init__()
         self._callback = callback
+        self.ask_team = ask_team
+        if ask_team:
+            self.team_name = ui.TextInput(label="Название команды", required=True)
+            self.add_item(self.team_name)
 
     async def on_submit(self, interaction: Interaction):
         try:
@@ -36,29 +40,62 @@ class PlayerIdModal(ui.Modal, title="ID игрока"):
         except ValueError:
             await interaction.response.send_message("Неверный ID", ephemeral=True)
             return
-        await self._callback(interaction, pid)
+        team = str(self.team_name) if self.ask_team else None
+        if self.ask_team:
+            await self._callback(interaction, pid, team)
+        else:
+            await self._callback(interaction, pid)
 
 
 class FinishModal(ui.Modal, title="Завершить турнир"):
-    first = ui.TextInput(label="ID 1 места", required=True)
-    second = ui.TextInput(label="ID 2 места", required=True)
-    third = ui.TextInput(label="ID 3 места", required=False)
+    """Modal with dropdowns to select winners."""
 
-    def __init__(self, tid: int, ctx: commands.Context):
+    def __init__(
+        self,
+        tid: int,
+        ctx: commands.Context,
+        options: list[discord.SelectOption],
+    ):
         super().__init__()
         self.tid = tid
         self.ctx = ctx
+
+        self.first_select = ui.Select(
+            placeholder="🥇 1 место",
+            options=options,
+        )
+        self.second_select = ui.Select(
+            placeholder="🥈 2 место",
+            options=options,
+        )
+        self.third_select = ui.Select(
+            placeholder="🥉 3 место (опционально)",
+            options=[discord.SelectOption(label="—", value="0")] + options,
+        )
+        self.add_item(self.first_select)
+        self.add_item(self.second_select)
+        self.add_item(self.third_select)
 
     async def on_submit(self, interaction: Interaction):
         from bot.commands.tournament import endtournament
 
         try:
-            first = int(str(self.first))
-            second = int(str(self.second))
-            third = int(str(self.third)) if str(self.third) else None
-        except ValueError:
-            await interaction.response.send_message("Неверные ID", ephemeral=True)
+            first = int(self.first_select.values[0])
+            second = int(self.second_select.values[0])
+            third_val = self.third_select.values[0]
+            third = int(third_val) if third_val != "0" else None
+        except Exception:
+            await interaction.response.send_message(
+                "Неверные данные", ephemeral=True
+            )
             return
+
+        if first == second or (third is not None and third in {first, second}):
+            await interaction.response.send_message(
+                "Выберите разные места", ephemeral=True
+            )
+            return
+
         ctx = await self.ctx.bot.get_context(interaction)
         await endtournament(ctx, self.tid, first, second, third)
         await interaction.response.send_message(
@@ -75,6 +112,9 @@ class ManageTournamentView(SafeView):
         self.ctx = ctx
         self.custom_id = f"manage_tour:{tournament_id}"
         self.paused = False
+        from bot.data.tournament_db import get_tournament_info
+        info = get_tournament_info(tournament_id) or {}
+        self.is_team = info.get("type") == "team"
         self.refresh_buttons()
 
     def refresh_buttons(self):
@@ -143,10 +183,26 @@ class ManageTournamentView(SafeView):
 
     # ----- Callbacks -----
     async def on_register_player(self, interaction: Interaction):
-        await interaction.response.send_modal(PlayerIdModal(self._register))
+        await interaction.response.send_modal(
+            PlayerIdModal(self._register, ask_team=self.is_team)
+        )
 
-    async def _register(self, interaction: Interaction, pid: int):
-        ok_db = add_player_to_tournament(pid, self.tid)
+    async def _register(self, interaction: Interaction, pid: int, team: str | None):
+        if self.is_team and team:
+            from bot.data.tournament_db import (
+                get_team_id_by_name,
+                get_next_team_id,
+            )
+
+            tid = get_team_id_by_name(self.tid, team)
+            if tid is None:
+                tid = get_next_team_id(self.tid)
+        else:
+            tid = None
+
+        ok_db = add_player_to_tournament(
+            pid, self.tid, team_id=tid, team_name=team if tid else None
+        )
         if ok_db:
             await interaction.response.send_message("Игрок добавлен", ephemeral=True)
         else:
@@ -210,15 +266,19 @@ class ManageTournamentView(SafeView):
         )
 
     async def on_manage_rounds(self, interaction: Interaction):
-        from bot.data.tournament_db import get_tournament_info
+        from bot.data.tournament_db import get_tournament_info, get_team_info
 
         info = get_tournament_info(self.tid) or {}
-        team_size = 3 if info.get("type") == "team" else 1
-        participants = [
-            p.get("discord_user_id") or p.get("player_id")
-            for p in list_participants_full(self.tid)
-        ]
-        logic = create_tournament_logic(participants, team_size=team_size)
+        if info.get("type") == "team":
+            team_map, _ = get_team_info(self.tid)
+            logic = create_tournament_logic(list(team_map.keys()))
+            logic.team_map = team_map
+        else:
+            participants = [
+                p.get("discord_user_id") or p.get("player_id")
+                for p in list_participants_full(self.tid)
+            ]
+            logic = create_tournament_logic(participants)
         view = RoundManagementView(self.tid, logic)
         embed = await build_tournament_bracket_embed(self.tid, interaction.guild)
         if not embed:
@@ -229,10 +289,18 @@ class ManageTournamentView(SafeView):
         embed = await build_tournament_bracket_embed(self.tid, interaction.guild)
         if not embed:
             embed = await build_tournament_status_embed(self.tid)
-        if interaction.message:
-            await interaction.message.edit(embed=embed, view=self)
-        else:
+        msg = interaction.message
+        # Don't try to edit ephemeral or missing messages
+        if msg is None or (getattr(msg, "flags", None) and msg.flags.ephemeral):
             await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        try:
+            await msg.edit(embed=embed, view=self)
+        except Exception:
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def on_bets(self, interaction: Interaction):
         await interaction.response.send_message(
@@ -252,4 +320,47 @@ class ManageTournamentView(SafeView):
             await interaction.message.edit(view=self)
 
     async def on_finish(self, interaction: Interaction):
-        await interaction.response.send_modal(FinishModal(self.tid, self.ctx))
+        from bot.data.tournament_db import get_tournament_info
+        from bot.data.players_db import get_player_by_id
+
+        info = get_tournament_info(self.tid) or {}
+        team_mode = info.get("type") == "team"
+
+        participants = [
+            p.get("discord_user_id") or p.get("player_id")
+            for p in list_participants_full(self.tid)
+        ]
+        team_size = 3 if team_mode else 1
+        logic = create_tournament_logic(participants, team_size=team_size)
+
+        guild = interaction.guild or (self.ctx.guild if hasattr(self.ctx, "guild") else None)
+
+        options: list[discord.SelectOption] = []
+        if team_mode:
+            for tid, members in logic.team_map.items():
+                names: list[str] = []
+                for m in members:
+                    name = None
+                    if guild:
+                        member = guild.get_member(m)
+                        if member:
+                            name = member.display_name
+                    if name is None:
+                        pl = get_player_by_id(m)
+                        name = pl["nick"] if pl else f"ID:{m}"
+                    names.append(name)
+                label = f"Команда {tid}: {', '.join(names)}"
+                options.append(discord.SelectOption(label=label[:100], value=str(tid)))
+        else:
+            for pid in participants:
+                name = None
+                if guild:
+                    member = guild.get_member(pid)
+                    if member:
+                        name = member.display_name
+                if name is None:
+                    pl = get_player_by_id(pid)
+                    name = pl["nick"] if pl else f"ID:{pid}"
+                options.append(discord.SelectOption(label=name[:100], value=str(pid)))
+
+        await interaction.response.send_modal(FinishModal(self.tid, self.ctx, options))

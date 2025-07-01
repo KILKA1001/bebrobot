@@ -688,12 +688,19 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
         )
         return
 
-    participants = [
-        p.get("discord_user_id") or p.get("player_id") for p in raw_participants
-    ]
-
     info = get_tournament_info(tournament_id) or {}
-    team_size = 3 if info.get("type") == "team" else 1
+    is_team = info.get("type") == "team"
+
+    if is_team:
+        from bot.data.tournament_db import get_team_info
+
+        team_map, team_display = get_team_info(tournament_id)
+        participants = list(team_map.keys())
+    else:
+        team_map, team_display = {}, {}
+        participants = [
+            p.get("discord_user_id") or p.get("player_id") for p in raw_participants
+        ]
 
     # 2) Только на сервере
     guild = interaction.guild
@@ -714,8 +721,9 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
     if view and hasattr(view, "logic"):
         tour = view.logic
     else:
-
-        tour = create_tournament_logic(participants, team_size=team_size)
+        tour = create_tournament_logic(participants)
+        if is_team:
+            tour.team_map = team_map
 
     # 3a) Обработка результатов предыдущего раунда
     if tour.current_round > 1:
@@ -730,7 +738,7 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
         _sync_participants_after_round(
             tournament_id, winners, getattr(tour, "team_map", None)
         )
-        if team_size > 1:
+        if is_team:
             tour.team_map = {tid: tour.team_map[tid] for tid in winners}
         tour.participants = winners
         participants = winners
@@ -749,8 +757,12 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
             )
             return
 
+
         if team_size > 1:
             tour = create_tournament_logic(participants)
+
+
+
 
     # 4) Генерация и запись
     existing = db_get_matches(tournament_id, tour.current_round)
@@ -793,11 +805,6 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
         description="Нажмите кнопку ниже, чтобы начать матчи для выбранной пары.",
         color=discord.Color.orange(),
     )
-    team_display: dict[int, str] = {}
-    if getattr(tour, "team_map", None):
-        for tid in tour.team_map.keys():
-            # Temporary placeholder for team names
-            team_display[tid] = f"Команда {tid}"
 
     view_pairs = PairSelectionView(
         tournament_id,
@@ -1687,14 +1694,17 @@ async def generate_first_round(
     if any(not p.get("confirmed") for p in db_list_participants_full(tournament_id)):
         return None
 
-    participants = [
-        p.get("discord_user_id") or p.get("player_id") for p in raw_participants
-    ]
-
     info = get_tournament_info(tournament_id) or {}
-    team_size = 3 if info.get("type") == "team" else 1
-
-    tour = create_tournament_logic(participants, team_size=team_size)
+    if info.get("type") == "team":
+        team_map, _ = tournament_db.get_team_info(tournament_id)
+        participants = list(team_map.keys())
+        tour = create_tournament_logic(participants)
+        tour.team_map = team_map
+    else:
+        participants = [
+            p.get("discord_user_id") or p.get("player_id") for p in raw_participants
+        ]
+        tour = create_tournament_logic(participants)
     matches = tour.generate_round()
     round_no = tour.current_round - 1
     db_create_matches(tournament_id, round_no, matches)
@@ -1830,6 +1840,7 @@ async def build_tournament_bracket_embed(
     """Строит embed-сетку турнира по сыгранным матчам."""
 
     round_no = 1
+    team_map, team_names = tournament_db.get_team_info(tournament_id)
     embed = discord.Embed(
         title=f"🏟️ Сетка турнира #{tournament_id}",
         color=discord.Color.purple(),
@@ -1849,15 +1860,22 @@ async def build_tournament_bracket_embed(
 
         lines: list[str] = []
         for (p1_id, p2_id), ms in pairs.items():
-            if guild:
+            if p1_id in team_names:
+                name1 = team_names[p1_id]
+            elif guild:
                 p1m = guild.get_member(p1_id)
-                p2m = guild.get_member(p2_id)
                 name1 = p1m.mention if p1m else (get_player_by_id(p1_id) or {}).get("nick", f"ID:{p1_id}")
-                name2 = p2m.mention if p2m else (get_player_by_id(p2_id) or {}).get("nick", f"ID:{p2_id}")
             else:
                 pl1 = get_player_by_id(p1_id)
-                pl2 = get_player_by_id(p2_id)
                 name1 = pl1["nick"] if pl1 else f"ID:{p1_id}"
+
+            if p2_id in team_names:
+                name2 = team_names[p2_id]
+            elif guild:
+                p2m = guild.get_member(p2_id)
+                name2 = p2m.mention if p2m else (get_player_by_id(p2_id) or {}).get("nick", f"ID:{p2_id}")
+            else:
+                pl2 = get_player_by_id(p2_id)
                 name2 = pl2["nick"] if pl2 else f"ID:{p2_id}"
 
             wins1 = sum(1 for m in ms if m.get("result") == 1)
@@ -1893,6 +1911,7 @@ async def build_participants_embed(
 
     lines: list[str] = []
     for idx, p in enumerate(participants, start=1):
+        prefix = f"[{p['team_name']}] " if p.get("team_name") else ""
         if p.get("discord_user_id"):
             uid = p["discord_user_id"]
             if guild:
@@ -1906,7 +1925,7 @@ async def build_participants_embed(
             name = pl["nick"] if pl else f"Игрок#{pid}"
 
         mark = "✅" if p.get("confirmed") else "❔"
-        lines.append(f"{idx}. {mark} {name}")
+        lines.append(f"{idx}. {mark} {prefix}{name}")
 
     embed.description = "\n".join(lines) if lines else "—"
     return embed
