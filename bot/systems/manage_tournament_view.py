@@ -320,36 +320,45 @@ class ManageTournamentView(SafeView):
             await interaction.message.edit(view=self)
 
     async def on_finish(self, interaction: Interaction):
-        from bot.data.tournament_db import get_tournament_info
+        from bot.data.tournament_db import get_tournament_info, get_team_info
         from bot.data.players_db import get_player_by_id
 
         info = get_tournament_info(self.tid) or {}
         team_mode = info.get("type") == "team"
 
-        participants = [
-            p.get("discord_user_id") or p.get("player_id")
-            for p in list_participants_full(self.tid)
-        ]
-        team_size = 3 if team_mode else 1
-        logic = create_tournament_logic(participants, team_size=team_size)
+        if team_mode:
+            team_map, team_names = get_team_info(self.tid)
+            logic = create_tournament_logic(list(team_map.keys()))
+            logic.team_map = team_map
+        else:
+            participants = [
+                p.get("discord_user_id") or p.get("player_id")
+                for p in list_participants_full(self.tid)
+            ]
+            logic = create_tournament_logic(participants)
 
         guild = interaction.guild or (self.ctx.guild if hasattr(self.ctx, "guild") else None)
 
         options: list[discord.SelectOption] = []
         if team_mode:
-            for tid, members in logic.team_map.items():
-                names: list[str] = []
-                for m in members:
-                    name = None
-                    if guild:
-                        member = guild.get_member(m)
-                        if member:
-                            name = member.display_name
-                    if name is None:
-                        pl = get_player_by_id(m)
-                        name = pl["nick"] if pl else f"ID:{m}"
-                    names.append(name)
-                label = f"Команда {tid}: {', '.join(names)}"
+            for tid in logic.team_map.keys():
+                name = team_names.get(tid)
+                if not name:
+                    members = logic.team_map.get(tid, [])
+                    if members:
+                        m = members[0]
+                        n = None
+                        if guild:
+                            member = guild.get_member(m)
+                            if member:
+                                n = member.display_name
+                        if n is None:
+                            pl = get_player_by_id(m)
+                            n = pl["nick"] if pl else f"ID:{m}"
+                        name = n
+                    else:
+                        name = str(tid)
+                label = f"Команда {name}"
                 options.append(discord.SelectOption(label=label[:100], value=str(tid)))
         else:
             for pid in participants:
