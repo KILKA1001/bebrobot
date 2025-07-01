@@ -374,42 +374,15 @@ class ManageTournamentView(SafeView):
         options: list[discord.SelectOption] = []
         if team_mode:
 
-            for tid in logic.team_map.keys():
-                name = team_names.get(tid)
-                if not name:
-                    members = logic.team_map.get(tid, [])
-                    if members:
-                        m = members[0]
-                        n = None
-                        if guild:
-                            member = guild.get_member(m)
-                            if member:
-                                n = member.display_name
-                        if n is None:
-                            pl = get_player_by_id(m)
-                            n = pl["nick"] if pl else f"ID:{m}"
-                        name = n
-                    else:
-                        name = str(tid)
-                label = f"Команда {name}"
-
-            team_map, _ = get_team_info(self.tid)
+            team_map, team_names = get_team_info(self.tid)
             for tid in winners:
-                members = team_map.get(int(tid), [])
-                names: list[str] = []
-                for m in members:
-                    name = None
-                    if guild:
-                        member = guild.get_member(m)
-                        if member:
-                            name = member.display_name
-                    if name is None:
-                        pl = get_player_by_id(m)
-                        name = pl["nick"] if pl else f"ID:{m}"
-                    names.append(name)
-                label = f"Команда {tid}: {', '.join(names)}"
+                name = team_names.get(int(tid))
+                if not name:
+                    name = f"Команда {tid}"
 
-                options.append(discord.SelectOption(label=label[:100], value=str(tid)))
+                options.append(
+                    discord.SelectOption(label=name[:100], value=str(tid))
+                )
         else:
             for pid in winners:
                 name = None
