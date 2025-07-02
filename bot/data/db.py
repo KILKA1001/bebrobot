@@ -36,8 +36,6 @@ class Database:
         self.quick_pay_streak = {}
         self.guild_id = int(os.getenv("GUILD_ID", 0))
         self.fast_payer_role_id = int(os.getenv("FAST_PAYER_ROLE_ID", 0))
-        # Флаг тестового режима для штрафов
-        self.fine_test_mode = os.getenv("FINE_TEST_MODE", "0") == "1"
         
     def _ensure_tables(self):
         """Проверяет существование обязательных таблиц"""
@@ -353,6 +351,12 @@ class Database:
                 logger.warning("❌ Supabase не инициализирован")
                 return False
 
+            fine = self.get_fine_by_id(fine_id)
+            is_test = False
+            if fine:
+                reason = str(fine.get("reason", ""))
+                is_test = "test" in reason.lower()
+
             # 1. Обновляем баллы пользователя
             if not self.update_scores(user_id, -amount):
                 return False
@@ -368,13 +372,12 @@ class Database:
             # 3. Лог действия
             self.add_action(user_id, -amount, f"Оплата штрафа ID #{fine_id}", author_id)
 
-            # 4. Обновление баланса банка (если не включён тестовый режим)
-            if not self.fine_test_mode:
+            # 4. Обновление баланса банка (если штраф не тестовый)
+            if not is_test:
                 self.add_to_bank(amount)
                 self.log_bank_income(user_id, amount, f"Оплата штрафа ID #{fine_id}")
 
             # 5. Обновляем данные по штрафу
-            fine = self.get_fine_by_id(fine_id)
             if fine:
                 fine['paid_amount'] = round(fine.get('paid_amount', 0) + amount, 2)
                 fine['is_paid'] = fine['paid_amount'] >= fine['amount']

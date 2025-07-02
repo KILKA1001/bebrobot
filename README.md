@@ -18,7 +18,6 @@ pip install -r requirements.txt
     SUPABASE_URL=ваш_url_supabase
     SUPABASE_KEY=ваш_ключ_supabase
     TOURNAMENT_ANNOUNCE_CHANNEL_ID=ID_канала_анонсов
-    FINE_TEST_MODE=0  # 1 — режим теста, оплата штрафов не попадает в банк
      ```
 
 3. **Запуск бота**:
