@@ -35,6 +35,7 @@ from bot.data.tournament_db import (
     list_recent_results,
     get_expired_registrations,
     update_start_time,
+    mark_reminder_sent,
     delete_tournament as db_delete_tournament,
 )
 from bot.systems import tournament_rewards_logic as rewards
@@ -2053,6 +2054,8 @@ async def send_tournament_reminders(bot: commands.Bot, hours: int = 24) -> None:
                 await user.send(msg)
             except Exception:
                 continue
+
+        tournament_db.mark_reminder_sent(t["id"])
 
 
 async def tournament_reminder_loop(bot: commands.Bot) -> None:
