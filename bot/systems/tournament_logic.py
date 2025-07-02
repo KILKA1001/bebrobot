@@ -569,6 +569,38 @@ def create_tournament_logic(participants: List[int], team_size: int = 1) -> Tour
     return Tournament(participants, MODE_IDS, MAPS_BY_MODE, team_size=team_size)
 
 
+def load_tournament_logic_from_db(tournament_id: int) -> Tournament:
+    """Восстанавливает объект ``Tournament`` из сохранённых матчей."""
+    info = get_tournament_info(tournament_id) or {}
+    if info.get("type") == "team":
+        team_map, _ = tournament_db.get_team_info(tournament_id)
+        participants = list(team_map.keys())
+        tour = create_tournament_logic(participants)
+        tour.team_map = team_map
+    else:
+        participants = [
+            p.get("discord_user_id") or p.get("player_id")
+            for p in tournament_db.list_participants_full(tournament_id)
+        ]
+        tour = create_tournament_logic(participants)
+
+    round_no = 1
+    while True:
+        rows = tournament_db.get_matches(tournament_id, round_no)
+        if not rows:
+            break
+        matches: list[Match] = []
+        for r in rows:
+            m = Match(r["player1_id"], r["player2_id"], r["mode"], r["map_id"])
+            m.match_id = r.get("id")
+            m.result = r.get("result")
+            matches.append(m)
+        tour.matches[round_no] = matches
+        round_no += 1
+    tour.current_round = round_no
+    return tour
+
+
 # ───── Вспомогательные функции ─────
 
 
