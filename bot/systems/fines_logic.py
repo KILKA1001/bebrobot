@@ -332,7 +332,9 @@ async def debt_repayment_loop(bot):
                 to_deduct = min(available, debt["total_due"])
                 db.update_scores(user_id, -to_deduct)
                 db.add_action(user_id, -to_deduct, f"Погашение долга по штрафу ID #{debt['fine_id']}", fine["author_id"])
-                db.add_to_bank(to_deduct)
+                reason = str(fine.get("reason", ""))
+                if "test" not in reason.lower():
+                    db.add_to_bank(to_deduct)
 
                 fine['paid_amount'] = round(fine.get('paid_amount', 0) + to_deduct, 2)
                 if fine['paid_amount'] >= fine['amount']:

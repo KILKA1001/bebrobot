@@ -351,6 +351,12 @@ class Database:
                 logger.warning("❌ Supabase не инициализирован")
                 return False
 
+            fine = self.get_fine_by_id(fine_id)
+            is_test = False
+            if fine:
+                reason = str(fine.get("reason", ""))
+                is_test = "test" in reason.lower()
+
             # 1. Обновляем баллы пользователя
             if not self.update_scores(user_id, -amount):
                 return False
@@ -366,12 +372,12 @@ class Database:
             # 3. Лог действия
             self.add_action(user_id, -amount, f"Оплата штрафа ID #{fine_id}", author_id)
 
-            # 4. Обновление баланса банка
-            self.add_to_bank(amount)
-            self.log_bank_income(user_id, amount, f"Оплата штрафа ID #{fine_id}")
+            # 4. Обновление баланса банка (если штраф не тестовый)
+            if not is_test:
+                self.add_to_bank(amount)
+                self.log_bank_income(user_id, amount, f"Оплата штрафа ID #{fine_id}")
 
             # 5. Обновляем данные по штрафу
-            fine = self.get_fine_by_id(fine_id)
             if fine:
                 fine['paid_amount'] = round(fine.get('paid_amount', 0) + amount, 2)
                 fine['is_paid'] = fine['paid_amount'] >= fine['amount']
