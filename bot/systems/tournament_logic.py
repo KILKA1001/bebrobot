@@ -627,7 +627,7 @@ def _sync_participants_after_round(
         pid = disc_id or player_id
         if pid not in keep:
             if disc_id is not None:
-                remove_discord_participant(tournament_id, disc_id)
+                db_remove_discord_participant(tournament_id, disc_id)
             if player_id is not None:
                 remove_player_from_tournament(player_id, tournament_id)
 
@@ -758,8 +758,8 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
             return
 
 
-        if team_size > 1:
-            tour = create_tournament_logic(participants)
+        if tour.team_size > 1:
+            tour = create_tournament_logic(participants, team_size=tour.team_size)
 
 
 

@@ -65,7 +65,8 @@ async def register_player_by_id(
 
     if ok:
         await send_temp(
-            f"✅ Игрок #{player_id} (`{player['nick']}`) зарегистрирован в турнире #{tournament_id}."
+            ctx,
+            f"✅ Игрок #{player_id} (`{player['nick']}`) зарегистрирован в турнире #{tournament_id}.",
         )
         # Обновляем кнопку регистрации, если сообщение доступно
         msg_id = get_announcement_message_id(tournament_id)
