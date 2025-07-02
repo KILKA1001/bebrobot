@@ -202,14 +202,29 @@ def list_maps_by_mode() -> Dict[int, List[str]]:
         return {}
 
 
-def record_match_result(match_id: int, result: int) -> None:
+def record_match_result(match_id: int, result: int) -> bool:
+    """Обновляет результат матча.
+
+    Parameters
+    ----------
+    match_id : int
+        ID матча, который нужно обновить.
+    result : int
+        Победитель (1 или 2). ``0`` обозначает ничью.
+
+    Returns
+    -------
+    bool
+        ``True`` при успешном обновлении, ``False`` при ошибке.
     """
-    Обновляет поле result у конкретного матча.
-    result: 1 или 2
-    """
-    supabase.table("tournament_matches").update({"result": result}).eq(
-        "id", match_id
-    ).execute()
+    try:
+        supabase.table("tournament_matches").update({"result": result}).eq(
+            "id", match_id
+        ).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to record match result: {e}")
+        return False
 
 
 def delete_tournament(tournament_id: int) -> None:
