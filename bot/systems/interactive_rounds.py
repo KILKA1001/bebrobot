@@ -10,6 +10,7 @@ from bot.systems.tournament_logic import (
     join_tournament,  # не обязательно, но для примера
     build_tournament_status_embed,
     build_participants_embed,
+    build_tournament_bracket_embed,
     MODE_NAMES,
     refresh_bracket_message,
 )
@@ -108,14 +109,14 @@ class RoundManagementView(SafeView):
             activate_btn.callback = self.on_activate_tournament
             self.add_item(activate_btn)
         else:
-            manage_btn = Button(
-                label="⚙ Управление раундами",
-                style=ButtonStyle.primary,
-                custom_id=f"manage_rounds:{self.tournament_id}",
+            back_btn = Button(
+                label="🔙 Назад",
+                style=ButtonStyle.secondary,
+                custom_id=f"back_to_main:{self.tournament_id}",
                 row=2,
             )
-            manage_btn.callback = self.on_manage_rounds
-            self.add_item(manage_btn)
+            back_btn.callback = self.on_back_to_main
+            self.add_item(back_btn)
 
     async def on_activate_tournament(self, interaction: Interaction):
         """Переводит турнир в активный статус"""
@@ -185,6 +186,25 @@ class RoundManagementView(SafeView):
         else:
             await interaction.response.send_message(
                 "❌ Не удалось получить список участников.", ephemeral=True
+            )
+
+    async def on_back_to_main(self, interaction: Interaction):
+        """Возвращает на главное меню управления турниром."""
+        from .manage_tournament_view import ManageTournamentView
+
+        ctx = await interaction.client.get_context(interaction)
+        view = ManageTournamentView(self.tournament_id, ctx)
+        embed = await build_tournament_bracket_embed(
+            self.tournament_id, interaction.guild
+        )
+        if not embed:
+            embed = await build_tournament_status_embed(self.tournament_id)
+
+        if embed:
+            await interaction.response.edit_message(embed=embed, view=view)
+        else:
+            await interaction.response.send_message(
+                "❌ Не удалось загрузить данные турнира.", ephemeral=True
             )
 
 
