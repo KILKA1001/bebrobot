@@ -36,6 +36,8 @@ class Database:
         self.quick_pay_streak = {}
         self.guild_id = int(os.getenv("GUILD_ID", 0))
         self.fast_payer_role_id = int(os.getenv("FAST_PAYER_ROLE_ID", 0))
+        # Флаг тестового режима для штрафов
+        self.fine_test_mode = os.getenv("FINE_TEST_MODE", "0") == "1"
         
     def _ensure_tables(self):
         """Проверяет существование обязательных таблиц"""
@@ -366,9 +368,10 @@ class Database:
             # 3. Лог действия
             self.add_action(user_id, -amount, f"Оплата штрафа ID #{fine_id}", author_id)
 
-            # 4. Обновление баланса банка
-            self.add_to_bank(amount)
-            self.log_bank_income(user_id, amount, f"Оплата штрафа ID #{fine_id}")
+            # 4. Обновление баланса банка (если не включён тестовый режим)
+            if not self.fine_test_mode:
+                self.add_to_bank(amount)
+                self.log_bank_income(user_id, amount, f"Оплата штрафа ID #{fine_id}")
 
             # 5. Обновляем данные по штрафу
             fine = self.get_fine_by_id(fine_id)
