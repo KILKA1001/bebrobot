@@ -490,18 +490,29 @@ def get_upcoming_tournaments(hours: int) -> list[dict]:
     try:
         res = (
             supabase.table("tournaments")
-            .select("id, type, start_time")
+            .select("id, type, start_time, reminder_sent")
             .eq("status", "registration")
             .gte("start_time", now.isoformat())
             .lte("start_time", later.isoformat())
             .execute()
         )
-        return res.data or []
+        tournaments = res.data or []
     except Exception as e:
         if getattr(e, "code", None) == "42703":
-            logger.warning("start_time column not found in tournaments table")
-            return []
-        raise
+            logger.warning("start_time or reminder_sent column not found in tournaments table")
+            res = (
+                supabase.table("tournaments")
+                .select("id, type, start_time")
+                .eq("status", "registration")
+                .gte("start_time", now.isoformat())
+                .lte("start_time", later.isoformat())
+                .execute()
+            )
+            tournaments = res.data or []
+        else:
+            raise
+
+    return [t for t in tournaments if not t.get("reminder_sent")]
 
 
 def save_announcement_message(tournament_id: int, message_id: int) -> bool:
@@ -599,4 +610,22 @@ def update_start_time(tournament_id: int, new_iso: str) -> bool:
         )
         return bool(res.data)
     except Exception:
+        return False
+
+
+def mark_reminder_sent(tournament_id: int) -> bool:
+    """Помечает турнир как отправивший напоминание."""
+    try:
+        res = (
+            supabase.table("tournaments")
+            .update({"reminder_sent": True})
+            .eq("id", tournament_id)
+            .execute()
+        )
+        return bool(res.data)
+    except Exception as e:
+        if getattr(e, "code", None) == "42703":
+            logger.warning("reminder_sent column not found in tournaments table")
+            return False
+        logger.error("Failed to mark reminder sent: %s", e)
         return False
