@@ -609,15 +609,21 @@ def _get_round_results(
 ) -> Optional[tuple[list[int], list[int]]]:
     """Возвращает списки победителей и проигравших указанного раунда.
 
-    Если хотя бы один матч не имеет результата, возвращается ``None``.
+    Возвращает ``None`` только если для какой-либо пары недостаточно
+    результатов, чтобы определить победителя.
     """
     matches = tournament_db.get_matches(tournament_id, round_no)
+    if not matches:
+        return None
+
+    totals: Dict[tuple[int, int], int] = {}
     results: Dict[tuple[int, int], list[int]] = {}
     for m in matches:
+        pair = (m["player1_id"], m["player2_id"])
+        totals[pair] = totals.get(pair, 0) + 1
         res = m.get("result")
         if res not in (1, 2):
-            return None
-        pair = (m["player1_id"], m["player2_id"])
+            continue  # матч не сыгран
         if pair not in results:
             results[pair] = [0, 0]
         if res == 1:
@@ -627,13 +633,25 @@ def _get_round_results(
 
     winners: list[int] = []
     losers: list[int] = []
-    for (p1, p2), (w1, w2) in results.items():
-        if w1 >= w2:
+    for pair, total in totals.items():
+        p1, p2 = pair
+        w1, w2 = results.get(pair, [0, 0])
+        if w1 == w2:
+            if (w1 + w2) < total:
+                # Ещё есть несыгранные матчи и нет явного победителя
+                return None
+            # Ничья после всех матчей
+            return None
+        if w1 > w2:
             winners.append(p1)
             losers.append(p2)
         else:
             winners.append(p2)
             losers.append(p1)
+
+    if len(winners) < len(totals):
+        # Есть пара без сыгранных матчей
+        return None
 
     return winners, losers
 
