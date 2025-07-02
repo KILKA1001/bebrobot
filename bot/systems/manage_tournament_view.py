@@ -20,7 +20,10 @@ from bot.systems.tournament_logic import (
     _get_round_results,
 )
 from bot.systems.interactive_rounds import RoundManagementView
-from bot.systems.tournament_logic import create_tournament_logic
+from bot.systems.tournament_logic import (
+    create_tournament_logic,
+    load_tournament_logic_from_db,
+)
 from bot.data.players_db import add_player_to_tournament
 
 
@@ -354,19 +357,7 @@ class ManageTournamentView(SafeView):
         )
 
     async def on_manage_rounds(self, interaction: Interaction):
-        from bot.data.tournament_db import get_tournament_info, get_team_info
-
-        info = get_tournament_info(self.tid) or {}
-        if info.get("type") == "team":
-            team_map, _ = get_team_info(self.tid)
-            logic = create_tournament_logic(list(team_map.keys()))
-            logic.team_map = team_map
-        else:
-            participants = [
-                p.get("discord_user_id") or p.get("player_id")
-                for p in list_participants_full(self.tid)
-            ]
-            logic = create_tournament_logic(participants)
+        logic = load_tournament_logic_from_db(self.tid)
         view = RoundManagementView(self.tid, logic)
         embed = await build_tournament_bracket_embed(self.tid, interaction.guild)
         if not embed:
