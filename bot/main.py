@@ -13,12 +13,11 @@ import time
 from dotenv import load_dotenv
 import pytz
 from discord.ext import commands
-from bot.commands.base import bot
+from bot.commands import bot as command_bot
 from bot import COMMAND_PREFIX
 # Локальные импорты
 from bot.data import db
 from keep_alive import keep_alive
-from bot.commands import bot as command_bot
 import bot.commands.tournament
 import bot.commands.players
 import bot.commands.maps
@@ -47,6 +46,13 @@ tasks_started = False
 
 bot = command_bot
 db.bot = bot
+
+import importlib
+
+def reload_bot():
+    module = importlib.import_module('bot.commands')
+    module = importlib.reload(module)
+    return module.bot
 
 from bot.utils import safe_send
 
@@ -182,6 +188,7 @@ async def monthly_top_task():
 
 # Основной запуск
 def main():
+    global bot
     load_dotenv()
     keep_alive()
     TOKEN = os.getenv('DISCORD_TOKEN')
@@ -202,6 +209,9 @@ def main():
                 )
                 time.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, 600)
+                bot = reload_bot()
+                db.bot = bot
+                bot.event(on_ready)
                 continue
             raise
         except Exception as e:
