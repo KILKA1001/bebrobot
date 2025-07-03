@@ -1,3 +1,4 @@
+# Core imports
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -6,8 +7,9 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import discord
 
 # Системные импорты
-import os
 import asyncio
+import logging
+import time
 from dotenv import load_dotenv
 import pytz
 from discord.ext import commands
@@ -188,12 +190,25 @@ def main():
         print("❌ Переменная DISCORD_TOKEN не задана.")
         return
 
-    try:
-        bot.run(TOKEN)
-    except Exception as e:
-        print("❌ Ошибка при запуске бота:", e)
-        import traceback
-        traceback.print_exc()
+    retry_delay = 60  # seconds
+    while True:
+        try:
+            bot.run(TOKEN)
+            break
+        except discord.HTTPException as e:
+            if e.status == 429:
+                logging.warning(
+                    "Login rate limited, retrying in %s seconds", retry_delay
+                )
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 600)
+                continue
+            raise
+        except Exception as e:
+            print("❌ Ошибка при запуске бота:", e)
+            import traceback
+            traceback.print_exc()
+            break
 
 if __name__ == "__main__":
     main()
