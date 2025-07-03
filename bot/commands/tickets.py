@@ -19,7 +19,7 @@ async def add_ticket(ctx, member: discord.Member, ticket_type: str, amount: int,
         reason=reason,
         author_id=ctx.author.id
     )
-    await send_temp(ctx, embed=embed)
+    await send_temp(ctx, embed=embed, delete_after=None)
 
 @bot.hybrid_command(
     name="removeticket",
