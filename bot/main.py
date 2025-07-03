@@ -1,3 +1,4 @@
+# Core imports
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -6,17 +7,17 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import discord
 
 # Системные импорты
-import os
 import asyncio
+import logging
+import time
 from dotenv import load_dotenv
 import pytz
 from discord.ext import commands
-from bot.commands.base import bot
+from bot.commands import bot as command_bot
 from bot import COMMAND_PREFIX
 # Локальные импорты
 from bot.data import db
 from keep_alive import keep_alive
-from bot.commands import bot as command_bot
 import bot.commands.tournament
 import bot.commands.players
 import bot.commands.maps
@@ -45,6 +46,13 @@ tasks_started = False
 
 bot = command_bot
 db.bot = bot
+
+import importlib
+
+def reload_bot():
+    module = importlib.import_module('bot.commands')
+    module = importlib.reload(module)
+    return module.bot
 
 from bot.utils import safe_send
 
@@ -180,6 +188,7 @@ async def monthly_top_task():
 
 # Основной запуск
 def main():
+    global bot
     load_dotenv()
     keep_alive()
     TOKEN = os.getenv('DISCORD_TOKEN')
@@ -188,12 +197,28 @@ def main():
         print("❌ Переменная DISCORD_TOKEN не задана.")
         return
 
-    try:
-        bot.run(TOKEN)
-    except Exception as e:
-        print("❌ Ошибка при запуске бота:", e)
-        import traceback
-        traceback.print_exc()
+    retry_delay = 60  # seconds
+    while True:
+        try:
+            bot.run(TOKEN)
+            break
+        except discord.HTTPException as e:
+            if e.status == 429:
+                logging.warning(
+                    "Login rate limited, retrying in %s seconds", retry_delay
+                )
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 600)
+                bot = reload_bot()
+                db.bot = bot
+                bot.event(on_ready)
+                continue
+            raise
+        except Exception as e:
+            print("❌ Ошибка при запуске бота:", e)
+            import traceback
+            traceback.print_exc()
+            break
 
 if __name__ == "__main__":
     main()
