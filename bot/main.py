@@ -212,10 +212,19 @@ def main():
                 bot = reload_bot()
                 db.bot = bot
                 bot.event(on_ready)
-
                 continue
             raise
         except Exception as e:
+            if "Session is closed" in str(e):
+                logging.warning(
+                    "Session closed, retrying in %s seconds", retry_delay
+                )
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 600)
+                bot = reload_bot()
+                db.bot = bot
+                bot.event(on_ready)
+                continue
             print("❌ Ошибка при запуске бота:", e)
             import traceback
             traceback.print_exc()
