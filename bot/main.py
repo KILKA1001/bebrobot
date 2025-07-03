@@ -212,6 +212,7 @@ def main():
                 bot = reload_bot()
                 db.bot = bot
                 bot.event(on_ready)
+
                 continue
             raise
         except Exception as e:
