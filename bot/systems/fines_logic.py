@@ -1,6 +1,6 @@
 import discord
 from discord.ui import Button
-from bot.utils import SafeView
+from bot.utils import SafeView, safe_send
 from datetime import datetime, timezone, timedelta
 from typing import List
 from bot.data import db
@@ -364,7 +364,10 @@ async def remind_fines(bot):
                 user = discord.utils.get(bot.get_all_members(), id=fine["user_id"])
                 if user:
                     try:
-                        await user.send(f"⏰ Напоминание: штраф #{fine['id']} нужно оплатить до {due_date.strftime('%d.%m.%Y')} (через {delta} дн.)")
+                        await safe_send(
+                            user,
+                            f"⏰ Напоминание: штраф #{fine['id']} нужно оплатить до {due_date.strftime('%d.%m.%Y')} (через {delta} дн.)",
+                        )
                     except discord.Forbidden:
                         continue
         except Exception:

@@ -46,10 +46,11 @@ tasks_started = False
 bot = command_bot
 db.bot = bot
 
+from bot.utils import safe_send
+
 async def send_greetings(channel, user_list):
     for user_id in user_list:
-        await channel.send(f"Привет, <@{user_id}>!")
-        await asyncio.sleep(1)
+        await safe_send(channel, f"Привет, <@{user_id}>!")
 
 async def autosave_task():
     await bot.wait_until_ready()
