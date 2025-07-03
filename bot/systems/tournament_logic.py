@@ -1010,6 +1010,11 @@ async def end_tournament(
         author_id=ctx.author.id,
     )
 
+    reward_first_each = bank_total * 0.5 / max(1, len(first_team))
+    reward_second_each = (
+        bank_total * 0.25 / max(1, len(second_team)) if second_team else 0
+    )
+
     # 🔹 Обновляем статус и сохраняем результат
     ok1 = db_save_tournament_result(tournament_id, first, second, third)
     ok2 = db_update_tournament_status(tournament_id, "finished")
@@ -1021,6 +1026,15 @@ async def end_tournament(
             f"🥈 {second} (x{len(second_team)})"
             + (f"\n🥉 {third}" if third is not None else "")
         )
+        if ctx.guild:
+            await update_result_message(
+                ctx.guild,
+                tournament_id,
+                first_team,
+                second_team,
+                reward_first_each,
+                reward_second_each,
+            )
     else:
         await send_temp(
             ctx, "❌ Не удалось завершить турнир. Проверьте ID и повторите."
@@ -1263,7 +1277,14 @@ async def finalize_tournament_logic(
                 pass
 
     if guild:
-        await refresh_bracket_message(guild, tournament_id)
+        await update_result_message(
+            guild,
+            tournament_id,
+            first_team,
+            second_team,
+            reward_first_each,
+            reward_second_each,
+        )
 
     return True, ""
 
@@ -2000,6 +2021,60 @@ async def refresh_bracket_message(guild: discord.Guild, tournament_id: int) -> b
         return False
     try:
         await message.edit(embed=embed)
+        return True
+    except Exception:
+        return False
+
+
+async def update_result_message(
+    guild: discord.Guild,
+    tournament_id: int,
+    first_team: list[int],
+    second_team: list[int],
+    reward_first_each: float,
+    reward_second_each: float,
+) -> bool:
+    """Обновляет сообщение регистрации, показывая финальные награды."""
+
+    msg_id = get_announcement_message_id(tournament_id)
+    if not msg_id:
+        return False
+    channel = guild.get_channel(ANNOUNCE_CHANNEL_ID)
+    if not channel:
+        return False
+    try:
+        message = await channel.fetch_message(msg_id)
+    except Exception:
+        return False
+
+    def mlist(ids: list[int]) -> str:
+        return (
+            ", ".join(
+                guild.get_member(i).mention if guild.get_member(i) else f"<@{i}>"
+                for i in ids
+            )
+            if ids
+            else "—"
+        )
+
+    embed = discord.Embed(
+        title=f"🏁 Турнир #{tournament_id} завершён!",
+        color=discord.Color.gold(),
+    )
+    embed.add_field(
+        name="🥇 1 место",
+        value=f"{mlist(first_team)} — {reward_first_each:.1f} баллов каждому",
+        inline=False,
+    )
+    if second_team:
+        embed.add_field(
+            name="🥈 2 место",
+            value=f"{mlist(second_team)} — {reward_second_each:.1f} баллов каждому",
+            inline=False,
+        )
+
+    try:
+        await message.edit(embed=embed, view=None)
         return True
     except Exception:
         return False
