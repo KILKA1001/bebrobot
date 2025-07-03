@@ -1,5 +1,6 @@
-import discord
 from discord.ext import commands
+import logging
+from discord.errors import HTTPException
 
 async def send_temp(ctx: commands.Context, *args, **kwargs):
     """Send a message that auto-deletes after 5 minutes by default.
@@ -17,4 +18,10 @@ async def send_temp(ctx: commands.Context, *args, **kwargs):
         # Delete messages after 5 minutes unless overridden.
         delete_after = 300
 
-    return await ctx.send(*args, delete_after=delete_after, **kwargs)
+    try:
+        return await ctx.send(*args, delete_after=delete_after, **kwargs)
+    except HTTPException as e:
+        if e.status == 429:
+            logging.warning("send_temp hit rate limit: %s", e.text)
+            return None
+        raise
