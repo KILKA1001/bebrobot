@@ -4,7 +4,7 @@ from typing import List, Dict, Optional
 import asyncio
 import discord
 from discord import ui, Embed, ButtonStyle, Color
-from bot.utils import SafeView
+from bot.utils import SafeView, safe_send
 import os
 from bot.data import db
 from discord.ext import commands
@@ -1170,7 +1170,7 @@ async def request_finish_confirmation(
 
     view = FinishConfirmView(tid, first_id, second_id, tour, admin_id)
     try:
-        await admin.send(embed=embed, view=view)
+        await safe_send(admin, embed=embed, view=view)
     except Exception:
         pass
 
@@ -1253,7 +1253,7 @@ async def finalize_tournament_logic(
                 value=f"{mlist(second_team)} — {reward_second_each:.1f} баллов каждому",
                 inline=False,
             )
-        await channel.send(embed=emb)
+        await safe_send(channel, embed=emb)
 
     class RewardConfirmView(SafeView):
         def __init__(self, tid: int):
@@ -1269,7 +1269,8 @@ async def finalize_tournament_logic(
         user = bot.get_user(uid)
         if user:
             try:
-                await user.send(
+                await safe_send(
+                    user,
                     f"Вы получили награду за турнир #{tournament_id}!",
                     view=RewardConfirmView(tournament_id),
                 )
@@ -1392,7 +1393,8 @@ class RegistrationView(SafeView):
                 admin_user = interaction.client.get_user(admin_id)
                 if admin_user:
                     try:
-                        await admin_user.send(
+                        await safe_send(
+                            admin_user,
                             f"Турнир #{self.tid} собрал максимум участников. Подтвердите начало."
                         )
                     except Exception:
@@ -1407,7 +1409,8 @@ class RegistrationView(SafeView):
                 if not user:
                     continue
                 try:
-                    await user.send(
+                    await safe_send(
+                        user,
                         f"Вы зарегистрированы в турнире #{self.tid}. Подтвердите участие:",
                         view=ParticipationConfirmView(self.tid, uid, admin_id),
                     )
@@ -1446,7 +1449,8 @@ class ParticipationConfirmView(SafeView):
         admin = interaction.client.get_user(self.admin_id) if self.admin_id else None
         if admin:
             try:
-                await admin.send(
+                await safe_send(
+                    admin,
                     f"Игрок <@{self.user_id}> отказался от участия в турнире #{self.tournament_id}."
                 )
             except Exception:
@@ -1684,7 +1688,8 @@ async def send_participation_confirmations(
         if not user:
             continue
         try:
-            await user.send(
+            await safe_send(
+                user,
                 f"Вы зарегистрированы в турнире #{tournament_id}. Подтвердите участие:",
                 view=ParticipationConfirmView(tournament_id, uid, admin_id),
             )
@@ -1742,7 +1747,7 @@ async def notify_first_round_participants(
                 )
                 embed.add_field(name="Карты", value="\n".join(map_lines), inline=False)
                 try:
-                    await user.send(embed=embed)
+                    await safe_send(user, embed=embed)
                 except Exception:
                     continue
 
@@ -2126,7 +2131,7 @@ async def send_tournament_reminders(bot: commands.Bot, hours: int = 24) -> None:
                 text_lines.append("Карты: " + ", ".join(maps))
             msg = "\n".join(text_lines)
             try:
-                await user.send(msg)
+                await safe_send(user, msg)
             except Exception:
                 continue
 
@@ -2154,7 +2159,8 @@ async def registration_deadline_loop(bot: commands.Bot) -> None:
             admin = bot.get_user(admin_id) if admin_id else None
             if admin:
                 try:
-                    await admin.send(
+                    await safe_send(
+                        admin,
                         f"Регистрация на турнир #{tid} завершилась. Продлить?",
                         view=ExtendRegistrationView(tid),
                     )
