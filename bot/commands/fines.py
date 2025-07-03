@@ -66,7 +66,7 @@ async def fine(ctx, member: discord.Member, amount: str, fine_type: int, *, reas
             embed.add_field(name="Срок оплаты", value=due_date.strftime("%d.%m.%Y"), inline=True)
             embed.set_footer(text=f"ID штрафа: {fine['id']}")
 
-            await send_temp(ctx, embed=embed)
+            await send_temp(ctx, embed=embed, delete_after=None)
             try:
                 await member.send(embed=embed)
             except discord.Forbidden:

@@ -65,7 +65,7 @@ async def add_points(ctx, member: discord.Member, points: str, *, reason: str = 
         embed.add_field(name="📝 Причина:", value=reason, inline=False)
         embed.add_field(name="🕒 Время:", value=format_moscow_time(), inline=False)
         embed.add_field(name="🎯 Текущий баланс:", value=f"{db.scores[user_id]} баллов", inline=False)
-        await send_temp(ctx, embed=embed)
+        await send_temp(ctx, embed=embed, delete_after=None)
     except ValueError:
         await send_temp(ctx, "Ошибка: введите корректное число")
 
