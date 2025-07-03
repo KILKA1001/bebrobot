@@ -1,6 +1,7 @@
 import os
 import discord
 from discord.ext import commands
+from aiohttp import TraceConfig
 from typing import Optional
 from datetime import datetime, timezone
 import pytz
@@ -39,7 +40,20 @@ active_timers = {}
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
-bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents, help_command=None)
+
+trace_config = TraceConfig()
+from bot.utils.api_monitor import monitor
+
+@trace_config.on_request_end.append
+async def _trace_request_end(session, ctx, params):
+    monitor.record_request(params.response.status)
+
+bot = commands.Bot(
+    command_prefix=COMMAND_PREFIX,
+    intents=intents,
+    help_command=None,
+    http_trace=trace_config,
+)
 
 def format_moscow_time(dt: Optional[datetime] = None) -> str:
     if dt is None:
