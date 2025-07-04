@@ -12,6 +12,7 @@ import logging
 import time
 import re
 from dotenv import load_dotenv
+load_dotenv()
 import pytz
 from discord.ext import commands
 from bot.commands import bot as command_bot
@@ -38,6 +39,26 @@ from bot.data import tournament_db
 # Константы
 TIME_FORMAT = "%H:%M (%d.%m.%Y)"
 TOP_CHANNEL_ID = int(os.getenv("MONTHLY_TOP_CHANNEL_ID", 0))
+
+# Required environment variables for the bot to start
+REQUIRED_ENV_VARS = [
+    "DISCORD_TOKEN",
+    "SUPABASE_URL",
+    "SUPABASE_KEY",
+    "TOURNAMENT_ANNOUNCE_CHANNEL_ID",
+]
+
+
+def validate_env() -> bool:
+    """Validate presence of required environment variables."""
+    missing = [var for var in REQUIRED_ENV_VARS if not os.getenv(var)]
+    if missing:
+        logging.error(
+            "Missing required environment variables: %s",
+            ", ".join(missing),
+        )
+        return False
+    return True
 
 # Таймеры удаления сообщений
 active_timers = {}
@@ -191,6 +212,8 @@ async def monthly_top_task():
 def main():
     global bot
     load_dotenv()
+    if not validate_env():
+        return
     keep_alive()
     TOKEN = os.getenv('DISCORD_TOKEN')
 
