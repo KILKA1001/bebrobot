@@ -209,7 +209,7 @@ def main():
                     return float(retry)
                 except ValueError:
                     pass
-        match = re.search(r"(\d+(?:\.\d+)?)", exc.text or "")
+        match = re.search(r"retry(?:_|-|\s)after[:]?\s*(\d+(?:\.\d+)?)", exc.text or "", re.I)
         if match:
             try:
                 return float(match.group(1))
