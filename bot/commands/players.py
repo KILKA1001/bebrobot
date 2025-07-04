@@ -1,4 +1,3 @@
-import discord
 from discord.ext import commands
 from typing import Optional
 
@@ -12,26 +11,23 @@ from bot.systems.players_logic import (
 )
 
 from bot.commands.base import bot
-from bot.utils import send_temp
 
 # ─── Регистрация игрока в системе ────────────────────────────────────────────
 
-@bot.hybrid_command(
-    name="register",
-    description='Добавить игрока в систему'
-)
+
+@bot.hybrid_command(name="register", description="Добавить игрока в систему")
 @commands.has_permissions(administrator=True)
 async def register(ctx: commands.Context, nick: str, tg_username: str):
     """
     /register <nick> <@tg_username>
     """
     await register_player(ctx, nick, tg_username)
+
+
 # ─── Список игроков ──────────────────────────────────────────────────────────
 
-@bot.hybrid_command(
-    name="listplayers",
-    description='Показать список игроков'
-)
+
+@bot.hybrid_command(name="listplayers", description="Показать список игроков")
 async def listplayers(ctx: commands.Context, page: Optional[int] = 1):
     """
     Показывает постраничный список игроков:
@@ -43,25 +39,27 @@ async def listplayers(ctx: commands.Context, page: Optional[int] = 1):
         page_num = 1
     await list_players_view(ctx, page_num)
 
-# ─── Редактирование информации об игроке ───────────────────────────────────────
 
-@bot.hybrid_command(
-    name="editplayer",
-    description='Изменить данные игрока'
-)
+# --- Редактирование информации об игроке ---
+
+
+@bot.hybrid_command(name="editplayer", description="Изменить данные игрока")
 @commands.has_permissions(administrator=True)
-async def editplayer(ctx: commands.Context, player_id: int, field: str, *, new_value: str):
+async def editplayer(
+    ctx: commands.Context, player_id: int, field: str, *, new_value: str
+):
     """
     Редактирует поле игрока:
     /editplayer <player_id> <nick|tg_username> <new_value>
     """
     await edit_player(ctx, player_id, field, new_value)
 
-# ─── Удаление игрока ──────────────────────────────────────────────────────────
+
+# --- Удаление игрока ---
+
 
 @bot.hybrid_command(
-    name="deleteplayer",
-    description='Удалить игрока из системы'
+    name="deleteplayer", description="Удалить игрока из системы"
 )
 @commands.has_permissions(administrator=True)
 async def deleteplayer(ctx: commands.Context, player_id: int):
@@ -71,24 +69,24 @@ async def deleteplayer(ctx: commands.Context, player_id: int):
     """
     await delete_player_cmd(ctx, player_id)
 
-@bot.hybrid_command(
-    name="unregister",
-    description='Убрать игрока из турнира'
-)
+
+@bot.hybrid_command(name="unregister", description="Убрать игрока из турнира")
 @commands.has_permissions(administrator=True)
-async def unregister(ctx: commands.Context, player_id: int, tournament_id: int):
+async def unregister(
+    ctx: commands.Context, player_id: int, tournament_id: int
+):
     """
     /unregister <player_id> <tournament_id>
     Убирает игрока из указанного турнира.
     """
     await unregister_player(ctx, player_id, tournament_id)
 
-@bot.hybrid_command(
-    name="playerlogs",
-    description='История изменений игрока'
-)
+
+@bot.hybrid_command(name="playerlogs", description="История изменений игрока")
 @commands.has_permissions(administrator=True)
-async def playerlogs(ctx: commands.Context, player_id: int, page: Optional[int] = 1):
+async def playerlogs(
+    ctx: commands.Context, player_id: int, page: Optional[int] = 1
+):
     """
     /playerlogs <player_id> [page]
     Показывает историю правок данных игрока.
