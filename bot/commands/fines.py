@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from bot.commands.base import bot
-from bot.utils import send_temp, build_top_embed
+from bot.utils import send_temp, build_top_embed, safe_send
 
 from bot.data import db
 from bot.systems.fines_logic import (
@@ -95,7 +95,7 @@ async def fine(
 
             await send_temp(ctx, embed=embed, delete_after=None)
             try:
-                await member.send(embed=embed)
+                await safe_send(member, embed=embed)
             except discord.Forbidden:
                 await send_temp(
                     ctx,

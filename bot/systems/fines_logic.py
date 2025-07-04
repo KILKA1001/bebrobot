@@ -415,8 +415,8 @@ async def fines_summary_report(bot):
     embed.add_field(name="🏦 Баланс Банка Бебр", value=f"{bank:.2f} баллов", inline=False)
     embed.set_footer(text="Следующее обновление — через 2 дня")
 
-    msg = await channel.send(embed=embed)
-    latest_report_message_id = msg.id
+    msg = await safe_send(channel, embed=embed)
+    latest_report_message_id = msg.id if msg else None
 
 async def fines_summary_loop(bot):
     while True:

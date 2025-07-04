@@ -9,7 +9,7 @@ import traceback
 
 from bot.data import db
 from bot.utils.roles_and_activities import ROLE_THRESHOLDS
-from bot.utils import send_temp, build_top_embed, SafeView
+from bot.utils import send_temp, build_top_embed, SafeView, safe_send
 from bot.utils.history_manager import format_history_embed
 
 TIME_FORMAT = "%H:%M (%d.%m.%Y)"
@@ -172,7 +172,7 @@ async def log_action_cancellation(ctx, member: discord.Member, entries: list):
         sign = "+" if points > 0 else ""
         lines.append(f"{i}. {sign}{points} — {reason}")
 
-    await channel.send("\n".join(lines))
+    await safe_send(channel, "\n".join(lines))
 
 
 async def run_monthly_top(ctx):
