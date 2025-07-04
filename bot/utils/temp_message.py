@@ -1,8 +1,9 @@
 from discord.ext import commands
 import logging
 from discord.errors import HTTPException
+from .safe_send import safe_send
 
-async def send_temp(ctx: commands.Context, *args, **kwargs):
+async def send_temp(ctx: commands.Context, *args, delay: float = 2.0, **kwargs):
     """Send a message that auto-deletes after 5 minutes by default.
 
     Admin replies were previously persistent which cluttered channels. Now any
@@ -19,7 +20,13 @@ async def send_temp(ctx: commands.Context, *args, **kwargs):
         delete_after = 300
 
     try:
-        return await ctx.send(*args, delete_after=delete_after, **kwargs)
+        return await safe_send(
+            ctx,
+            *args,
+            delete_after=delete_after,
+            delay=delay,
+            **kwargs,
+        )
     except HTTPException as e:
         if e.status == 429:
             logging.warning("send_temp hit rate limit: %s", e.text)

@@ -2,7 +2,7 @@ import asyncio
 import logging
 from discord.errors import HTTPException
 
-async def safe_send(destination, *args, delay: float = 1.0, **kwargs):
+async def safe_send(destination, *args, delay: float = 1.5, **kwargs):
     """Send a message with basic rate limit handling.
 
     Parameters
