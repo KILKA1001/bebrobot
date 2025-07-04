@@ -256,7 +256,9 @@ class ManageTournamentView(SafeView):
             PlayerIdModal(self._register, ask_team=self.is_team)
         )
 
-    async def _register(self, interaction: Interaction, pid: int, team: str | None):
+    async def _register(
+        self, interaction: Interaction, pid: int, team: str | None = None
+    ):
         if self.is_team and team:
             from bot.data.tournament_db import (
                 get_team_id_by_name,
