@@ -1,9 +1,9 @@
-import asyncio
 import logging
 from discord.errors import HTTPException
+from .rate_limiter import rate_limiter
 
 async def safe_send(destination, *args, delay: float = 1.5, **kwargs):
-    """Send a message with basic rate limit handling.
+    """Send a message with global rate limiting.
 
     Parameters
     ----------
@@ -12,15 +12,12 @@ async def safe_send(destination, *args, delay: float = 1.5, **kwargs):
     delay: float
         Optional delay in seconds after sending to avoid bursts.
     """
+    await rate_limiter.wait(delay)
     try:
-        msg = await destination.send(*args, **kwargs)
-        if delay:
-            await asyncio.sleep(delay)
-        return msg
+        return await destination.send(*args, **kwargs)
     except HTTPException as e:
         if e.status == 429:
             logging.warning("safe_send hit rate limit: %s", e.text)
-            if delay:
-                await asyncio.sleep(delay)
+            await rate_limiter.wait(delay)
             return None
         raise
