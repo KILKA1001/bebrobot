@@ -532,7 +532,7 @@ class TournamentSetupView(SafeView):
             if guild:
                 chan = guild.get_channel(ANNOUNCE_CHANNEL_ID)
                 if isinstance(chan, (TextChannel, Thread)):
-                    sent = await chan.send(embed=announcement, view=reg_view)
+                    sent = await safe_send(chan, embed=announcement, view=reg_view)
                     # сохраняем sent.id вместе с tour_id в БД
                     tournament_db.save_announcement_message(
                         tournament_id=tour_id, message_id=sent.id
@@ -542,7 +542,7 @@ class TournamentSetupView(SafeView):
             # fallback на текущий канал
             msg = interaction.message
             if msg and isinstance(msg.channel, (TextChannel, Thread, Messageable)):
-                await msg.channel.send(embed=announcement, view=reg_view)
+                await safe_send(msg.channel, embed=announcement, view=reg_view)
             else:
                 # в самом крайнем случае используем interaction.response
                 await interaction.response.send_message(

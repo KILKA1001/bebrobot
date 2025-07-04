@@ -157,8 +157,11 @@ async def monthly_top_task():
 
                 channel = bot.get_channel(TOP_CHANNEL_ID)
                 if isinstance(channel, discord.TextChannel):
-                    msg = await channel.send("🔁 Запускаем автоматический топ месяца...")
-                    ctx = await bot.get_context(msg)
+                    msg = await safe_send(
+                        channel,
+                        "🔁 Запускаем автоматический топ месяца...",
+                    )
+                    ctx = await bot.get_context(msg or channel.last_message)
 
                     from bot.systems.core_logic import run_monthly_top
                     await run_monthly_top(ctx)

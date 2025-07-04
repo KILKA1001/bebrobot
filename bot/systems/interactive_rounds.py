@@ -1,7 +1,7 @@
 import discord
 from discord import Embed, Interaction, ButtonStyle, ui
 from discord.ui import Button
-from bot.utils import SafeView
+from bot.utils import SafeView, safe_send
 from typing import Optional
 from bot.data.players_db import get_player_by_id
 from bot.data.tournament_db import get_tournament_info
@@ -429,7 +429,7 @@ class PairSelectionView(SafeView):
             )
 
             if channel:
-                msg = await channel.send(embed=match_embed, view=view)
+                msg = await safe_send(channel, embed=match_embed, view=view)
                 await view.wait()
                 if view.winner == 1:
                     wins[1] += 1
@@ -446,7 +446,7 @@ class PairSelectionView(SafeView):
                 result_text = "Победила команда 2"
             else:
                 result_text = "Ничья"
-            await channel.send(f"Результат пары {idx}: {result_text}")
+            await safe_send(channel, f"Результат пары {idx}: {result_text}")
 
             try:
                 await refresh_bracket_message(self.guild, self.tournament_id)
@@ -468,4 +468,4 @@ async def announce_round_management(channel, tournament_id: int, logic: Tourname
         color=0xF39C12,
     )
     view = RoundManagementView(tournament_id, logic)
-    await channel.send(embed=embed, view=view)
+    await safe_send(channel, embed=embed, view=view)
