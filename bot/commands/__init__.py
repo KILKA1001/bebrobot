@@ -1,10 +1,10 @@
 from bot.commands.base import bot, run_monthly_top
 
 # Import all command modules to register them
-from . import fines
-from . import tournament
-from . import tickets
-from . import maps
+from . import fines  # noqa: F401
+from . import tournament  # noqa: F401
+from . import tickets  # noqa: F401
+from . import maps  # noqa: F401
 
 # Import specific commands for explicit access if needed
 from .fines import (
@@ -15,20 +15,31 @@ from .fines import (
     editfine,
     cancel_fine,
     finehistory,
-    topfines
+    topfines,
 )
 
 from .tournament import (
     createtournament,
     jointournament,
     deletetournament,
-    regplayer
+    regplayer,
 )
 from .maps import mapinfo
 
 __all__ = [
-    "bot", 
+    "bot",
     "run_monthly_top",
-    "fine", "myfines", "all_fines", "finedetails", "editfine", "cancel_fine", "finehistory", "topfines",
-    "createtournament", "jointournament", "deletetournament", "regplayer", "mapinfo"
+    "fine",
+    "myfines",
+    "all_fines",
+    "finedetails",
+    "editfine",
+    "cancel_fine",
+    "finehistory",
+    "topfines",
+    "createtournament",
+    "jointournament",
+    "deletetournament",
+    "regplayer",
+    "mapinfo",
 ]

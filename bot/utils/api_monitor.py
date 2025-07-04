@@ -3,8 +3,10 @@ import time
 from collections import deque
 from typing import Deque
 
+
 class APIMonitor:
     """Tracks API request counts and rate limit hits."""
+
     def __init__(self, window: int = 60) -> None:
         self.window = window
         self.requests: Deque[float] = deque()
@@ -27,5 +29,6 @@ class APIMonitor:
         """Return number of requests in the monitoring window."""
         self._trim()
         return len(self.requests)
+
 
 monitor = APIMonitor()
