@@ -10,6 +10,7 @@ import discord
 import asyncio
 import logging
 import time
+import re
 from dotenv import load_dotenv
 import pytz
 from discord.ext import commands
@@ -198,12 +199,30 @@ def main():
         return
 
     retry_delay = 60  # seconds
+
+    def get_retry_after(exc: discord.HTTPException, default: float) -> float:
+        headers = getattr(exc, 'response', None)
+        if headers is not None:
+            retry = headers.headers.get('Retry-After') or headers.headers.get('retry-after')
+            if retry:
+                try:
+                    return float(retry)
+                except ValueError:
+                    pass
+        match = re.search(r"(\d+(?:\.\d+)?)", exc.text or "")
+        if match:
+            try:
+                return float(match.group(1))
+            except ValueError:
+                pass
+        return default
     while True:
         try:
             bot.run(TOKEN)
             break
         except discord.HTTPException as e:
             if e.status == 429:
+                retry_delay = get_retry_after(e, retry_delay)
                 logging.warning(
                     "Login rate limited, retrying in %s seconds", retry_delay
                 )
