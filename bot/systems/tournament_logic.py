@@ -1001,6 +1001,9 @@ async def end_tournament(
     first_team = resolve_team(first)
     second_team = resolve_team(second)
 
+    # Удаляем из таблицы участников всех, кто не занял первое место
+    _sync_participants_after_round(tournament_id, [first])
+
     # 🔹 Начисление наград
     rewards.distribute_rewards(
         tournament_id=tournament_id,
@@ -1212,6 +1215,14 @@ async def finalize_tournament_logic(
 
     first_team = _resolve(first_id)
     second_team = _resolve(second_id)
+
+    # Удаляем из таблицы участников всех, кто не занял первое место
+    if first_id is not None:
+        _sync_participants_after_round(
+            tournament_id,
+            [first_id],
+            getattr(tour, "team_map", None),
+        )
 
     rewards.distribute_rewards(
         tournament_id, bank_total, first_team, second_team, admin_id
