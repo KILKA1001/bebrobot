@@ -19,13 +19,17 @@ def distribute_rewards(
     reward_first = bank_total * 0.5
     reward_second = bank_total * 0.25
 
+    give_tickets = bank_total > 0
+
     for uid in first_team_ids:
         db.add_action(uid, reward_first, f"🏆 1 место в турнире #{tournament_id}", author_id)
-        db.give_ticket(uid, "gold", 1, f"🥇 Золотой билет за 1 место (турнир #{tournament_id})", author_id)
+        if give_tickets:
+            db.give_ticket(uid, "gold", 1, f"🥇 Золотой билет за 1 место (турнир #{tournament_id})", author_id)
 
     for uid in second_team_ids:
         db.add_action(uid, reward_second, f"🥈 2 место в турнире #{tournament_id}", author_id)
-        db.give_ticket(uid, "normal", 1, f"🎟 Обычный билет за 2 место (турнир #{tournament_id})", author_id)
+        if give_tickets:
+            db.give_ticket(uid, "normal", 1, f"🎟 Обычный билет за 2 место (турнир #{tournament_id})", author_id)
 
 # ─────────────────────────────────────────────────────────────
 
