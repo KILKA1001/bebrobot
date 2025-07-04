@@ -52,6 +52,8 @@ async def manage_tournament(ctx, tournament_id: int):
     `tournament_id` — номер турнира из базы
     (смотрите `/tournamenthistory`).
     """
+    if ctx.interaction and not ctx.interaction.response.is_done():
+        await ctx.defer()
     embed = await build_tournament_bracket_embed(tournament_id, ctx.guild)
     if not embed:
         embed = await build_tournament_status_embed(tournament_id)
