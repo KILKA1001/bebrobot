@@ -2096,6 +2096,173 @@ async def update_result_message(
         return False
 
 
+async def announce_results(ctx: commands.Context, tournament_id: int) -> bool:
+    """Отправляет или обновляет сообщение с итогами турнира."""
+    guild = ctx.guild
+    info = get_tournament_info(tournament_id) or {}
+    result = tournament_db.get_tournament_result(tournament_id)
+    if not result:
+        return False
+
+    first_id = result.get("first_place_id")
+    second_id = result.get("second_place_id")
+
+    team_mode = info.get("type") == "team"
+    bank_type = info.get("bank_type", 1)
+    manual = info.get("manual_amount") or 20.0
+
+    if team_mode:
+        team_map, _ = tournament_db.get_team_info(tournament_id)
+        first_team = team_map.get(int(first_id), [])
+        second_team = team_map.get(int(second_id), [])
+    else:
+        first_team = [int(first_id)] if first_id else []
+        second_team = [int(second_id)] if second_id else []
+
+    bank_total, _u, _b = rewards.calculate_bank(bank_type, manual_amount=manual)
+    reward_first_each = bank_total * 0.5 / max(1, len(first_team))
+    reward_second_each = (
+        bank_total * 0.25 / max(1, len(second_team)) if second_team else 0
+    )
+
+    if guild and await update_result_message(
+        guild,
+        tournament_id,
+        first_team,
+        second_team,
+        reward_first_each,
+        reward_second_each,
+    ):
+        return True
+
+    if not guild:
+        return False
+
+    channel = guild.get_channel(ANNOUNCE_CHANNEL_ID)
+    if not channel:
+        return False
+
+    def mlist(ids: list[int]) -> str:
+        return (
+            ", ".join(
+                guild.get_member(i).mention if guild.get_member(i) else f"<@{i}>"
+                for i in ids
+            )
+            if ids
+            else "—"
+        )
+
+    embed = discord.Embed(
+        title=f"🏁 Турнир #{tournament_id} завершён!",
+        color=discord.Color.gold(),
+    )
+    embed.add_field(
+        name="🥇 1 место",
+        value=f"{mlist(first_team)} — {reward_first_each:.1f} баллов каждому",
+        inline=False,
+    )
+    if second_team:
+        embed.add_field(
+            name="🥈 2 место",
+            value=f"{mlist(second_team)} — {reward_second_each:.1f} баллов каждому",
+            inline=False,
+        )
+
+    msg = await channel.send(embed=embed)
+    tournament_db.save_announcement_message(tournament_id, msg.id)
+    return True
+
+
+async def change_winners(
+    ctx: commands.Context,
+    tournament_id: int,
+    first_id: int,
+    second_id: int,
+    third_id: int | None = None,
+) -> bool:
+    """Переназначает победителей турнира и перераспределяет награды."""
+    info = get_tournament_info(tournament_id) or {}
+    prev = tournament_db.get_tournament_result(tournament_id)
+    if not prev:
+        return False
+
+    team_mode = info.get("type") == "team"
+    bank_type = info.get("bank_type", 1)
+    manual = info.get("manual_amount") or 20.0
+
+    if team_mode:
+        team_map, _ = tournament_db.get_team_info(tournament_id)
+        old_first_team = team_map.get(int(prev.get("first_place_id") or 0), [])
+        old_second_team = team_map.get(int(prev.get("second_place_id") or 0), [])
+        new_first_team = team_map.get(int(first_id), [])
+        new_second_team = team_map.get(int(second_id), [])
+    else:
+        old_first_team = [int(prev.get("first_place_id"))] if prev.get("first_place_id") else []
+        old_second_team = [int(prev.get("second_place_id"))] if prev.get("second_place_id") else []
+        new_first_team = [int(first_id)]
+        new_second_team = [int(second_id)] if second_id else []
+
+    bank_total, _u, _b = rewards.calculate_bank(bank_type, manual_amount=manual)
+    reward_first_each = bank_total * 0.5 / max(1, len(new_first_team))
+    reward_second_each = (
+        bank_total * 0.25 / max(1, len(new_second_team)) if new_second_team else 0
+    )
+
+    # Снимаем старые награды
+    for uid in old_first_team:
+        db.add_action(
+            uid,
+            -reward_first_each,
+            f"Коррекция награды за турнир #{tournament_id}",
+            ctx.author.id,
+        )
+        db.remove_ticket(
+            uid,
+            "gold",
+            1,
+            f"Коррекция билета за турнир #{tournament_id}",
+            ctx.author.id,
+        )
+
+    for uid in old_second_team:
+        db.add_action(
+            uid,
+            -reward_second_each,
+            f"Коррекция награды за турнир #{tournament_id}",
+            ctx.author.id,
+        )
+        db.remove_ticket(
+            uid,
+            "normal",
+            1,
+            f"Коррекция билета за турнир #{tournament_id}",
+            ctx.author.id,
+        )
+
+    # Выдаём новые
+    rewards.distribute_rewards(
+        tournament_id,
+        bank_total,
+        new_first_team,
+        new_second_team,
+        ctx.author.id,
+    )
+
+    tournament_db.save_tournament_result(tournament_id, first_id, second_id, third_id)
+
+    if ctx.guild:
+        await update_result_message(
+            ctx.guild,
+            tournament_id,
+            new_first_team,
+            new_second_team,
+            reward_first_each,
+            reward_second_each,
+        )
+
+    return True
+
+
 async def send_tournament_reminders(bot: commands.Bot, hours: int = 24) -> None:
     """Отправляет участникам напоминания о ближайших турнирах."""
     from datetime import datetime

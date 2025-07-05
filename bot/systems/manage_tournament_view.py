@@ -68,7 +68,7 @@ class TeamRenameModal(ui.Modal, title="Переименовать команду
         await self._callback(interaction, tid, str(self.new_name))
 
 
-class FinishModal(ui.Modal, title="Завершить турнир"):
+class FinishModal(ui.Modal):
     """Modal with dropdowns to select winners."""
 
     def __init__(
@@ -76,10 +76,13 @@ class FinishModal(ui.Modal, title="Завершить турнир"):
         tid: int,
         ctx: commands.Context,
         options: list[discord.SelectOption],
+        title: str = "Завершить турнир",
+        submit_callback=None,
     ):
-        super().__init__()
+        super().__init__(title=title)
         self.tid = tid
         self.ctx = ctx
+        self._submit_callback = submit_callback
 
         self.first_select = ui.Select(
             placeholder="🥇 1 место",
@@ -98,7 +101,6 @@ class FinishModal(ui.Modal, title="Завершить турнир"):
         self.add_item(self.third_select)
 
     async def on_submit(self, interaction: Interaction):
-        from bot.commands.tournament import endtournament
 
         try:
             first = int(self.first_select.values[0])
@@ -116,10 +118,15 @@ class FinishModal(ui.Modal, title="Завершить турнир"):
             return
 
         ctx = await self.ctx.bot.get_context(interaction)
-        await endtournament(ctx, self.tid, first, second, third)
-        await interaction.response.send_message(
-            "Попытка завершить турнир", ephemeral=True
-        )
+        if self._submit_callback:
+            await self._submit_callback(ctx, self.tid, first, second, third)
+            await interaction.response.send_message("Данные отправлены", ephemeral=True)
+        else:
+            from bot.commands.tournament import endtournament
+            await endtournament(ctx, self.tid, first, second, third)
+            await interaction.response.send_message(
+                "Попытка завершить турнир", ephemeral=True
+            )
 
 
 class FinishChoiceView(SafeView):
@@ -184,8 +191,10 @@ class ManageTournamentView(SafeView):
         status = get_tournament_status(self.tid)
         if status == "registration":
             self._add_pre_start_buttons()
-        else:
+        elif status == "active":
             self._add_active_buttons()
+        else:
+            self._add_finished_buttons()
 
     # ----- Stage 1 -----
     def _add_pre_start_buttons(self):
@@ -249,6 +258,19 @@ class ManageTournamentView(SafeView):
         finish_btn = ui.Button(label="Завершить", style=ButtonStyle.danger)
         finish_btn.callback = self.on_finish
         self.add_item(finish_btn)
+
+    def _add_finished_buttons(self):
+        announce_btn = ui.Button(label="Анонс результатов", style=ButtonStyle.primary)
+        announce_btn.callback = self.on_announce_results
+        self.add_item(announce_btn)
+
+        edit_btn = ui.Button(label="Изменить победителей", style=ButtonStyle.secondary)
+        edit_btn.callback = self.on_edit_winners
+        self.add_item(edit_btn)
+
+        clear_btn = ui.Button(label="Удалить бои", style=ButtonStyle.danger)
+        clear_btn.callback = self.on_clear_matches
+        self.add_item(clear_btn)
 
     # ----- Callbacks -----
     async def on_register_player(self, interaction: Interaction):
@@ -518,3 +540,67 @@ class ManageTournamentView(SafeView):
         await interaction.response.send_message(
             "Выберите способ завершения", ephemeral=True, view=view
         )
+
+    async def on_announce_results(self, interaction: Interaction):
+        from bot.systems import tournament_logic
+
+        await tournament_logic.announce_results(self.ctx, self.tid)
+        await interaction.response.send_message("Анонсирован результат", ephemeral=True)
+
+    async def on_edit_winners(self, interaction: Interaction):
+        from bot.data.tournament_db import get_team_info, get_matches
+        from bot.data.players_db import get_player_by_id
+        from bot.systems.tournament_logic import FinishModal
+
+        guild = interaction.guild or (self.ctx.guild if hasattr(self.ctx, "guild") else None)
+
+        team_mode = self.is_team
+        ids = set()
+        round_no = 1
+        while True:
+            data = get_matches(self.tid, round_no)
+            if not data:
+                break
+            for m in data:
+                ids.add(int(m.get("player1_id")))
+                ids.add(int(m.get("player2_id")))
+            round_no += 1
+
+        options: list[discord.SelectOption] = []
+        if team_mode:
+            team_map, team_names = get_team_info(self.tid)
+            for tid in sorted(ids):
+                name = team_names.get(tid, f"Команда {tid}")
+                options.append(discord.SelectOption(label=name[:100], value=str(tid)))
+        else:
+            for pid in sorted(ids):
+                name = None
+                if guild:
+                    member = guild.get_member(pid)
+                    if member:
+                        name = member.display_name
+                if name is None:
+                    pl = get_player_by_id(pid)
+                    name = pl["nick"] if pl else f"ID:{pid}"
+                options.append(discord.SelectOption(label=name[:100], value=str(pid)))
+
+        from bot.systems.tournament_logic import change_winners
+
+        async def submit_cb(ctx, tid, first, second, third):
+            await change_winners(ctx, tid, first, second, third)
+
+        await interaction.response.send_modal(
+            FinishModal(
+                self.tid,
+                self.ctx,
+                options,
+                title="Изменить победителей",
+                submit_callback=submit_cb,
+            )
+        )
+
+    async def on_clear_matches(self, interaction: Interaction):
+        from bot.data.tournament_db import delete_match_records
+
+        delete_match_records(self.tid)
+        await interaction.response.send_message("Записи матчей удалены", ephemeral=True)
