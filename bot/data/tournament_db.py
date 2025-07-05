@@ -709,3 +709,58 @@ def close_bet(bet_id: int, won: bool, payout: float) -> bool:
         return bool(res.data)
     except Exception:
         return False
+
+
+def get_bet(bet_id: int) -> dict | None:
+    """Возвращает ставку по ID или None."""
+    try:
+        res = (
+            supabase.table("tournament_bets")
+            .select("*")
+            .eq("id", bet_id)
+            .single()
+            .execute()
+        )
+        return res.data if res and res.data else None
+    except Exception:
+        return None
+
+
+def list_user_bets(tournament_id: int, user_id: int, open_only: bool = True) -> list[dict]:
+    """Возвращает ставки пользователя на турнир."""
+    query = (
+        supabase.table("tournament_bets")
+        .select("*")
+        .eq("tournament_id", tournament_id)
+        .eq("user_id", user_id)
+    )
+    if open_only:
+        query = query.is_("won", None)
+    try:
+        res = query.execute()
+        return res.data or []
+    except Exception:
+        return []
+
+
+def update_bet(bet_id: int, bet_on: int, amount: float) -> bool:
+    """Обновляет ставку."""
+    try:
+        res = (
+            supabase.table("tournament_bets")
+            .update({"bet_on": bet_on, "amount": amount})
+            .eq("id", bet_id)
+            .execute()
+        )
+        return bool(res.data)
+    except Exception:
+        return False
+
+
+def delete_bet(bet_id: int) -> bool:
+    """Удаляет ставку."""
+    try:
+        supabase.table("tournament_bets").delete().eq("id", bet_id).execute()
+        return True
+    except Exception:
+        return False
