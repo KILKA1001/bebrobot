@@ -61,3 +61,42 @@ def payout_bets(tournament_id: int, round_no: int, pair_index: int, winner: int,
         if payout:
             db.db.update_scores(int(bet["user_id"]), payout)
         tournament_db.close_bet(int(bet["id"]), won, payout)
+
+
+def calculate_payout(round_no: int, total_rounds: int, amount: float) -> int:
+    """Возвращает сумму выплаты при победе."""
+    multiplier = get_multiplier(round_no, total_rounds)
+    return math.floor(amount * (1 + multiplier))
+
+
+def get_user_bets(tournament_id: int, user_id: int) -> list[dict]:
+    """Список активных ставок пользователя."""
+    return tournament_db.list_user_bets(tournament_id, user_id, open_only=True)
+
+
+def cancel_bet(bet_id: int) -> tuple[bool, str]:
+    bet = tournament_db.get_bet(bet_id)
+    if not bet or bet.get("won") is not None:
+        return False, "Ставка не найдена или уже завершена"
+    if not tournament_db.delete_bet(bet_id):
+        return False, "Не удалось удалить ставку"
+    db.db.update_scores(int(bet["user_id"]), float(bet["amount"]))
+    return True, "Ставка удалена и баллы возвращены"
+
+
+def modify_bet(bet_id: int, bet_on: int, amount: float, user_id: int, total_rounds: int) -> tuple[bool, str]:
+    bet = tournament_db.get_bet(bet_id)
+    if not bet or bet.get("won") is not None:
+        return False, "Ставка не найдена или уже завершена"
+    min_bet = get_min_bet(int(bet["round"]), total_rounds)
+    if amount < min_bet:
+        return False, f"Минимальная ставка для этого раунда: {min_bet}"
+    diff = amount - float(bet["amount"])
+    balance = db.db.scores.get(user_id, 0)
+    if diff > 0 and balance < diff:
+        return False, "Недостаточно баллов"
+    if diff != 0 and not db.db.update_scores(user_id, -diff):
+        return False, "Не удалось обновить баланс"
+    if not tournament_db.update_bet(bet_id, bet_on, amount):
+        return False, "Не удалось изменить ставку"
+    return True, "Ставка обновлена"
