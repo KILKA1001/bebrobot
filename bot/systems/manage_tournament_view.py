@@ -8,6 +8,7 @@ from bot.data.tournament_db import (
     get_tournament_size,
     list_participants_full,
     remove_player_from_tournament,
+    count_matches,
 )
 from bot.systems.tournament_logic import (
     set_tournament_status,
@@ -261,9 +262,10 @@ class ManageTournamentView(SafeView):
         self.add_item(finish_btn)
 
     def _add_finished_buttons(self):
-        bracket_btn = ui.Button(label="Сетка", style=ButtonStyle.secondary)
-        bracket_btn.callback = self.on_bracket
-        self.add_item(bracket_btn)
+        if count_matches(self.tid) > 0:
+            bracket_btn = ui.Button(label="Сетка", style=ButtonStyle.secondary)
+            bracket_btn.callback = self.on_bracket
+            self.add_item(bracket_btn)
 
         announce_btn = ui.Button(label="Анонс результатов", style=ButtonStyle.primary)
         announce_btn.callback = self.on_announce_results
@@ -636,3 +638,6 @@ class ManageTournamentView(SafeView):
 
         delete_match_records(self.tid)
         await interaction.response.send_message("Записи матчей удалены", ephemeral=True)
+        self.refresh_buttons()
+        if interaction.message:
+            await interaction.message.edit(view=self)
