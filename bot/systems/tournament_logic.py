@@ -2096,6 +2096,80 @@ async def update_result_message(
         return False
 
 
+async def build_tournament_result_embed(
+    tournament_id: int, guild: discord.Guild | None = None
+) -> discord.Embed | None:
+    """Возвращает embed с итогами турнира и расчётом наград."""
+
+    info = get_tournament_info(tournament_id) or {}
+    result = tournament_db.get_tournament_result(tournament_id)
+    if not result:
+        return None
+
+    first_id = result.get("first_place_id")
+    second_id = result.get("second_place_id")
+
+    team_mode = info.get("type") == "team"
+    bank_type = info.get("bank_type", 1)
+    manual = info.get("manual_amount") or 20.0
+
+    if team_mode:
+        team_map, _ = tournament_db.get_team_info(tournament_id)
+        first_team = team_map.get(int(first_id), [])
+        second_team = team_map.get(int(second_id), [])
+    else:
+        first_team = [int(first_id)] if first_id else []
+        second_team = [int(second_id)] if second_id else []
+
+    def mention(pid: int) -> str:
+        if guild:
+            member = guild.get_member(pid)
+            if member:
+                return member.mention
+        pl = get_player_by_id(pid)
+        return pl["nick"] if pl else f"<@{pid}>"
+
+    bank_total, _u, _b = rewards.calculate_bank(bank_type, manual_amount=manual)
+    reward_first_each = bank_total * 0.5 / max(1, len(first_team))
+    reward_second_each = (
+        bank_total * 0.25 / max(1, len(second_team)) if second_team else 0
+    )
+
+    embed = discord.Embed(
+        title=f"🏁 Турнир #{tournament_id} завершён!",
+        color=discord.Color.gold(),
+    )
+    embed.add_field(
+        name="🥇 1 место",
+        value=f"{', '.join(mention(i) for i in first_team)} — {reward_first_each:.1f} баллов каждому",
+        inline=False,
+    )
+    if second_team:
+        embed.add_field(
+            name="🥈 2 место",
+            value=f"{', '.join(mention(i) for i in second_team)} — {reward_second_each:.1f} баллов каждому",
+            inline=False,
+        )
+
+    start_iso = info.get("start_time")
+    finish_iso = result.get("finished_at")
+    if start_iso and finish_iso:
+        from datetime import datetime
+
+        try:
+            start_dt = datetime.fromisoformat(start_iso)
+            end_dt = datetime.fromisoformat(finish_iso)
+            duration = end_dt - start_dt
+            minutes = int(duration.total_seconds() // 60)
+            hours, minutes = divmod(minutes, 60)
+            dur_text = f"{hours}ч {minutes}м" if hours else f"{minutes}м"
+            embed.add_field(name="Длительность", value=dur_text, inline=False)
+        except Exception:
+            pass
+
+    return embed
+
+
 async def announce_results(ctx: commands.Context, tournament_id: int) -> bool:
     """Отправляет или обновляет сообщение с итогами турнира."""
     guild = ctx.guild

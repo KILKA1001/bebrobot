@@ -279,7 +279,9 @@ def get_tournament_result(tournament_id: int) -> Optional[dict]:
     try:
         res = (
             supabase.table("tournament_results")
-            .select("first_place_id, second_place_id, third_place_id")
+            .select(
+                "first_place_id, second_place_id, third_place_id, finished_at"
+            )
             .eq("tournament_id", tournament_id)
             .single()
             .execute()

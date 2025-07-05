@@ -14,6 +14,7 @@ from bot.systems.tournament_logic import (
     generate_first_round,
     build_tournament_status_embed,
     build_tournament_bracket_embed,
+    build_tournament_result_embed,
     send_announcement_embed,
     send_participation_confirmations,
     delete_tournament as send_delete_confirmation,
@@ -260,6 +261,10 @@ class ManageTournamentView(SafeView):
         self.add_item(finish_btn)
 
     def _add_finished_buttons(self):
+        bracket_btn = ui.Button(label="Сетка", style=ButtonStyle.secondary)
+        bracket_btn.callback = self.on_bracket
+        self.add_item(bracket_btn)
+
         announce_btn = ui.Button(label="Анонс результатов", style=ButtonStyle.primary)
         announce_btn.callback = self.on_announce_results
         self.add_item(announce_btn)
@@ -388,10 +393,37 @@ class ManageTournamentView(SafeView):
             embed = await build_tournament_status_embed(self.tid)
         await interaction.response.edit_message(embed=embed, view=view)
 
-    async def on_status(self, interaction: Interaction):
+    async def on_bracket(self, interaction: Interaction):
         embed = await build_tournament_bracket_embed(self.tid, interaction.guild)
         if not embed:
             embed = await build_tournament_status_embed(self.tid)
+
+        if embed is None:
+            await interaction.response.send_message(
+                "Турнир не найден", ephemeral=True
+            )
+            return
+
+        msg = interaction.message
+        if msg is None or (getattr(msg, "flags", None) and msg.flags.ephemeral):
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        try:
+            await msg.edit(embed=embed, view=self)
+        except Exception:
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def on_status(self, interaction: Interaction):
+        status = get_tournament_status(self.tid)
+        if status == "finished":
+            embed = await build_tournament_result_embed(self.tid, interaction.guild)
+        else:
+            embed = await build_tournament_bracket_embed(self.tid, interaction.guild)
+            if not embed:
+                embed = await build_tournament_status_embed(self.tid)
 
         if embed is None:
             await interaction.response.send_message(
