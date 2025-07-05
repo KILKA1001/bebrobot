@@ -250,6 +250,7 @@ class TournamentSetupView(SafeView):
         super().__init__(timeout=120)
         self.author_id = author_id
         self.manual_amount = 0.0
+        self.bets_bank = 0.0
         self.t_type: Optional[str] = None
         self.size: Optional[int] = None
         self.bank_type: Optional[int] = None
@@ -346,6 +347,14 @@ class TournamentSetupView(SafeView):
         )
         date_btn.callback = self.on_set_date
         self.add_item(date_btn)
+
+        bet_bank_btn = ui.Button(
+            label="Банк ставок",
+            style=discord.ButtonStyle.secondary,
+            custom_id="bet_bank",
+        )
+        bet_bank_btn.callback = self.on_set_bet_bank
+        self.add_item(bet_bank_btn)
         # Кнопка «Подтвердить»
         btn_confirm = ui.Button(
             label="✅ Подтвердить",
@@ -364,6 +373,9 @@ class TournamentSetupView(SafeView):
 
     async def on_set_date(self, interaction: discord.Interaction):
         await interaction.response.send_modal(StartDateModal(self))
+
+    async def on_set_bet_bank(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(BetBankModal(self))
 
     async def interaction_check(self, inter: discord.Interaction) -> bool:
         # Только автор команды может управлять этим View
@@ -469,6 +481,21 @@ class TournamentSetupView(SafeView):
             if not ok:
                 await interaction.response.send_message(msg, ephemeral=True)
                 return
+            if self.bets_bank > 0:
+                from bot.data import db as _db
+                from bot.data import tournament_db as tdb
+
+                if not _db.db.spend_from_bank(
+                    self.bets_bank,
+                    self.author_id,
+                    f"Банк ставок турнира #{tour_id}",
+                ):
+                    await interaction.response.send_message(
+                        "❌ Недостаточно средств в банке для банка ставок",
+                        ephemeral=True,
+                    )
+                    return
+                tdb.create_bet_bank(tour_id, self.bets_bank)
             typetxt = "Дуэльный 1×1" if self.t_type == "duel" else "Командный 3×3"
             prize_text = {
                 1: f"🏅 Тип 1 — {self.manual_amount:.2f} баллов от пользователя",
@@ -1298,6 +1325,18 @@ async def finalize_tournament_logic(
             reward_second_each,
         )
 
+    from bot.data.tournament_db import close_bet_bank
+    from bot.data import db as _db
+
+    remaining = close_bet_bank(tournament_id)
+    if remaining > 0:
+        _db.db.add_to_bank(remaining)
+        _db.db.log_bank_income(
+            admin_id,
+            remaining,
+            f"Возврат банка ставок турнира #{tournament_id}",
+        )
+
     return True, ""
 
 
@@ -1618,6 +1657,28 @@ class BankAmountModal(ui.Modal, title="Введите сумму банка"):
         except Exception:
             await interaction.response.send_message(
                 "❌ Ошибка: введите корректное число (мин. 15)", ephemeral=True
+            )
+
+
+class BetBankModal(ui.Modal, title="Банк ставок"):
+    amount = ui.TextInput(label="Сумма (0-20)", placeholder="10", required=True)
+
+    def __init__(self, view: TournamentSetupView):
+        super().__init__()
+        self.view = view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            value = float(self.amount.value.replace(",", "."))
+            if value < 0 or value > 20:
+                raise ValueError
+            self.view.bets_bank = value
+            await interaction.response.send_message(
+                f"✅ Банк ставок: **{value:.1f}** баллов", ephemeral=True
+            )
+        except Exception:
+            await interaction.response.send_message(
+                "❌ Введите число от 0 до 20", ephemeral=True
             )
 
 

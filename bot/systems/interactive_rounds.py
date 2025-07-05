@@ -300,17 +300,50 @@ class MatchResultView(SafeView):
             except Exception:
                 pass
             try:
-                from bot.systems.bets_logic import payout_bets
+                from bot.systems.bets_logic import (
+                    payout_bets,
+                    get_pair_summary,
+                )
                 from bot.data.tournament_db import get_tournament_size
+
                 size = get_tournament_size(self.tournament_id)
                 total_rounds = int(math.ceil(math.log2(size))) if size > 1 else 1
-                payout_bets(
+                summary = get_pair_summary(
                     self.tournament_id,
                     self.round_no,
                     self.pair_index,
                     winner,
                     total_rounds,
                 )
+
+                class PayoutView(SafeView):
+                    def __init__(self):
+                        super().__init__(timeout=60)
+
+                    @ui.button(label="Выплатить", style=ButtonStyle.success)
+                    async def confirm(self, inter: Interaction, button: ui.Button):
+                        payout_bets(
+                            self.tournament_id,
+                            self.round_no,
+                            self.pair_index,
+                            winner,
+                            total_rounds,
+                        )
+                        await inter.response.edit_message(content="Ставки выплачены", view=None)
+                        self.stop()
+
+                emb = discord.Embed(
+                    title="Ставки на пару",
+                    description=(
+                        f"Всего: {summary['total']}\n"
+                        f"Выиграли: {summary['won']}\n"
+                        f"Проиграли: {summary['lost']}\n"
+                        f"Профит банка: {summary['profit']:.1f}"
+                    ),
+                    color=discord.Color.orange(),
+                )
+                view = PayoutView()
+                await safe_send(interaction.channel, embed=emb, view=view)
             except Exception:
                 pass
             self.stop()

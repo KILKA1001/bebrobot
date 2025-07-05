@@ -40,12 +40,16 @@ def place_bet(tournament_id: int, round_no: int, pair_index: int, user_id: int, 
     if balance < amount:
         return False, "Недостаточно баллов"
 
-    bet_id = tournament_db.create_bet(tournament_id, round_no, pair_index, user_id, bet_on, amount)
+    bet_id = tournament_db.create_bet(
+        tournament_id, round_no, pair_index, user_id, bet_on, amount
+    )
     if bet_id is None:
         return False, "Не удалось создать ставку"
 
     if not db.db.update_scores(user_id, -amount):
         return False, "Не удалось списать баллы"
+
+    tournament_db.update_bet_bank(tournament_id, amount)
 
     return True, f"Ставка принята. ID {bet_id}"
 
@@ -59,6 +63,7 @@ def payout_bets(tournament_id: int, round_no: int, pair_index: int, winner: int,
         multiplier = get_multiplier(round_no, total_rounds)
         payout = math.floor(float(bet.get("amount")) * (1 + multiplier)) if won else 0
         if payout:
+            tournament_db.update_bet_bank(tournament_id, -payout)
             db.db.update_scores(int(bet["user_id"]), payout)
         tournament_db.close_bet(int(bet["id"]), won, payout)
 
@@ -81,6 +86,7 @@ def cancel_bet(bet_id: int) -> tuple[bool, str]:
     if not tournament_db.delete_bet(bet_id):
         return False, "Не удалось удалить ставку"
     db.db.update_scores(int(bet["user_id"]), float(bet["amount"]))
+    tournament_db.update_bet_bank(int(bet["tournament_id"]), -float(bet["amount"]))
     return True, "Ставка удалена и баллы возвращены"
 
 
@@ -99,4 +105,34 @@ def modify_bet(bet_id: int, bet_on: int, amount: float, user_id: int, total_roun
         return False, "Не удалось обновить баланс"
     if not tournament_db.update_bet(bet_id, bet_on, amount):
         return False, "Не удалось изменить ставку"
+    if diff != 0:
+        tournament_db.update_bet_bank(int(bet["tournament_id"]), diff)
     return True, "Ставка обновлена"
+
+
+def get_pair_summary(tournament_id: int, round_no: int, pair_index: int, winner: int, total_rounds: int) -> dict:
+    """Returns bet statistics for a pair."""
+    bets = tournament_db.list_bets(tournament_id, round_no)
+    total = 0
+    won_cnt = 0
+    lose_cnt = 0
+    total_amount = 0.0
+    payout_total = 0.0
+    for b in bets:
+        if b.get("pair_index") != pair_index:
+            continue
+        total += 1
+        amt = float(b.get("amount", 0))
+        total_amount += amt
+        if int(b.get("bet_on")) == winner:
+            won_cnt += 1
+            payout_total += calculate_payout(round_no, total_rounds, amt)
+        else:
+            lose_cnt += 1
+    profit = total_amount - payout_total
+    return {
+        "total": total,
+        "won": won_cnt,
+        "lost": lose_cnt,
+        "profit": profit,
+    }
