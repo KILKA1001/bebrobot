@@ -57,7 +57,7 @@ def place_bet(
     test = _is_test(tournament_id)
 
     if not test:
-        balance = db.db.scores.get(user_id, 0)
+        balance = db.scores.get(user_id, 0)
         if balance < amount:
             return False, "Недостаточно баллов"
 
@@ -68,7 +68,7 @@ def place_bet(
         return False, "Не удалось создать ставку"
 
     if not test:
-        if not db.db.update_scores(user_id, -amount):
+        if not db.update_scores(user_id, -amount):
             return False, "Не удалось списать баллы"
         tournament_db.update_bet_bank(tournament_id, amount)
 
@@ -86,7 +86,7 @@ def payout_bets(tournament_id: int, round_no: int, pair_index: int, winner: int,
         payout = math.floor(float(bet.get("amount")) * (1 + multiplier)) if won else 0
         if payout and not test:
             tournament_db.update_bet_bank(tournament_id, -payout)
-            db.db.update_scores(int(bet["user_id"]), payout)
+            db.update_scores(int(bet["user_id"]), payout)
         tournament_db.close_bet(int(bet["id"]), won, payout if not test else 0)
 
 
@@ -109,7 +109,7 @@ def cancel_bet(bet_id: int) -> tuple[bool, str]:
         return False, "Не удалось удалить ставку"
     test = _is_test(int(bet["tournament_id"]))
     if not test:
-        db.db.update_scores(int(bet["user_id"]), float(bet["amount"]))
+        db.update_scores(int(bet["user_id"]), float(bet["amount"]))
         tournament_db.update_bet_bank(int(bet["tournament_id"]), -float(bet["amount"]))
         return True, "Ставка удалена и баллы возвращены"
     return True, "Ставка удалена (тестовый режим)"
@@ -125,10 +125,10 @@ def modify_bet(bet_id: int, bet_on: int, amount: float, user_id: int, total_roun
     diff = amount - float(bet["amount"])
     test = _is_test(int(bet["tournament_id"]))
     if not test:
-        balance = db.db.scores.get(user_id, 0)
+        balance = db.scores.get(user_id, 0)
         if diff > 0 and balance < diff:
             return False, "Недостаточно баллов"
-        if diff != 0 and not db.db.update_scores(user_id, -diff):
+        if diff != 0 and not db.update_scores(user_id, -diff):
             return False, "Не удалось обновить баланс"
     if not tournament_db.update_bet(bet_id, bet_on, amount):
         return False, "Не удалось изменить ставку"

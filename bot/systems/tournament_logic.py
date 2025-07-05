@@ -485,7 +485,7 @@ class TournamentSetupView(SafeView):
                 from bot.data import db as _db
                 from bot.data import tournament_db as tdb
 
-                if not _db.db.spend_from_bank(
+                if not _db.spend_from_bank(
                     self.bets_bank,
                     self.author_id,
                     f"Банк ставок турнира #{tour_id}",
@@ -1330,8 +1330,8 @@ async def finalize_tournament_logic(
 
     remaining = close_bet_bank(tournament_id)
     if remaining > 0:
-        _db.db.add_to_bank(remaining)
-        _db.db.log_bank_income(
+        _db.add_to_bank(remaining)
+        _db.log_bank_income(
             admin_id,
             remaining,
             f"Возврат банка ставок турнира #{tournament_id}",
