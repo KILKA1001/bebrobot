@@ -157,12 +157,14 @@ class BetPairSelectView(SafeView):
         round_no: int,
         pairs: dict[int, tuple[int, int]],
         name_map: dict[int, str],
+        maps: dict[int, list[dict]],
         callback,
     ):
         super().__init__(timeout=60)
         self.round_no = round_no
         self.pairs = pairs
         self.name_map = name_map
+        self.maps = maps
         self._callback = callback
         options = []
         for idx, (p1, p2) in pairs.items():
@@ -180,9 +182,19 @@ class BetPairSelectView(SafeView):
         p1, p2 = self.pairs.get(idx, (0, 0))
         n1 = self.name_map.get(p1, str(p1))
         n2 = self.name_map.get(p2, str(p2))
+        desc = f"{n1} vs {n2}"
         embed = discord.Embed(
-            title=f"Пара {idx}", description=f"{n1} vs {n2}", color=discord.Color.blue()
+            title=f"Пара {idx}",
+            description=desc,
+            color=discord.Color.blue(),
         )
+        maps = self.maps.get(idx)
+        if maps:
+            lines = [f"{m.get('name', m.get('id'))} (`{m.get('id')}`)" for m in maps]
+            embed.add_field(name="Карты", value="\n".join(lines), inline=False)
+            first = maps[0]
+            if first.get("image_url"):
+                embed.set_image(url=first["image_url"])
         view = BetPlayerView(self.round_no, idx, p1, p2, self._callback, self.name_map)
         await interaction.response.edit_message(embed=embed, view=view)
 
@@ -694,6 +706,7 @@ class ManageTournamentView(SafeView):
             return
 
         pairs: dict[int, tuple[int, int]] = {}
+        pair_maps: dict[int, list[dict]] = {}
         idx_map: dict[tuple[int, int], int] = {}
         idx = 1
         for m in matches:
@@ -703,6 +716,15 @@ class ManageTournamentView(SafeView):
                 idx += 1
             pid = idx_map[key]
             pairs[pid] = key
+            from bot.data.tournament_db import get_map_info
+            info = get_map_info(str(m.get("map_id")))
+            pair_maps.setdefault(pid, []).append(
+                {
+                    "id": str(m.get("map_id")),
+                    "name": info.get("name") if info else str(m.get("map_id")),
+                    "image_url": info.get("image_url") if info else None,
+                }
+            )
 
         name_map: dict[int, str] = {}
         if self.is_team:
@@ -722,7 +744,7 @@ class ManageTournamentView(SafeView):
                 name = pl["nick"] if pl else f"ID:{pid}"
             name_map[pid] = name
 
-        view = BetPairSelectView(round_no, pairs, name_map, self._place_bet)
+        view = BetPairSelectView(round_no, pairs, name_map, pair_maps, self._place_bet)
         embed = discord.Embed(
             title=f"Ставки: раунд {round_no}",
             description="Выберите пару для ставки",
@@ -781,7 +803,7 @@ class ManageTournamentView(SafeView):
                 try:
                     await safe_send(
                         inter.user,
-                        f"Вы поставили {amount} баллов на {name} в паре {pair_index} раунда {round_no}. Возможный выигрыш {payout}",
+                        f"Вы поставили {amount} баллов на {name} в паре {pair_index} раунда {round_no}. Возможный выигрыш {payout}.\nОжидайте результата.",
                     )
                 except Exception:
                     pass
