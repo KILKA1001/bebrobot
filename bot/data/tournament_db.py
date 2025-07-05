@@ -657,3 +657,55 @@ def mark_reminder_sent(tournament_id: int) -> bool:
             return False
         logger.error("Failed to mark reminder sent: %s", e)
         return False
+
+# ---------------------------------------------------------------------------
+# Betting helpers
+# ---------------------------------------------------------------------------
+
+def create_bet(tournament_id: int, round_no: int, pair_index: int, user_id: int, bet_on: int, amount: float) -> int | None:
+    """Creates a bet record and returns its ID."""
+    try:
+        res = (
+            supabase.table("tournament_bets")
+            .insert(
+                {
+                    "tournament_id": tournament_id,
+                    "round": round_no,
+                    "pair_index": pair_index,
+                    "user_id": user_id,
+                    "bet_on": bet_on,
+                    "amount": amount,
+                },
+                returning="representation",
+            )
+            .execute()
+        )
+        return res.data[0]["id"] if res.data else None
+    except Exception:
+        return None
+
+
+def list_bets(tournament_id: int, round_no: int | None = None) -> list[dict]:
+    """Returns bets for a tournament (optionally filtered by round)."""
+    query = supabase.table("tournament_bets").select("*").eq("tournament_id", tournament_id)
+    if round_no is not None:
+        query = query.eq("round", round_no)
+    try:
+        res = query.execute()
+        return res.data or []
+    except Exception:
+        return []
+
+
+def close_bet(bet_id: int, won: bool, payout: float) -> bool:
+    """Updates bet result and payout."""
+    try:
+        res = (
+            supabase.table("tournament_bets")
+            .update({"won": won, "payout": payout})
+            .eq("id", bet_id)
+            .execute()
+        )
+        return bool(res.data)
+    except Exception:
+        return False

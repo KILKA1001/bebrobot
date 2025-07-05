@@ -16,4 +16,8 @@ __all__ = [
     "tophistory"
 ]
 
+from . import bets_logic
+
+__all__.append("bets_logic")
+
 
