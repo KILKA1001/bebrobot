@@ -39,6 +39,9 @@ active_tournaments: dict[int, Tournament] = {}
 @commands.has_permissions(administrator=True)
 async def createtournament(ctx):
     """Запустить создание нового турнира через мультишаговый UI."""
+    if ctx.interaction and not ctx.interaction.response.is_done():
+        # Acknowledge the interaction to avoid "Unknown interaction" errors
+        await ctx.defer()
     view = TournamentSetupView(ctx.author.id)
     msg = await send_temp(ctx, embed=view.initial_embed(), view=view)
     view.message = msg
