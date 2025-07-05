@@ -132,6 +132,7 @@ async def on_ready():
 
     # 👇 тут будет работать, потому что определена выше
     asyncio.create_task(autosave_task())
+    asyncio.create_task(monthly_top_task())
 
     print('--- Данные успешно загружены ---')
     print(f'Пользователей: {len(db.scores)}')
