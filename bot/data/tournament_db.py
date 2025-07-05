@@ -274,6 +274,32 @@ def save_tournament_result(
         return False
 
 
+def get_tournament_result(tournament_id: int) -> Optional[dict]:
+    """Возвращает результат турнира или None."""
+    try:
+        res = (
+            supabase.table("tournament_results")
+            .select("first_place_id, second_place_id, third_place_id")
+            .eq("tournament_id", tournament_id)
+            .single()
+            .execute()
+        )
+        return res.data or None
+    except Exception:
+        return None
+
+
+def delete_match_records(tournament_id: int) -> bool:
+    """Удаляет все записи матчей указанного турнира."""
+    try:
+        supabase.table("tournament_matches").delete().eq(
+            "tournament_id", tournament_id
+        ).execute()
+        return True
+    except Exception:
+        return False
+
+
 def update_tournament_status(tournament_id: int, status: str) -> bool:
     """
     Обновляет поле status в записи tournaments.
