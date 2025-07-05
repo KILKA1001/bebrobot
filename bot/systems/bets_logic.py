@@ -136,3 +136,26 @@ def get_pair_summary(tournament_id: int, round_no: int, pair_index: int, winner:
         "lost": lose_cnt,
         "profit": profit,
     }
+
+
+def pair_started(tournament_id: int, round_no: int, pair_index: int) -> bool:
+    """Returns True if any match in the pair has a result set."""
+    matches = tournament_db.get_matches(tournament_id, round_no)
+    if not matches:
+        return False
+
+    pairs: dict[int, list[dict]] = {}
+    idx_map: dict[tuple[int, int], int] = {}
+    idx = 1
+    for m in matches:
+        key = (int(m["player1_id"]), int(m["player2_id"]))
+        if key not in idx_map:
+            idx_map[key] = idx
+            idx += 1
+        pid = idx_map[key]
+        pairs.setdefault(pid, []).append(m)
+
+    for m in pairs.get(pair_index, []):
+        if m.get("result") is not None:
+            return True
+    return False
