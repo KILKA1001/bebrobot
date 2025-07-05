@@ -13,11 +13,13 @@ from bot.systems.tournament_logic import (
     handle_unregister,
     build_tournament_status_embed,
     build_tournament_bracket_embed,
+    build_tournament_result_embed,
 )
 from bot.systems.manage_tournament_view import ManageTournamentView
 from bot.systems.tournament_logic import (
     delete_tournament as send_delete_confirmation,
 )
+from bot.data.tournament_db import get_tournament_status
 
 # Import the bot instance from base.py instead of creating a new one
 from bot.commands.base import bot
@@ -54,9 +56,13 @@ async def manage_tournament(ctx, tournament_id: int):
     """
     if ctx.interaction and not ctx.interaction.response.is_done():
         await ctx.defer()
-    embed = await build_tournament_bracket_embed(tournament_id, ctx.guild)
-    if not embed:
-        embed = await build_tournament_status_embed(tournament_id)
+    status = get_tournament_status(tournament_id)
+    if status == "finished":
+        embed = await build_tournament_result_embed(tournament_id, ctx.guild)
+    else:
+        embed = await build_tournament_bracket_embed(tournament_id, ctx.guild)
+        if not embed:
+            embed = await build_tournament_status_embed(tournament_id)
     if not embed:
         embed = discord.Embed(
             title=f"⚙ Управление турниром #{tournament_id}",
