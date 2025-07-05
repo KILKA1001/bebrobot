@@ -764,3 +764,60 @@ def delete_bet(bet_id: int) -> bool:
         return True
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Bet bank helpers
+# ---------------------------------------------------------------------------
+
+def create_bet_bank(tournament_id: int, amount: float) -> bool:
+    """Creates or resets bet bank for a tournament."""
+    try:
+        supabase.table("tournament_bet_bank").upsert(
+            {"tournament_id": tournament_id, "balance": amount},
+            on_conflict="tournament_id",
+        ).execute()
+        return True
+    except Exception:
+        return False
+
+
+def get_bet_bank(tournament_id: int) -> float:
+    """Returns current bet bank balance."""
+    try:
+        res = (
+            supabase.table("tournament_bet_bank")
+            .select("balance")
+            .eq("tournament_id", tournament_id)
+            .single()
+            .execute()
+        )
+        if res and res.data:
+            return float(res.data.get("balance", 0))
+    except Exception:
+        pass
+    return 0.0
+
+
+def update_bet_bank(tournament_id: int, delta: float) -> bool:
+    """Adds delta to bet bank balance."""
+    current = get_bet_bank(tournament_id)
+    new_balance = current + delta
+    try:
+        supabase.table("tournament_bet_bank").upsert(
+            {"tournament_id": tournament_id, "balance": new_balance},
+            on_conflict="tournament_id",
+        ).execute()
+        return True
+    except Exception:
+        return False
+
+
+def close_bet_bank(tournament_id: int) -> float:
+    """Deletes bet bank entry and returns remaining balance."""
+    balance = get_bet_bank(tournament_id)
+    try:
+        supabase.table("tournament_bet_bank").delete().eq("tournament_id", tournament_id).execute()
+    except Exception:
+        pass
+    return balance
