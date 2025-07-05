@@ -21,6 +21,7 @@ from bot.systems.tournament_logic import (
     delete_tournament as send_delete_confirmation,
     _get_round_results,
 )
+import math
 from bot.systems.interactive_rounds import RoundManagementView
 from bot.systems.tournament_logic import (
     create_tournament_logic,
@@ -68,6 +69,28 @@ class TeamRenameModal(ui.Modal, title="Переименовать команду
             await interaction.response.send_message("Неверный ID", ephemeral=True)
             return
         await self._callback(interaction, tid, str(self.new_name))
+
+
+class BetModal(ui.Modal, title="Сделать ставку"):
+    round_no = ui.TextInput(label="Раунд", required=True)
+    pair_index = ui.TextInput(label="Пара", required=True)
+    bet_on = ui.TextInput(label="ID игрока/команды", required=True)
+    amount = ui.TextInput(label="Баллы", required=True)
+
+    def __init__(self, callback):
+        super().__init__()
+        self._callback = callback
+
+    async def on_submit(self, interaction: Interaction):
+        try:
+            rnd = int(str(self.round_no))
+            pair = int(str(self.pair_index))
+            bet_on = int(str(self.bet_on))
+            amount = float(str(self.amount))
+        except ValueError:
+            await interaction.response.send_message("Неверные данные", ephemeral=True)
+            return
+        await self._callback(interaction, rnd, pair, bet_on, amount)
 
 
 class FinishModal(ui.Modal):
@@ -447,9 +470,31 @@ class ManageTournamentView(SafeView):
                 await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def on_bets(self, interaction: Interaction):
-        await interaction.response.send_message(
-            "Система ставок в разработке", ephemeral=True
+        await interaction.response.send_modal(BetModal(self._place_bet))
+
+    async def _place_bet(
+        self,
+        interaction: Interaction,
+        round_no: int,
+        pair_index: int,
+        bet_on: int,
+        amount: float,
+    ):
+        from bot.systems.bets_logic import place_bet
+        from bot.data.tournament_db import get_tournament_size
+
+        size = get_tournament_size(self.tid)
+        total_rounds = int(math.ceil(math.log2(size))) if size > 1 else 1
+        ok, msg = place_bet(
+            self.tid,
+            round_no,
+            pair_index,
+            interaction.user.id,
+            bet_on,
+            amount,
+            total_rounds,
         )
+        await interaction.response.send_message(msg, ephemeral=True)
 
     async def on_pause(self, interaction: Interaction):
         self.paused = not self.paused

@@ -5,6 +5,7 @@ from bot.utils import SafeView, safe_send
 from typing import Optional
 from bot.data.players_db import get_player_by_id
 from bot.data.tournament_db import get_tournament_info
+import math
 from bot.systems.tournament_logic import (
     start_round as cmd_start_round,
     join_tournament,  # не обязательно, но для примера
@@ -217,12 +218,17 @@ class MatchResultView(SafeView):
         tournament_id: int,
         guild: discord.Guild,
         team_display: Optional[dict[int, str]] = None,
+        *,
+        round_no: int = 1,
+        pair_index: int = 0,
     ):
         super().__init__(timeout=60)
         self.match_id = match_id
         self.tournament_id = tournament_id
         self.guild = guild
         self.winner: Optional[int] = None
+        self.round_no = round_no
+        self.pair_index = pair_index
         info = get_tournament_info(tournament_id) or {}
         self.is_team = info.get("type") == "team"
         self.team_display = team_display or {}
@@ -291,6 +297,20 @@ class MatchResultView(SafeView):
             try:
                 if self.guild:
                     await refresh_bracket_message(self.guild, self.tournament_id)
+            except Exception:
+                pass
+            try:
+                from bot.systems.bets_logic import payout_bets
+                from bot.data.tournament_db import get_tournament_size
+                size = get_tournament_size(self.tournament_id)
+                total_rounds = int(math.ceil(math.log2(size))) if size > 1 else 1
+                payout_bets(
+                    self.tournament_id,
+                    self.round_no,
+                    self.pair_index,
+                    winner,
+                    total_rounds,
+                )
             except Exception:
                 pass
             self.stop()
@@ -426,6 +446,8 @@ class PairSelectionView(SafeView):
                 tournament_id=self.tournament_id,
                 guild=self.guild,
                 team_display=self.team_display,
+                round_no=self.round_no,
+                pair_index=idx,
             )
 
             if channel:
