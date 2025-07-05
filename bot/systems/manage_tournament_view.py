@@ -2,7 +2,7 @@ import discord
 from discord import ui, ButtonStyle, Interaction
 from discord.ext import commands
 
-from bot.utils import SafeView
+from bot.utils import SafeView, safe_send
 from bot.data.tournament_db import (
     get_tournament_status,
     get_tournament_size,
@@ -91,6 +91,96 @@ class BetModal(ui.Modal, title="Сделать ставку"):
             await interaction.response.send_message("Неверные данные", ephemeral=True)
             return
         await self._callback(interaction, rnd, pair, bet_on, amount)
+
+
+class BetAmountModal(ui.Modal, title="Размер ставки"):
+    amount = ui.TextInput(label="Баллы", required=True)
+
+    def __init__(self, callback, round_no: int, pair_index: int, bet_on: int):
+        super().__init__()
+        self._callback = callback
+        self.round_no = round_no
+        self.pair_index = pair_index
+        self.bet_on = bet_on
+
+    async def on_submit(self, interaction: Interaction):
+        try:
+            amount = float(str(self.amount))
+        except ValueError:
+            await interaction.response.send_message("Неверные данные", ephemeral=True)
+            return
+        await self._callback(
+            interaction,
+            self.round_no,
+            self.pair_index,
+            self.bet_on,
+            amount,
+        )
+
+
+class BetPlayerView(SafeView):
+    def __init__(
+        self,
+        round_no: int,
+        pair_index: int,
+        player1: int,
+        player2: int,
+        callback,
+    ):
+        super().__init__(timeout=60)
+        self.round_no = round_no
+        self.pair_index = pair_index
+        self.player1 = player1
+        self.player2 = player2
+        self._callback = callback
+
+    @ui.button(label="Игрок 1", style=ButtonStyle.primary)
+    async def bet_p1(self, interaction: Interaction, button: ui.Button):
+        await interaction.response.send_modal(
+            BetAmountModal(self._callback, self.round_no, self.pair_index, self.player1)
+        )
+
+    @ui.button(label="Игрок 2", style=ButtonStyle.secondary)
+    async def bet_p2(self, interaction: Interaction, button: ui.Button):
+        await interaction.response.send_modal(
+            BetAmountModal(self._callback, self.round_no, self.pair_index, self.player2)
+        )
+
+
+class BetPairSelectView(SafeView):
+    def __init__(
+        self,
+        round_no: int,
+        pairs: dict[int, tuple[int, int]],
+        name_map: dict[int, str],
+        callback,
+    ):
+        super().__init__(timeout=60)
+        self.round_no = round_no
+        self.pairs = pairs
+        self.name_map = name_map
+        self._callback = callback
+        options = []
+        for idx, (p1, p2) in pairs.items():
+            n1 = name_map.get(p1, str(p1))
+            n2 = name_map.get(p2, str(p2))
+            options.append(
+                discord.SelectOption(label=f"Пара {idx}: {n1} vs {n2}", value=str(idx))
+            )
+        self.select = ui.Select(placeholder="Выберите пару", options=options)
+        self.select.callback = self.on_select
+        self.add_item(self.select)
+
+    async def on_select(self, interaction: Interaction):
+        idx = int(self.select.values[0])
+        p1, p2 = self.pairs.get(idx, (0, 0))
+        n1 = self.name_map.get(p1, str(p1))
+        n2 = self.name_map.get(p2, str(p2))
+        embed = discord.Embed(
+            title=f"Пара {idx}", description=f"{n1} vs {n2}", color=discord.Color.blue()
+        )
+        view = BetPlayerView(self.round_no, idx, p1, p2, self._callback)
+        await interaction.response.edit_message(embed=embed, view=view)
 
 
 class FinishModal(ui.Modal):
@@ -470,7 +560,63 @@ class ManageTournamentView(SafeView):
                 await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def on_bets(self, interaction: Interaction):
-        await interaction.response.send_modal(BetModal(self._place_bet))
+        from bot.data.tournament_db import get_matches, get_team_info, get_tournament_size
+        from bot.data.players_db import get_player_by_id
+
+        guild = interaction.guild or (self.ctx.guild if hasattr(self.ctx, "guild") else None)
+
+        round_no = 1
+        matches = []
+        while True:
+            m = get_matches(self.tid, round_no)
+            if not m:
+                round_no -= 1
+                break
+            matches = m
+            if any(x.get("result") not in (1, 2) for x in m):
+                break
+            round_no += 1
+
+        if not matches:
+            await interaction.response.send_message("Нет активных матчей", ephemeral=True)
+            return
+
+        pairs: dict[int, tuple[int, int]] = {}
+        idx_map: dict[tuple[int, int], int] = {}
+        idx = 1
+        for m in matches:
+            key = (int(m["player1_id"]), int(m["player2_id"]))
+            if key not in idx_map:
+                idx_map[key] = idx
+                idx += 1
+            pid = idx_map[key]
+            pairs[pid] = key
+
+        name_map: dict[int, str] = {}
+        if self.is_team:
+            _, team_names = get_team_info(self.tid)
+            name_map.update({int(k): v for k, v in team_names.items()})
+
+        for pid in {p for pair in pairs.values() for p in pair}:
+            if pid in name_map:
+                continue
+            name = None
+            if guild:
+                member = guild.get_member(pid)
+                if member:
+                    name = member.display_name
+            if name is None:
+                pl = get_player_by_id(pid)
+                name = pl["nick"] if pl else f"ID:{pid}"
+            name_map[pid] = name
+
+        view = BetPairSelectView(round_no, pairs, name_map, self._place_bet)
+        embed = discord.Embed(
+            title=f"Ставки: раунд {round_no}",
+            description="Выберите пару для ставки",
+            color=discord.Color.orange(),
+        )
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     async def _place_bet(
         self,
@@ -495,6 +641,15 @@ class ManageTournamentView(SafeView):
             total_rounds,
         )
         await interaction.response.send_message(msg, ephemeral=True)
+        if ok:
+            user = interaction.user
+            try:
+                await safe_send(
+                    user,
+                    f"Вы поставили {amount} баллов на ID {bet_on} в паре {pair_index} раунда {round_no}.",
+                )
+            except Exception:
+                pass
 
     async def on_pause(self, interaction: Interaction):
         self.paused = not self.paused
