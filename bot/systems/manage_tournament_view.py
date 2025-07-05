@@ -230,7 +230,7 @@ class BetEditModal(ui.Modal, title="Изменить ставку"):
 
 
 class BetStatusView(SafeView):
-    def __init__(self, bets: list[dict], edit_cb, delete_cb):
+    def __init__(self, bets: list[dict], edit_cb, delete_cb, locked: set[int] | None = None):
         super().__init__(timeout=60)
         options = [discord.SelectOption(label=f"ID {b['id']} (пара {b['pair_index']})", value=str(b['id'])) for b in bets]
         self.select = ui.Select(placeholder="Выберите ставку", options=options)
@@ -245,22 +245,34 @@ class BetStatusView(SafeView):
         self.selected: int | None = None
         self._edit_cb = edit_cb
         self._delete_cb = delete_cb
+        self.locked = locked or set()
 
     async def on_select(self, interaction: Interaction):
         self.selected = int(self.select.values[0])
-        self.edit_btn.disabled = False
-        self.del_btn.disabled = False
+        locked = self.selected in self.locked
+        self.edit_btn.disabled = locked
+        self.del_btn.disabled = locked
         await interaction.response.edit_message(view=self)
-
+        
     async def on_edit(self, interaction: Interaction, button: ui.Button):
         if self.selected is None:
             await interaction.response.send_message("Выберите ставку", ephemeral=True)
+            return
+        if self.selected in self.locked:
+            await interaction.response.send_message(
+                "Ставку нельзя изменить после начала пары", ephemeral=True
+            )
             return
         await interaction.response.send_modal(BetEditModal(self._edit_cb, self.selected))
 
     async def on_delete(self, interaction: Interaction, button: ui.Button):
         if self.selected is None:
             await interaction.response.send_message("Выберите ставку", ephemeral=True)
+            return
+        if self.selected in self.locked:
+            await interaction.response.send_message(
+                "Ставку нельзя удалить после начала пары", ephemeral=True
+            )
             return
         await self._delete_cb(interaction, self.selected)
 
@@ -672,6 +684,11 @@ class ManageTournamentView(SafeView):
         if not bet:
             await interaction.response.send_message("Ставка не найдена", ephemeral=True)
             return
+        if bets_logic.pair_started(self.tid, int(bet["round"]), int(bet["pair_index"])):
+            await interaction.response.send_message(
+                "Пара уже началась, ставку нельзя изменить", ephemeral=True
+            )
+            return
         size = get_tournament_size(self.tid)
         total_rounds = int(math.ceil(math.log2(size))) if size > 1 else 1
         ok, msg = bets_logic.modify_bet(bet_id, bet_on, amount, interaction.user.id, total_rounds)
@@ -679,7 +696,14 @@ class ManageTournamentView(SafeView):
 
     async def _delete_bet(self, interaction: Interaction, bet_id: int):
         from bot.systems import bets_logic
+        from bot.data.tournament_db import get_bet
 
+        bet = get_bet(bet_id)
+        if bet and bets_logic.pair_started(self.tid, int(bet["round"]), int(bet["pair_index"])):
+            await interaction.response.send_message(
+                "Пара уже началась, ставку нельзя удалить", ephemeral=True
+            )
+            return
         ok, msg = bets_logic.cancel_bet(bet_id)
         await interaction.response.send_message(msg, ephemeral=True)
 
@@ -760,13 +784,16 @@ class ManageTournamentView(SafeView):
             await interaction.response.edit_message(content="Ставок нет", embed=None, view=None)
             return
         embed = discord.Embed(title="Ваши ставки", color=discord.Color.orange())
+        locked: set[int] = set()
         for b in bets:
+            if bets_logic.pair_started(self.tid, int(b["round"]), int(b["pair_index"])):
+                locked.add(int(b["id"]))
             embed.add_field(
                 name=f"ID {b['id']}",
                 value=f"Раунд {b['round']} пара {b['pair_index']} на {b['bet_on']} — {b['amount']} баллов",
                 inline=False,
             )
-        view = BetStatusView(bets, self._edit_bet, self._delete_bet)
+        view = BetStatusView(bets, self._edit_bet, self._delete_bet, locked)
         await interaction.response.edit_message(embed=embed, view=view)
 
     async def _place_bet(
