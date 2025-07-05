@@ -1969,9 +1969,12 @@ async def build_tournament_bracket_embed(
             wins1 = sum(1 for m in ms if m.get("result") == 1)
             wins2 = sum(1 for m in ms if m.get("result") == 2)
 
+            finished = all(m.get("result") in (1, 2) for m in ms)
+            status = "✅" if finished else "❌"
+
             line = (
                 f"{name1} [{wins1}] ─┐\n"
-                f"{name2} [{wins2}] ─┘"
+                f"{name2} [{wins2}] ─┘ {status}"
             )
             lines.append(line)
 
