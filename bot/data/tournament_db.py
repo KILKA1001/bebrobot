@@ -244,13 +244,21 @@ def record_match_result(match_id: int, result: int) -> bool:
 
 
 def delete_tournament(tournament_id: int) -> None:
-    """Удаляет турнир и все связанные с ним записи."""
+    """Удаляет турнир и все связанные с ним записи и логи."""
     # Удаляем результаты
     supabase.table("tournament_results").delete().eq(
         "tournament_id", tournament_id
     ).execute()
     # Удаляем матчи
     supabase.table("tournament_matches").delete().eq(
+        "tournament_id", tournament_id
+    ).execute()
+    # Удаляем ставки
+    supabase.table("tournament_bets").delete().eq(
+        "tournament_id", tournament_id
+    ).execute()
+    # Очищаем банк ставок
+    supabase.table("tournament_bet_bank").delete().eq(
         "tournament_id", tournament_id
     ).execute()
     # Удаляем участников (discord и player)
