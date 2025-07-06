@@ -587,16 +587,17 @@ class TournamentSetupView(SafeView):
                 from bot.data import db as _db
                 from bot.data import tournament_db as tdb
 
-                if not _db.spend_from_bank(
-                    self.bets_bank,
-                    self.author_id,
-                    f"Банк ставок турнира #{tour_id}",
-                ):
-                    await interaction.response.send_message(
-                        "❌ Недостаточно средств в банке для банка ставок",
-                        ephemeral=True,
-                    )
-                    return
+                if self.bank_type != 4:
+                    if not _db.spend_from_bank(
+                        self.bets_bank,
+                        self.author_id,
+                        f"Банк ставок турнира #{tour_id}",
+                    ):
+                        await interaction.response.send_message(
+                            "❌ Недостаточно средств в банке для банка ставок",
+                            ephemeral=True,
+                        )
+                        return
                 tdb.create_bet_bank(tour_id, self.bets_bank)
             typetxt = "Дуэльный 1×1" if self.t_type == "duel" else "Командный 3×3"
             prize_text = {
@@ -1191,6 +1192,9 @@ class ConfirmDeleteView(SafeView):
 
     @ui.button(label="❌ Удалить турнир", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: ui.Button):
+        from bot.systems import bets_logic
+
+        bets_logic.refund_all_bets(self.tid, interaction.user.id)
         ok = delete_tournament_record(self.tid)
         if ok:
             await interaction.response.edit_message(
