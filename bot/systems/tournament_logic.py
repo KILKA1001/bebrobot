@@ -515,11 +515,15 @@ class TournamentSetupView(SafeView):
             # если вдруг не удалось, просто игнорируем
             return
         type_name = "Дуэльный 1×1" if self.t_type == "duel" else "Командный 3×3"
+        if self.t_type == "team":
+            count_text = f"👥 **Команд:** {self.size // 3} ({self.size} игроков)"
+        else:
+            count_text = f"👥 **Участников:** {self.size}"
         embed = discord.Embed(
             title="Создание турнира",
             description=(
                 f"🏆 **Тип:** {type_name}\n"
-                f"👥 **Участников:** {self.size}\n\n"
+                f"{count_text}\n\n"
                 "Нажмите **✅ Подтвердить** или **❌ Отменить**"
             ),
             color=discord.Color.gold(),
@@ -584,11 +588,16 @@ class TournamentSetupView(SafeView):
                 3: "🥇 Тип 3 — 30 баллов (из банка Бебр)",
                 4: "🛠️ TEST — тестовый режим, награды не выдаются",
             }.get(self.bank_type or 1, "❓ Неизвестно")
+            count_line = (
+                f"👥 Команд: {self.size // 3} ({self.size} игроков)"
+                if self.t_type == "team"
+                else f"👥 Участников: {self.size}"
+            )
             embed = discord.Embed(
                 title=f"✅ Турнир #{tour_id} создан!",
                 description=(
                     f"🏆 Тип: {'Дуэльный 1×1' if self.t_type=='duel' else 'Командный 3×3'}\n"
-                    f"👥 Участников: {self.size}\n"
+                    f"{count_line}\n"
                     f"🎁 Приз: {prize_text}\n"
                     f"ID турнира: **{tour_id}**"
                 ),
@@ -602,7 +611,18 @@ class TournamentSetupView(SafeView):
             )
             # тип турнира
             announcement.add_field(name="Тип", value=typetxt, inline=True)
-            announcement.add_field(name="Участников", value=str(self.size), inline=True)
+            if self.t_type == "team":
+                announcement.add_field(
+                    name="Команд",
+                    value=str(self.size // 3),
+                    inline=True,
+                )
+            else:
+                announcement.add_field(
+                    name="Участников",
+                    value=str(self.size),
+                    inline=True,
+                )
             announcement.add_field(name="Приз", value=prize_text, inline=False)
             if self.start_time:
                 announcement.add_field(
@@ -1444,10 +1464,16 @@ async def show_history(ctx: commands.Context, limit: int = 10) -> None:
         total_participants = len(participants)
 
         total_matches = count_matches(tid)  # возвращает int
+        t_info = get_tournament_info(tid) or {}
+        if t_info.get("type") == "team":
+            team_total = total_participants // 3
+            participant_line = f"👥 Команд: {team_total} ({total_participants} игроков)"
+        else:
+            participant_line = f"👥 Участников: {total_participants}"
 
         places_line = f"🥇 {first}  🥈 {second}" + (f"  🥉 {third}" if third else "")
         stats_line = (
-            f"👥 Участников: {total_participants}\n"
+            f"{participant_line}\n"
             f"🎲 Матчей сыграно: {total_matches}\n"
             f"ℹ️ Подробно: `/tournamentstatus {tid}`"
         )
@@ -1981,7 +2007,20 @@ async def send_announcement_embed(ctx, tournament_id: int) -> bool:
         color=discord.Color.gold(),
     )
     embed.add_field(name="Тип турнира", value=type_text, inline=True)
-    embed.add_field(name="Участников", value=f"{current}/{size}", inline=True)
+    if t_type == "team":
+        team_map, _ = tournament_db.get_team_info(tournament_id)
+        current_teams = len(team_map)
+        embed.add_field(
+            name="Команд",
+            value=f"{current_teams}/{size // 3}",
+            inline=True,
+        )
+    else:
+        embed.add_field(
+            name="Участников",
+            value=f"{current}/{size}",
+            inline=True,
+        )
     embed.add_field(name="Приз", value=prize_text, inline=False)
     embed.set_footer(text="Нажмите на кнопку ниже, чтобы зарегистрироваться")
 
@@ -2044,7 +2083,20 @@ async def build_tournament_status_embed(tournament_id: int) -> discord.Embed | N
         title=f"📋 Турнир #{tournament_id} — Статус", color=discord.Color.blue()
     )
     embed.add_field(name="Тип", value=type_text, inline=True)
-    embed.add_field(name="Участники", value=f"{current}/{size}", inline=True)
+    if t_type == "team":
+        team_map, _ = tournament_db.get_team_info(tournament_id)
+        current_teams = len(team_map)
+        embed.add_field(
+            name="Команд",
+            value=f"{current_teams}/{size // 3}",
+            inline=True,
+        )
+    else:
+        embed.add_field(
+            name="Участников",
+            value=f"{current}/{size}",
+            inline=True,
+        )
     embed.add_field(name="Банк", value=prize_text, inline=False)
     embed.add_field(name="Статус", value=status.capitalize(), inline=True)
     embed.add_field(name="Этап", value=stage, inline=True)
@@ -2061,7 +2113,8 @@ async def build_tournament_status_embed(tournament_id: int) -> discord.Embed | N
         for p in participants[:10]
     ]
     name_list = "\n".join(f"• {n}" for n in names) if names else "—"
-    embed.add_field(name="📌 Участники (первые 10)", value=name_list, inline=False)
+    title = "📌 Команды (первые 10)" if t_type == "team" else "📌 Участники (первые 10)"
+    embed.add_field(name=title, value=name_list, inline=False)
 
     return embed
 
@@ -2140,8 +2193,14 @@ async def build_participants_embed(
     if not participants:
         return None
 
+    t_info = get_tournament_info(tournament_id) or {}
+    title = (
+        f"👥 Команды турнира #{tournament_id}"
+        if t_info.get("type") == "team"
+        else f"👥 Участники турнира #{tournament_id}"
+    )
     embed = discord.Embed(
-        title=f"👥 Участники турнира #{tournament_id}",
+        title=title,
         color=discord.Color.dark_teal(),
     )
 
