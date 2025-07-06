@@ -14,6 +14,9 @@ if supabase is None:
 
 logger = logging.getLogger(__name__)
 
+# Флаг наличия столбца team_auto в таблице tournaments
+_has_team_auto = True
+
 
 def create_tournament_record(
     t_type: str,
@@ -28,9 +31,19 @@ def create_tournament_record(
         payload["start_time"] = start_time
     if author_id is not None:
         payload["author_id"] = author_id
-    if team_auto is not None:
+    global _has_team_auto
+    if team_auto is not None and _has_team_auto:
         payload["team_auto"] = team_auto
-    res = supabase.table("tournaments").insert(payload).execute()
+    try:
+        res = supabase.table("tournaments").insert(payload).execute()
+    except APIError as e:
+        if _has_team_auto and "team_auto" in str(e) and getattr(e, "code", "") == "PGRST204":
+            logger.warning("'team_auto' column missing in tournaments table")
+            payload.pop("team_auto", None)
+            _has_team_auto = False
+            res = supabase.table("tournaments").insert(payload).execute()
+        else:
+            raise
     return res.data[0]["id"]
 
 
@@ -488,6 +501,9 @@ def get_tournament_size(tournament_id: int) -> int:
 
 def get_team_auto(tournament_id: int) -> bool:
     """Возвращает True, если турнир использует авто-команды."""
+    global _has_team_auto
+    if not _has_team_auto:
+        return False
     try:
         res = (
             supabase.table("tournaments")
@@ -497,6 +513,12 @@ def get_team_auto(tournament_id: int) -> bool:
             .execute()
         )
         return bool(res.data.get("team_auto")) if res and res.data else False
+    except APIError as e:
+        if "team_auto" in str(e) and getattr(e, "code", "") == "PGRST204":
+            logger.warning("'team_auto' column missing when reading tournament")
+            _has_team_auto = False
+            return False
+        return False
     except Exception:
         return False
 
@@ -573,15 +595,32 @@ def save_announcement_message(tournament_id: int, message_id: int) -> bool:
 
 def get_tournament_info(tournament_id: int) -> Optional[dict]:
     """Возвращает основные поля турнира или None."""
+    global _has_team_auto
+    fields = "type, size, bank_type, manual_amount, status, start_time"
+    if _has_team_auto:
+        fields += ", team_auto"
     try:
         res = (
             supabase.table("tournaments")
-            .select("type, size, bank_type, manual_amount, status, start_time, team_auto")
+            .select(fields)
             .eq("id", tournament_id)
             .single()
             .execute()
         )
         return res.data or None
+    except APIError as e:
+        if _has_team_auto and "team_auto" in str(e) and getattr(e, "code", "") == "PGRST204":
+            logger.warning("'team_auto' column missing when fetching tournament info")
+            _has_team_auto = False
+            res = (
+                supabase.table("tournaments")
+                .select("type, size, bank_type, manual_amount, status, start_time")
+                .eq("id", tournament_id)
+                .single()
+                .execute()
+            )
+            return res.data or None
+        return None
     except Exception:
         return None
 
