@@ -599,6 +599,8 @@ class ManageTournamentView(SafeView):
         if set_tournament_status(self.tid, "active"):
             if guild:
                 await generate_first_round(interaction.client, guild, self.tid)
+                from bot.systems.tournament_logic import update_bet_message
+                await update_bet_message(guild, self.tid)
             await interaction.response.send_message(
                 "Турнир активирован", ephemeral=True
             )
