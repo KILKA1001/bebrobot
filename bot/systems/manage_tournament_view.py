@@ -26,6 +26,9 @@ from bot.systems.interactive_rounds import RoundManagementView
 from bot.systems.tournament_logic import (
     create_tournament_logic,
     load_tournament_logic_from_db,
+    is_auto_team,
+    assign_auto_team,
+    rename_auto_team,
 )
 from bot.data.players_db import add_player_to_tournament
 
@@ -407,6 +410,7 @@ class ManageTournamentView(SafeView):
 
         info = get_tournament_info(tournament_id) or {}
         self.is_team = info.get("type") == "team"
+        self.team_auto = is_auto_team(tournament_id)
         self.refresh_buttons()
 
     def refresh_buttons(self):
@@ -503,13 +507,13 @@ class ManageTournamentView(SafeView):
     # ----- Callbacks -----
     async def on_register_player(self, interaction: Interaction):
         await interaction.response.send_modal(
-            PlayerIdModal(self._register, ask_team=self.is_team)
+            PlayerIdModal(self._register, ask_team=self.is_team and not self.team_auto)
         )
 
     async def _register(
         self, interaction: Interaction, pid: int, team: str | None = None
     ):
-        if self.is_team and team:
+        if self.is_team and not self.team_auto and team:
             from bot.data.tournament_db import (
                 get_team_id_by_name,
                 get_next_team_id,
@@ -518,12 +522,13 @@ class ManageTournamentView(SafeView):
             tid = get_team_id_by_name(self.tid, team)
             if tid is None:
                 tid = get_next_team_id(self.tid)
-        else:
+        elif not self.team_auto:
             tid = None
-
-        ok_db = add_player_to_tournament(
-            pid, self.tid, team_id=tid, team_name=team if tid else None
-        )
+            ok_db = add_player_to_tournament(
+                pid, self.tid, team_id=tid, team_name=team if tid else None
+            )
+        else:
+            ok_db = assign_auto_team(self.tid, pid)
         if ok_db:
             await interaction.response.send_message("Игрок добавлен", ephemeral=True)
         else:
@@ -571,6 +576,7 @@ class ManageTournamentView(SafeView):
         from bot.data.tournament_db import update_team_name
 
         ok = update_team_name(self.tid, team_id, name)
+        rename_auto_team(self.tid, team_id, name)
         if ok:
             await interaction.response.send_message(
                 "Название обновлено", ephemeral=True
