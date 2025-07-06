@@ -177,8 +177,13 @@ class BetPairSelectView(SafeView):
                 discord.SelectOption(label=f"Пара {idx}: {n1} vs {n2}", value=str(idx))
             )
         self.select = ui.Select(placeholder="Выберите пару", options=options)
+
         # Use bound method so callback receives view instance
         self.select.callback = self.on_select
+
+        # Use unbound method to match discord.py callback signature
+        self.select.callback = BetPairSelectView.on_select
+
         self.add_item(self.select)
 
     async def on_select(self, interaction: Interaction):
@@ -238,13 +243,18 @@ class BetStatusView(SafeView):
         super().__init__(timeout=60)
         options = [discord.SelectOption(label=f"ID {b['id']} (пара {b['pair_index']})", value=str(b['id'])) for b in bets]
         self.select = ui.Select(placeholder="Выберите ставку", options=options)
+
         # Use bound callbacks for proper parameter binding
         self.select.callback = self.on_select
+
+        # Use unbound callback to avoid extra parameters from discord.py
+        self.select.callback = BetStatusView.on_select
+
         self.add_item(self.select)
         self.edit_btn = ui.Button(label="Изменить", style=ButtonStyle.primary, disabled=True)
-        self.edit_btn.callback = self.on_edit
+        self.edit_btn.callback = BetStatusView.on_edit
         self.del_btn = ui.Button(label="Удалить", style=ButtonStyle.danger, disabled=True)
-        self.del_btn.callback = self.on_delete
+        self.del_btn.callback = BetStatusView.on_delete
         self.add_item(self.edit_btn)
         self.add_item(self.del_btn)
         self.selected: int | None = None
