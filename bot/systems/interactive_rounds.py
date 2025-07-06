@@ -124,6 +124,7 @@ class RoundManagementView(SafeView):
         from bot.systems.tournament_logic import (
             set_tournament_status,
             generate_first_round,
+            update_bet_message,
         )
 
         if set_tournament_status(self.tournament_id, "active"):
@@ -138,6 +139,7 @@ class RoundManagementView(SafeView):
                 )
                 if tour:
                     self.logic = tour
+                await update_bet_message(guild, self.tournament_id)
             # Обновляем View
             self._setup_view()
             if interaction.message:

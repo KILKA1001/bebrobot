@@ -2,6 +2,7 @@ import random
 import logging
 from typing import List, Dict, Optional
 import asyncio
+import math
 import discord
 from discord import ui, Embed, ButtonStyle, Color
 from bot.utils import SafeView, safe_send
@@ -1629,6 +1630,202 @@ class ParticipationConfirmView(SafeView):
         self.stop()
 
 
+class BettingView(SafeView):
+    """Simple view with a button to place bets after the tournament starts."""
+
+    persistent = True
+
+    def __init__(self, tournament_id: int):
+        super().__init__(timeout=None)
+        self.tid = tournament_id
+        info = get_tournament_info(tournament_id) or {}
+        self.is_team = info.get("type") == "team"
+
+        btn = ui.Button(label="Поставить ставку", style=ButtonStyle.primary)
+        btn.callback = self.on_bets
+        self.add_item(btn)
+
+    async def on_bets(self, interaction: Interaction, button: ui.Button):
+        from .manage_tournament_view import BetMenuView
+
+        view = BetMenuView(self)
+        embed = discord.Embed(
+            title="Ставки",
+            description="Выберите действие",
+            color=discord.Color.orange(),
+        )
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    async def _edit_bet(self, interaction: Interaction, bet_id: int, bet_on: int, amount: float):
+        from bot.systems import bets_logic
+        from bot.data.tournament_db import get_tournament_size, get_bet
+
+        bet = get_bet(bet_id)
+        if not bet:
+            await interaction.response.send_message("Ставка не найдена", ephemeral=True)
+            return
+        if bets_logic.pair_started(self.tid, int(bet["round"]), int(bet["pair_index"])):
+            await interaction.response.send_message(
+                "Пара уже началась, ставку нельзя изменить",
+                ephemeral=True,
+            )
+            return
+        size = get_tournament_size(self.tid)
+        total_rounds = int(math.ceil(math.log2(size))) if size > 1 else 1
+        ok, msg = bets_logic.modify_bet(bet_id, bet_on, amount, interaction.user.id, total_rounds)
+        await interaction.response.send_message(msg, ephemeral=True)
+
+    async def _delete_bet(self, interaction: Interaction, bet_id: int):
+        from bot.systems import bets_logic
+        from bot.data.tournament_db import get_bet
+
+        bet = get_bet(bet_id)
+        if bet and bets_logic.pair_started(self.tid, int(bet["round"]), int(bet["pair_index"])):
+            await interaction.response.send_message(
+                "Пара уже началась, ставку нельзя удалить",
+                ephemeral=True,
+            )
+            return
+        ok, msg = bets_logic.cancel_bet(bet_id)
+        await interaction.response.send_message(msg, ephemeral=True)
+
+    async def _show_pair_select(self, interaction: Interaction):
+        from bot.data.tournament_db import get_matches, get_team_info, get_map_info
+        from bot.data.players_db import get_player_by_id
+        from .manage_tournament_view import BetPairSelectView
+
+        guild = interaction.guild
+
+        round_no = 1
+        matches = []
+        while True:
+            m = get_matches(self.tid, round_no)
+            if not m:
+                round_no -= 1
+                break
+            matches = m
+            if any(x.get("result") not in (1, 2) for x in m):
+                break
+            round_no += 1
+
+        if not matches:
+            await interaction.response.send_message("Нет активных матчей", ephemeral=True)
+            return
+
+        pairs: dict[int, tuple[int, int]] = {}
+        pair_maps: dict[int, list[dict]] = {}
+        idx_map: dict[tuple[int, int], int] = {}
+        idx = 1
+        for m in matches:
+            key = (int(m["player1_id"]), int(m["player2_id"]))
+            if key not in idx_map:
+                idx_map[key] = idx
+                idx += 1
+            pid = idx_map[key]
+            pairs[pid] = key
+            info = get_map_info(str(m.get("map_id")))
+            pair_maps.setdefault(pid, []).append(
+                {
+                    "id": str(m.get("map_id")),
+                    "name": info.get("name") if info else str(m.get("map_id")),
+                    "image_url": info.get("image_url") if info else None,
+                }
+            )
+
+        name_map: dict[int, str] = {}
+        if self.is_team:
+            _, team_names = get_team_info(self.tid)
+            name_map.update({int(k): v for k, v in team_names.items()})
+
+        for pid in {p for pair in pairs.values() for p in pair}:
+            if pid in name_map:
+                continue
+            name = None
+            if guild:
+                member = guild.get_member(pid)
+                if member:
+                    name = member.display_name
+            if name is None:
+                pl = get_player_by_id(pid)
+                name = pl["nick"] if pl else f"ID:{pid}"
+            name_map[pid] = name
+
+        view = BetPairSelectView(round_no, pairs, name_map, pair_maps, self._place_bet)
+        embed = discord.Embed(
+            title=f"Ставки: раунд {round_no}",
+            description="Выберите пару для ставки",
+            color=discord.Color.orange(),
+        )
+        await interaction.response.edit_message(embed=embed, view=view)
+
+    async def _show_bet_status(self, interaction: Interaction):
+        from bot.systems import bets_logic
+        from .manage_tournament_view import BetStatusView
+
+        bets = bets_logic.get_user_bets(self.tid, interaction.user.id)
+        if not bets:
+            await interaction.response.edit_message(content="Ставок нет", embed=None, view=None)
+            return
+        embed = discord.Embed(title="Ваши ставки", color=discord.Color.orange())
+        locked: set[int] = set()
+        for b in bets:
+            if bets_logic.pair_started(self.tid, int(b["round"]), int(b["pair_index"])):
+                locked.add(int(b["id"]))
+            embed.add_field(
+                name=f"ID {b['id']}",
+                value=f"Раунд {b['round']} пара {b['pair_index']} на {b['bet_on']} — {b['amount']} баллов",
+                inline=False,
+            )
+        view = BetStatusView(bets, self._edit_bet, self._delete_bet, locked)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+    async def _place_bet(
+        self,
+        interaction: Interaction,
+        round_no: int,
+        pair_index: int,
+        bet_on: int,
+        amount: float,
+        name: str,
+    ):
+        from bot.systems import bets_logic
+        from bot.data.tournament_db import get_tournament_size
+
+        size = get_tournament_size(self.tid)
+        total_rounds = int(math.ceil(math.log2(size))) if size > 1 else 1
+        payout = bets_logic.calculate_payout(round_no, total_rounds, amount)
+
+        async def confirm(inter: Interaction):
+            ok, msg = bets_logic.place_bet(
+                self.tid,
+                round_no,
+                pair_index,
+                inter.user.id,
+                bet_on,
+                amount,
+                total_rounds,
+            )
+            if inter.response.is_done():
+                await inter.followup.send(msg, ephemeral=True)
+            else:
+                await inter.response.send_message(msg, ephemeral=True)
+            if ok:
+                try:
+                    await safe_send(
+                        inter.user,
+                        f"Вы поставили {amount} баллов на {name} в паре {pair_index} раунда {round_no}. Возможный выигрыш {payout}.\nОжидайте результата.",
+                    )
+                except Exception:
+                    pass
+
+        embed = discord.Embed(
+            title="Подтверждение ставки",
+            description=f"На {name} {amount} баллов. Возможный выигрыш {payout}",
+            color=discord.Color.orange(),
+        )
+        view = ConfirmBetView(confirm)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
 
 async def announce_tournament(
     ctx: commands.Context,
@@ -2257,6 +2454,27 @@ async def refresh_bracket_message(guild: discord.Guild, tournament_id: int) -> b
         return False
     try:
         await message.edit(embed=embed)
+        return True
+    except Exception:
+        return False
+
+
+async def update_bet_message(guild: discord.Guild, tournament_id: int) -> bool:
+    """Replaces registration controls with a betting button."""
+    msg_id = get_announcement_message_id(tournament_id)
+    if not msg_id:
+        return False
+    channel = guild.get_channel(ANNOUNCE_CHANNEL_ID)
+    if not channel:
+        return False
+    try:
+        message = await channel.fetch_message(msg_id)
+    except Exception:
+        return False
+
+    view = BettingView(tournament_id)
+    try:
+        await message.edit(view=view)
         return True
     except Exception:
         return False
