@@ -914,6 +914,9 @@ class ManageTournamentView(SafeView):
 
         if not winners_found:
             set_tournament_status(self.tid, "finished")
+            from bot.systems import bets_logic
+
+            bets_logic.refund_all_bets(self.tid, interaction.user.id)
             await interaction.response.send_message(
                 "🏁 Турнир завершён без наград.", ephemeral=True
             )

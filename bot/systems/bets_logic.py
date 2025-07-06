@@ -186,3 +186,19 @@ def pair_started(tournament_id: int, round_no: int, pair_index: int) -> bool:
         if m.get("result") is not None:
             return True
     return False
+
+
+def refund_all_bets(tournament_id: int, admin_id: int | None = None) -> None:
+    """Отменяет все ставки турнира и возвращает банк в общий банк Бебр."""
+    bets = tournament_db.list_bets(tournament_id)
+    for bet in bets:
+        cancel_bet(int(bet["id"]))
+
+    remaining = tournament_db.close_bet_bank(tournament_id)
+    if remaining > 0:
+        db.add_to_bank(remaining)
+        db.log_bank_income(
+            admin_id or 0,
+            remaining,
+            f"Возврат банка ставок турнира #{tournament_id}",
+        )
