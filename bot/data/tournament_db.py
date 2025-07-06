@@ -20,6 +20,7 @@ def create_tournament_record(
     size: int,
     start_time: Optional[str] = None,
     author_id: Optional[int] = None,
+    team_auto: bool | None = None,
 ) -> int:
     """Создаёт запись о новом турнире и возвращает его ID."""
     payload = {"type": t_type, "size": size, "status": "registration"}
@@ -27,6 +28,8 @@ def create_tournament_record(
         payload["start_time"] = start_time
     if author_id is not None:
         payload["author_id"] = author_id
+    if team_auto is not None:
+        payload["team_auto"] = team_auto
     res = supabase.table("tournaments").insert(payload).execute()
     return res.data[0]["id"]
 
@@ -483,6 +486,20 @@ def get_tournament_size(tournament_id: int) -> int:
     res = supabase.table("tournaments").select("size").eq("id", tournament_id).execute()
     return res.data[0]["size"] if res.data else 0
 
+def get_team_auto(tournament_id: int) -> bool:
+    """Возвращает True, если турнир использует авто-команды."""
+    try:
+        res = (
+            supabase.table("tournaments")
+            .select("team_auto")
+            .eq("id", tournament_id)
+            .single()
+            .execute()
+        )
+        return bool(res.data.get("team_auto")) if res and res.data else False
+    except Exception:
+        return False
+
 
 def get_announcement_message_id(tournament_id: int) -> Optional[int]:
     """Возвращает ID сообщения-объявления турнира."""
@@ -559,7 +576,7 @@ def get_tournament_info(tournament_id: int) -> Optional[dict]:
     try:
         res = (
             supabase.table("tournaments")
-            .select("type, size, bank_type, manual_amount, status, start_time")
+            .select("type, size, bank_type, manual_amount, status, start_time, team_auto")
             .eq("id", tournament_id)
             .single()
             .execute()

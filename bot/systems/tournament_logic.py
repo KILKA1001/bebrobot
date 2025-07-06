@@ -46,6 +46,45 @@ logger = logging.getLogger(__name__)
 # Уже уведомлённые о завершении регистрации турниры
 expired_notified: set[int] = set()
 
+# Настройки автоматических команд турниров
+# {tournament_id: {"auto": bool, "team_names": {team_id: name}}}
+AUTO_TEAM_DATA: Dict[int, dict] = {}
+
+def create_auto_teams(tournament_id: int, team_count: int) -> None:
+    """Создаёт записи о командах по умолчанию."""
+    AUTO_TEAM_DATA[tournament_id] = {
+        "auto": True,
+        "team_names": {i: f"Новая команда {i}" for i in range(1, team_count + 1)},
+    }
+
+def is_auto_team(tournament_id: int) -> bool:
+    return AUTO_TEAM_DATA.get(tournament_id, {}).get("auto", False)
+
+def get_auto_team_names(tournament_id: int) -> Dict[int, str]:
+    return AUTO_TEAM_DATA.get(tournament_id, {}).get("team_names", {})
+
+def rename_auto_team(tournament_id: int, team_id: int, new_name: str) -> None:
+    if tournament_id in AUTO_TEAM_DATA:
+        AUTO_TEAM_DATA[tournament_id].setdefault("team_names", {})[team_id] = new_name
+
+def assign_auto_team(tournament_id: int, user_id: int) -> bool:
+    """Регистрирует игрока в первую неполную команду."""
+    teams = get_auto_team_names(tournament_id)
+    if not teams:
+        return False
+    participants = db_list_participants_full(tournament_id)
+    counts: Dict[int, int] = {tid: 0 for tid in teams}
+    for p in participants:
+        tid = p.get("team_id")
+        if tid is not None and tid in counts:
+            counts[tid] += 1
+    for tid in sorted(teams):
+        if counts.get(tid, 0) < 3:
+            return db_add_participant(
+                tournament_id, user_id, team_id=tid, team_name=teams[tid]
+            )
+    return False
+
 
 MODE_NAMES: Dict[int, str] = {
     1: "Нокаут",
@@ -104,9 +143,10 @@ def create_tournament_record(
     size: int,
     start_time: Optional[str] = None,
     author_id: Optional[int] = None,
+    team_auto: bool | None = None,
 ) -> int:
     """Создаёт запись о турнире и возвращает его ID."""
-    return db_create_tournament_record(t_type, size, start_time, author_id)
+    return db_create_tournament_record(t_type, size, start_time, author_id, team_auto)
 
 
 def set_tournament_status(tournament_id: int, status: str) -> bool:
@@ -255,6 +295,7 @@ class TournamentSetupView(SafeView):
         self.size: Optional[int] = None
         self.bank_type: Optional[int] = None
         self.start_time: Optional[str] = None
+        self.team_auto: bool = False
         self.message: Optional[discord.Message] = None
         self._build_type_buttons()
 
@@ -295,6 +336,23 @@ class TournamentSetupView(SafeView):
         )
         btn2.callback = self.on_type_team
         self.add_item(btn2)
+
+    def _build_distribution_buttons(self):
+        self.clear_items()
+        auto_btn = ui.Button(
+            label="Авто-команды",
+            style=discord.ButtonStyle.primary,
+            custom_id="dist_auto",
+        )
+        manual_btn = ui.Button(
+            label="Вручную",
+            style=discord.ButtonStyle.secondary,
+            custom_id="dist_manual",
+        )
+        auto_btn.callback = self.on_dist_auto
+        manual_btn.callback = self.on_dist_manual
+        self.add_item(auto_btn)
+        self.add_item(manual_btn)
 
     def _build_size_buttons(self):
         self.clear_items()
@@ -395,7 +453,27 @@ class TournamentSetupView(SafeView):
         self.t_type = "team"
         embed = discord.Embed(
             title="Создание турнира",
-            description="🤝 **Командный 3×3**\n\nТеперь выберите **количество участников**:",
+            description="🤝 **Командный 3×3**\n\nВыберите способ распределения команд:",
+            color=discord.Color.gold(),
+        )
+        self._build_distribution_buttons()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def on_dist_auto(self, interaction: discord.Interaction):
+        self.team_auto = True
+        embed = discord.Embed(
+            title="Создание турнира",
+            description="🤖 Автоматическое распределение\n\nВыберите **количество участников**:",
+            color=discord.Color.gold(),
+        )
+        self._build_size_buttons()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def on_dist_manual(self, interaction: discord.Interaction):
+        self.team_auto = False
+        embed = discord.Embed(
+            title="Создание турнира",
+            description="📝 Ручное распределение\n\nВыберите **количество участников**:",
             color=discord.Color.gold(),
         )
         self._build_size_buttons()
@@ -474,6 +552,7 @@ class TournamentSetupView(SafeView):
                 self.size,
                 self.start_time,
                 author_id=self.author_id,
+                team_auto=self.team_auto if self.t_type == "team" else None,
             )
             ok, msg = validate_and_save_bank(
                 tour_id, self.bank_type or 1, self.manual_amount
@@ -481,6 +560,8 @@ class TournamentSetupView(SafeView):
             if not ok:
                 await interaction.response.send_message(msg, ephemeral=True)
                 return
+            if self.t_type == "team" and self.team_auto:
+                create_auto_teams(tour_id, self.size // 3)
             if self.bets_bank > 0:
                 from bot.data import db as _db
                 from bot.data import tournament_db as tdb
@@ -1410,7 +1491,10 @@ class RegistrationView(SafeView):
         self.add_item(btn)
 
     async def register(self, interaction: discord.Interaction):
-        ok = db_add_participant(self.tid, interaction.user.id)
+        if is_auto_team(self.tid):
+            ok = assign_auto_team(self.tid, interaction.user.id)
+        else:
+            ok = db_add_participant(self.tid, interaction.user.id)
         if not ok:
             return await interaction.response.send_message(
                 "⚠️ Вы уже зарегистрированы или турнир не существует.", ephemeral=True
