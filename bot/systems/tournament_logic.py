@@ -135,6 +135,22 @@ if not MAPS_BY_MODE:
         4: ["4.1 10", "4.2 11", "4.3 12"],
     }
 
+
+def format_reward_details(bank_type: int, manual_amount: float, team_mode: bool) -> str:
+    """Возвращает текст с наградами за 1 и 2 место."""
+    bank_total, _u, _b = rewards.calculate_bank(bank_type, manual_amount=manual_amount)
+    if bank_total <= 0:
+        return "Награды не выдаются"
+
+    members = 3 if team_mode else 1
+    reward_first_each = bank_total * 0.5 / members
+    reward_second_each = bank_total * 0.25 / members
+
+    return (
+        f"🥇 1 место — {reward_first_each:.1f} баллов и золотой билет каждому\n"
+        f"🥈 2 место — {reward_second_each:.1f} баллов и обычный билет каждому"
+    )
+
 # ───── База данных ─────
 
 
@@ -624,6 +640,10 @@ class TournamentSetupView(SafeView):
                     inline=True,
                 )
             announcement.add_field(name="Приз", value=prize_text, inline=False)
+            reward_info = format_reward_details(
+                self.bank_type or 1, self.manual_amount, self.t_type == "team"
+            )
+            announcement.add_field(name="Награды", value=reward_info, inline=False)
             if self.start_time:
                 announcement.add_field(
                     name="Начало", value=self.start_time, inline=False
@@ -645,15 +665,6 @@ class TournamentSetupView(SafeView):
                 max_participants=self.size,
                 tour_type=typetxt,
                 author_id=self.author_id,
-            )
-
-            # добавляем к нему кнопку управления раундами
-            reg_view.add_item(
-                discord.ui.Button(
-                    label="⚙ Управление раундами",
-                    style=ButtonStyle.primary,
-                    custom_id=f"manage_rounds:{tour_id}",
-                )
             )
             # отправляем в тот же канал, где был setup
             guild = interaction.guild
@@ -2022,6 +2033,8 @@ async def send_announcement_embed(ctx, tournament_id: int) -> bool:
             inline=True,
         )
     embed.add_field(name="Приз", value=prize_text, inline=False)
+    reward_info = format_reward_details(bank_type, manual, t_type == "team")
+    embed.add_field(name="Награды", value=reward_info, inline=False)
     embed.set_footer(text="Нажмите на кнопку ниже, чтобы зарегистрироваться")
 
     admin_id = get_tournament_author(tournament_id)
