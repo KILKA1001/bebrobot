@@ -241,6 +241,44 @@ class BetEditModal(ui.Modal, title="Изменить ставку"):
 class BetStatusView(SafeView):
     def __init__(self, bets: list[dict], edit_cb, delete_cb, locked: set[int] | None = None):
         super().__init__(timeout=60)
+
+        options = [
+            discord.SelectOption(
+                label=f"ID {b['id']} (пара {b['pair_index']})", value=str(b["id"])
+            )
+            for b in bets
+        ]
+
+        class _Select(ui.Select):
+            def __init__(self, parent: "BetStatusView"):
+                super().__init__(placeholder="Выберите ставку", options=options)
+                self.parent = parent
+
+            async def callback(self, interaction: Interaction):
+                await self.parent.on_select(interaction)
+
+        class _EditBtn(ui.Button):
+            def __init__(self, parent: "BetStatusView"):
+                super().__init__(label="Изменить", style=ButtonStyle.primary, disabled=True)
+                self.parent = parent
+
+            async def callback(self, interaction: Interaction):
+                await self.parent.on_edit(interaction)
+
+        class _DelBtn(ui.Button):
+            def __init__(self, parent: "BetStatusView"):
+                super().__init__(label="Удалить", style=ButtonStyle.danger, disabled=True)
+                self.parent = parent
+
+            async def callback(self, interaction: Interaction):
+                await self.parent.on_delete(interaction)
+
+        self.select = _Select(self)
+        self.edit_btn = _EditBtn(self)
+        self.del_btn = _DelBtn(self)
+
+        self.add_item(self.select)
+
         options = [discord.SelectOption(label=f"ID {b['id']} (пара {b['pair_index']})", value=str(b['id'])) for b in bets]
         self.select = ui.Select(placeholder="Выберите ставку", options=options)
 
@@ -255,6 +293,7 @@ class BetStatusView(SafeView):
         self.edit_btn.callback = BetStatusView.on_edit
         self.del_btn = ui.Button(label="Удалить", style=ButtonStyle.danger, disabled=True)
         self.del_btn.callback = BetStatusView.on_delete
+
         self.add_item(self.edit_btn)
         self.add_item(self.del_btn)
         self.selected: int | None = None
