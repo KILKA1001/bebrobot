@@ -269,7 +269,7 @@ class BetStatusView(SafeView):
         self.del_btn.disabled = locked
         await interaction.response.edit_message(view=self)
         
-    async def on_edit(self, interaction: Interaction, button: ui.Button):
+    async def on_edit(self, interaction: Interaction):
         if self.selected is None:
             await interaction.response.send_message("Выберите ставку", ephemeral=True)
             return
@@ -280,7 +280,7 @@ class BetStatusView(SafeView):
             return
         await interaction.response.send_modal(BetEditModal(self._edit_cb, self.selected))
 
-    async def on_delete(self, interaction: Interaction, button: ui.Button):
+    async def on_delete(self, interaction: Interaction):
         if self.selected is None:
             await interaction.response.send_message("Выберите ставку", ephemeral=True)
             return

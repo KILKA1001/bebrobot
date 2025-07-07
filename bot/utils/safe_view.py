@@ -1,4 +1,7 @@
 import discord
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class SafeView(discord.ui.View):
@@ -23,4 +26,4 @@ class SafeView(discord.ui.View):
             pass
         import traceback
 
-        print("Interaction error:", traceback.format_exc())
+        logger.error("Interaction error:\n%s", traceback.format_exc())
