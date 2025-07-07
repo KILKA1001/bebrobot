@@ -177,6 +177,7 @@ class BetPairSelectView(SafeView):
                 discord.SelectOption(label=f"Пара {idx}: {n1} vs {n2}", value=str(idx))
             )
         self.select = ui.Select(placeholder="Выберите пару", options=options)
+        # Use bound method so callback receives view instance
         self.select.callback = self.on_select
         self.add_item(self.select)
 
@@ -235,14 +236,42 @@ class BetEditModal(ui.Modal, title="Изменить ставку"):
 class BetStatusView(SafeView):
     def __init__(self, bets: list[dict], edit_cb, delete_cb, locked: set[int] | None = None):
         super().__init__(timeout=60)
-        options = [discord.SelectOption(label=f"ID {b['id']} (пара {b['pair_index']})", value=str(b['id'])) for b in bets]
-        self.select = ui.Select(placeholder="Выберите ставку", options=options)
-        self.select.callback = self.on_select
+        options = [
+            discord.SelectOption(
+                label=f"ID {b['id']} (пара {b['pair_index']})", value=str(b["id"])
+            )
+            for b in bets
+        ]
+
+        class _Select(ui.Select):
+            def __init__(self, parent: "BetStatusView"):
+                super().__init__(placeholder="Выберите ставку", options=options)
+                self.parent = parent
+
+            async def callback(self, interaction: Interaction):
+                await self.parent.on_select(interaction)
+
+        class _EditBtn(ui.Button):
+            def __init__(self, parent: "BetStatusView"):
+                super().__init__(label="Изменить", style=ButtonStyle.primary, disabled=True)
+                self.parent = parent
+
+            async def callback(self, interaction: Interaction):
+                await self.parent.on_edit(interaction)
+
+        class _DelBtn(ui.Button):
+            def __init__(self, parent: "BetStatusView"):
+                super().__init__(label="Удалить", style=ButtonStyle.danger, disabled=True)
+                self.parent = parent
+
+            async def callback(self, interaction: Interaction):
+                await self.parent.on_delete(interaction)
+
+        self.select = _Select(self)
+        self.edit_btn = _EditBtn(self)
+        self.del_btn = _DelBtn(self)
+
         self.add_item(self.select)
-        self.edit_btn = ui.Button(label="Изменить", style=ButtonStyle.primary, disabled=True)
-        self.edit_btn.callback = self.on_edit
-        self.del_btn = ui.Button(label="Удалить", style=ButtonStyle.danger, disabled=True)
-        self.del_btn.callback = self.on_delete
         self.add_item(self.edit_btn)
         self.add_item(self.del_btn)
         self.selected: int | None = None
@@ -257,7 +286,7 @@ class BetStatusView(SafeView):
         self.del_btn.disabled = locked
         await interaction.response.edit_message(view=self)
         
-    async def on_edit(self, interaction: Interaction, button: ui.Button):
+    async def on_edit(self, interaction: Interaction):
         if self.selected is None:
             await interaction.response.send_message("Выберите ставку", ephemeral=True)
             return
@@ -268,7 +297,7 @@ class BetStatusView(SafeView):
             return
         await interaction.response.send_modal(BetEditModal(self._edit_cb, self.selected))
 
-    async def on_delete(self, interaction: Interaction, button: ui.Button):
+    async def on_delete(self, interaction: Interaction):
         if self.selected is None:
             await interaction.response.send_message("Выберите ставку", ephemeral=True)
             return
