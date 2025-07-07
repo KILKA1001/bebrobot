@@ -278,22 +278,6 @@ class BetStatusView(SafeView):
         self.del_btn = _DelBtn(self)
 
         self.add_item(self.select)
-
-        options = [discord.SelectOption(label=f"ID {b['id']} (пара {b['pair_index']})", value=str(b['id'])) for b in bets]
-        self.select = ui.Select(placeholder="Выберите ставку", options=options)
-
-        # Use bound callbacks for proper parameter binding
-        self.select.callback = self.on_select
-
-        # Use unbound callback to avoid extra parameters from discord.py
-        self.select.callback = BetStatusView.on_select
-
-        self.add_item(self.select)
-        self.edit_btn = ui.Button(label="Изменить", style=ButtonStyle.primary, disabled=True)
-        self.edit_btn.callback = BetStatusView.on_edit
-        self.del_btn = ui.Button(label="Удалить", style=ButtonStyle.danger, disabled=True)
-        self.del_btn.callback = BetStatusView.on_delete
-
         self.add_item(self.edit_btn)
         self.add_item(self.del_btn)
         self.selected: int | None = None
@@ -302,6 +286,8 @@ class BetStatusView(SafeView):
         self.locked = locked or set()
 
     async def on_select(self, interaction: Interaction):
+        if not self.select.values:
+            return
         self.selected = int(self.select.values[0])
         locked = self.selected in self.locked
         self.edit_btn.disabled = locked
