@@ -177,6 +177,7 @@ class BetPairSelectView(SafeView):
                 discord.SelectOption(label=f"Пара {idx}: {n1} vs {n2}", value=str(idx))
             )
         self.select = ui.Select(placeholder="Выберите пару", options=options)
+        # Use bound method so callback receives view instance
         self.select.callback = self.on_select
         self.add_item(self.select)
 
@@ -237,6 +238,7 @@ class BetStatusView(SafeView):
         super().__init__(timeout=60)
         options = [discord.SelectOption(label=f"ID {b['id']} (пара {b['pair_index']})", value=str(b['id'])) for b in bets]
         self.select = ui.Select(placeholder="Выберите ставку", options=options)
+        # Use bound callbacks for proper parameter binding
         self.select.callback = self.on_select
         self.add_item(self.select)
         self.edit_btn = ui.Button(label="Изменить", style=ButtonStyle.primary, disabled=True)
@@ -257,7 +259,7 @@ class BetStatusView(SafeView):
         self.del_btn.disabled = locked
         await interaction.response.edit_message(view=self)
         
-    async def on_edit(self, interaction: Interaction, button: ui.Button):
+    async def on_edit(self, interaction: Interaction):
         if self.selected is None:
             await interaction.response.send_message("Выберите ставку", ephemeral=True)
             return
@@ -268,7 +270,7 @@ class BetStatusView(SafeView):
             return
         await interaction.response.send_modal(BetEditModal(self._edit_cb, self.selected))
 
-    async def on_delete(self, interaction: Interaction, button: ui.Button):
+    async def on_delete(self, interaction: Interaction):
         if self.selected is None:
             await interaction.response.send_message("Выберите ставку", ephemeral=True)
             return
