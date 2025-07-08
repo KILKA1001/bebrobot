@@ -483,19 +483,32 @@ class PairSelectionView(SafeView):
                 )
 
                 class PayoutView(SafeView):
-                    def __init__(self):
+                    def __init__(self,
+                                 tournament_id: int,
+                                 round_no: int,
+                                 pair_index: int,
+                                 winner: int,
+                                 total_rounds: int) -> None:
                         super().__init__(timeout=60)
+                        self.tournament_id = tournament_id
+                        self.round_no = round_no
+                        self.pair_index = pair_index
+                        self.winner = winner
+                        self.total_rounds = total_rounds
 
                     @ui.button(label="Выплатить", style=ButtonStyle.success)
                     async def confirm(self, inter: Interaction, button: ui.Button):
                         payout_bets(
                             self.tournament_id,
                             self.round_no,
-                            idx,
-                            winner,
-                            total_rounds,
+                            self.pair_index,
+                            self.winner,
+                            self.total_rounds,
                         )
-                        await inter.response.edit_message(content="Ставки выплачены", view=None)
+                        await inter.response.edit_message(
+                            content="Ставки выплачены",
+                            view=None,
+                        )
                         self.stop()
 
                 emb = discord.Embed(
@@ -508,7 +521,13 @@ class PairSelectionView(SafeView):
                     ),
                     color=discord.Color.orange(),
                 )
-                view = PayoutView()
+                view = PayoutView(
+                    self.tournament_id,
+                    self.round_no,
+                    idx,
+                    winner,
+                    total_rounds,
+                )
                 await safe_send(channel, embed=emb, view=view)
             except Exception:
                 pass
