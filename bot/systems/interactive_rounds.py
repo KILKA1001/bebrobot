@@ -3,6 +3,7 @@ from discord import Embed, Interaction, ButtonStyle, ui
 from discord.ui import Button
 from bot.utils import SafeView, safe_send
 from typing import Optional
+from discord.ext import commands
 from bot.data.players_db import get_player_by_id
 from bot.data.tournament_db import get_tournament_info
 import math
@@ -36,10 +37,16 @@ class RoundManagementView(SafeView):
 
     persistent = True
 
-    def __init__(self, tournament_id: int, logic: Tournament):
+    def __init__(
+        self,
+        tournament_id: int,
+        logic: Tournament,
+        ctx: commands.Context | None = None,
+    ) -> None:
         super().__init__(timeout=None)
         self.tournament_id = tournament_id
         self.logic = logic
+        self.ctx = ctx
         self.custom_id = f"manage_rounds:{tournament_id}"  # Добавляем custom_id
 
         # Первоначальная настройка кнопок
@@ -177,7 +184,7 @@ class RoundManagementView(SafeView):
             ),
             color=0xF39C12,
         )
-        view = RoundManagementView(self.tournament_id, self.logic)
+        view = RoundManagementView(self.tournament_id, self.logic, self.ctx)
         await interaction.response.edit_message(embed=embed, view=view)
 
     async def on_list_participants(self, interaction: Interaction):
@@ -195,7 +202,22 @@ class RoundManagementView(SafeView):
         """Возвращает на главное меню управления турниром."""
         from .manage_tournament_view import ManageTournamentView
 
-        ctx = await interaction.client.get_context(interaction)
+        from types import SimpleNamespace
+
+        ctx = None
+        if self.ctx is not None:
+            ctx = await self.ctx.bot.get_context(interaction)
+        else:
+            try:
+                ctx = await interaction.client.get_context(interaction)
+            except ValueError:
+                # Fallback to a minimal context with only bot, guild and author
+                ctx = SimpleNamespace(
+                    bot=interaction.client,
+                    guild=interaction.guild,
+                    author=interaction.user,
+                )
+
         view = ManageTournamentView(self.tournament_id, ctx)
         embed = await build_tournament_bracket_embed(
             self.tournament_id, interaction.guild
@@ -534,7 +556,12 @@ class PairSelectionView(SafeView):
 
 
 # Функция-помощник для отправки стартового сообщения турнира
-async def announce_round_management(channel, tournament_id: int, logic: Tournament):
+async def announce_round_management(
+    channel,
+    tournament_id: int,
+    logic: Tournament,
+    ctx: commands.Context | None = None,
+):
     """
     Отправляет embed-подложку с кнопками управления раундами.
     """
@@ -546,5 +573,5 @@ async def announce_round_management(channel, tournament_id: int, logic: Tourname
         ),
         color=0xF39C12,
     )
-    view = RoundManagementView(tournament_id, logic)
+    view = RoundManagementView(tournament_id, logic, ctx)
     await safe_send(channel, embed=embed, view=view)
