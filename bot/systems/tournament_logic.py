@@ -1020,6 +1020,29 @@ async def report_result(ctx: commands.Context, match_id: int, winner: int) -> No
         await send_temp(ctx, "❌ Укажите победителя: 1 (player1) или 2 (player2).")
         return
 
+    match = tournament_db.get_match(match_id)
+    if not match:
+        await send_temp(ctx, "❌ Матч не найден.")
+        return
+
+    all_matches = tournament_db.get_matches(match["tournament_id"], match["round_number"])
+    pairs: dict[int, list[dict]] = {}
+    idx_map: dict[tuple[int, int], int] = {}
+    idx = 1
+    for m in all_matches:
+        key = (int(m["player1_id"]), int(m["player2_id"]))
+        if key not in idx_map:
+            idx_map[key] = idx
+            idx += 1
+        pid = idx_map[key]
+        pairs.setdefault(pid, []).append(m)
+
+    pair_idx = idx_map.get((int(match["player1_id"]), int(match["player2_id"])))
+    pair_matches = pairs.get(pair_idx, [])
+    if not all(x.get("result") is not None for x in pair_matches):
+        await send_temp(ctx, "❌ Изменять результат можно только после оглашения пары.")
+        return
+
     ok = db_record_match_result(match_id, winner)
     if ok:
         await send_temp(
