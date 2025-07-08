@@ -1,13 +1,12 @@
 import discord
 from discord.ui import Button
-from bot.utils import SafeView, safe_send
+from bot.utils import SafeView, safe_send, format_moscow_time, format_moscow_date
 from datetime import datetime, timezone, timedelta
 from typing import List
 from bot.data import db
 from collections import defaultdict
 import asyncio
 import os
-import pytz
 
 latest_report_message_id = None
 
@@ -28,7 +27,7 @@ def format_fine_due_date(fine: dict) -> str:
         return "N/A"
     try:
         dt = datetime.fromisoformat(raw)
-        return dt.astimezone(timezone.utc).strftime("%d.%m.%Y")
+        return format_moscow_date(dt)
     except Exception:
         return raw
 
@@ -217,7 +216,14 @@ class AllFinesView(SafeView):
             user = self.ctx.guild.get_member(fine["user_id"])
             name = user.display_name if user else f"<@{fine['user_id']}>"
             rest = fine["amount"] - fine.get("paid_amount", 0)
-            due = fine.get("due_date", "N/A")[:10]
+            due_raw = fine.get("due_date")
+            if isinstance(due_raw, str):
+                try:
+                    due = format_moscow_date(datetime.fromisoformat(due_raw))
+                except Exception:
+                    due = due_raw[:10]
+            else:
+                due = "N/A"
             status = "⚠️ Просрочен" if fine.get("is_overdue") else "⏳ Активен"
             embed.add_field(
                 name=f"#{fine['id']} • {name}",
@@ -366,7 +372,7 @@ async def remind_fines(bot):
                     try:
                         await safe_send(
                             user,
-                            f"⏰ Напоминание: штраф #{fine['id']} нужно оплатить до {due_date.strftime('%d.%m.%Y')} (через {delta} дн.)",
+                            f"⏰ Напоминание: штраф #{fine['id']} нужно оплатить до {format_moscow_date(due_date)} (через {delta} дн.)",
                         )
                     except discord.Forbidden:
                         continue
@@ -406,7 +412,7 @@ async def fines_summary_report(bot):
     total_sum = sum(f["amount"] - f.get("paid_amount", 0) for f in active)
     bank = db.get_bank_balance()
 
-    now = datetime.now(pytz.timezone("Europe/Moscow")).strftime("%d.%m.%Y")
+    now = format_moscow_date()
 
     embed = discord.Embed(title=f"📢 Актуальная сводка по штрафам на {now}", color=discord.Color.orange())
     embed.add_field(name="📋 Активных штрафов", value=str(len(active)), inline=True)

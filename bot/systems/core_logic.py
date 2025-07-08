@@ -9,16 +9,16 @@ import traceback
 
 from bot.data import db
 from bot.utils.roles_and_activities import ROLE_THRESHOLDS
-from bot.utils import send_temp, build_top_embed, SafeView, safe_send
+from bot.utils import (
+    send_temp,
+    build_top_embed,
+    SafeView,
+    safe_send,
+    format_moscow_time,
+)
 from bot.utils.history_manager import format_history_embed
 
-TIME_FORMAT = "%H:%M (%d.%m.%Y)"
 active_timers = {}
-
-def format_moscow_time(dt: Optional[datetime] = None) -> str:
-  if dt is None:
-      dt = datetime.now(timezone.utc)
-  return dt.astimezone(pytz.timezone('Europe/Moscow')).strftime(TIME_FORMAT)
   
 async def update_roles(member: discord.Member):
     user_id = member.id
@@ -109,20 +109,20 @@ async def render_history(ctx_or_interaction, member: discord.Member, page: int):
         embed.add_field(name="💰 Текущий баланс", value=f"```{total_points} баллов```", inline=False)
 
         for action in page_actions:
-            points = action.get('points', 0)
+            points = action.get("points", 0)
             emoji = "🟢" if points >= 0 else "🔴"
-            if action.get('is_undo', False):
+            if action.get("is_undo", False):
                 emoji = "⚪"
 
-            timestamp = action.get('timestamp')
+            timestamp = action.get("timestamp")
             if isinstance(timestamp, str):
                 try:
                     dt = datetime.fromisoformat(timestamp)
-                    formatted_time = dt.astimezone(pytz.timezone('Europe/Moscow')).strftime("%H:%M (%d.%m.%Y)")
+                    formatted_time = format_moscow_time(dt)
                 except ValueError:
                     formatted_time = timestamp
             else:
-                formatted_time = timestamp.strftime("%H:%M (%d.%m.%Y)") if timestamp else 'N/A'
+                formatted_time = format_moscow_time(timestamp) if timestamp else "N/A"
 
             author_id = action.get('author_id', 'N/A')
             reason = action.get('reason', 'Не указана')
@@ -166,8 +166,10 @@ async def log_action_cancellation(ctx, member: discord.Member, entries: list):
     if not channel:
         return
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    lines = [f"**{ctx.author.display_name}** отменил(а) {len(entries)} изменения для **{member.display_name}** ({member.id}) в {now}:"]
+    now = format_moscow_time()
+    lines = [
+        f"**{ctx.author.display_name}** отменил(а) {len(entries)} изменения для **{member.display_name}** ({member.id}) в {now}:"
+    ]
     for i, (points, reason) in enumerate(entries[::-1], start=1):
         sign = "+" if points > 0 else ""
         lines.append(f"{i}. {sign}{points} — {reason}")

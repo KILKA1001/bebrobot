@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from bot.commands.base import bot
-from bot.utils import send_temp, build_top_embed, safe_send
+from bot.utils import send_temp, build_top_embed, safe_send, format_moscow_date
 
 from bot.data import db
 from bot.systems.fines_logic import (
@@ -88,7 +88,7 @@ async def fine(
             embed.add_field(name="Причина", value=reason, inline=False)
             embed.add_field(
                 name="Срок оплаты",
-                value=due_date.strftime("%d.%m.%Y"),
+                value=format_moscow_date(due_date),
                 inline=True,
             )
             embed.set_footer(text=f"ID штрафа: {fine['id']}")
