@@ -691,7 +691,7 @@ class ManageTournamentView(SafeView):
 
     async def on_manage_rounds(self, interaction: Interaction):
         logic = load_tournament_logic_from_db(self.tid)
-        view = RoundManagementView(self.tid, logic)
+        view = RoundManagementView(self.tid, logic, self.ctx)
         embed = await build_tournament_bracket_embed(self.tid, interaction.guild)
         if not embed:
             embed = await build_tournament_status_embed(self.tid)
