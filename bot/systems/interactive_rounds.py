@@ -224,7 +224,8 @@ class MatchResultView(SafeView):
         round_no: int = 1,
         pair_index: int = 0,
     ):
-        super().__init__(timeout=60)
+        # timeout=None чтобы ожидать регистрации результата без ограничения
+        super().__init__(timeout=None)
         self.match_id = match_id
         self.tournament_id = tournament_id
         self.guild = guild

@@ -170,6 +170,24 @@ def get_matches(tournament_id: int, round_number: int) -> List[dict]:
     return res.data or []
 
 
+def get_match(match_id: int) -> Optional[dict]:
+    """Возвращает запись матча по ID или ``None``."""
+    try:
+        res = (
+            supabase.table("tournament_matches")
+            .select(
+                "id, tournament_id, round_number, player1_id, player2_id, result"
+            )
+            .eq("id", match_id)
+            .single()
+            .execute()
+        )
+        return res.data if res and res.data else None
+    except Exception as e:
+        logger.error(f"Failed to get match {match_id}: {e}")
+        return None
+
+
 def get_map_image_url(map_id: str) -> Optional[str]:
     """Возвращает ссылку на изображение карты по её ID."""
     try:
