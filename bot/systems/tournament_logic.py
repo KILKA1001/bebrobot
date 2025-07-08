@@ -5,7 +5,7 @@ import asyncio
 import math
 import discord
 from discord import ui, Embed, ButtonStyle, Color
-from bot.utils import SafeView, safe_send
+from bot.utils import SafeView, safe_send, format_moscow_time
 import os
 from bot.data import db
 from discord.ext import commands
@@ -1532,6 +1532,30 @@ class RegistrationView(SafeView):
         btn.disabled = current >= self.max
         self.add_item(btn)
 
+        time_btn = ui.Button(
+            label="⏰ Время начала",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"start_{self.tid}",
+        )
+        time_btn.callback = self.show_start_time
+        self.add_item(time_btn)
+
+    async def show_start_time(self, interaction: discord.Interaction):
+        from datetime import datetime
+        info = get_tournament_info(self.tid) or {}
+        start_raw = info.get("start_time")
+        if start_raw:
+            try:
+                dt = datetime.fromisoformat(start_raw)
+                start_text = format_moscow_time(dt)
+            except Exception:
+                start_text = start_raw
+        else:
+            start_text = "Не указано"
+        await interaction.response.send_message(
+            f"🕒 Турнир начнётся: {start_text}", ephemeral=True
+        )
+
     async def register(self, interaction: discord.Interaction):
         if is_auto_team(self.tid):
             ok = assign_auto_team(self.tid, interaction.user.id)
@@ -1948,7 +1972,7 @@ class StartDateModal(ui.Modal, title="Дата начала турнира"):
             dt = datetime.strptime(str(self.start), "%d.%m.%Y %H:%M")
             self.view.start_time = dt.isoformat()
             await interaction.response.send_message(
-                f"✅ Дата начала установлена: {dt.strftime('%d.%m.%Y %H:%M')}",
+                f"✅ Дата начала установлена: {format_moscow_time(dt)}",
                 ephemeral=True,
             )
             if self.view.message:
@@ -2022,7 +2046,7 @@ class ExtendDateModal(ui.Modal, title="Новая дата"):
             if update_start_time(self.tid, dt.isoformat()):
                 expired_notified.discard(self.tid)
                 await interaction.response.send_message(
-                    f"✅ Регистрация продлена до {dt.strftime('%d.%m.%Y %H:%M')}",
+                    f"✅ Регистрация продлена до {format_moscow_time(dt)}",
                     ephemeral=True,
                 )
             else:
@@ -2054,7 +2078,8 @@ class ExtendRegistrationView(SafeView):
             if ok:
                 expired_notified.discard(self.tid)
                 await interaction.response.send_message(
-                    f"✅ Новое время: {dt.strftime('%d.%m.%Y %H:%M')}", ephemeral=True
+                    f"✅ Новое время: {format_moscow_time(dt)}",
+                    ephemeral=True,
                 )
             else:
                 await interaction.response.send_message(
@@ -2790,7 +2815,7 @@ async def send_tournament_reminders(bot: commands.Bot, hours: int = 24) -> None:
             continue
         try:
             dt = datetime.fromisoformat(start_iso)
-            start_text = dt.strftime("%d.%m.%Y %H:%M")
+            start_text = format_moscow_time(dt)
         except Exception:
             start_text = start_iso
         participants = tournament_db.list_participants_full(t["id"])

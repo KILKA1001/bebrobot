@@ -2,8 +2,6 @@ import discord
 from discord.ext import commands
 from aiohttp import TraceConfig
 from typing import Optional
-from datetime import datetime, timezone
-import pytz
 
 from bot.data import db
 from bot.utils.roles_and_activities import (
@@ -20,13 +18,12 @@ from bot.systems.core_logic import (
     LeaderboardView,
     build_balance_embed,
 )
-from bot.utils import send_temp
+from bot.utils import send_temp, format_moscow_time, TIME_FORMAT
 from bot.utils.api_monitor import monitor
 from bot import COMMAND_PREFIX
 
 
 # Константы
-TIME_FORMAT = "%H:%M (%d.%m.%Y)"
 DATE_FORMAT = "%d-%m-%Y"  # 25-12-2023
 DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"  # Для сортировки
 
@@ -52,10 +49,7 @@ bot = commands.Bot(
 )
 
 
-def format_moscow_time(dt: Optional[datetime] = None) -> str:
-    if dt is None:
-        dt = datetime.now(timezone.utc)
-    return dt.astimezone(pytz.timezone("Europe/Moscow")).strftime(TIME_FORMAT)
+
 
 
 @bot.hybrid_command(name="addpoints", description="Начислить баллы участнику")
