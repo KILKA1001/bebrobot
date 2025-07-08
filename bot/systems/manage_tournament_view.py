@@ -220,19 +220,30 @@ class ConfirmBetView(SafeView):
 
 
 class BetEditModal(ui.Modal, title="Изменить ставку"):
-    bet_on = ui.TextInput(label="ID игрока/команды", required=True)
     amount = ui.TextInput(label="Баллы", required=True)
 
-    def __init__(self, callback, bet_id: int):
+    def __init__(
+        self,
+        callback,
+        bet_id: int,
+        options: list[discord.SelectOption],
+        default: int | None = None,
+    ):
         super().__init__()
         self._callback = callback
         self.bet_id = bet_id
+        if default is not None:
+            for opt in options:
+                if opt.value == str(default):
+                    opt.default = True
+        self.bet_select = ui.Select(placeholder="Игрок/команда", options=options)
+        self.add_item(self.bet_select)
 
     async def on_submit(self, interaction: Interaction):
         try:
-            bet_on = int(str(self.bet_on))
+            bet_on = int(self.bet_select.values[0])
             amount = float(str(self.amount))
-        except ValueError:
+        except Exception:
             await interaction.response.send_message("Неверные данные", ephemeral=True)
             return
         await self._callback(interaction, self.bet_id, bet_on, amount)
@@ -303,7 +314,7 @@ class BetStatusView(SafeView):
                 "Ставку нельзя изменить после начала пары", ephemeral=True
             )
             return
-        await interaction.response.send_modal(BetEditModal(self._edit_cb, self.selected))
+        await self._edit_cb(interaction, self.selected)
 
     async def on_delete(self, interaction: Interaction):
         if self.selected is None:
@@ -721,6 +732,58 @@ class ManageTournamentView(SafeView):
         )
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
+    async def _show_edit_modal(self, interaction: Interaction, bet_id: int):
+        from bot.data.tournament_db import get_bet, get_matches, get_team_info
+        from bot.data.players_db import get_player_by_id
+        bet = get_bet(bet_id)
+        if not bet:
+            await interaction.response.send_message("Ставка не найдена", ephemeral=True)
+            return
+        round_no = int(bet["round"])
+        pair_index = int(bet["pair_index"])
+        matches = get_matches(self.tid, round_no)
+        if not matches:
+            await interaction.response.send_message("Матчи не найдены", ephemeral=True)
+            return
+        pairs: dict[int, tuple[int, int]] = {}
+        idx_map: dict[tuple[int, int], int] = {}
+        idx = 1
+        for m in matches:
+            key = (int(m["player1_id"]), int(m["player2_id"]))
+            if key not in idx_map:
+                idx_map[key] = idx
+                idx += 1
+            pid = idx_map[key]
+            pairs[pid] = key
+        pair = pairs.get(pair_index)
+        if not pair:
+            await interaction.response.send_message("Пара не найдена", ephemeral=True)
+            return
+        p1, p2 = pair
+        name_map: dict[int, str] = {}
+        if self.is_team:
+            _, team_names = get_team_info(self.tid)
+            name_map.update({int(k): v for k, v in team_names.items()})
+        guild = interaction.guild or (self.ctx.guild if hasattr(self.ctx, "guild") else None)
+        for pid in (p1, p2):
+            if pid in name_map:
+                continue
+            name = None
+            if guild:
+                member = guild.get_member(pid)
+                if member:
+                    name = member.display_name
+            if name is None:
+                pl = get_player_by_id(pid)
+                name = pl["nick"] if pl else f"ID:{pid}"
+            name_map[pid] = name
+        options = [
+            discord.SelectOption(label=name_map.get(p1, str(p1)), value=str(p1)),
+            discord.SelectOption(label=name_map.get(p2, str(p2)), value=str(p2)),
+        ]
+        modal = BetEditModal(self._edit_bet, bet_id, options, default=int(bet["bet_on"]))
+        await interaction.response.send_modal(modal)
+
     async def _edit_bet(self, interaction: Interaction, bet_id: int, bet_on: int, amount: float):
         from bot.systems import bets_logic
         from bot.data.tournament_db import get_tournament_size, get_bet
@@ -838,7 +901,7 @@ class ManageTournamentView(SafeView):
                 value=f"Раунд {b['round']} пара {b['pair_index']} на {b['bet_on']} — {b['amount']} баллов",
                 inline=False,
             )
-        view = BetStatusView(bets, self._edit_bet, self._delete_bet, locked)
+        view = BetStatusView(bets, self._show_edit_modal, self._delete_bet, locked)
         await interaction.response.edit_message(embed=embed, view=view)
 
     async def _place_bet(
