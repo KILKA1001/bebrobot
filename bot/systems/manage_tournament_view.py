@@ -219,34 +219,59 @@ class ConfirmBetView(SafeView):
         self.stop()
 
 
-class BetEditModal(ui.Modal, title="Изменить ставку"):
+class BetEditAmountModal(ui.Modal, title="Изменить ставку"):
+    """Modal for editing bet amount."""
+
     amount = ui.TextInput(label="Баллы", required=True)
 
-    def __init__(
-        self,
-        callback,
-        bet_id: int,
-        options: list[discord.SelectOption],
-        default: int | None = None,
-    ):
+    def __init__(self, callback, bet_id: int, bet_on: int):
         super().__init__()
         self._callback = callback
         self.bet_id = bet_id
-        if default is not None:
-            for opt in options:
-                if opt.value == str(default):
-                    opt.default = True
-        self.bet_select = ui.Select(placeholder="Игрок/команда", options=options)
-        self.add_item(self.bet_select)
+        self.bet_on = bet_on
 
     async def on_submit(self, interaction: Interaction):
         try:
-            bet_on = int(self.bet_select.values[0])
             amount = float(str(self.amount))
         except Exception:
             await interaction.response.send_message("Неверные данные", ephemeral=True)
             return
-        await self._callback(interaction, self.bet_id, bet_on, amount)
+        await self._callback(interaction, self.bet_id, self.bet_on, amount)
+
+
+class BetEditView(SafeView):
+    """View to select new bet target before entering amount."""
+
+    def __init__(
+        self,
+        bet_id: int,
+        options: list[discord.SelectOption],
+        callback,
+        default: int | None = None,
+    ):
+        super().__init__(timeout=60)
+        self.bet_id = bet_id
+        self._callback = callback
+        if default is not None:
+            for opt in options:
+                if opt.value == str(default):
+                    opt.default = True
+
+        self.select = ui.Select(placeholder="Игрок/команда", options=options)
+        self.add_item(self.select)
+
+        self.confirm_btn = ui.Button(label="Далее", style=ButtonStyle.primary)
+        self.confirm_btn.callback = self.on_confirm
+        self.add_item(self.confirm_btn)
+
+    async def on_confirm(self, interaction: Interaction):
+        if not self.select.values:
+            await interaction.response.send_message("Выберите игрока/команду", ephemeral=True)
+            return
+        bet_on = int(self.select.values[0])
+        await interaction.response.send_modal(
+            BetEditAmountModal(self._callback, self.bet_id, bet_on)
+        )
 
 
 class BetStatusView(SafeView):
@@ -781,8 +806,13 @@ class ManageTournamentView(SafeView):
             discord.SelectOption(label=name_map.get(p1, str(p1)), value=str(p1)),
             discord.SelectOption(label=name_map.get(p2, str(p2)), value=str(p2)),
         ]
-        modal = BetEditModal(self._edit_bet, bet_id, options, default=int(bet["bet_on"]))
-        await interaction.response.send_modal(modal)
+        view = BetEditView(bet_id, options, self._edit_bet, default=int(bet["bet_on"]))
+        embed = discord.Embed(
+            title="Изменить ставку",
+            description="Выберите игрока/команду и нажмите Далее",
+            color=discord.Color.orange(),
+        )
+        await interaction.response.edit_message(embed=embed, view=view)
 
     async def _edit_bet(self, interaction: Interaction, bet_id: int, bet_on: int, amount: float):
         from bot.systems import bets_logic
