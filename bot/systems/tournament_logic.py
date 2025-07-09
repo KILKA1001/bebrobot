@@ -2304,7 +2304,35 @@ async def send_announcement_embed(ctx, tournament_id: int) -> bool:
         channel = ctx.guild.get_channel(ANNOUNCE_CHANNEL_ID)
 
     target = channel or ctx
-    await send_temp(target, embed=embed, view=view, delete_after=None)
+
+    from bot.data.tournament_db import (
+        get_announcement_message_id,
+        save_announcement_message,
+    )
+
+    sent_message = None
+    if channel:
+        msg_id = get_announcement_message_id(tournament_id)
+        if msg_id:
+            try:
+                existing = await channel.fetch_message(msg_id)
+                await existing.edit(embed=embed, view=view)
+                sent_message = existing
+            except Exception:
+                pass
+
+    if sent_message is None:
+        sent_message = await send_temp(target, embed=embed, view=view, delete_after=None)
+
+    if not sent_message:
+        return False
+
+    save_announcement_message(tournament_id, sent_message.id)
+    try:
+        ctx.bot.add_view(view, message_id=sent_message.id)
+    except Exception:
+        pass
+
     return True
 
 
