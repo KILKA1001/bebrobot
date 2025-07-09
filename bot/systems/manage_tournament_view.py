@@ -632,8 +632,11 @@ class ManageTournamentView(SafeView):
             await interaction.response.send_message("Нет данных", ephemeral=True)
 
     async def on_announce(self, interaction: Interaction):
-        await send_announcement_embed(self.ctx, self.tid)
-        await interaction.response.send_message("Анонс отправлен", ephemeral=True)
+        success = await send_announcement_embed(self.ctx, self.tid)
+        if success:
+            await interaction.response.send_message("Анонс отправлен", ephemeral=True)
+        else:
+            await interaction.response.send_message("Не удалось отправить анонс", ephemeral=True)
 
     async def on_notify(self, interaction: Interaction):
         admin_id = self.ctx.author.id

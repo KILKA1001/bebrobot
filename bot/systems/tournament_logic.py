@@ -2290,7 +2290,7 @@ async def send_announcement_embed(ctx, tournament_id: int) -> bool:
 
     from bot.commands.tournament import tournament_admins
 
-    admin_id = tournament_admins.get(tournament_id)
+    admin_id = tournament_admins.get(tournament_id, admin_id)
 
     view = RegistrationView(
         tournament_id,

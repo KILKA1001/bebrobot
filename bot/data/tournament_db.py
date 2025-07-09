@@ -635,17 +635,20 @@ def get_tournament_info(tournament_id: int) -> Optional[dict]:
         )
         return res.data or None
     except APIError as e:
-        if _has_team_auto and "team_auto" in str(e) and getattr(e, "code", "") == "PGRST204":
+        if _has_team_auto and "team_auto" in str(e):
             logger.warning("'team_auto' column missing when fetching tournament info")
             _has_team_auto = False
-            res = (
-                supabase.table("tournaments")
-                .select("type, size, bank_type, manual_amount, status, start_time")
-                .eq("id", tournament_id)
-                .single()
-                .execute()
-            )
-            return res.data or None
+            try:
+                res = (
+                    supabase.table("tournaments")
+                    .select("type, size, bank_type, manual_amount, status, start_time")
+                    .eq("id", tournament_id)
+                    .single()
+                    .execute()
+                )
+                return res.data or None
+            except Exception:
+                return None
         return None
     except Exception:
         return None
