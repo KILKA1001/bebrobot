@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 from aiohttp import TraceConfig
 from typing import Optional
+import os
 
 from bot.data import db
 from bot.utils.roles_and_activities import (
@@ -35,6 +36,11 @@ intents.message_content = True
 
 trace_config = TraceConfig()
 
+# Дополнительные роли, которым разрешено начислять и снимать баллы
+POINTS_ROLE_IDS = tuple(
+    int(r) for r in os.getenv("POINTS_ROLE_IDS", "").split(",") if r
+)
+
 
 @trace_config.on_request_end.append
 async def _trace_request_end(session, ctx, params):
@@ -49,11 +55,18 @@ bot = commands.Bot(
 )
 
 
+def has_points_permission(ctx: commands.Context) -> bool:
+    """Check if user can modify points."""
+    if ctx.author.guild_permissions.administrator:
+        return True
+    return any(role.id in POINTS_ROLE_IDS for role in ctx.author.roles)
+
+
 
 
 
 @bot.hybrid_command(name="addpoints", description="Начислить баллы участнику")
-@commands.has_permissions(administrator=True)
+@commands.check(has_points_permission)
 async def add_points(
     ctx, member: discord.Member, points: str, *, reason: str = "Без причины"
 ):
@@ -88,7 +101,7 @@ async def add_points(
 
 
 @bot.hybrid_command(name="removepoints", description="Снять баллы у участника")
-@commands.has_permissions(administrator=True)
+@commands.check(has_points_permission)
 async def remove_points(
     ctx, member: discord.Member, points: str, *, reason: str = "Без причины"
 ):
