@@ -178,11 +178,10 @@ class BetPairSelectView(SafeView):
             )
         self.select = ui.Select(placeholder="Выберите пару", options=options)
 
-        # Use bound method so callback receives view instance
-        self.select.callback = self.on_select
+        async def _callback(interaction: Interaction):
+            await self.on_select(interaction)
 
-        # Use unbound method to match discord.py callback signature
-        self.select.callback = BetPairSelectView.on_select
+        self.select.callback = _callback
 
         self.add_item(self.select)
 

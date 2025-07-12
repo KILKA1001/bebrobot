@@ -7,7 +7,6 @@ from bot.systems.players_logic import (
     edit_player,
     delete_player_cmd,
     list_player_logs_view,
-    unregister_player,
 )
 
 from bot.commands.base import bot
@@ -70,16 +69,6 @@ async def deleteplayer(ctx: commands.Context, player_id: int):
     await delete_player_cmd(ctx, player_id)
 
 
-@bot.hybrid_command(name="unregister", description="Убрать игрока из турнира")
-@commands.has_permissions(administrator=True)
-async def unregister(
-    ctx: commands.Context, player_id: int, tournament_id: int
-):
-    """
-    /unregister <player_id> <tournament_id>
-    Убирает игрока из указанного турнира.
-    """
-    await unregister_player(ctx, player_id, tournament_id)
 
 
 @bot.hybrid_command(name="playerlogs", description="История изменений игрока")
