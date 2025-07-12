@@ -21,8 +21,6 @@ from .fines import (
 from .tournament import (
     createtournament,
     jointournament,
-    deletetournament,
-    regplayer,
 )
 from .maps import mapinfo
 
@@ -39,7 +37,5 @@ __all__ = [
     "topfines",
     "createtournament",
     "jointournament",
-    "deletetournament",
-    "regplayer",
     "mapinfo",
 ]

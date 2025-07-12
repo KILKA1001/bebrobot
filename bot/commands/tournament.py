@@ -9,16 +9,11 @@ from bot.systems.tournament_logic import (
     show_history,
     Tournament,
     handle_jointournament,
-    handle_regplayer,
-    handle_unregister,
     build_tournament_status_embed,
     build_tournament_bracket_embed,
     build_tournament_result_embed,
 )
 from bot.systems.manage_tournament_view import ManageTournamentView
-from bot.systems.tournament_logic import (
-    delete_tournament as send_delete_confirmation,
-)
 from bot.data.tournament_db import get_tournament_status
 
 # Import the bot instance from base.py instead of creating a new one
@@ -84,13 +79,10 @@ async def jointournament(ctx: commands.Context, tournament_id: int):
     await handle_jointournament(ctx, tournament_id)
 
 
-@bot.hybrid_command(
-    name="endtournament", description="Завершить турнир и указать призёров"
-)
-@commands.has_permissions(administrator=True)
 async def endtournament(
     ctx, tid: int, first: int, second: int, third: Optional[int] = None
 ):
+    """Завершить турнир и указать призёров."""
     await end_tournament(ctx, tid, first, second, third)
 
 
@@ -102,44 +94,3 @@ async def tournamenthistory(ctx, limit: int = 10):
     await show_history(ctx, limit)
 
 
-@bot.hybrid_command(
-    name="deletetournament", description="Удалить турнир из базы"
-)
-@commands.has_permissions(administrator=True)
-async def deletetournament(ctx, tournament_id: int):
-    """Удалить турнир и все связанные с ним записи."""
-    await send_delete_confirmation(ctx, tournament_id)
-
-
-@bot.hybrid_command(
-    name="regplayer", description="Добавить участника в турнир"
-)
-@commands.has_permissions(administrator=True)
-async def regplayer(ctx: commands.Context, player_id: int, tournament_id: int):
-    await handle_regplayer(ctx, player_id, tournament_id)
-
-
-@bot.hybrid_command(
-    name="tunregister", description="Убрать участника из турнира"
-)
-@commands.has_permissions(administrator=True)
-async def tournament_unregister(
-    ctx: commands.Context, identifier: str, tournament_id: int
-):
-    await handle_unregister(ctx, identifier, tournament_id)
-
-
-@bot.hybrid_command(
-    name="tournamentannounce", description="Отправить объявление о турнире"
-)
-@commands.has_permissions(administrator=True)
-async def tournament_announce(ctx, tournament_id: int):
-    from bot.systems import tournament_logic
-
-    success = await tournament_logic.send_announcement_embed(
-        ctx, tournament_id
-    )
-    if not success:
-        await send_temp(
-            ctx, "❌ Не удалось отправить объявление. Проверь ID турнира."
-        )
