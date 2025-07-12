@@ -222,15 +222,11 @@ class Database:
             logger.error(f"🔥 Ошибка сохранения: {str(e)}")
             traceback.print_exc()
 
-    def log_monthly_top(self, entries: list):
+    def log_monthly_top(self, entries: list, month: int, year: int):
         """Запись топа месяца в Supabase"""
         if not self.supabase:
             logger.warning("Supabase не инициализирован для логирования топа")
             return False
-
-        now = datetime.now()
-        month = now.month
-        year = now.year
 
         log_entries = [
             {
