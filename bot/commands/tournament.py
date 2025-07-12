@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 from typing import Optional
+import os
 
 # UI-класс и вся бизнес-логика в одном модуле
 from bot.systems.tournament_logic import (
@@ -27,11 +28,22 @@ confirmed_participants: dict[int, set[int]] = {}
 # В памяти храним экземпляры турниров
 active_tournaments: dict[int, Tournament] = {}
 
+# Роли, которым разрешено создавать и управлять турнирами
+TOURNAMENT_ROLE_IDS = tuple(
+    int(r) for r in os.getenv("TOURNAMENT_ROLE_IDS", "").split(",") if r
+)
+
+
+def has_tournament_permission(ctx: commands.Context) -> bool:
+    if ctx.author.guild_permissions.administrator:
+        return True
+    return any(role.id in TOURNAMENT_ROLE_IDS for role in ctx.author.roles)
+
 
 @bot.hybrid_command(
     name="createtournament", description="Создать новый турнир"
 )
-@commands.has_permissions(administrator=True)
+@commands.check(has_tournament_permission)
 async def createtournament(ctx):
     """Запустить создание нового турнира через мультишаговый UI."""
     if ctx.interaction and not ctx.interaction.response.is_done():
@@ -45,7 +57,7 @@ async def createtournament(ctx):
 @bot.hybrid_command(
     name="managetournament", description="Панель управления турниром"
 )
-@commands.has_permissions(administrator=True)
+@commands.check(has_tournament_permission)
 async def manage_tournament(ctx, tournament_id: int):
     """Открывает расширенную панель управления турниром.
 

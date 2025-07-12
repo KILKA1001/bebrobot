@@ -19,6 +19,14 @@ pip install -r requirements.txt
     SUPABASE_KEY=ваш_ключ_supabase
     TOURNAMENT_ANNOUNCE_CHANNEL_ID=ID_канала_анонсов
      ```
+   - При необходимости укажите дополнительные переменные для ролей:
+     ```ini
+     POINTS_ROLE_IDS=ID_роли1,ID_роли2
+     FINE_ROLE_IDS=ID_роли1,ID_роли2
+     TOURNAMENT_ROLE_IDS=ID_роли1,ID_роли2
+     ```
+     Здесь `ID_роли` — числовые идентификаторы ролей, которым разрешены
+     соответствующие действия.
 
 3. **Запуск бота**:
 ```bash

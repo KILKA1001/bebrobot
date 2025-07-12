@@ -5,6 +5,7 @@ from typing import Optional
 
 from bot.commands.base import bot
 from bot.utils import send_temp, build_top_embed, safe_send, format_moscow_date
+import os
 
 from bot.data import db
 from bot.systems.fines_logic import (
@@ -15,15 +16,15 @@ from bot.systems.fines_logic import (
     get_fine_leaders,
 )
 
-ALLOWED_ROLES = (
-    []
-)  # 👉 сюда можно вписать ID ролей, кому разрешено выдавать штрафы
+FINE_ROLE_IDS = tuple(
+    int(r) for r in os.getenv("FINE_ROLE_IDS", "").split(",") if r
+)
 
 
 def has_permission(ctx):
     if ctx.author.guild_permissions.administrator:
         return True
-    return any(role.id in ALLOWED_ROLES for role in ctx.author.roles)
+    return any(role.id in FINE_ROLE_IDS for role in ctx.author.roles)
 
 
 @bot.hybrid_command(name="fine", description="Назначить штраф пользователю")
