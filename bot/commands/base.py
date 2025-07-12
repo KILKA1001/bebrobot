@@ -282,11 +282,11 @@ async def undo(ctx, member: discord.Member, count: int = 1):
 
 
 @bot.hybrid_command(
-    name="monthlytop", description="Запустить начисление топа месяца"
+    name="awardmonthtop", description="Начислить бонусы за выбранный месяц"
 )
 @commands.has_permissions(administrator=True)
-async def monthly_top(ctx):
-    await run_monthly_top(ctx)
+async def award_monthtop(ctx, month: Optional[int] = None, year: Optional[int] = None):
+    await run_monthly_top(ctx, month, year)
 
 
 @bot.hybrid_command(

@@ -182,10 +182,21 @@ async def log_action_cancellation(ctx, member: discord.Member, entries: list):
     await safe_send(channel, "\n".join(lines))
 
 
-async def run_monthly_top(ctx):
+async def run_monthly_top(ctx, month: Optional[int] = None, year: Optional[int] = None):
+    """Award monthly top bonuses.
+
+    Parameters
+    ----------
+    ctx : commands.Context
+        Command context.
+    month : Optional[int], optional
+        Month number to calculate results for. Defaults to current month.
+    year : Optional[int], optional
+        Year number to calculate results for. Defaults to current year.
+    """
     now = datetime.now(pytz.timezone('Europe/Moscow'))
-    current_month = now.month
-    current_year = now.year
+    current_month = month or now.month
+    current_year = year or now.year
     from collections import defaultdict
     monthly_scores = defaultdict(float)
     for action in db.actions:
@@ -222,7 +233,7 @@ async def run_monthly_top(ctx):
         )
         entries_to_log.append((uid, score, percent))
 
-    db.log_monthly_top(entries_to_log)
+    db.log_monthly_top(entries_to_log, current_month, current_year)
     embed = build_top_embed("🏆 Топ месяца", formatted, color=discord.Color.gold())
     await send_temp(ctx, embed=embed)
 
@@ -344,7 +355,7 @@ def get_help_embed(category: str) -> discord.Embed:
             "`/addpoints @пользователь сумма [причина]` — начислить баллы\n"
             "`/removepoints @пользователь сумма [причина]` — снять баллы\n"
             "`/undo @пользователь [кол-во]` — отменить последние действия\n"
-            "`/monthlytop` — бонусы за топ месяца\n"
+            "`/awardmonthtop [месяц] [год]` — бонусы за топ месяца\n"
             "`/addticket @пользователь тип кол-во [причина]` — выдать билет\n"
             "`/removeticket @пользователь тип кол-во [причина]` — списать билет"
         )
@@ -489,6 +500,7 @@ class LeaderboardView(SafeView):
             entries=formatted,
             color=discord.Color.gold(),
             footer=footer,
+            start_index=start + 1,
         )
 
     @discord.ui.button(label="◀️", style=discord.ButtonStyle.gray)

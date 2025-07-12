@@ -8,6 +8,7 @@ def build_top_embed(
     *,
     color: discord.Color = discord.Color.gold(),
     footer: Optional[str] = None,
+    start_index: int = 1,
 ) -> discord.Embed:
     """Create a unified embed for top lists.
 
@@ -21,10 +22,12 @@ def build_top_embed(
         Color of the embed border, by default ``discord.Color.gold()``.
     footer : Optional[str], optional
         Footer text, by default ``None``.
+    start_index : int, optional
+        Starting number for ranking, by default ``1``.
     """
     embed = discord.Embed(title=title, color=color)
 
-    for index, (name, value) in enumerate(entries, start=1):
+    for index, (name, value) in enumerate(entries, start=start_index):
         if index == 1:
             prefix = "🥇"
         elif index == 2:

@@ -165,7 +165,7 @@ async def monthly_top_task():
                     ctx = await bot.get_context(msg or channel.last_message)
 
                     from bot.systems.core_logic import run_monthly_top
-                    await run_monthly_top(ctx)
+                    await run_monthly_top(ctx, now.month, now.year)
 
                     # 🔥 Штрафной антибонус для топ-должников
                     from bot.systems.fines_logic import get_fine_leaders
