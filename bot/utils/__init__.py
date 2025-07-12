@@ -9,6 +9,7 @@ from .time_utils import (
     TIME_FORMAT,
     DATE_FORMAT,
 )
+from .points import format_points
 
 __all__ = [
     "send_temp",
@@ -20,4 +21,5 @@ __all__ = [
     "format_moscow_date",
     "TIME_FORMAT",
     "DATE_FORMAT",
+    "format_points",
 ]
