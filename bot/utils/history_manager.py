@@ -1,5 +1,6 @@
 from enum import Enum
 import discord
+from .points import format_points
 
 
 # Типы действий с баллами
@@ -56,7 +57,7 @@ def format_history_embed(
 
             # Форматирование отображения баллов
             sign = "+" if points >= 0 else ""
-            title = f"{action_type.value} {sign}{points} баллов"
+            title = f"{action_type.value} {sign}{format_points(points)} баллов"
 
             # Формирование текста записи
             value = (

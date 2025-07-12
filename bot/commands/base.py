@@ -19,7 +19,7 @@ from bot.systems.core_logic import (
     LeaderboardView,
     build_balance_embed,
 )
-from bot.utils import send_temp, format_moscow_time, TIME_FORMAT
+from bot.utils import send_temp, format_moscow_time, TIME_FORMAT, format_points
 from bot.utils.api_monitor import monitor
 from bot import COMMAND_PREFIX
 
@@ -92,7 +92,7 @@ async def add_points(
         )
         embed.add_field(
             name="🎯 Текущий баланс:",
-            value=f"{db.scores[user_id]} баллов",
+            value=f"{format_points(db.scores[user_id])} баллов",
             inline=False,
         )
         await send_temp(ctx, embed=embed, delete_after=None)
@@ -142,7 +142,7 @@ async def remove_points(
         )
         embed.add_field(
             name="🎯 Текущий баланс:",
-            value=f"{db.scores[user_id]} баллов",
+            value=f"{format_points(db.scores[user_id])} баллов",
             inline=False,
         )
         await send_temp(ctx, embed=embed)

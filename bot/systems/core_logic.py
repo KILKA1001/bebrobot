@@ -15,6 +15,7 @@ from bot.utils import (
     SafeView,
     safe_send,
     format_moscow_time,
+    format_points,
 )
 from bot.utils.history_manager import format_history_embed
 
@@ -106,7 +107,11 @@ async def render_history(ctx_or_interaction, member: discord.Member, page: int):
         embed.set_author(name=member.display_name, icon_url=member.avatar.url if member.avatar else member.default_avatar.url)
 
         total_points = db.scores.get(user_id, 0)
-        embed.add_field(name="💰 Текущий баланс", value=f"```{total_points} баллов```", inline=False)
+        embed.add_field(
+            name="💰 Текущий баланс",
+            value=f"```{format_points(total_points)} баллов```",
+            inline=False,
+        )
 
         for action in page_actions:
             points = action.get("points", 0)
@@ -129,7 +134,7 @@ async def render_history(ctx_or_interaction, member: discord.Member, page: int):
 
             field_name = f"{emoji} {formatted_time}"
             field_value = (
-                f"```diff\n{'+' if points >= 0 else ''}{points} баллов```\n"
+                f"```diff\n{'+' if points >= 0 else ''}{format_points(points)} баллов```\n"
                 f"**Причина:** {reason}\n"
                 f"**Выдал:** <@{author_id}>"
             )
@@ -172,7 +177,7 @@ async def log_action_cancellation(ctx, member: discord.Member, entries: list):
     ]
     for i, (points, reason) in enumerate(entries[::-1], start=1):
         sign = "+" if points > 0 else ""
-        lines.append(f"{i}. {sign}{points} — {reason}")
+        lines.append(f"{i}. {sign}{format_points(points)} — {reason}")
 
     await safe_send(channel, "\n".join(lines))
 
@@ -476,7 +481,7 @@ class LeaderboardView(SafeView):
             if member:
                 roles = [r.name for r in member.roles if r.id in ROLE_THRESHOLDS]
             role_text = f"\nРоль: {', '.join(roles)}" if roles else ""
-            formatted.append((name, f"**{points:.2f}** баллов{role_text}"))
+            formatted.append((name, f"**{format_points(points)}** баллов{role_text}"))
 
         footer = f"Страница {self.page}/{self.total_pages} • Режим: {self.mode}"
         return build_top_embed(
@@ -563,7 +568,7 @@ def build_balance_embed(member: discord.Member) -> discord.Embed:
     )
     embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
 
-    embed.add_field(name="🎯 Баллы", value=f"{points}", inline=True)
+    embed.add_field(name="🎯 Баллы", value=format_points(points), inline=True)
     embed.add_field(name="🎟 Обычные билеты", value=f"{normal}", inline=True)
     embed.add_field(name="🪙 Золотые билеты", value=f"{gold}", inline=True)
     embed.add_field(name="🏅 Роли", value=role_names, inline=False)
