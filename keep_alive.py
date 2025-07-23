@@ -6,12 +6,12 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return send_from_directory('.', 'index.html')
+    # Передаём путь к файлу относительно текущего каталога скрипта
+    return send_from_directory(os.path.dirname(__file__), "index.html")
 
 def run():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
 def keep_alive():
-    t = Thread(target=run)
-    t.start()
+    Thread(target=run).start()
