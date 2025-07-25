@@ -660,8 +660,9 @@ class ManageTournamentView(SafeView):
 
     async def on_notify(self, interaction: Interaction):
         admin_id = self.ctx.author.id
+        await interaction.response.defer(ephemeral=True)
         await send_participation_confirmations(interaction.client, self.tid, admin_id)
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "Уведомления отправлены", ephemeral=True
         )
 
