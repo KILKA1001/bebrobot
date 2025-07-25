@@ -854,13 +854,71 @@ async def join_tournament(ctx: commands.Context, tournament_id: int) -> None:
 
 
 async def start_round(interaction: Interaction, tournament_id: int) -> None:
-    """
-    1) Берёт участников
-    2) Проверяет, что их >=2 и команда в гильдии
-    3) Создаёт/достаёт объект Tournament
-    4) Генерирует раунд, сохраняет в БД
-    5) Строит Embed и шлёт в канал
-    """
+    """Открывает меню выбора пары для текущего раунда без генерации нового."""
+    from bot.systems.interactive_rounds import PairSelectionView, get_stage_name
+
+    guild = interaction.guild
+    if guild is None:
+        await interaction.response.send_message(
+            "❌ Эту команду можно использовать только на сервере.",
+            ephemeral=True,
+        )
+        return
+
+    tour = load_tournament_logic_from_db(tournament_id)
+    round_no = tour.current_round
+    matches = tournament_db.get_matches(tournament_id, round_no)
+    if not matches:
+        await interaction.response.send_message(
+            "⚠️ Раунд ещё не создан. Перейдите к следующему раунду.",
+            ephemeral=True,
+        )
+        return
+
+    info = get_tournament_info(tournament_id) or {}
+    team_display = {}
+    if info.get("type") == "team":
+        _map, team_display = tournament_db.get_team_info(tournament_id)
+
+    pairs: dict[int, list[Match]] = {}
+    step = len(tour.modes[:3])
+    pid = 1
+    for i in range(0, len(matches), step):
+        pairs[pid] = [
+            Match(m["player1_id"], m["player2_id"], m["mode"], m["map_id"])
+            if isinstance(m, dict)
+            else m
+            for m in matches[i : i + step]
+        ]
+        for m, row in zip(pairs[pid], matches[i : i + step]):
+            if isinstance(row, dict):
+                m.match_id = row.get("id")
+                m.result = row.get("result")
+        pid += 1
+
+    participants = {m.player1_id for ms in pairs.values() for m in ms}
+    participants.update({m.player2_id for ms in pairs.values() for m in ms})
+    stage_name = get_stage_name(len(participants))
+
+    embed = discord.Embed(
+        title=f"Раунд {round_no} — выбор пары",
+        description="Нажмите кнопку ниже, чтобы начать матчи для выбранной пары.",
+        color=discord.Color.orange(),
+    )
+
+    view_pairs = PairSelectionView(
+        tournament_id,
+        pairs,
+        guild,
+        round_no,
+        stage_name,
+        team_display,
+    )
+    await interaction.response.send_message(embed=embed, view=view_pairs)
+
+
+async def next_round(interaction: Interaction, tournament_id: int) -> None:
+    """Генерирует следующий раунд и отправляет меню выбора пары."""
     from bot.systems.interactive_rounds import (
         MatchResultView,
         PairSelectionView,

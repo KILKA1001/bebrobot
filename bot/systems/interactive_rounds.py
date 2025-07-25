@@ -9,6 +9,7 @@ from bot.data.tournament_db import get_tournament_info
 import math
 from bot.systems.tournament_logic import (
     start_round as cmd_start_round,
+    next_round as cmd_next_round,
     join_tournament,  # не обязательно, но для примера
     build_tournament_status_embed,
     build_participants_embed,
@@ -160,7 +161,7 @@ class RoundManagementView(SafeView):
         await cmd_start_round(interaction, self.tournament_id)
 
     async def on_next_round(self, interaction: Interaction):
-        await cmd_start_round(interaction, self.tournament_id)
+        await cmd_next_round(interaction, self.tournament_id)
 
     async def on_stop_round(self, interaction: Interaction):
         status = await build_tournament_status_embed(self.tournament_id)
