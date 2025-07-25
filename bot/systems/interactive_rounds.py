@@ -206,6 +206,7 @@ class RoundManagementView(SafeView):
         from types import SimpleNamespace
 
         if self.ctx is not None:
+            ctx = self.ctx
             try:
                 ctx = await self.ctx.bot.get_context(interaction)
             except ValueError:

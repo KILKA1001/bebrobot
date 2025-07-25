@@ -454,6 +454,7 @@ class FinishModal(ui.Modal):
             )
             return
 
+        ctx = self.ctx
         try:
             ctx = await self.ctx.bot.get_context(interaction)
         except ValueError:
@@ -497,10 +498,13 @@ class FinishChoiceView(SafeView):
             return
         from bot.commands.tournament import endtournament
 
+        ctx = self.ctx
+
         try:
             ctx = await self.ctx.bot.get_context(interaction)
         except ValueError:
             ctx = self.ctx
+
         await endtournament(ctx, self.tid, self.auto_first, self.auto_second)
         await interaction.response.edit_message(
             content="Попытка завершить турнир", view=None
