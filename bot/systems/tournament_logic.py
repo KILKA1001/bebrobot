@@ -729,19 +729,28 @@ def load_tournament_logic_from_db(tournament_id: int) -> Tournament:
         tour = create_tournament_logic(participants)
 
     round_no = 1
+    incomplete_round = None
     while True:
         rows = tournament_db.get_matches(tournament_id, round_no)
         if not rows:
             break
         matches: list[Match] = []
+        all_done = True
         for r in rows:
             m = Match(r["player1_id"], r["player2_id"], r["mode"], r["map_id"])
             m.match_id = r.get("id")
             m.result = r.get("result")
+            if m.result not in (1, 2):
+                all_done = False
             matches.append(m)
         tour.matches[round_no] = matches
+        if not all_done and incomplete_round is None:
+            incomplete_round = round_no
         round_no += 1
-    tour.current_round = round_no
+    if incomplete_round is not None:
+        tour.current_round = incomplete_round
+    else:
+        tour.current_round = round_no
     return tour
 
 
