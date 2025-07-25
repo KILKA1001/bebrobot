@@ -1692,7 +1692,7 @@ class BettingView(SafeView):
         btn.callback = self.on_bets
         self.add_item(btn)
 
-    async def on_bets(self, interaction: Interaction, button: ui.Button):
+    async def on_bets(self, interaction: Interaction):
         from .manage_tournament_view import BetMenuView
 
         view = BetMenuView(self)
