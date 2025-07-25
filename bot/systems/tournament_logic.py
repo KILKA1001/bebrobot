@@ -2128,6 +2128,11 @@ async def send_participation_confirmations(
             continue
         user = bot.get_user(uid)
         if not user:
+            try:
+                user = await bot.fetch_user(uid)
+            except Exception:
+                user = None
+        if not user:
             continue
         try:
             await safe_send(
