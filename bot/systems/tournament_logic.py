@@ -2539,6 +2539,42 @@ async def refresh_bracket_message(guild: discord.Guild, tournament_id: int) -> b
         return False
 
 
+async def update_registration_message(
+    guild: discord.Guild, tournament_id: int
+) -> bool:
+    """Обновляет кнопку регистрации в сообщении анонса."""
+    msg_id = get_announcement_message_id(tournament_id)
+    if not msg_id:
+        return False
+    channel = guild.get_channel(ANNOUNCE_CHANNEL_ID)
+    if not channel:
+        return False
+    try:
+        message = await channel.fetch_message(msg_id)
+    except Exception:
+        return False
+
+    info = get_tournament_info(tournament_id) or {}
+    t_type = info.get("type", "duel")
+    type_text = "Дуэльный 1×1" if t_type == "duel" else "Командный 3×3"
+    admin_id = get_tournament_author(tournament_id)
+    from bot.commands.tournament import tournament_admins
+
+    admin_id = tournament_admins.get(tournament_id, admin_id)
+
+    view = RegistrationView(
+        tournament_id,
+        get_tournament_size(tournament_id),
+        type_text,
+        author_id=admin_id,
+    )
+    try:
+        await message.edit(view=view)
+        return True
+    except Exception:
+        return False
+
+
 async def update_bet_message(guild: discord.Guild, tournament_id: int) -> bool:
     """Replaces registration controls with a betting button."""
     msg_id = get_announcement_message_id(tournament_id)
