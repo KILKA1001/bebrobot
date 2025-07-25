@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 # Флаг наличия столбца team_auto в таблице tournaments
 _has_team_auto = True
+# Флаг наличия столбца status_message_id
+_has_status_msg = True
 
 
 def create_tournament_record(
@@ -37,7 +39,11 @@ def create_tournament_record(
     try:
         res = supabase.table("tournaments").insert(payload).execute()
     except APIError as e:
-        if _has_team_auto and "team_auto" in str(e) and getattr(e, "code", "") == "PGRST204":
+        if (
+            _has_team_auto
+            and "team_auto" in str(e)
+            and getattr(e, "code", "") == "PGRST204"
+        ):
             logger.warning("'team_auto' column missing in tournaments table")
             payload.pop("team_auto", None)
             _has_team_auto = False
@@ -175,9 +181,7 @@ def get_match(match_id: int) -> Optional[dict]:
     try:
         res = (
             supabase.table("tournament_matches")
-            .select(
-                "id, tournament_id, round_number, player1_id, player2_id, result"
-            )
+            .select("id, tournament_id, round_number, player1_id, player2_id, result")
             .eq("id", match_id)
             .single()
             .execute()
@@ -321,9 +325,7 @@ def get_tournament_result(tournament_id: int) -> Optional[dict]:
     try:
         res = (
             supabase.table("tournament_results")
-            .select(
-                "first_place_id, second_place_id, third_place_id, finished_at"
-            )
+            .select("first_place_id, second_place_id, third_place_id, finished_at")
             .eq("tournament_id", tournament_id)
             .single()
             .execute()
@@ -380,9 +382,7 @@ def list_participants_full(tournament_id: int) -> List[dict]:
     """
     res = (
         supabase.table("tournament_participants")
-        .select(
-            "discord_user_id, player_id, confirmed, team_id, team_name"
-        )
+        .select("discord_user_id, player_id, confirmed, team_id, team_name")
         .eq("tournament_id", tournament_id)
         .execute()
     )
@@ -525,6 +525,7 @@ def get_tournament_size(tournament_id: int) -> int:
     res = supabase.table("tournaments").select("size").eq("id", tournament_id).execute()
     return res.data[0]["size"] if res.data else 0
 
+
 def get_team_auto(tournament_id: int) -> bool:
     """Возвращает True, если турнир использует авто-команды."""
     global _has_team_auto
@@ -592,7 +593,9 @@ def get_upcoming_tournaments(hours: int) -> list[dict]:
         tournaments = res.data or []
     except Exception as e:
         if getattr(e, "code", None) == "42703":
-            logger.warning("start_time or reminder_sent column not found in tournaments table")
+            logger.warning(
+                "start_time or reminder_sent column not found in tournaments table"
+            )
             res = (
                 supabase.table("tournaments")
                 .select("id, type, start_time")
@@ -617,6 +620,53 @@ def save_announcement_message(tournament_id: int, message_id: int) -> bool:
         .execute()
     )
     return bool(res.data)
+
+
+def get_status_message_id(tournament_id: int) -> Optional[int]:
+    """Возвращает ID сообщения со статусом турнира."""
+    global _has_status_msg
+    if not _has_status_msg:
+        return None
+    try:
+        res = (
+            supabase.table("tournaments")
+            .select("status_message_id")
+            .eq("id", tournament_id)
+            .single()
+            .execute()
+        )
+        return res.data.get("status_message_id") if res and res.data else None
+    except APIError as e:
+        if "status_message_id" in str(e) and getattr(e, "code", "") == "PGRST204":
+            logger.warning("'status_message_id' column missing when reading tournament")
+            _has_status_msg = False
+            return None
+        return None
+    except Exception:
+        return None
+
+
+def save_status_message(tournament_id: int, message_id: int) -> bool:
+    """Сохраняет ID сообщения со статусом турнира."""
+    global _has_status_msg
+    if not _has_status_msg:
+        return False
+    try:
+        res = (
+            supabase.table("tournaments")
+            .update({"status_message_id": message_id})
+            .eq("id", tournament_id)
+            .execute()
+        )
+        return bool(res.data)
+    except APIError as e:
+        if "status_message_id" in str(e) and getattr(e, "code", "") == "PGRST204":
+            logger.warning("'status_message_id' column missing when saving tournament")
+            _has_status_msg = False
+            return False
+        return False
+    except Exception:
+        return False
 
 
 def get_tournament_info(tournament_id: int) -> Optional[dict]:
@@ -757,11 +807,20 @@ def mark_reminder_sent(tournament_id: int) -> bool:
         logger.error("Failed to mark reminder sent: %s", e)
         return False
 
+
 # ---------------------------------------------------------------------------
 # Betting helpers
 # ---------------------------------------------------------------------------
 
-def create_bet(tournament_id: int, round_no: int, pair_index: int, user_id: int, bet_on: int, amount: float) -> int | None:
+
+def create_bet(
+    tournament_id: int,
+    round_no: int,
+    pair_index: int,
+    user_id: int,
+    bet_on: int,
+    amount: float,
+) -> int | None:
     """Creates a bet record and returns its ID."""
     try:
         res = (
@@ -786,7 +845,9 @@ def create_bet(tournament_id: int, round_no: int, pair_index: int, user_id: int,
 
 def list_bets(tournament_id: int, round_no: int | None = None) -> list[dict]:
     """Returns bets for a tournament (optionally filtered by round)."""
-    query = supabase.table("tournament_bets").select("*").eq("tournament_id", tournament_id)
+    query = (
+        supabase.table("tournament_bets").select("*").eq("tournament_id", tournament_id)
+    )
     if round_no is not None:
         query = query.eq("round", round_no)
     try:
@@ -825,7 +886,9 @@ def get_bet(bet_id: int) -> dict | None:
         return None
 
 
-def list_user_bets(tournament_id: int, user_id: int, open_only: bool = True) -> list[dict]:
+def list_user_bets(
+    tournament_id: int, user_id: int, open_only: bool = True
+) -> list[dict]:
     """Возвращает ставки пользователя на турнир."""
     query = (
         supabase.table("tournament_bets")
@@ -868,6 +931,7 @@ def delete_bet(bet_id: int) -> bool:
 # ---------------------------------------------------------------------------
 # Bet bank helpers
 # ---------------------------------------------------------------------------
+
 
 def create_bet_bank(tournament_id: int, amount: float) -> bool:
     """Creates or resets bet bank for a tournament."""
@@ -916,7 +980,9 @@ def close_bet_bank(tournament_id: int) -> float:
     """Deletes bet bank entry and returns remaining balance."""
     balance = get_bet_bank(tournament_id)
     try:
-        supabase.table("tournament_bet_bank").delete().eq("tournament_id", tournament_id).execute()
+        supabase.table("tournament_bet_bank").delete().eq(
+            "tournament_id", tournament_id
+        ).execute()
     except Exception:
         pass
     return balance
