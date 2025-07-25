@@ -20,6 +20,7 @@ from bot.systems.tournament_logic import (
     send_participation_confirmations,
     delete_tournament as send_delete_confirmation,
     _get_round_results,
+    update_registration_message,
 )
 import math
 from bot.systems.interactive_rounds import RoundManagementView
@@ -72,6 +73,22 @@ class TeamRenameModal(ui.Modal, title="Переименовать команду
             await interaction.response.send_message("Неверный ID", ephemeral=True)
             return
         await self._callback(interaction, tid, str(self.new_name))
+
+
+class SizeModal(ui.Modal, title="Новое количество"):
+    new_size = ui.TextInput(label="Количество участников", required=True)
+
+    def __init__(self, callback):
+        super().__init__()
+        self._callback = callback
+
+    async def on_submit(self, interaction: Interaction):
+        try:
+            size = int(str(self.new_size))
+        except ValueError:
+            await interaction.response.send_message("Неверное число", ephemeral=True)
+            return
+        await self._callback(interaction, size)
 
 
 class BetModal(ui.Modal, title="Сделать ставку"):
@@ -517,6 +534,10 @@ class ManageTournamentView(SafeView):
         notify_btn.callback = self.on_notify
         self.add_item(notify_btn)
 
+        size_btn = ui.Button(label="Изм. размер", style=ButtonStyle.secondary)
+        size_btn.callback = self.on_change_size
+        self.add_item(size_btn)
+
         if self.is_team:
             rename_btn = ui.Button(
                 label="Переименовать команду", style=ButtonStyle.secondary
@@ -643,6 +664,30 @@ class ManageTournamentView(SafeView):
         await interaction.response.send_message(
             "Уведомления отправлены", ephemeral=True
         )
+
+    async def on_change_size(self, interaction: Interaction):
+        await interaction.response.send_modal(SizeModal(self._change_size))
+
+    async def _change_size(self, interaction: Interaction, size: int):
+        from bot.data.tournament_db import update_tournament_size
+
+        ok = update_tournament_size(self.tid, size)
+        if ok:
+            await interaction.response.send_message(
+                f"Размер обновлён: {size}", ephemeral=True
+            )
+            guild = interaction.guild or (
+                self.ctx.guild if hasattr(self.ctx, "guild") else None
+            )
+            if guild:
+                await update_registration_message(guild, self.tid)
+        else:
+            await interaction.response.send_message(
+                "Не удалось обновить", ephemeral=True
+            )
+        self.refresh_buttons()
+        if interaction.message:
+            await interaction.message.edit(view=self)
 
     async def on_rename_team(self, interaction: Interaction):
         await interaction.response.send_modal(TeamRenameModal(self._rename_team))

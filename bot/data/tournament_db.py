@@ -726,6 +726,20 @@ def update_start_time(tournament_id: int, new_iso: str) -> bool:
         return False
 
 
+def update_tournament_size(tournament_id: int, new_size: int) -> bool:
+    """Обновляет максимальное число участников."""
+    try:
+        res = (
+            supabase.table("tournaments")
+            .update({"size": new_size})
+            .eq("id", tournament_id)
+            .execute()
+        )
+        return bool(res.data)
+    except Exception:
+        return False
+
+
 def mark_reminder_sent(tournament_id: int) -> bool:
     """Помечает турнир как отправивший напоминание."""
     try:
