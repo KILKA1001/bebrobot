@@ -1847,6 +1847,7 @@ class BettingView(SafeView):
     ):
         from bot.systems import bets_logic
         from bot.data.tournament_db import get_tournament_size
+        from .manage_tournament_view import ConfirmBetView
 
         size = get_tournament_size(self.tid)
         total_rounds = int(math.ceil(math.log2(size))) if size > 1 else 1
