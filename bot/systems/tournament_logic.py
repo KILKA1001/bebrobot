@@ -51,6 +51,7 @@ expired_notified: set[int] = set()
 # {tournament_id: {"auto": bool, "team_names": {team_id: name}}}
 AUTO_TEAM_DATA: Dict[int, dict] = {}
 
+
 def create_auto_teams(tournament_id: int, team_count: int) -> None:
     """Создаёт записи о командах по умолчанию."""
     AUTO_TEAM_DATA[tournament_id] = {
@@ -58,15 +59,19 @@ def create_auto_teams(tournament_id: int, team_count: int) -> None:
         "team_names": {i: f"Новая команда {i}" for i in range(1, team_count + 1)},
     }
 
+
 def is_auto_team(tournament_id: int) -> bool:
     return AUTO_TEAM_DATA.get(tournament_id, {}).get("auto", False)
+
 
 def get_auto_team_names(tournament_id: int) -> Dict[int, str]:
     return AUTO_TEAM_DATA.get(tournament_id, {}).get("team_names", {})
 
+
 def rename_auto_team(tournament_id: int, team_id: int, new_name: str) -> None:
     if tournament_id in AUTO_TEAM_DATA:
         AUTO_TEAM_DATA[tournament_id].setdefault("team_names", {})[team_id] = new_name
+
 
 def assign_auto_team(tournament_id: int, user_id: int) -> bool:
     """Регистрирует игрока в первую неполную команду."""
@@ -102,7 +107,6 @@ from bot.data.tournament_db import list_maps_by_mode
 MAPS_BY_MODE: Dict[int, List[str]] = list_maps_by_mode()
 if not MAPS_BY_MODE:
     MAPS_BY_MODE = {
-
         1: [
             "1.1 1",
             "1.2 2",
@@ -129,7 +133,6 @@ if not MAPS_BY_MODE:
             "4.1 10",
             "4.2 14",
         ],
-
         1: ["1.1 1", "1.2 2", "1.3 3"],
         2: ["2.1 4", "2.2 5", "2.3 6"],
         3: ["3.1 7", "3.2 8", "3.3 9"],
@@ -151,6 +154,7 @@ def format_reward_details(bank_type: int, manual_amount: float, team_mode: bool)
         f"🥇 1 место — {reward_first_each:.1f} баллов и золотой билет каждому\n"
         f"🥈 2 место — {reward_second_each:.1f} баллов и обычный билет каждому"
     )
+
 
 # ───── База данных ─────
 
@@ -705,8 +709,6 @@ class TournamentSetupView(SafeView):
         await interaction.response.edit_message(embed=embed, view=self)
 
 
-
-
 def create_tournament_logic(participants: List[int], team_size: int = 1) -> Tournament:
     return Tournament(participants, MODE_IDS, MAPS_BY_MODE, team_size=team_size)
 
@@ -822,8 +824,6 @@ def _sync_participants_after_round(
                 db_remove_discord_participant(tournament_id, disc_id)
             if player_id is not None:
                 remove_player_from_tournament(player_id, tournament_id)
-
-
 
 
 async def join_tournament(ctx: commands.Context, tournament_id: int) -> None:
@@ -949,12 +949,8 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
             )
             return
 
-
         if tour.team_size > 1:
             tour = create_tournament_logic(participants, team_size=tour.team_size)
-
-
-
 
     # 4) Генерация и запись
     existing = db_get_matches(tournament_id, tour.current_round)
@@ -1025,7 +1021,9 @@ async def report_result(ctx: commands.Context, match_id: int, winner: int) -> No
         await send_temp(ctx, "❌ Матч не найден.")
         return
 
-    all_matches = tournament_db.get_matches(match["tournament_id"], match["round_number"])
+    all_matches = tournament_db.get_matches(
+        match["tournament_id"], match["round_number"]
+    )
     pairs: dict[int, list[dict]] = {}
     idx_map: dict[tuple[int, int], int] = {}
     idx = 1
@@ -1203,9 +1201,7 @@ async def end_tournament(
                 reward_second_each,
             )
     else:
-        await send_temp(
-            ctx, "❌ Не удалось завершить турнир. Проверьте ID и повторите."
-        )
+        await send_temp(ctx, "❌ Не удалось завершить турнир. Проверьте ID и повторите.")
 
 
 class ConfirmDeleteView(SafeView):
@@ -1440,7 +1436,9 @@ async def finalize_tournament_logic(
 
         @ui.button(label="Получил", style=ButtonStyle.success)
         async def confirm(self, interaction: Interaction, button: ui.Button):
-            await interaction.response.send_message("Награда подтверждена!", ephemeral=True)
+            await interaction.response.send_message(
+                "Награда подтверждена!", ephemeral=True
+            )
             self.stop()
 
     for uid in first_team + second_team:
@@ -1565,6 +1563,7 @@ class RegistrationView(SafeView):
 
     async def show_start_time(self, interaction: discord.Interaction):
         from datetime import datetime
+
         info = get_tournament_info(self.tid) or {}
         start_raw = info.get("start_time")
         if start_raw:
@@ -1601,7 +1600,6 @@ class RegistrationView(SafeView):
         # Если достигнуто максимальное число участников — уведомляем автора
         raw = db_list_participants_full(self.tid)
         if len(raw) >= self.max:
-
             admin_id = get_tournament_author(self.tid)
 
             from bot.commands.tournament import (
@@ -1618,7 +1616,7 @@ class RegistrationView(SafeView):
                     try:
                         await safe_send(
                             admin_user,
-                            f"Турнир #{self.tid} собрал максимум участников. Подтвердите начало."
+                            f"Турнир #{self.tid} собрал максимум участников. Подтвердите начало.",
                         )
                     except Exception:
                         pass
@@ -1650,7 +1648,6 @@ class ParticipationConfirmView(SafeView):
 
     @ui.button(label="Да, буду участвовать", style=ButtonStyle.success)
     async def confirm(self, interaction: Interaction, button: ui.Button):
-
         confirm_participant(self.tournament_id, self.user_id)
 
         from bot.commands.tournament import confirmed_participants
@@ -1662,7 +1659,6 @@ class ParticipationConfirmView(SafeView):
 
     @ui.button(label="Нет, передумал", style=ButtonStyle.danger)
     async def decline(self, interaction: Interaction, button: ui.Button):
-
         from bot.commands.tournament import tournament_admins
 
         tournament_db.remove_discord_participant(self.tournament_id, self.user_id)
@@ -1674,7 +1670,7 @@ class ParticipationConfirmView(SafeView):
             try:
                 await safe_send(
                     admin,
-                    f"Игрок <@{self.user_id}> отказался от участия в турнире #{self.tournament_id}."
+                    f"Игрок <@{self.user_id}> отказался от участия в турнире #{self.tournament_id}.",
                 )
             except Exception:
                 pass
@@ -1707,7 +1703,9 @@ class BettingView(SafeView):
         )
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    async def _edit_bet(self, interaction: Interaction, bet_id: int, bet_on: int, amount: float):
+    async def _edit_bet(
+        self, interaction: Interaction, bet_id: int, bet_on: int, amount: float
+    ):
         from bot.systems import bets_logic
         from bot.data.tournament_db import get_tournament_size, get_bet
 
@@ -1723,7 +1721,9 @@ class BettingView(SafeView):
             return
         size = get_tournament_size(self.tid)
         total_rounds = int(math.ceil(math.log2(size))) if size > 1 else 1
-        ok, msg = bets_logic.modify_bet(bet_id, bet_on, amount, interaction.user.id, total_rounds)
+        ok, msg = bets_logic.modify_bet(
+            bet_id, bet_on, amount, interaction.user.id, total_rounds
+        )
         await interaction.response.send_message(msg, ephemeral=True)
 
     async def _delete_bet(self, interaction: Interaction, bet_id: int):
@@ -1731,7 +1731,9 @@ class BettingView(SafeView):
         from bot.data.tournament_db import get_bet
 
         bet = get_bet(bet_id)
-        if bet and bets_logic.pair_started(self.tid, int(bet["round"]), int(bet["pair_index"])):
+        if bet and bets_logic.pair_started(
+            self.tid, int(bet["round"]), int(bet["pair_index"])
+        ):
             await interaction.response.send_message(
                 "Пара уже началась, ставку нельзя удалить",
                 ephemeral=True,
@@ -1760,7 +1762,9 @@ class BettingView(SafeView):
             round_no += 1
 
         if not matches:
-            await interaction.response.send_message("Нет активных матчей", ephemeral=True)
+            await interaction.response.send_message(
+                "Нет активных матчей", ephemeral=True
+            )
             return
 
         pairs: dict[int, tuple[int, int]] = {}
@@ -1815,7 +1819,9 @@ class BettingView(SafeView):
 
         bets = bets_logic.get_user_bets(self.tid, interaction.user.id)
         if not bets:
-            await interaction.response.edit_message(content="Ставок нет", embed=None, view=None)
+            await interaction.response.edit_message(
+                content="Ставок нет", embed=None, view=None
+            )
             return
         embed = discord.Embed(title="Ваши ставки", color=discord.Color.orange())
         locked: set[int] = set()
@@ -1925,9 +1931,7 @@ async def handle_jointournament(ctx: commands.Context, tournament_id: int):
 async def handle_regplayer(ctx: commands.Context, player_id: int, tournament_id: int):
     ok_db = add_player_to_tournament(player_id, tournament_id)
     if not ok_db:
-        return await send_temp(
-            ctx, "❌ Игрок уже зарегистрирован или произошла ошибка."
-        )
+        return await send_temp(ctx, "❌ Игрок уже зарегистрирован или произошла ошибка.")
     pl = get_player_by_id(player_id)
     name = pl["nick"] if pl else f"Игрок#{player_id}"
     await send_temp(ctx, f"✅ {name} зарегистрирован в турнире #{tournament_id}.")
@@ -2327,7 +2331,9 @@ async def send_announcement_embed(ctx, tournament_id: int) -> bool:
                 pass
 
     if sent_message is None:
-        sent_message = await send_temp(target, embed=embed, view=view, delete_after=None)
+        sent_message = await send_temp(
+            target, embed=embed, view=view, delete_after=None
+        )
 
     if not sent_message:
         return False
@@ -2445,7 +2451,11 @@ async def build_tournament_bracket_embed(
                 name1 = team_names[p1_id]
             elif guild:
                 p1m = guild.get_member(p1_id)
-                name1 = p1m.mention if p1m else (get_player_by_id(p1_id) or {}).get("nick", f"ID:{p1_id}")
+                name1 = (
+                    p1m.mention
+                    if p1m
+                    else (get_player_by_id(p1_id) or {}).get("nick", f"ID:{p1_id}")
+                )
             else:
                 pl1 = get_player_by_id(p1_id)
                 name1 = pl1["nick"] if pl1 else f"ID:{p1_id}"
@@ -2454,7 +2464,11 @@ async def build_tournament_bracket_embed(
                 name2 = team_names[p2_id]
             elif guild:
                 p2m = guild.get_member(p2_id)
-                name2 = p2m.mention if p2m else (get_player_by_id(p2_id) or {}).get("nick", f"ID:{p2_id}")
+                name2 = (
+                    p2m.mention
+                    if p2m
+                    else (get_player_by_id(p2_id) or {}).get("nick", f"ID:{p2_id}")
+                )
             else:
                 pl2 = get_player_by_id(p2_id)
                 name2 = pl2["nick"] if pl2 else f"ID:{p2_id}"
@@ -2465,10 +2479,7 @@ async def build_tournament_bracket_embed(
             finished = all(m.get("result") in (1, 2) for m in ms)
             status = "✅" if finished else "❌"
 
-            line = (
-                f"{name1} [{wins1}] ─┐\n"
-                f"{name2} [{wins2}] ─┘ {status}"
-            )
+            line = f"{name1} [{wins1}] ─┐\n" f"{name2} [{wins2}] ─┘ {status}"
             lines.append(line)
 
         embed.add_field(name=f"Раунд {round_no}", value="\n".join(lines), inline=False)
@@ -2544,9 +2555,7 @@ async def refresh_bracket_message(guild: discord.Guild, tournament_id: int) -> b
         return False
 
 
-async def update_registration_message(
-    guild: discord.Guild, tournament_id: int
-) -> bool:
+async def update_registration_message(guild: discord.Guild, tournament_id: int) -> bool:
     """Обновляет кнопку регистрации в сообщении анонса."""
     msg_id = get_announcement_message_id(tournament_id)
     if not msg_id:
@@ -2599,6 +2608,36 @@ async def update_bet_message(guild: discord.Guild, tournament_id: int) -> bool:
         return True
     except Exception:
         return False
+
+
+async def send_status_message(
+    guild: discord.Guild, tournament_id: int, bot: commands.Bot | None = None
+) -> bool:
+    """Отправляет новое сообщение со статусом турнира."""
+    embed = await build_tournament_bracket_embed(tournament_id, guild)
+    if not embed:
+        embed = await build_tournament_status_embed(tournament_id)
+    if not embed:
+        return False
+
+    channel = guild.get_channel(ANNOUNCE_CHANNEL_ID)
+    if not channel:
+        return False
+
+    view = BettingView(tournament_id)
+    sent = await safe_send(channel, embed=embed, view=view, delete_after=None)
+    if not sent:
+        return False
+
+    from bot.data.tournament_db import save_status_message
+
+    save_status_message(tournament_id, sent.id)
+    if bot:
+        try:
+            bot.add_view(view, message_id=sent.id)
+        except Exception:
+            pass
+    return True
 
 
 async def update_result_message(
@@ -2830,8 +2869,12 @@ async def change_winners(
         new_first_team = team_map.get(int(first_id), [])
         new_second_team = team_map.get(int(second_id), [])
     else:
-        old_first_team = [int(prev.get("first_place_id"))] if prev.get("first_place_id") else []
-        old_second_team = [int(prev.get("second_place_id"))] if prev.get("second_place_id") else []
+        old_first_team = (
+            [int(prev.get("first_place_id"))] if prev.get("first_place_id") else []
+        )
+        old_second_team = (
+            [int(prev.get("second_place_id"))] if prev.get("second_place_id") else []
+        )
         new_first_team = [int(first_id)]
         new_second_team = [int(second_id)] if second_id else []
 

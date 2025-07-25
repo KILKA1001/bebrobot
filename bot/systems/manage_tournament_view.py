@@ -17,6 +17,7 @@ from bot.systems.tournament_logic import (
     build_tournament_bracket_embed,
     build_tournament_result_embed,
     send_announcement_embed,
+    send_status_message,
     send_participation_confirmations,
     delete_tournament as send_delete_confirmation,
     _get_round_results,
@@ -116,7 +117,9 @@ class BetModal(ui.Modal, title="Сделать ставку"):
 class BetAmountModal(ui.Modal, title="Размер ставки"):
     amount = ui.TextInput(label="Баллы", required=True)
 
-    def __init__(self, callback, round_no: int, pair_index: int, bet_on: int, name: str):
+    def __init__(
+        self, callback, round_no: int, pair_index: int, bet_on: int, name: str
+    ):
         super().__init__()
         self._callback = callback
         self.round_no = round_no
@@ -161,13 +164,25 @@ class BetPlayerView(SafeView):
     @ui.button(label="Игрок 1", style=ButtonStyle.primary)
     async def bet_p1(self, interaction: Interaction, button: ui.Button):
         await interaction.response.send_modal(
-            BetAmountModal(self._callback, self.round_no, self.pair_index, self.player1, self.name_map.get(self.player1, str(self.player1)))
+            BetAmountModal(
+                self._callback,
+                self.round_no,
+                self.pair_index,
+                self.player1,
+                self.name_map.get(self.player1, str(self.player1)),
+            )
         )
 
     @ui.button(label="Игрок 2", style=ButtonStyle.secondary)
     async def bet_p2(self, interaction: Interaction, button: ui.Button):
         await interaction.response.send_modal(
-            BetAmountModal(self._callback, self.round_no, self.pair_index, self.player2, self.name_map.get(self.player2, str(self.player2)))
+            BetAmountModal(
+                self._callback,
+                self.round_no,
+                self.pair_index,
+                self.player2,
+                self.name_map.get(self.player2, str(self.player2)),
+            )
         )
 
 
@@ -282,7 +297,9 @@ class BetEditView(SafeView):
 
     async def on_confirm(self, interaction: Interaction):
         if not self.select.values:
-            await interaction.response.send_message("Выберите игрока/команду", ephemeral=True)
+            await interaction.response.send_message(
+                "Выберите игрока/команду", ephemeral=True
+            )
             return
         bet_on = int(self.select.values[0])
         await interaction.response.send_modal(
@@ -291,7 +308,9 @@ class BetEditView(SafeView):
 
 
 class BetStatusView(SafeView):
-    def __init__(self, bets: list[dict], edit_cb, delete_cb, locked: set[int] | None = None):
+    def __init__(
+        self, bets: list[dict], edit_cb, delete_cb, locked: set[int] | None = None
+    ):
         super().__init__(timeout=60)
 
         options = [
@@ -311,7 +330,9 @@ class BetStatusView(SafeView):
 
         class _EditBtn(ui.Button):
             def __init__(self, parent: "BetStatusView"):
-                super().__init__(label="Изменить", style=ButtonStyle.primary, disabled=True)
+                super().__init__(
+                    label="Изменить", style=ButtonStyle.primary, disabled=True
+                )
                 self.parent = parent
 
             async def callback(self, interaction: Interaction):
@@ -319,7 +340,9 @@ class BetStatusView(SafeView):
 
         class _DelBtn(ui.Button):
             def __init__(self, parent: "BetStatusView"):
-                super().__init__(label="Удалить", style=ButtonStyle.danger, disabled=True)
+                super().__init__(
+                    label="Удалить", style=ButtonStyle.danger, disabled=True
+                )
                 self.parent = parent
 
             async def callback(self, interaction: Interaction):
@@ -345,7 +368,7 @@ class BetStatusView(SafeView):
         self.edit_btn.disabled = locked
         self.del_btn.disabled = locked
         await interaction.response.edit_message(view=self)
-        
+
     async def on_edit(self, interaction: Interaction):
         if self.selected is None:
             await interaction.response.send_message("Выберите ставку", ephemeral=True)
@@ -416,7 +439,6 @@ class FinishModal(ui.Modal):
         self.add_item(self.third_select)
 
     async def on_submit(self, interaction: Interaction):
-
         try:
             first = int(self.first_select.values[0])
             second = int(self.second_select.values[0])
@@ -438,6 +460,7 @@ class FinishModal(ui.Modal):
             await interaction.response.send_message("Данные отправлены", ephemeral=True)
         else:
             from bot.commands.tournament import endtournament
+
             await endtournament(ctx, self.tid, first, second, third)
             await interaction.response.send_message(
                 "Попытка завершить турнир", ephemeral=True
@@ -562,8 +585,8 @@ class ManageTournamentView(SafeView):
         manage_btn.callback = self.on_manage_rounds
         self.add_item(manage_btn)
 
-        status_btn = ui.Button(label="Статус", style=ButtonStyle.secondary)
-        status_btn.callback = self.on_status
+        status_btn = ui.Button(label="Отправить статус", style=ButtonStyle.secondary)
+        status_btn.callback = self.on_send_status
         self.add_item(status_btn)
 
         bet_btn = ui.Button(label="Ставки", style=ButtonStyle.gray)
@@ -656,15 +679,15 @@ class ManageTournamentView(SafeView):
         if success:
             await interaction.response.send_message("Анонс отправлен", ephemeral=True)
         else:
-            await interaction.response.send_message("Не удалось отправить анонс", ephemeral=True)
+            await interaction.response.send_message(
+                "Не удалось отправить анонс", ephemeral=True
+            )
 
     async def on_notify(self, interaction: Interaction):
         admin_id = self.ctx.author.id
         await interaction.response.defer(ephemeral=True)
         await send_participation_confirmations(interaction.client, self.tid, admin_id)
-        await interaction.followup.send(
-            "Уведомления отправлены", ephemeral=True
-        )
+        await interaction.followup.send("Уведомления отправлены", ephemeral=True)
 
     async def on_change_size(self, interaction: Interaction):
         await interaction.response.send_modal(SizeModal(self._change_size))
@@ -721,6 +744,7 @@ class ManageTournamentView(SafeView):
             if guild:
                 await generate_first_round(interaction.client, guild, self.tid)
                 from bot.systems.tournament_logic import update_bet_message
+
                 await update_bet_message(guild, self.tid)
             await interaction.response.send_message(
                 "Турнир активирован", ephemeral=True
@@ -751,9 +775,7 @@ class ManageTournamentView(SafeView):
             embed = await build_tournament_status_embed(self.tid)
 
         if embed is None:
-            await interaction.response.send_message(
-                "Турнир не найден", ephemeral=True
-            )
+            await interaction.response.send_message("Турнир не найден", ephemeral=True)
             return
 
         msg = interaction.message
@@ -768,33 +790,26 @@ class ManageTournamentView(SafeView):
             else:
                 await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    async def on_status(self, interaction: Interaction):
-        status = get_tournament_status(self.tid)
-        if status == "finished":
-            embed = await build_tournament_result_embed(self.tid, interaction.guild)
+    async def on_send_status(self, interaction: Interaction):
+        guild = interaction.guild or (
+            self.ctx.guild if hasattr(self.ctx, "guild") else None
+        )
+        if not guild:
+            await interaction.response.send_message(
+                "Не удалось определить сервер", ephemeral=True
+            )
+            return
+
+        from bot.systems.tournament_logic import send_status_message
+
+        bot = interaction.client
+        ok = await send_status_message(guild, self.tid, bot=bot)
+        if ok:
+            await interaction.response.send_message("Статус отправлен", ephemeral=True)
         else:
-            embed = await build_tournament_bracket_embed(self.tid, interaction.guild)
-            if not embed:
-                embed = await build_tournament_status_embed(self.tid)
-
-        if embed is None:
             await interaction.response.send_message(
-                "Турнир не найден", ephemeral=True
+                "Не удалось отправить статус", ephemeral=True
             )
-            return
-
-        msg = interaction.message
-        # Don't try to edit ephemeral or missing messages
-        if msg is None or (getattr(msg, "flags", None) and msg.flags.ephemeral):
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        try:
-            await msg.edit(embed=embed, view=self)
-        except Exception:
-            if interaction.response.is_done():
-                await interaction.followup.send(embed=embed, ephemeral=True)
-            else:
-                await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def on_bets(self, interaction: Interaction):
         view = BetMenuView(self)
@@ -808,6 +823,7 @@ class ManageTournamentView(SafeView):
     async def _show_edit_modal(self, interaction: Interaction, bet_id: int):
         from bot.data.tournament_db import get_bet, get_matches, get_team_info
         from bot.data.players_db import get_player_by_id
+
         bet = get_bet(bet_id)
         if not bet:
             await interaction.response.send_message("Ставка не найдена", ephemeral=True)
@@ -837,7 +853,9 @@ class ManageTournamentView(SafeView):
         if self.is_team:
             _, team_names = get_team_info(self.tid)
             name_map.update({int(k): v for k, v in team_names.items()})
-        guild = interaction.guild or (self.ctx.guild if hasattr(self.ctx, "guild") else None)
+        guild = interaction.guild or (
+            self.ctx.guild if hasattr(self.ctx, "guild") else None
+        )
         for pid in (p1, p2):
             if pid in name_map:
                 continue
@@ -862,7 +880,9 @@ class ManageTournamentView(SafeView):
         )
         await interaction.response.edit_message(embed=embed, view=view)
 
-    async def _edit_bet(self, interaction: Interaction, bet_id: int, bet_on: int, amount: float):
+    async def _edit_bet(
+        self, interaction: Interaction, bet_id: int, bet_on: int, amount: float
+    ):
         from bot.systems import bets_logic
         from bot.data.tournament_db import get_tournament_size, get_bet
 
@@ -877,7 +897,9 @@ class ManageTournamentView(SafeView):
             return
         size = get_tournament_size(self.tid)
         total_rounds = int(math.ceil(math.log2(size))) if size > 1 else 1
-        ok, msg = bets_logic.modify_bet(bet_id, bet_on, amount, interaction.user.id, total_rounds)
+        ok, msg = bets_logic.modify_bet(
+            bet_id, bet_on, amount, interaction.user.id, total_rounds
+        )
         await interaction.response.send_message(msg, ephemeral=True)
 
     async def _delete_bet(self, interaction: Interaction, bet_id: int):
@@ -885,7 +907,9 @@ class ManageTournamentView(SafeView):
         from bot.data.tournament_db import get_bet
 
         bet = get_bet(bet_id)
-        if bet and bets_logic.pair_started(self.tid, int(bet["round"]), int(bet["pair_index"])):
+        if bet and bets_logic.pair_started(
+            self.tid, int(bet["round"]), int(bet["pair_index"])
+        ):
             await interaction.response.send_message(
                 "Пара уже началась, ставку нельзя удалить", ephemeral=True
             )
@@ -897,7 +921,9 @@ class ManageTournamentView(SafeView):
         from bot.data.tournament_db import get_matches, get_team_info
         from bot.data.players_db import get_player_by_id
 
-        guild = interaction.guild or (self.ctx.guild if hasattr(self.ctx, "guild") else None)
+        guild = interaction.guild or (
+            self.ctx.guild if hasattr(self.ctx, "guild") else None
+        )
 
         round_no = 1
         matches = []
@@ -912,7 +938,9 @@ class ManageTournamentView(SafeView):
             round_no += 1
 
         if not matches:
-            await interaction.response.send_message("Нет активных матчей", ephemeral=True)
+            await interaction.response.send_message(
+                "Нет активных матчей", ephemeral=True
+            )
             return
 
         pairs: dict[int, tuple[int, int]] = {}
@@ -927,6 +955,7 @@ class ManageTournamentView(SafeView):
             pid = idx_map[key]
             pairs[pid] = key
             from bot.data.tournament_db import get_map_info
+
             info = get_map_info(str(m.get("map_id")))
             pair_maps.setdefault(pid, []).append(
                 {
@@ -967,7 +996,9 @@ class ManageTournamentView(SafeView):
 
         bets = bets_logic.get_user_bets(self.tid, interaction.user.id)
         if not bets:
-            await interaction.response.edit_message(content="Ставок нет", embed=None, view=None)
+            await interaction.response.edit_message(
+                content="Ставок нет", embed=None, view=None
+            )
             return
         embed = discord.Embed(title="Ваши ставки", color=discord.Color.orange())
         locked: set[int] = set()
@@ -1042,7 +1073,6 @@ class ManageTournamentView(SafeView):
             await interaction.message.edit(view=self)
 
     async def on_finish(self, interaction: Interaction):
-
         from bot.data.tournament_db import get_tournament_info, get_team_info
 
         from bot.data.tournament_db import (
@@ -1055,7 +1085,6 @@ class ManageTournamentView(SafeView):
 
         info = get_tournament_info(self.tid) or {}
         team_mode = info.get("type") == "team"
-
 
         if team_mode:
             team_map, team_names = get_team_info(self.tid)
@@ -1071,7 +1100,6 @@ class ManageTournamentView(SafeView):
         guild = interaction.guild or (
             self.ctx.guild if hasattr(self.ctx, "guild") else None
         )
-
 
         winners: list[int] | None = None
         losers: list[int] | None = None
@@ -1108,7 +1136,6 @@ class ManageTournamentView(SafeView):
 
         options: list[discord.SelectOption] = []
         if team_mode:
-
             team_map, _ = get_team_info(self.tid)
             for tid in winners:
                 members = team_map.get(int(tid), [])
@@ -1133,9 +1160,7 @@ class ManageTournamentView(SafeView):
                 if not name:
                     name = f"Команда {tid}"
 
-                options.append(
-                    discord.SelectOption(label=name[:100], value=str(tid))
-                )
+                options.append(discord.SelectOption(label=name[:100], value=str(tid)))
 
         else:
             for pid in winners:
@@ -1149,9 +1174,7 @@ class ManageTournamentView(SafeView):
                     name = pl["nick"] if pl else f"ID:{pid}"
                 options.append(discord.SelectOption(label=name[:100], value=str(pid)))
 
-        view = FinishChoiceView(
-            self.tid, self.ctx, auto_first, auto_second, options
-        )
+        view = FinishChoiceView(self.tid, self.ctx, auto_first, auto_second, options)
         await interaction.response.send_message(
             "Выберите способ завершения", ephemeral=True, view=view
         )
@@ -1167,7 +1190,9 @@ class ManageTournamentView(SafeView):
         from bot.data.players_db import get_player_by_id
         from bot.systems.tournament_logic import FinishModal
 
-        guild = interaction.guild or (self.ctx.guild if hasattr(self.ctx, "guild") else None)
+        guild = interaction.guild or (
+            self.ctx.guild if hasattr(self.ctx, "guild") else None
+        )
 
         team_mode = self.is_team
         ids = set()
