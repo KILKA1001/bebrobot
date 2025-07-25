@@ -203,7 +203,8 @@ def get_map_image_url(map_id: str) -> Optional[str]:
             .execute()
         )
         return res.data.get("image_url") if res and res.data else None
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to get map image url: %s", e)
         return None
 
 
@@ -218,7 +219,8 @@ def get_map_info(map_id: str) -> Optional[dict]:
             .execute()
         )
         return res.data if res and res.data else None
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to get map info: %s", e)
         return None
 
 
@@ -292,8 +294,8 @@ def delete_tournament(tournament_id: int) -> None:
         supabase.table("tournament_players").delete().eq(
             "tournament_id", tournament_id
         ).execute()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error("Failed to delete tournament_players links: %s", e)
     # Наконец удаляем сам турнир
     supabase.table("tournaments").delete().eq("id", tournament_id).execute()
 
@@ -316,7 +318,8 @@ def save_tournament_result(
         }
         res = supabase.table("tournament_results").upsert(payload).execute()
         return bool(res.data)
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to save tournament result: %s", e)
         return False
 
 
@@ -331,7 +334,8 @@ def get_tournament_result(tournament_id: int) -> Optional[dict]:
             .execute()
         )
         return res.data or None
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to get tournament result: %s", e)
         return None
 
 
@@ -342,7 +346,8 @@ def delete_match_records(tournament_id: int) -> bool:
             "tournament_id", tournament_id
         ).execute()
         return True
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to delete match records: %s", e)
         return False
 
 
@@ -358,7 +363,8 @@ def update_tournament_status(tournament_id: int, status: str) -> bool:
             .execute()
         )
         return bool(res.data)
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to update tournament status: %s", e)
         return False
 
 
@@ -452,7 +458,8 @@ def update_team_name(tournament_id: int, team_id: int, new_name: str) -> bool:
             .execute()
         )
         return bool(res.data)
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to update team name: %s", e)
         return False
 
 
@@ -496,7 +503,8 @@ def confirm_participant(tournament_id: int, discord_user_id: int) -> bool:
             .execute()
         )
         return bool(res.data)
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to confirm participant: %s", e)
         return False
 
 
@@ -546,7 +554,8 @@ def get_team_auto(tournament_id: int) -> bool:
             _has_team_auto = False
             return False
         return False
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to get team auto flag: %s", e)
         return False
 
 
@@ -642,7 +651,8 @@ def get_status_message_id(tournament_id: int) -> Optional[int]:
             _has_status_msg = False
             return None
         return None
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to get status message id: %s", e)
         return None
 
 
@@ -665,7 +675,8 @@ def save_status_message(tournament_id: int, message_id: int) -> bool:
             _has_status_msg = False
             return False
         return False
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to save status message: %s", e)
         return False
 
 
@@ -697,10 +708,12 @@ def get_tournament_info(tournament_id: int) -> Optional[dict]:
                     .execute()
                 )
                 return res.data or None
-            except Exception:
+            except Exception as e:
+                logger.error("Failed to fetch fallback tournament info: %s", e)
                 return None
         return None
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to get tournament info: %s", e)
         return None
 
 
@@ -717,7 +730,8 @@ def get_tournament_author(tournament_id: int) -> Optional[int]:
         if res and res.data:
             return res.data.get("author_id")
         return None
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to get tournament author: %s", e)
         return None
 
 
@@ -731,7 +745,8 @@ def set_tournament_author(tournament_id: int, author_id: int) -> bool:
             .execute()
         )
         return bool(res.data)
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to set tournament author: %s", e)
         return False
 
 
@@ -772,7 +787,8 @@ def update_start_time(tournament_id: int, new_iso: str) -> bool:
             .execute()
         )
         return bool(res.data)
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to update start time: %s", e)
         return False
 
 
@@ -786,7 +802,8 @@ def update_tournament_size(tournament_id: int, new_size: int) -> bool:
             .execute()
         )
         return bool(res.data)
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to update tournament size: %s", e)
         return False
 
 
@@ -839,7 +856,8 @@ def create_bet(
             .execute()
         )
         return res.data[0]["id"] if res.data else None
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to create bet: %s", e)
         return None
 
 
@@ -853,7 +871,8 @@ def list_bets(tournament_id: int, round_no: int | None = None) -> list[dict]:
     try:
         res = query.execute()
         return res.data or []
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to list bets: %s", e)
         return []
 
 
@@ -867,7 +886,8 @@ def close_bet(bet_id: int, won: bool, payout: float) -> bool:
             .execute()
         )
         return bool(res.data)
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to close bet: %s", e)
         return False
 
 
@@ -882,7 +902,8 @@ def get_bet(bet_id: int) -> dict | None:
             .execute()
         )
         return res.data if res and res.data else None
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to get bet: %s", e)
         return None
 
 
@@ -901,7 +922,8 @@ def list_user_bets(
     try:
         res = query.execute()
         return res.data or []
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to list user bets: %s", e)
         return []
 
 
@@ -915,7 +937,8 @@ def update_bet(bet_id: int, bet_on: int, amount: float) -> bool:
             .execute()
         )
         return bool(res.data)
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to update bet: %s", e)
         return False
 
 
@@ -924,7 +947,8 @@ def delete_bet(bet_id: int) -> bool:
     try:
         supabase.table("tournament_bets").delete().eq("id", bet_id).execute()
         return True
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to delete bet: %s", e)
         return False
 
 
@@ -941,7 +965,8 @@ def create_bet_bank(tournament_id: int, amount: float) -> bool:
             on_conflict="tournament_id",
         ).execute()
         return True
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to create bet bank: %s", e)
         return False
 
 
@@ -957,8 +982,8 @@ def get_bet_bank(tournament_id: int) -> float:
         )
         if res and res.data:
             return float(res.data.get("balance", 0))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error("Failed to get bet bank: %s", e)
     return 0.0
 
 
@@ -972,7 +997,8 @@ def update_bet_bank(tournament_id: int, delta: float) -> bool:
             on_conflict="tournament_id",
         ).execute()
         return True
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to update bet bank: %s", e)
         return False
 
 
@@ -983,6 +1009,6 @@ def close_bet_bank(tournament_id: int) -> float:
         supabase.table("tournament_bet_bank").delete().eq(
             "tournament_id", tournament_id
         ).execute()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error("Failed to close bet bank: %s", e)
     return balance
