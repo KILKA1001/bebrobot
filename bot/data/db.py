@@ -29,6 +29,10 @@ class Database:
         self.url = os.getenv("SUPABASE_URL")
         self.key = os.getenv("SUPABASE_KEY")
         self.supabase = create_client(self.url, self.key) if self.url and self.key else None
+        # Some Supabase deployments strictly check for lowercase 'apikey' header.
+        # Ensure both variants are present in request headers.
+        if self.supabase:
+            self.supabase.options.headers.setdefault("apikey", self.key)
         self.has_was_on_time = True
         self._ensure_tables()
         self.load_data()
