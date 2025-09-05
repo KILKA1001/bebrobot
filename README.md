@@ -52,6 +52,11 @@ python bot/main.py
 - `/cancel_fine ID` - Отменить штраф
 - `/topfines` - Топ должников
 
+### Турниры
+- `/tournamentadmin` - открыть панель управления турнирами
+- `/createtournament` - создать новый турнир
+- `/managetournament ID` - панель конкретного турнира
+
 ## ⚙️ Технические требования
 - Python 3.10+
 - База данных Supabase

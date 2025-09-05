@@ -21,6 +21,7 @@ from .fines import (
 from .tournament import (
     createtournament,
     jointournament,
+    tournamentadmin,
 )
 from .maps import mapinfo
 
@@ -37,5 +38,6 @@ __all__ = [
     "topfines",
     "createtournament",
     "jointournament",
+    "tournamentadmin",
     "mapinfo",
 ]
