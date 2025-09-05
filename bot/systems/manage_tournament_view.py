@@ -63,6 +63,57 @@ class PlayerIdModal(ui.Modal, title="ID игрока"):
             await self._callback(interaction, pid)
 
 
+class TeamNameModal(ui.Modal, title="Название команды"):
+    team_name = ui.TextInput(label="Название команды", required=True)
+
+    def __init__(self, callback, pid: int):
+        super().__init__()
+        self._callback = callback
+        self.pid = pid
+
+    async def on_submit(self, interaction: Interaction):
+        await self._callback(interaction, self.pid, str(self.team_name))
+
+
+class RegisterPlayerView(SafeView):
+    def __init__(self, parent_view, members):
+        super().__init__(timeout=60)
+        self.parent_view = parent_view
+        options = [
+            discord.SelectOption(label=m.display_name, value=str(m.id))
+            for m in members[:25]
+        ]
+        if options:
+            select = ui.Select(placeholder="Выберите игрока", options=options)
+
+            async def on_select(interaction: Interaction):
+                pid = int(select.values[0])
+                if self.parent_view.is_team and not self.parent_view.team_auto:
+                    await interaction.response.send_modal(
+                        TeamNameModal(self.parent_view._register, pid)
+                    )
+                else:
+                    await self.parent_view._register(interaction, pid)
+                self.stop()
+
+            select.callback = on_select
+            self.add_item(select)
+
+        id_btn = ui.Button(label="Ввести ID", style=ButtonStyle.secondary)
+
+        async def on_id(interaction: Interaction):
+            await interaction.response.send_modal(
+                PlayerIdModal(
+                    self.parent_view._register,
+                    ask_team=self.parent_view.is_team and not self.parent_view.team_auto,
+                )
+            )
+            self.stop()
+
+        id_btn.callback = on_id
+        self.add_item(id_btn)
+
+
 class TeamRenameModal(ui.Modal, title="Переименовать команду"):
     team_id = ui.TextInput(label="ID команды", required=True)
     new_name = ui.TextInput(label="Новое название", required=True)
@@ -653,9 +704,21 @@ class ManageTournamentView(SafeView):
 
     # ----- Callbacks -----
     async def on_register_player(self, interaction: Interaction):
-        await interaction.response.send_modal(
-            PlayerIdModal(self._register, ask_team=self.is_team and not self.team_auto)
+        guild = interaction.guild or (
+            self.ctx.guild if hasattr(self.ctx, "guild") else None
         )
+        members = guild.members if guild else []
+        if members:
+            view = RegisterPlayerView(self, members)
+            await interaction.response.send_message(
+                "Выберите игрока или введите ID:", view=view, ephemeral=True
+            )
+        else:
+            await interaction.response.send_modal(
+                PlayerIdModal(
+                    self._register, ask_team=self.is_team and not self.team_auto
+                )
+            )
 
     async def _register(
         self, interaction: Interaction, pid: int, team: str | None = None
