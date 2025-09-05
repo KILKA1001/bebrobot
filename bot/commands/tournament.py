@@ -13,9 +13,10 @@ from bot.systems.tournament_logic import (
     build_tournament_status_embed,
     build_tournament_bracket_embed,
     build_tournament_result_embed,
+    format_tournament_title,
 )
 from bot.systems.manage_tournament_view import ManageTournamentView
-from bot.data.tournament_db import get_tournament_status
+from bot.data.tournament_db import get_tournament_status, get_tournament_info
 
 # Import the bot instance from base.py instead of creating a new one
 from bot.commands.base import bot
@@ -70,12 +71,20 @@ async def manage_tournament(ctx, tournament_id: int):
     if status == "finished":
         embed = await build_tournament_result_embed(tournament_id, ctx.guild)
     else:
-        embed = await build_tournament_bracket_embed(tournament_id, ctx.guild)
+        embed = await build_tournament_bracket_embed(
+            tournament_id, ctx.guild, include_id=True
+        )
         if not embed:
-            embed = await build_tournament_status_embed(tournament_id)
+            embed = await build_tournament_status_embed(
+                tournament_id, include_id=True
+            )
     if not embed:
+        info = get_tournament_info(tournament_id) or {}
+        title = format_tournament_title(
+            info.get("name"), info.get("start_time"), tournament_id, include_id=True
+        )
         embed = discord.Embed(
-            title=f"⚙ Управление турниром #{tournament_id}",
+            title=f"⚙ Управление турниром {title}",
             color=discord.Color.blue(),
         )
 

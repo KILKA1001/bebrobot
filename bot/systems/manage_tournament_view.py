@@ -9,6 +9,7 @@ from bot.data.tournament_db import (
     list_participants_full,
     remove_player_from_tournament,
     count_matches,
+    get_tournament_info,
 )
 from bot.systems.tournament_logic import (
     set_tournament_status,
@@ -22,6 +23,9 @@ from bot.systems.tournament_logic import (
     delete_tournament as send_delete_confirmation,
     _get_round_results,
     update_registration_message,
+    rename_tournament,
+    refresh_bracket_message,
+    format_tournament_title,
 )
 import math
 from bot.systems.interactive_rounds import RoundManagementView
@@ -74,6 +78,17 @@ class TeamRenameModal(ui.Modal, title="Переименовать команду
             await interaction.response.send_message("Неверный ID", ephemeral=True)
             return
         await self._callback(interaction, tid, str(self.new_name))
+
+
+class TournamentRenameModal(ui.Modal, title="Новое название турнира"):
+    new_name = ui.TextInput(label="Название", required=True)
+
+    def __init__(self, callback):
+        super().__init__()
+        self._callback = callback
+
+    async def on_submit(self, interaction: Interaction):
+        await self._callback(interaction, str(self.new_name))
 
 
 class SizeModal(ui.Modal, title="Новое количество"):
@@ -567,6 +582,12 @@ class ManageTournamentView(SafeView):
         notify_btn.callback = self.on_notify
         self.add_item(notify_btn)
 
+        rename_tour_btn = ui.Button(
+            label="Название турнира", style=ButtonStyle.secondary
+        )
+        rename_tour_btn.callback = self.on_rename_tournament
+        self.add_item(rename_tour_btn)
+
         size_btn = ui.Button(label="Изм. размер", style=ButtonStyle.secondary)
         size_btn.callback = self.on_change_size
         self.add_item(size_btn)
@@ -678,7 +699,7 @@ class ManageTournamentView(SafeView):
             await interaction.message.edit(view=self)
 
     async def on_list_players(self, interaction: Interaction):
-        embed = await build_tournament_status_embed(self.tid)
+        embed = await build_tournament_status_embed(self.tid, include_id=True)
         if embed:
             await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
@@ -687,7 +708,13 @@ class ManageTournamentView(SafeView):
     async def on_announce(self, interaction: Interaction):
         success = await send_announcement_embed(self.ctx, self.tid)
         if success:
-            await interaction.response.send_message("Анонс отправлен", ephemeral=True)
+            info = get_tournament_info(self.tid) or {}
+            title = format_tournament_title(
+                info.get("name"), info.get("start_time"), self.tid, include_id=True
+            )
+            await interaction.response.send_message(
+                f"Анонс отправлен: {title}", ephemeral=True
+            )
         else:
             await interaction.response.send_message(
                 "Не удалось отправить анонс", ephemeral=True
@@ -698,6 +725,35 @@ class ManageTournamentView(SafeView):
         await interaction.response.defer(ephemeral=True)
         await send_participation_confirmations(interaction.client, self.tid, admin_id)
         await interaction.followup.send("Уведомления отправлены", ephemeral=True)
+
+    async def on_rename_tournament(self, interaction: Interaction):
+        await interaction.response.send_modal(
+            TournamentRenameModal(self._rename_tournament)
+        )
+
+    async def _rename_tournament(self, interaction: Interaction, new_name: str):
+        ok = rename_tournament(self.tid, new_name)
+        if ok:
+            info = get_tournament_info(self.tid) or {}
+            title = format_tournament_title(
+                new_name, info.get("start_time"), self.tid, include_id=True
+            )
+            await interaction.response.send_message(
+                f"Название обновлено: {title}", ephemeral=True
+            )
+            guild = interaction.guild or (
+                self.ctx.guild if hasattr(self.ctx, "guild") else None
+            )
+            if guild:
+                await send_announcement_embed(self.ctx, self.tid)
+                await refresh_bracket_message(guild, self.tid)
+        else:
+            await interaction.response.send_message(
+                "Не удалось обновить название", ephemeral=True
+            )
+        self.refresh_buttons()
+        if interaction.message:
+            await interaction.message.edit(view=self)
 
     async def on_change_size(self, interaction: Interaction):
         await interaction.response.send_modal(SizeModal(self._change_size))
@@ -776,11 +832,13 @@ class ManageTournamentView(SafeView):
         view = RoundManagementView(self.tid, logic, self.ctx)
         embed = await build_tournament_bracket_embed(self.tid, interaction.guild)
         if not embed:
-            embed = await build_tournament_status_embed(self.tid)
+            embed = await build_tournament_status_embed(self.tid, include_id=True)
         await interaction.response.edit_message(embed=embed, view=view)
 
     async def on_bracket(self, interaction: Interaction):
-        embed = await build_tournament_bracket_embed(self.tid, interaction.guild)
+        embed = await build_tournament_bracket_embed(
+            self.tid, interaction.guild, include_id=True
+        )
         if not embed:
             embed = await build_tournament_status_embed(self.tid)
 

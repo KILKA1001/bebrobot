@@ -26,6 +26,7 @@ def create_tournament_record(
     start_time: Optional[str] = None,
     author_id: Optional[int] = None,
     team_auto: bool | None = None,
+    name: Optional[str] = None,
 ) -> int:
     """Создаёт запись о новом турнире и возвращает его ID."""
     payload = {"type": t_type, "size": size, "status": "registration"}
@@ -33,6 +34,8 @@ def create_tournament_record(
         payload["start_time"] = start_time
     if author_id is not None:
         payload["author_id"] = author_id
+    if name:
+        payload["name"] = name
     global _has_team_auto
     if team_auto is not None and _has_team_auto:
         payload["team_auto"] = team_auto
@@ -683,7 +686,7 @@ def save_status_message(tournament_id: int, message_id: int) -> bool:
 def get_tournament_info(tournament_id: int) -> Optional[dict]:
     """Возвращает основные поля турнира или None."""
     global _has_team_auto
-    fields = "type, size, bank_type, manual_amount, status, start_time"
+    fields = "type, size, bank_type, manual_amount, status, start_time, name"
     if _has_team_auto:
         fields += ", team_auto"
     try:
@@ -702,7 +705,7 @@ def get_tournament_info(tournament_id: int) -> Optional[dict]:
             try:
                 res = (
                     supabase.table("tournaments")
-                    .select("type, size, bank_type, manual_amount, status, start_time")
+                    .select("type, size, bank_type, manual_amount, status, start_time, name")
                     .eq("id", tournament_id)
                     .single()
                     .execute()
@@ -789,6 +792,21 @@ def update_start_time(tournament_id: int, new_iso: str) -> bool:
         return bool(res.data)
     except Exception as e:
         logger.error("Failed to update start time: %s", e)
+        return False
+
+
+def update_tournament_name(tournament_id: int, new_name: str) -> bool:
+    """Обновляет название турнира."""
+    try:
+        res = (
+            supabase.table("tournaments")
+            .update({"name": new_name})
+            .eq("id", tournament_id)
+            .execute()
+        )
+        return bool(res.data)
+    except Exception as e:
+        logger.error("Failed to update tournament name: %s", e)
         return False
 
 
