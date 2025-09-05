@@ -16,6 +16,7 @@ from bot.systems.tournament_logic import (
     format_tournament_title,
 )
 from bot.systems.manage_tournament_view import ManageTournamentView
+from bot.systems.tournament_admin_ui import TournamentAdminDashboard
 from bot.data.tournament_db import get_tournament_status, get_tournament_info
 
 # Import the bot instance from base.py instead of creating a new one
@@ -53,6 +54,21 @@ async def createtournament(ctx):
     view = TournamentSetupView(ctx.author.id)
     msg = await send_temp(ctx, embed=view.initial_embed(), view=view)
     view.message = msg
+
+
+@bot.hybrid_command(
+    name="tournamentadmin", description="Панель управления турнирами"
+)
+@commands.check(has_tournament_permission)
+async def tournamentadmin(ctx: commands.Context):
+    """Открывает центральную панель для администраторов турниров."""
+    if ctx.interaction and not ctx.interaction.response.is_done():
+        await ctx.defer()
+    view = TournamentAdminDashboard(ctx)
+    embed = discord.Embed(
+        title="🎮 Панель турниров", color=discord.Color.blurple()
+    )
+    await send_temp(ctx, embed=embed, view=view)
 
 
 @bot.hybrid_command(
