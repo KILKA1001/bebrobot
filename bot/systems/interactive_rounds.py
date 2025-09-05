@@ -224,10 +224,12 @@ class RoundManagementView(SafeView):
 
         view = ManageTournamentView(self.tournament_id, ctx)
         embed = await build_tournament_bracket_embed(
-            self.tournament_id, interaction.guild
+            self.tournament_id, interaction.guild, include_id=True
         )
         if not embed:
-            embed = await build_tournament_status_embed(self.tournament_id)
+            embed = await build_tournament_status_embed(
+                self.tournament_id, include_id=True
+            )
 
         if embed:
             await interaction.response.edit_message(embed=embed, view=view)

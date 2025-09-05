@@ -156,6 +156,43 @@ def format_reward_details(bank_type: int, manual_amount: float, team_mode: bool)
     )
 
 
+def format_tournament_title(
+    name: str | None,
+    start_time: Optional[str],
+    tournament_id: int,
+    include_id: bool = False,
+) -> str:
+    """Формирует строку вида 'Название Месяц, Год [#id]'."""
+    title = name or f"Турнир"
+    date_part = ""
+    if start_time:
+        from datetime import datetime
+
+        try:
+            dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+            months = [
+                "января",
+                "февраля",
+                "марта",
+                "апреля",
+                "мая",
+                "июня",
+                "июля",
+                "августа",
+                "сентября",
+                "октября",
+                "ноября",
+                "декабря",
+            ]
+            date_part = f" {months[dt.month - 1]} {dt.year}"
+        except Exception:
+            pass
+    full = f"{title}{date_part}".strip()
+    if include_id:
+        full += f" #{tournament_id}"
+    return full
+
+
 # ───── База данных ─────
 
 
@@ -165,9 +202,12 @@ def create_tournament_record(
     start_time: Optional[str] = None,
     author_id: Optional[int] = None,
     team_auto: bool | None = None,
+    name: Optional[str] = None,
 ) -> int:
     """Создаёт запись о турнире и возвращает его ID."""
-    return db_create_tournament_record(t_type, size, start_time, author_id, team_auto)
+    return db_create_tournament_record(
+        t_type, size, start_time, author_id, team_auto, name
+    )
 
 
 def set_tournament_status(tournament_id: int, status: str) -> bool:
@@ -187,6 +227,13 @@ def delete_tournament_record(tournament_id: int) -> bool:
         return True
     except Exception:
         return False
+
+
+def rename_tournament(tournament_id: int, new_name: str) -> bool:
+    """Изменяет название турнира."""
+    from bot.data.tournament_db import update_tournament_name
+
+    return update_tournament_name(tournament_id, new_name)
 
 
 # ───── Доменные классы ─────
@@ -321,6 +368,7 @@ class TournamentSetupView(SafeView):
         self.size: Optional[int] = None
         self.bank_type: Optional[int] = None
         self.start_time: Optional[str] = None
+        self.title: Optional[str] = None
         self.team_auto: bool = False
         self.message: Optional[discord.Message] = None
         self._build_type_buttons()
@@ -424,6 +472,11 @@ class TournamentSetupView(SafeView):
 
     def _build_confirm_buttons(self):
         self.clear_items()
+        name_btn = ui.Button(
+            label="Название", style=discord.ButtonStyle.secondary, custom_id="set_name"
+        )
+        name_btn.callback = self.on_set_name
+        self.add_item(name_btn)
         date_btn = ui.Button(
             label="📅 Дата старта",
             style=discord.ButtonStyle.secondary,
@@ -460,6 +513,9 @@ class TournamentSetupView(SafeView):
 
     async def on_set_bet_bank(self, interaction: discord.Interaction):
         await interaction.response.send_modal(BetBankModal(self))
+
+    async def on_set_name(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(TournamentNameModal(self))
 
     async def interaction_check(self, inter: discord.Interaction) -> bool:
         # Только автор команды может управлять этим View
@@ -583,6 +639,7 @@ class TournamentSetupView(SafeView):
                 self.start_time,
                 author_id=self.author_id,
                 team_auto=self.team_auto if self.t_type == "team" else None,
+                name=self.title,
             )
             ok, msg = validate_and_save_bank(
                 tour_id, self.bank_type or 1, self.manual_amount
@@ -609,6 +666,12 @@ class TournamentSetupView(SafeView):
                         return
                 tdb.create_bet_bank(tour_id, self.bets_bank)
             typetxt = "Дуэльный 1×1" if self.t_type == "duel" else "Командный 3×3"
+            display_public = format_tournament_title(
+                self.title, self.start_time, tour_id
+            )
+            display_admin = format_tournament_title(
+                self.title, self.start_time, tour_id, include_id=True
+            )
             prize_text = {
                 1: f"🏅 Тип 1 — {self.manual_amount:.2f} баллов от пользователя",
                 2: "🥈 Тип 2 — 30 баллов (25% платит игрок)",
@@ -621,7 +684,7 @@ class TournamentSetupView(SafeView):
                 else f"👥 Участников: {self.size}"
             )
             embed = discord.Embed(
-                title=f"✅ Турнир #{tour_id} создан!",
+                title=f"✅ {display_admin} создан!",
                 description=(
                     f"🏆 Тип: {'Дуэльный 1×1' if self.t_type=='duel' else 'Командный 3×3'}\n"
                     f"{count_line}\n"
@@ -633,7 +696,7 @@ class TournamentSetupView(SafeView):
             self.disable_all_items()
             await interaction.response.edit_message(embed=embed, view=self)
             announcement = discord.Embed(
-                title=f"📣 Открыта регистрация — Турнир #{tour_id}",
+                title=f"📣 Открыта регистрация — {display_public}",
                 color=discord.Color.gold(),
             )
             # тип турнира
@@ -2065,6 +2128,24 @@ async def handle_unregister(ctx: commands.Context, identifier: str, tournament_i
     await send_temp(ctx, f"✅ {name} удалён из турнира #{tournament_id}.")
 
 
+class TournamentNameModal(ui.Modal, title="Название турнира"):
+    name = ui.TextInput(label="Название", required=True)
+
+    def __init__(self, view: TournamentSetupView):
+        super().__init__()
+        self.view = view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.view.title = str(self.name)
+        await interaction.response.send_message(
+            f"✅ Название установлено: **{self.view.title}**",
+            ephemeral=True,
+        )
+        if self.view.message:
+            self.view._build_confirm_buttons()
+            await self.view.message.edit(view=self.view)
+
+
 class StartDateModal(ui.Modal, title="Дата начала турнира"):
     start = ui.TextInput(
         label="ДД.ММ.ГГГГ ЧЧ:ММ", placeholder="01.12.2023 18:00", required=True
@@ -2353,8 +2434,11 @@ async def send_announcement_embed(ctx, tournament_id: int) -> bool:
     else:
         prize_text = "❓"
 
+    display_public = format_tournament_title(
+        data.get("name"), data.get("start_time"), tournament_id
+    )
     embed = discord.Embed(
-        title=f"📣 Открыта регистрация — Турнир #{tournament_id}",
+        title=f"📣 Открыта регистрация — {display_public}",
         color=discord.Color.gold(),
     )
     embed.add_field(name="Тип турнира", value=type_text, inline=True)
@@ -2429,7 +2513,9 @@ async def send_announcement_embed(ctx, tournament_id: int) -> bool:
     return True
 
 
-async def build_tournament_status_embed(tournament_id: int) -> discord.Embed | None:
+async def build_tournament_status_embed(
+    tournament_id: int, include_id: bool = False
+) -> discord.Embed | None:
     t = get_tournament_info(tournament_id)
     if not t:
         return None
@@ -2462,8 +2548,11 @@ async def build_tournament_status_embed(tournament_id: int) -> discord.Embed | N
     elif status == "finished":
         stage = "✅ Завершён"
 
+    title_str = format_tournament_title(
+        t.get("name"), t.get("start_time"), tournament_id, include_id
+    )
     embed = discord.Embed(
-        title=f"📋 Турнир #{tournament_id} — Статус", color=discord.Color.blue()
+        title=f"📋 {title_str} — Статус", color=discord.Color.blue()
     )
     embed.add_field(name="Тип", value=type_text, inline=True)
     if t_type == "team":
@@ -2505,13 +2594,18 @@ async def build_tournament_status_embed(tournament_id: int) -> discord.Embed | N
 async def build_tournament_bracket_embed(
     tournament_id: int,
     guild: discord.Guild | None = None,
+    include_id: bool = False,
 ) -> discord.Embed | None:
     """Строит embed-сетку турнира по сыгранным матчам."""
 
     round_no = 1
     team_map, team_names = tournament_db.get_team_info(tournament_id)
+    info = get_tournament_info(tournament_id) or {}
+    title_str = format_tournament_title(
+        info.get("name"), info.get("start_time"), tournament_id, include_id
+    )
     embed = discord.Embed(
-        title=f"🏟️ Сетка турнира #{tournament_id}",
+        title=f"🏟️ Сетка турнира {title_str}",
         color=discord.Color.purple(),
     )
 
@@ -2766,8 +2860,11 @@ async def update_result_message(
             else "—"
         )
 
+    title_str = format_tournament_title(
+        info.get("name"), info.get("start_time"), tournament_id
+    )
     embed = discord.Embed(
-        title=f"🏁 Турнир #{tournament_id} завершён!",
+        title=f"🏁 {title_str} завершён!",
         color=discord.Color.gold(),
     )
     embed.add_field(
