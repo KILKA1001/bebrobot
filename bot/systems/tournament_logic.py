@@ -213,6 +213,8 @@ class Tournament:
         modes: List[int],
         maps_by_mode: Dict[int, List[str]],
         team_size: int = 1,
+        *,
+        shuffle: bool = True,
     ) -> None:
         self.team_size = max(1, team_size)
         self.modes = modes
@@ -232,12 +234,15 @@ class Tournament:
                 team_ids.append(tid)
                 tid += 1
             self.participants = team_ids
+            if shuffle:
+                random.shuffle(self.participants)
         else:
             self.participants = participants.copy()
+            if shuffle:
+                random.shuffle(self.participants)
             self.team_map = {}
 
     def generate_round(self) -> List[Match]:
-        random.shuffle(self.participants)
         round_matches: List[Match] = []
         for i in range(0, len(self.participants), 2):
             p1, p2 = self.participants[i], self.participants[i + 1]
@@ -709,8 +714,15 @@ class TournamentSetupView(SafeView):
         await interaction.response.edit_message(embed=embed, view=self)
 
 
-def create_tournament_logic(participants: List[int], team_size: int = 1) -> Tournament:
-    return Tournament(participants, MODE_IDS, MAPS_BY_MODE, team_size=team_size)
+def create_tournament_logic(
+    participants: List[int],
+    team_size: int = 1,
+    *,
+    shuffle: bool = True,
+) -> Tournament:
+    return Tournament(
+        participants, MODE_IDS, MAPS_BY_MODE, team_size=team_size, shuffle=shuffle
+    )
 
 
 def load_tournament_logic_from_db(tournament_id: int) -> Tournament:
@@ -719,14 +731,14 @@ def load_tournament_logic_from_db(tournament_id: int) -> Tournament:
     if info.get("type") == "team":
         team_map, _ = tournament_db.get_team_info(tournament_id)
         participants = list(team_map.keys())
-        tour = create_tournament_logic(participants)
+        tour = create_tournament_logic(participants, shuffle=False)
         tour.team_map = team_map
     else:
         participants = [
             p.get("discord_user_id") or p.get("player_id")
             for p in tournament_db.list_participants_full(tournament_id)
         ]
-        tour = create_tournament_logic(participants)
+        tour = create_tournament_logic(participants, shuffle=False)
 
     round_no = 1
     incomplete_round = None
@@ -1017,7 +1029,9 @@ async def next_round(interaction: Interaction, tournament_id: int) -> None:
             return
 
         if tour.team_size > 1:
-            tour = create_tournament_logic(participants, team_size=tour.team_size)
+            tour = create_tournament_logic(
+                participants, team_size=tour.team_size, shuffle=False
+            )
 
     # 4) Генерация и запись
     existing = db_get_matches(tournament_id, tour.current_round)

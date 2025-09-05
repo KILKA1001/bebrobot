@@ -1098,14 +1098,14 @@ class ManageTournamentView(SafeView):
 
         if team_mode:
             team_map, team_names = get_team_info(self.tid)
-            logic = create_tournament_logic(list(team_map.keys()))
+            logic = create_tournament_logic(list(team_map.keys()), shuffle=False)
             logic.team_map = team_map
         else:
             participants = [
                 p.get("discord_user_id") or p.get("player_id")
                 for p in list_participants_full(self.tid)
             ]
-            logic = create_tournament_logic(participants)
+            logic = create_tournament_logic(participants, shuffle=False)
 
         guild = interaction.guild or (
             self.ctx.guild if hasattr(self.ctx, "guild") else None
