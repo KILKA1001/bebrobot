@@ -97,7 +97,7 @@ async def add_points(
         )
         await send_temp(ctx, embed=embed, delete_after=None)
     except ValueError:
-        await send_temp(ctx, "Ошибка: введите корректное число")
+        await send_temp(ctx, "Ошибка: введите корректное число", delete_after=None)
 
 
 @bot.hybrid_command(name="removepoints", description="Снять баллы у участника")
@@ -109,7 +109,9 @@ async def remove_points(
         points_float = float(points.replace(",", "."))
         if points_float <= 0:
             await send_temp(
-                ctx, "❌ Ошибка: введите число больше 0 для снятия баллов."
+                ctx,
+                "❌ Ошибка: введите число больше 0 для снятия баллов.",
+                delete_after=None,
             )
             return
         user_id = member.id
@@ -122,7 +124,7 @@ async def remove_points(
                 ),
                 color=discord.Color.red(),
             )
-            await send_temp(ctx, embed=embed)
+            await send_temp(ctx, embed=embed, delete_after=None)
             return
         db.scores[user_id] = current_points - points_float
         db.add_action(user_id, -points_float, reason, ctx.author.id)
@@ -145,9 +147,11 @@ async def remove_points(
             value=f"{format_points(db.scores[user_id])} баллов",
             inline=False,
         )
-        await send_temp(ctx, embed=embed)
+        await send_temp(ctx, embed=embed, delete_after=None)
     except ValueError:
-        await send_temp(ctx, "Ошибка: введите корректное число больше 0")
+        await send_temp(
+            ctx, "Ошибка: введите корректное число больше 0", delete_after=None
+        )
 
 
 @bot.hybrid_command(
