@@ -126,7 +126,9 @@ async def on_ready():
                 
         if participants:
             team_size = 3 if tour.get("type") == "team" else 1
-            tournament_logic = create_tournament_logic(participants, team_size=team_size)
+            tournament_logic = create_tournament_logic(
+                participants, team_size=team_size, shuffle=False
+            )
             round_management_view = RoundManagementView(tour["id"], tournament_logic)
             bot.add_view(round_management_view)
 
