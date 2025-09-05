@@ -2564,9 +2564,17 @@ async def build_tournament_bracket_embed(
                 or wins2 >= required_wins
                 or all(m.get("result") in (1, 2) for m in ms)
             )
-            status = "✅" if finished else "❌"
 
-            line = f"{name1} [{wins1}] ─┐\n" f"{name2} [{wins2}] ─┘ {status}"
+            if finished:
+                if wins1 > wins2:
+                    line = f"✅ {name1} [{wins1}] ─┐\n{name2} [{wins2}] ─┘"
+                elif wins2 > wins1:
+                    line = f"{name1} [{wins1}] ─┐\n✅ {name2} [{wins2}] ─┘"
+                else:
+                    line = f"{name1} [{wins1}] ─┐\n{name2} [{wins2}] ─┘ ✅"
+            else:
+                line = f"{name1} [{wins1}] ─┐\n{name2} [{wins2}] ─┘ ❌"
+
             lines.append(line)
 
         embed.add_field(name=f"Раунд {round_no}", value="\n".join(lines), inline=False)
