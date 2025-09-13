@@ -391,36 +391,37 @@ class BetStatusView(SafeView):
         ]
 
         class _Select(ui.Select):
-            def __init__(self, parent: "BetStatusView"):
+            def __init__(self):
+                # используем встроенное свойство `view` вместо собственного поля `parent`
                 super().__init__(placeholder="Выберите ставку", options=options)
-                self.parent = parent
 
             async def callback(self, interaction: Interaction):
-                await self.parent.on_select(interaction)
+                await self.view.on_select(interaction)
 
         class _EditBtn(ui.Button):
-            def __init__(self, parent: "BetStatusView"):
+            def __init__(self):
+                # кнопка редактирования по умолчанию отключена
                 super().__init__(
                     label="Изменить", style=ButtonStyle.primary, disabled=True
                 )
-                self.parent = parent
 
             async def callback(self, interaction: Interaction):
-                await self.parent.on_edit(interaction)
+                await self.view.on_edit(interaction)
 
         class _DelBtn(ui.Button):
-            def __init__(self, parent: "BetStatusView"):
+            def __init__(self):
+                # кнопку удаления также блокируем до выбора ставки
                 super().__init__(
                     label="Удалить", style=ButtonStyle.danger, disabled=True
                 )
-                self.parent = parent
 
             async def callback(self, interaction: Interaction):
-                await self.parent.on_delete(interaction)
+                await self.view.on_delete(interaction)
 
-        self.select = _Select(self)
-        self.edit_btn = _EditBtn(self)
-        self.del_btn = _DelBtn(self)
+        # создаём элементы интерфейса и добавляем их в текущее View
+        self.select = _Select()
+        self.edit_btn = _EditBtn()
+        self.del_btn = _DelBtn()
 
         self.add_item(self.select)
         self.add_item(self.edit_btn)
