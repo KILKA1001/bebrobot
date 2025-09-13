@@ -76,28 +76,24 @@ class TeamNameModal(ui.Modal, title="Название команды"):
 
 
 class RegisterPlayerView(SafeView):
-    def __init__(self, parent_view, members):
+    def __init__(self, parent_view):
         super().__init__(timeout=60)
         self.parent_view = parent_view
-        options = [
-            discord.SelectOption(label=m.display_name, value=str(m.id))
-            for m in members[:25]
-        ]
-        if options:
-            select = ui.Select(placeholder="Выберите игрока", options=options)
+        select = ui.UserSelect(placeholder="Выберите игрока")
 
-            async def on_select(interaction: Interaction):
-                pid = int(select.values[0])
-                if self.parent_view.is_team and not self.parent_view.team_auto:
-                    await interaction.response.send_modal(
-                        TeamNameModal(self.parent_view._register, pid)
-                    )
-                else:
-                    await self.parent_view._register(interaction, pid)
-                self.stop()
+        async def on_select(interaction: Interaction):
+            user = select.values[0]
+            pid = user.id
+            if self.parent_view.is_team and not self.parent_view.team_auto:
+                await interaction.response.send_modal(
+                    TeamNameModal(self.parent_view._register, pid)
+                )
+            else:
+                await self.parent_view._register(interaction, pid)
+            self.stop()
 
-            select.callback = on_select
-            self.add_item(select)
+        select.callback = on_select
+        self.add_item(select)
 
         id_btn = ui.Button(label="Ввести ID", style=ButtonStyle.secondary)
 
@@ -704,12 +700,8 @@ class ManageTournamentView(SafeView):
 
     # ----- Callbacks -----
     async def on_register_player(self, interaction: Interaction):
-        guild = interaction.guild or (
-            self.ctx.guild if hasattr(self.ctx, "guild") else None
-        )
-        members = guild.members if guild else []
-        if members:
-            view = RegisterPlayerView(self, members)
+        if interaction.guild:
+            view = RegisterPlayerView(self)
             await interaction.response.send_message(
                 "Выберите игрока или введите ID:", view=view, ephemeral=True
             )
