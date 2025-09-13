@@ -66,13 +66,17 @@ class PlayerIdModal(ui.Modal, title="ID игрока"):
 class TeamNameModal(ui.Modal, title="Название команды"):
     team_name = ui.TextInput(label="Название команды", required=True)
 
-    def __init__(self, callback, pid: int):
+    def __init__(self, callback, pid: int, *, is_discord: bool = False):
         super().__init__()
         self._callback = callback
         self.pid = pid
+        self.is_discord = is_discord
 
     async def on_submit(self, interaction: Interaction):
-        await self._callback(interaction, self.pid, str(self.team_name))
+        # Передаём дополнительный флаг, чтобы знать, ID это игрока или Discord
+        await self._callback(
+            interaction, self.pid, str(self.team_name), is_discord=self.is_discord
+        )
 
 
 class RegisterPlayerView(SafeView):
@@ -86,10 +90,14 @@ class RegisterPlayerView(SafeView):
             pid = user.id
             if self.parent_view.is_team and not self.parent_view.team_auto:
                 await interaction.response.send_modal(
-                    TeamNameModal(self.parent_view._register, pid)
+                    TeamNameModal(
+                        self.parent_view._register, pid, is_discord=True
+                    )
                 )
             else:
-                await self.parent_view._register(interaction, pid)
+                await self.parent_view._register(
+                    interaction, pid, is_discord=True
+                )
             self.stop()
 
         select.callback = on_select
@@ -713,7 +721,12 @@ class ManageTournamentView(SafeView):
             )
 
     async def _register(
-        self, interaction: Interaction, pid: int, team: str | None = None
+        self,
+        interaction: Interaction,
+        pid: int,
+        team: str | None = None,
+        *,
+        is_discord: bool = False,
     ):
         if self.is_team and not self.team_auto and team:
             from bot.data.tournament_db import (
@@ -726,11 +739,24 @@ class ManageTournamentView(SafeView):
                 tid = get_next_team_id(self.tid)
         elif not self.team_auto:
             tid = None
-            ok_db = add_player_to_tournament(
-                pid, self.tid, team_id=tid, team_name=team if tid else None
-            )
+            if is_discord:
+                ok_db = add_player_to_tournament(
+                    None,
+                    self.tid,
+                    discord_user_id=pid,
+                    team_id=tid,
+                    team_name=team if tid else None,
+                )
+            else:
+                ok_db = add_player_to_tournament(
+                    pid,
+                    self.tid,
+                    team_id=tid,
+                    team_name=team if tid else None,
+                )
         else:
-            ok_db = assign_auto_team(self.tid, pid)
+            # При автоматическом распределении команд нам нужен Discord ID
+            ok_db = assign_auto_team(self.tid, pid) if is_discord else False
         if ok_db:
             await interaction.response.send_message("Игрок добавлен", ephemeral=True)
         else:

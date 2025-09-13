@@ -87,18 +87,30 @@ def update_player_field(player_id: int, field_name: str, new_value: str) -> bool
 
 
 def add_player_to_tournament(
-    player_id: int,
+    player_id: Optional[int],
     tournament_id: int,
+    *,
+    discord_user_id: Optional[int] = None,
     team_id: Optional[int] = None,
     team_name: Optional[str] = None,
 ) -> bool:
-    """Регистрирует игрока в турнире."""
-    payload = {
-        "tournament_id": tournament_id,
-        "discord_user_id": player_id,
-        "player_id": player_id,
-        "confirmed": True,
-    }
+    """Регистрирует игрока в турнире.
+
+    Можно передать либо ``player_id`` (ID в таблице ``players``),
+    либо ``discord_user_id``. Если нам известен только Discord ID,
+    ``player_id`` можно оставить ``None``.
+    """
+
+    # хотя бы одно из полей должно быть заполнено
+    if player_id is None and discord_user_id is None:
+        logger.error("add_player_to_tournament called without player identifiers")
+        return False
+
+    payload = {"tournament_id": tournament_id, "confirmed": True}
+    if player_id is not None:
+        payload["player_id"] = player_id
+    if discord_user_id is not None:
+        payload["discord_user_id"] = discord_user_id
     if team_id is not None:
         payload["team_id"] = team_id
         payload["team_name"] = team_name
