@@ -2794,6 +2794,13 @@ async def update_bet_message(guild: discord.Guild, tournament_id: int) -> bool:
     view = BettingView(tournament_id)
     try:
         await message.edit(view=view)
+        # сохраняем в памяти ссылку на кнопку, чтобы она не "умирала" спустя время
+        try:
+            from bot.commands.base import bot
+
+            bot.add_view(view, message_id=message.id)
+        except Exception:
+            pass
         return True
     except Exception:
         return False

@@ -30,7 +30,7 @@ from bot.systems.fines_logic import get_fine_leaders
 from bot.systems.fines_logic import build_fine_embed
 from bot.systems.fines_logic import fines_summary_loop
 import bot.data.tournament_db as tournament_db
-from bot.systems.tournament_logic import RegistrationView
+from bot.systems.tournament_logic import RegistrationView, BettingView
 from bot.systems.interactive_rounds import RoundManagementView
 from bot.systems.tournament_logic import create_tournament_logic
 from bot.data import tournament_db
@@ -100,20 +100,21 @@ async def on_ready():
     
     active_tournaments = tournament_db.get_active_tournaments()
     for tour in active_tournaments:
-        # Проверяем наличие обязательных полей
+        # Проверяем наличие нужных полей
         if not all(key in tour for key in ["id", "size", "type", "announcement_message_id"]):
             continue
-            
+
         try:
-            # Регистрация RegistrationView
-            registration_view = RegistrationView(
-                tournament_id=tour["id"],
-                max_participants=tour.get("size", 0),  # Используем get с default значением
-                tour_type=tour.get("type", "duel")     # Default тип турнира
-            )
-            bot.add_view(registration_view, message_id=tour["announcement_message_id"])
+            # Регистрируем кнопку ставок, чтобы она работала после перезапуска
+            bet_view = BettingView(tour["id"])
+            bot.add_view(bet_view, message_id=tour["announcement_message_id"])
+
+            # если есть отдельное сообщение со статусом — добавляем кнопку и туда
+            status_msg_id = tournament_db.get_status_message_id(tour["id"])
+            if status_msg_id:
+                bot.add_view(BettingView(tour["id"]), message_id=status_msg_id)
         except Exception as e:
-            print(f"Ошибка при регистрации турнира {tour.get('id')}: {e}")
+            print(f"Ошибка при регистрации кнопок турнира {tour.get('id')}: {e}")
 
         # Регистрация RoundManagementView
         participants_data = tournament_db.list_participants(tour["id"])
