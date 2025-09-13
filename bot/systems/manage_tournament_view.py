@@ -765,7 +765,12 @@ class ManageTournamentView(SafeView):
             )
         self.refresh_buttons()
         if interaction.message:
-            await interaction.message.edit(view=self)
+            try:
+                # Обновляем исходное сообщение с кнопками, если оно ещё существует
+                await interaction.message.edit(view=self)
+            except discord.NotFound:
+                # Сообщение могли удалить или оно было эфемерным — просто игнорируем
+                pass
 
     async def on_unregister_player(self, interaction: Interaction):
         await interaction.response.send_modal(PlayerIdModal(self._unregister))

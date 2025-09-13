@@ -109,6 +109,10 @@ def add_player_to_tournament(
     payload = {"tournament_id": tournament_id, "confirmed": True}
     if player_id is not None:
         payload["player_id"] = player_id
+        if discord_user_id is None:
+            # В базе столбец discord_user_id обязательный, поэтому,
+            # если у игрока нет Discord, используем его player_id как заглушку
+            payload["discord_user_id"] = player_id
     if discord_user_id is not None:
         payload["discord_user_id"] = discord_user_id
     if team_id is not None:
