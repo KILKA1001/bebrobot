@@ -892,20 +892,25 @@ class ManageTournamentView(SafeView):
         guild = interaction.guild or (
             self.ctx.guild if hasattr(self.ctx, "guild") else None
         )
+
+        # Сначала откладываем ответ на взаимодействие, чтобы Discord не
+        # "забыл" его, пока мы генерируем сетку и уведомляем игроков.
+        await interaction.response.defer(ephemeral=True)
+
         if set_tournament_status(self.tid, "active"):
             if guild:
                 await generate_first_round(interaction.client, guild, self.tid)
                 from bot.systems.tournament_logic import update_bet_message
 
                 await update_bet_message(guild, self.tid)
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Турнир активирован", ephemeral=True
             )
             self.refresh_buttons()
             if interaction.message:
                 await interaction.message.edit(view=self)
         else:
-            await interaction.response.send_message("Не удалось", ephemeral=True)
+            await interaction.followup.send("Не удалось", ephemeral=True)
 
     async def on_delete(self, interaction: Interaction):
         await send_delete_confirmation(self.ctx, self.tid)
