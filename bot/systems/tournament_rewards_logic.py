@@ -1,5 +1,6 @@
 from bot.data import db
 from bot.systems.tournament_bank_logic import calculate_bank
+from bot.data.tournament_db import get_tournament_info
 
 # ─────────────────────────────────────────────────────────────
 
@@ -21,15 +22,34 @@ def distribute_rewards(
 
     give_tickets = bank_total > 0
 
+    # Получаем информацию о турнире, чтобы в истории видно было название и номер
+    info = get_tournament_info(tournament_id) or {}
+    t_name = info.get("name")  # Может быть None, если название не задавали
+    # Формируем часть строки с названием и ID
+    tournament_title = f"{t_name} (#{tournament_id})" if t_name else f"#{tournament_id}"
+
     for uid in first_team_ids:
-        db.add_action(uid, reward_first, f"🏆 1 место в турнире #{tournament_id}", author_id)
+        # Сохраняем действие: указываем место и турнир
+        db.add_action(uid, reward_first, f"🏆 1 место в турнире {tournament_title}", author_id)
         if give_tickets:
-            db.give_ticket(uid, "gold", 1, f"🥇 Золотой билет за 1 место (турнир #{tournament_id})", author_id)
+            db.give_ticket(
+                uid,
+                "gold",
+                1,
+                f"🥇 Золотой билет за 1 место (турнир {tournament_title})",
+                author_id,
+            )
 
     for uid in second_team_ids:
-        db.add_action(uid, reward_second, f"🥈 2 место в турнире #{tournament_id}", author_id)
+        db.add_action(uid, reward_second, f"🥈 2 место в турнире {tournament_title}", author_id)
         if give_tickets:
-            db.give_ticket(uid, "normal", 1, f"🎟 Обычный билет за 2 место (турнир #{tournament_id})", author_id)
+            db.give_ticket(
+                uid,
+                "normal",
+                1,
+                f"🎟 Обычный билет за 2 место (турнир {tournament_title})",
+                author_id,
+            )
 
 # ─────────────────────────────────────────────────────────────
 
