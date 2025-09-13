@@ -2,7 +2,7 @@ import discord
 from discord import ui, ButtonStyle, Interaction
 from discord.ext import commands
 
-from bot.utils import SafeView, safe_send
+from bot.utils import SafeView, safe_send, format_points
 from bot.data.tournament_db import (
     get_tournament_status,
     get_tournament_size,
@@ -463,7 +463,33 @@ class BetStatusView(SafeView):
         await self._delete_cb(interaction, self.selected)
 
 
+class BetRootView(SafeView):
+    """Корневое меню раздела ставок."""
+
+    def __init__(self, parent):
+        super().__init__(timeout=60)
+        self.parent = parent
+
+    @ui.button(label="Свои ставки", style=ButtonStyle.primary)
+    async def mine(self, interaction: Interaction, button: ui.Button):
+        """Переход к меню управления собственными ставками."""
+        view = BetMenuView(self.parent)
+        embed = discord.Embed(
+            title="Ставки",
+            description="Выберите действие",
+            color=discord.Color.orange(),
+        )
+        await interaction.response.edit_message(embed=embed, view=view)
+
+    @ui.button(label="Все ставки", style=ButtonStyle.secondary)
+    async def all(self, interaction: Interaction, button: ui.Button):
+        """Показать сводку по всем ставкам турнира."""
+        await self.parent._show_all_bets(interaction)
+
+
 class BetMenuView(SafeView):
+    """Меню работы со своими ставками."""
+
     def __init__(self, parent):
         super().__init__(timeout=60)
         self.parent = parent
@@ -475,6 +501,17 @@ class BetMenuView(SafeView):
     @ui.button(label="Статус ставок", style=ButtonStyle.secondary)
     async def status(self, interaction: Interaction, button: ui.Button):
         await self.parent._show_bet_status(interaction)
+
+    @ui.button(label="Назад", style=ButtonStyle.gray)
+    async def back(self, interaction: Interaction, button: ui.Button):
+        """Возврат в главное меню ставок."""
+        view = BetRootView(self.parent)
+        embed = discord.Embed(
+            title="Ставки",
+            description="Выберите раздел",
+            color=discord.Color.orange(),
+        )
+        await interaction.response.edit_message(embed=embed, view=view)
 
 
 class FinishModal(ui.Modal):
@@ -972,10 +1009,11 @@ class ManageTournamentView(SafeView):
             )
 
     async def on_bets(self, interaction: Interaction):
-        view = BetMenuView(self)
+        """Открыть меню работы со ставками."""
+        view = BetRootView(self)
         embed = discord.Embed(
             title="Ставки",
-            description="Выберите действие",
+            description="Выберите раздел",
             color=discord.Color.orange(),
         )
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
@@ -1172,6 +1210,69 @@ class ManageTournamentView(SafeView):
             )
         view = BetStatusView(bets, self._show_edit_modal, self._delete_bet, locked)
         await interaction.response.edit_message(embed=embed, view=view)
+
+    async def _show_all_bets(self, interaction: Interaction):
+        """Выводит сводку по всем активным ставкам турнира."""
+        from bot.data import tournament_db
+        from bot.data.tournament_db import get_team_info
+        from bot.data.players_db import get_player_by_id
+
+        bets = [b for b in tournament_db.list_bets(self.tid) if b.get("won") is None]
+        if not bets:
+            embed = discord.Embed(
+                title="Все ставки",
+                description="Ставок нет",
+                color=discord.Color.orange(),
+            )
+            await interaction.response.edit_message(embed=embed, view=BetRootView(self))
+            return
+
+        guild = interaction.guild or (
+            self.ctx.guild if hasattr(self.ctx, "guild") else None
+        )
+
+        team_names: dict[int, str] = {}
+        if self.is_team:
+            _, team_names = get_team_info(self.tid)
+
+        def resolve_name(uid: int) -> str:
+            """Подбирает понятное имя по ID игрока/команды."""
+            if uid in team_names:
+                return team_names[uid]
+            name = None
+            if guild:
+                member = guild.get_member(uid)
+                if member:
+                    name = member.display_name
+            if name is None:
+                pl = get_player_by_id(uid)
+                if pl:
+                    name = pl.get("nick")
+            return name or f"ID:{uid}"
+
+        users: dict[int, dict] = {}
+        total_sum = 0.0
+        for b in bets:
+            uid = int(b.get("user_id"))
+            amount = float(b.get("amount", 0))
+            total_sum += amount
+            entry = users.setdefault(
+                uid, {"name": resolve_name(uid), "total": 0.0, "bets": []}
+            )
+            bet_on_name = resolve_name(int(b.get("bet_on")))
+            entry["total"] += amount
+            entry["bets"].append(
+                f"Раунд {b['round']} пара {b['pair_index']} на {bet_on_name}: {format_points(amount)}"
+            )
+
+        embed = discord.Embed(title="Все ставки", color=discord.Color.orange())
+        for data in sorted(users.values(), key=lambda x: x["name"].lower()):
+            lines = "\n".join(data["bets"])
+            value = f"{lines}\n**Итого:** {format_points(data['total'])}"
+            embed.add_field(name=data["name"], value=value, inline=False)
+
+        embed.set_footer(text=f"Общая сумма ставок: {format_points(total_sum)}")
+        await interaction.response.edit_message(embed=embed, view=BetRootView(self))
 
     async def _place_bet(
         self,
