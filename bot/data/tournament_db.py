@@ -991,15 +991,17 @@ def create_bet_bank(tournament_id: int, amount: float) -> bool:
 def get_bet_bank(tournament_id: int) -> float:
     """Returns current bet bank balance."""
     try:
+        # .single() вызывает ошибку, если строки нет.
+        # Берём первую запись вручную, чтобы просто вернуть 0 при отсутствии данных.
         res = (
             supabase.table("tournament_bet_bank")
             .select("balance")
             .eq("tournament_id", tournament_id)
-            .single()
+            .limit(1)
             .execute()
         )
         if res and res.data:
-            return float(res.data.get("balance", 0))
+            return float(res.data[0].get("balance", 0))
     except Exception as e:
         logger.error("Failed to get bet bank: %s", e)
     return 0.0
