@@ -1578,7 +1578,8 @@ async def finalize_tournament_logic(
             super().__init__(timeout=86400)
             self.tid = tid
 
-        @ui.button(label="Получил", style=ButtonStyle.success)
+        # Кнопка для подтверждения получения награды
+        @ui.button(label="Подтвердить", style=ButtonStyle.success)
         async def confirm(self, interaction: Interaction, button: ui.Button):
             await interaction.response.send_message(
                 "Награда подтверждена!", ephemeral=True
@@ -1589,9 +1590,10 @@ async def finalize_tournament_logic(
         user = bot.get_user(uid)
         if user:
             try:
+                # Сообщаем пользователю о начисленной награде и просим подтвердить её получение
                 await safe_send(
                     user,
-                    f"Вы получили награду за турнир #{tournament_id}!",
+                    f"Вам начислена награда за турнир #{tournament_id}! Подтвердите её получение.",
                     view=RewardConfirmView(tournament_id),
                 )
             except Exception:
