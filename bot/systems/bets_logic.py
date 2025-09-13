@@ -75,13 +75,17 @@ def place_bet(
     return True, f"Ставка принята. ID {bet_id}"
 
 
-def payout_bets(tournament_id: int, round_no: int, pair_index: int, winner: int, total_rounds: int) -> None:
+def payout_bets(tournament_id: int, round_no: int, pair_index: int, winner_id: int, total_rounds: int) -> None:
+    """Выплачивает ставки для указанной пары.
+
+    ``winner_id`` — ID игрока/команды-победителя (0 если ничья).
+    """
     bets = tournament_db.list_bets(tournament_id, round_no)
     test = _is_test(tournament_id)
     for bet in bets:
         if bet.get("pair_index") != pair_index:
             continue
-        won = int(bet.get("bet_on")) == winner
+        won = int(bet.get("bet_on")) == winner_id
         multiplier = get_multiplier(round_no, total_rounds)
         payout = math.floor(float(bet.get("amount")) * (1 + multiplier)) if won else 0
         if payout and not test:
@@ -137,8 +141,11 @@ def modify_bet(bet_id: int, bet_on: int, amount: float, user_id: int, total_roun
     return True, "Ставка обновлена" if not test else "Ставка обновлена (тест)"
 
 
-def get_pair_summary(tournament_id: int, round_no: int, pair_index: int, winner: int, total_rounds: int) -> dict:
-    """Returns bet statistics for a pair."""
+def get_pair_summary(tournament_id: int, round_no: int, pair_index: int, winner_id: int, total_rounds: int) -> dict:
+    """Возвращает статистику ставок на пару.
+
+    ``winner_id`` — ID игрока/команды-победителя (0 если ничья).
+    """
     bets = tournament_db.list_bets(tournament_id, round_no)
     total = 0
     won_cnt = 0
@@ -151,7 +158,7 @@ def get_pair_summary(tournament_id: int, round_no: int, pair_index: int, winner:
         total += 1
         amt = float(b.get("amount", 0))
         total_amount += amt
-        if int(b.get("bet_on")) == winner:
+        if int(b.get("bet_on")) == winner_id:
             won_cnt += 1
             payout_total += calculate_payout(round_no, total_rounds, amt)
         else:

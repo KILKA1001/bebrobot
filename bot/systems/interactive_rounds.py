@@ -415,6 +415,10 @@ class PairSelectionView(SafeView):
 
         channel = interaction.channel
         wins = {1: 0, 2: 0}
+        # запоминаем, какие игроки участвуют в паре,
+        # чтобы позже определить победителя по их ID
+        p1_id = matches[0].player1_id
+        p2_id = matches[0].player2_id
         for n, m in enumerate(matches, start=1):
             if m.player1_id in self.team_display:
                 v1 = self.team_display[m.player1_id]
@@ -501,12 +505,15 @@ class PairSelectionView(SafeView):
 
                 size = get_tournament_size(self.tournament_id)
                 total_rounds = int(math.ceil(math.log2(size))) if size > 1 else 1
-                winner = 1 if wins[1] > wins[2] else 2 if wins[2] > wins[1] else 0
+                # определяем ID победителя пары
+                winner_id = (
+                    p1_id if wins[1] > wins[2] else p2_id if wins[2] > wins[1] else 0
+                )
                 summary = get_pair_summary(
                     self.tournament_id,
                     self.round_no,
                     idx,
-                    winner,
+                    winner_id,
                     total_rounds,
                 )
 
@@ -515,13 +522,13 @@ class PairSelectionView(SafeView):
                                  tournament_id: int,
                                  round_no: int,
                                  pair_index: int,
-                                 winner: int,
+                                 winner_id: int,
                                  total_rounds: int) -> None:
                         super().__init__(timeout=60)
                         self.tournament_id = tournament_id
                         self.round_no = round_no
                         self.pair_index = pair_index
-                        self.winner = winner
+                        self.winner_id = winner_id
                         self.total_rounds = total_rounds
 
                     @ui.button(label="Выплатить", style=ButtonStyle.success)
@@ -530,7 +537,7 @@ class PairSelectionView(SafeView):
                             self.tournament_id,
                             self.round_no,
                             self.pair_index,
-                            self.winner,
+                            self.winner_id,
                             self.total_rounds,
                         )
                         await inter.response.edit_message(
@@ -553,7 +560,7 @@ class PairSelectionView(SafeView):
                     self.tournament_id,
                     self.round_no,
                     idx,
-                    winner,
+                    winner_id,
                     total_rounds,
                 )
                 await safe_send(channel, embed=emb, view=view)
