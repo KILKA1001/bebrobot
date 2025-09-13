@@ -56,11 +56,13 @@ class HistoryView(SafeView):
 
     @discord.ui.button(label="◀️ Назад", style=discord.ButtonStyle.gray, custom_id="prev")
     async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Переход на предыдущую страницу истории."""
         await interaction.response.defer()
         await render_history(interaction, self.member, self.page - 1)
 
-    @discord.ui.button(label="Вперед ▶️", style=discord.ButtonStyle.gray, custom_id="next")
+    @discord.ui.button(label="Вперёд ▶️", style=discord.ButtonStyle.gray, custom_id="next")
     async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Переход на следующую страницу истории."""
         await interaction.response.defer()
         await render_history(interaction, self.member, self.page + 1)
 
