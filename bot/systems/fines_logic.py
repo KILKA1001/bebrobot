@@ -1,6 +1,6 @@
 import discord
 from discord.ui import Button
-from bot.utils import SafeView, safe_send, format_moscow_time, format_moscow_date
+from bot.utils import SafeView, safe_send, format_moscow_date
 from datetime import datetime, timezone, timedelta
 from typing import List
 from bot.data import db

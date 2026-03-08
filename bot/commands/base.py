@@ -19,7 +19,7 @@ from bot.systems.core_logic import (
     LeaderboardView,
     build_balance_embed,
 )
-from bot.utils import send_temp, format_moscow_time, TIME_FORMAT, format_points
+from bot.utils import send_temp, format_moscow_time, format_points
 from bot.utils.api_monitor import monitor
 from bot import COMMAND_PREFIX
 

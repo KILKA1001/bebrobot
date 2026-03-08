@@ -10,7 +10,6 @@ import math
 from bot.systems.tournament_logic import (
     start_round as cmd_start_round,
     next_round as cmd_next_round,
-    join_tournament,  # не обязательно, но для примера
     build_tournament_status_embed,
     build_participants_embed,
     build_tournament_bracket_embed,
@@ -472,7 +471,7 @@ class PairSelectionView(SafeView):
             )
 
             if channel:
-                msg = await safe_send(channel, embed=match_embed, view=view)
+                await safe_send(channel, embed=match_embed, view=view)
                 await view.wait()
                 if view.winner == 1:
                     wins[1] += 1

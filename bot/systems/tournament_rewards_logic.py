@@ -1,5 +1,4 @@
 from bot.data import db
-from bot.systems.tournament_bank_logic import calculate_bank
 from bot.data.tournament_db import get_tournament_info
 
 # ─────────────────────────────────────────────────────────────

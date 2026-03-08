@@ -1,10 +1,8 @@
 import discord
-from discord.ext import commands
 from typing import Optional
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 import pytz
-import asyncio
 import traceback
 
 from bot.data import db
@@ -17,7 +15,6 @@ from bot.utils import (
     format_moscow_time,
     format_points,
 )
-from bot.utils.history_manager import format_history_embed
 
 active_timers = {}
   
@@ -148,12 +145,12 @@ async def render_history(ctx_or_interaction, member: discord.Member, page: int):
 
         if isinstance(ctx_or_interaction, discord.Interaction):
             if ctx_or_interaction.response.is_done():
-                sent_message = await ctx_or_interaction.edit_original_response(embed=embed, view=view)
+                await ctx_or_interaction.edit_original_response(embed=embed, view=view)
             else:
                 await ctx_or_interaction.response.send_message(embed=embed, view=view)
-                sent_message = await ctx_or_interaction.original_response()
+                await ctx_or_interaction.original_response()
         else:
-            sent_message = await send_temp(ctx_or_interaction, embed=embed, view=view)
+            await send_temp(ctx_or_interaction, embed=embed, view=view)
 
     except Exception as e:
         error_embed = discord.Embed(

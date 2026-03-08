@@ -16,7 +16,6 @@ from bot.systems.tournament_logic import (
     generate_first_round,
     build_tournament_status_embed,
     build_tournament_bracket_embed,
-    build_tournament_result_embed,
     send_announcement_embed,
     send_status_message,
     send_participation_confirmations,
@@ -997,7 +996,6 @@ class ManageTournamentView(SafeView):
             )
             return
 
-        from bot.systems.tournament_logic import send_status_message
 
         bot = interaction.client
         ok = await send_status_message(guild, self.tid, bot=bot)
@@ -1337,8 +1335,6 @@ class ManageTournamentView(SafeView):
         from bot.data.tournament_db import get_tournament_info, get_team_info
 
         from bot.data.tournament_db import (
-            get_tournament_info,
-            get_team_info,
             get_matches,
         )
 

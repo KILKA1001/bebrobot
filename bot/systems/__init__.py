@@ -1,3 +1,5 @@
+from . import bets_logic as bets_logic
+
 from bot.systems.core_logic import (
     update_roles,
     render_history,
@@ -13,11 +15,6 @@ __all__ = [
     "HistoryView",
     "log_action_cancellation",
     "run_monthly_top",
-    "tophistory"
+    "tophistory",
+    "bets_logic",
 ]
-
-from . import bets_logic
-
-__all__.append("bets_logic")
-
-

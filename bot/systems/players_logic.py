@@ -2,7 +2,6 @@ import discord
 from discord import ui, Embed
 from bot.utils import SafeView
 from discord.ext import commands
-from typing import Optional, List, Tuple
 from functools import partial
 
 from bot.data.players_db import (

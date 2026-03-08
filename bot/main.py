@@ -15,27 +15,22 @@ import random
 import json
 from dotenv import load_dotenv
 import pytz
-from discord.ext import commands
 from bot.commands import bot as command_bot
-from bot import COMMAND_PREFIX
 # Локальные импорты
 from bot.data import db
 from keep_alive import keep_alive
 import bot.commands.tournament
 import bot.commands.players
 import bot.commands.maps
-from bot.commands import run_monthly_top
 from datetime import datetime
+import importlib
 from bot.systems import fines_logic
 import bot.commands.fines
-from bot.systems.fines_logic import get_fine_leaders
-from bot.systems.fines_logic import build_fine_embed
-from bot.systems.fines_logic import fines_summary_loop
 import bot.data.tournament_db as tournament_db
-from bot.systems.tournament_logic import RegistrationView, BettingView
+from bot.systems.tournament_logic import BettingView
 from bot.systems.interactive_rounds import RoundManagementView
 from bot.systems.tournament_logic import create_tournament_logic
-from bot.data import tournament_db
+from bot.utils import safe_send
 
 # Константы
 TIME_FORMAT = "%H:%M (%d.%m.%Y)"
@@ -58,14 +53,10 @@ COMMAND_SYNC_MIN_INTERVAL = int(os.getenv("COMMAND_SYNC_MIN_INTERVAL", "21600"))
 bot = command_bot
 db.bot = bot
 
-import importlib
-
 def reload_bot():
     module = importlib.import_module('bot.commands')
     module = importlib.reload(module)
     return module.bot
-
-from bot.utils import safe_send
 
 async def send_greetings(channel, user_list):
     for user_id in user_list:

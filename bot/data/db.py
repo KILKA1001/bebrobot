@@ -1,6 +1,5 @@
 import os
 import logging
-import discord
 from discord.ext import commands
 from typing import Optional
 from datetime import datetime, timezone, timedelta
