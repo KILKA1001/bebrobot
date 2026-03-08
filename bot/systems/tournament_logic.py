@@ -4,7 +4,7 @@ from typing import List, Dict, Optional
 import asyncio
 import math
 import discord
-from discord import ui, Embed, ButtonStyle, Color
+from discord import ui, Embed, ButtonStyle
 from bot.utils import SafeView, safe_send, format_moscow_time
 import os
 from bot.data import db
@@ -36,8 +36,8 @@ from bot.data.tournament_db import (
     list_recent_results,
     get_expired_registrations,
     update_start_time,
-    mark_reminder_sent,
     delete_tournament as db_delete_tournament,
+    list_maps_by_mode,
 )
 from bot.systems import tournament_rewards_logic as rewards
 from bot.systems.tournament_bank_logic import validate_and_save_bank
@@ -102,37 +102,9 @@ ANNOUNCE_CHANNEL_ID = int(os.getenv("TOURNAMENT_ANNOUNCE_CHANNEL_ID", 0))
 MODE_IDS = list(MODE_NAMES.keys())
 
 # Карты сгруппированы по режиму; по возможности берём из базы
-from bot.data.tournament_db import list_maps_by_mode
-
 MAPS_BY_MODE: Dict[int, List[str]] = list_maps_by_mode()
 if not MAPS_BY_MODE:
     MAPS_BY_MODE = {
-        1: [
-            "1.1 1",
-            "1.2 2",
-            "1.3 7",
-            "1.4 11",
-            "1.5 12",
-            "1.6 16",
-        ],
-        2: [
-            "2.1 3",
-            "2.2 4",
-            "2.3 8",
-            "2.4 13",
-            "2.5 15",
-        ],
-        3: [
-            "3.1 5",
-            "3.2 6",
-            "3.3 9",
-            "3.4 17",
-            "3.5 18",
-        ],
-        4: [
-            "4.1 10",
-            "4.2 14",
-        ],
         1: ["1.1 1", "1.2 2", "1.3 3"],
         2: ["2.1 4", "2.2 5", "2.3 6"],
         3: ["3.1 7", "3.2 8", "3.3 9"],
@@ -163,7 +135,7 @@ def format_tournament_title(
     include_id: bool = False,
 ) -> str:
     """Формирует строку вида 'Название Месяц, Год [#id]'."""
-    title = name or f"Турнир"
+    title = name or "Турнир"
     date_part = ""
     if start_time:
         from datetime import datetime
@@ -995,7 +967,6 @@ async def start_round(interaction: Interaction, tournament_id: int) -> None:
 async def next_round(interaction: Interaction, tournament_id: int) -> None:
     """Генерирует следующий раунд и отправляет меню выбора пары."""
     from bot.systems.interactive_rounds import (
-        MatchResultView,
         PairSelectionView,
         get_stage_name,
     )
@@ -1511,8 +1482,6 @@ async def finalize_tournament_logic(
     ):
         return False, "Недостаточно средств для формирования банка"
 
-    participants = db_list_participants_full(tournament_id)
-
     def _resolve(pid: int | None) -> list[int]:
         if pid is None:
             return []
@@ -1805,7 +1774,6 @@ class ParticipationConfirmView(SafeView):
 
     @ui.button(label="Нет, передумал", style=ButtonStyle.danger)
     async def decline(self, interaction: Interaction, button: ui.Button):
-        from bot.commands.tournament import tournament_admins
 
         tournament_db.remove_discord_participant(self.tournament_id, self.user_id)
         await interaction.response.send_message(
@@ -2869,6 +2837,7 @@ async def update_result_message(
             else "—"
         )
 
+    info = get_tournament_info(tournament_id) or {}
     title_str = format_tournament_title(
         info.get("name"), info.get("start_time"), tournament_id
     )
