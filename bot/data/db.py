@@ -118,15 +118,22 @@ class Database:
             return False
 
         try:
-            # 1. Получаем текущие баллы
-            try:
-                current = self.supabase.table("scores")\
-                    .select("points")\
-                    .eq("user_id", user_id)\
-                    .execute()
-                current_points = float(current.data[0]['points']) if current.data else 0
-            except Exception:
-                current_points = 0
+            # 1. Получаем текущие баллы из локального кеша
+            # Это убирает лишний SELECT к Supabase на каждое изменение баллов.
+            cached_points = self.scores.get(user_id)
+            if cached_points is not None:
+                current_points = float(cached_points)
+            else:
+                # Fallback для пользователей, которых ещё нет в кеше
+                # (например, если запись была добавлена извне).
+                try:
+                    current = self.supabase.table("scores")\
+                        .select("points")\
+                        .eq("user_id", user_id)\
+                        .execute()
+                    current_points = float(current.data[0]['points']) if current.data else 0
+                except Exception:
+                    current_points = 0
 
             new_points = max(current_points + points_change, 0)  # Не уходим в минус
 
