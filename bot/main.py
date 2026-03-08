@@ -279,18 +279,6 @@ def main():
     next_retry_at, retry_delay = load_startup_retry_state()
     retry_delay = max(1.0, min(retry_delay, max_retry_delay))
 
-    def normalize_retry_after(parsed_retry: float) -> float:
-        """Normalize retry-after to seconds and clamp to configured bounds."""
-        # Платформы/прокси иногда возвращают Retry-After в миллисекундах.
-        if parsed_retry > max_retry_delay and parsed_retry / 1000 <= max_retry_delay:
-            parsed_retry /= 1000
-        return max(1.0, min(parsed_retry, max_retry_delay))
-
-
-    retry_delay = 60.0  # seconds
-    max_retry_delay = float(os.getenv("STARTUP_MAX_RETRY_DELAY", "300"))
-    next_retry_at = load_next_startup_retry_at()
-
 
 
     def normalize_retry_after(parsed_retry: float) -> float:
@@ -375,10 +363,9 @@ def main():
         except discord.HTTPException as e:
             if e.status == 429:
                 retry_after = get_retry_after(e, retry_delay)
-                retry_delay = wait_before_retry(
-                    max(retry_delay, retry_after),
-                    "Login rate limited.",
-                )
+                # Для входа лучше опираться на Retry-After от Discord,
+                # чтобы не раздувать задержку экспоненциально между перезапусками.
+                retry_delay = wait_before_retry(retry_after, "Login rate limited.")
 
                 continue
 
