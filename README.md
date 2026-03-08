@@ -24,9 +24,15 @@ pip install -r requirements.txt
      POINTS_ROLE_IDS=ID_роли1,ID_роли2
      FINE_ROLE_IDS=ID_роли1,ID_роли2
      TOURNAMENT_ROLE_IDS=ID_роли1,ID_роли2
+     BOT_API_DELAY_SECONDS=3.0
+     BOT_API_DELAY_JITTER=0.8
      ```
      Здесь `ID_роли` — числовые идентификаторы ролей, которым разрешены
      соответствующие действия.
+
+     `BOT_API_DELAY_SECONDS` и `BOT_API_DELAY_JITTER` помогают распределять
+     запросы к API во времени (чтобы реже ловить 429). Первый задаёт базовую
+     задержку между запросами, второй добавляет случайный разброс сверху.
 
 3. **Запуск бота**:
 ```bash
