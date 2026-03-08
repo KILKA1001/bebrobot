@@ -11,6 +11,7 @@ import asyncio
 import logging
 import time
 import re
+import random
 from dotenv import load_dotenv
 import pytz
 from discord.ext import commands
@@ -212,7 +213,8 @@ def main():
         print("❌ Переменная DISCORD_TOKEN не задана.")
         return
 
-    retry_delay = 60  # seconds
+    retry_delay = 60.0  # seconds
+    max_retry_delay = 3600.0
 
     def get_retry_after(exc: discord.HTTPException, default: float) -> float:
         headers = getattr(exc, 'response', None)
@@ -230,6 +232,19 @@ def main():
             except ValueError:
                 pass
         return default
+
+    def wait_before_retry(base_delay: float) -> float:
+        """Sleep before reconnecting and return the next backoff value.
+
+        A small jitter helps avoid synchronized reconnect storms when hosting
+        platforms restart multiple workers around the same moment.
+        """
+
+        delay = max(1.0, min(base_delay, max_retry_delay))
+        jittered = delay + random.uniform(0.0, min(5.0, delay * 0.1))
+        logging.warning("Retrying bot startup in %.1f seconds", jittered)
+        time.sleep(jittered)
+        return min(delay * 2, max_retry_delay)
     while True:
         try:
             bot.run(TOKEN)
@@ -243,8 +258,7 @@ def main():
                 logging.warning(
                     "Login rate limited, retrying in %s seconds", retry_delay
                 )
-                time.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, 600)
+                retry_delay = wait_before_retry(retry_delay)
                 bot = reload_bot()
                 db.bot = bot
                 bot.event(on_ready)
@@ -255,8 +269,7 @@ def main():
                 logging.warning(
                     "Session closed, retrying in %s seconds", retry_delay
                 )
-                time.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, 600)
+                retry_delay = wait_before_retry(retry_delay)
                 bot = reload_bot()
                 db.bot = bot
                 bot.event(on_ready)
