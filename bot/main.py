@@ -234,20 +234,20 @@ def mark_commands_synced() -> None:
         logging.warning("Не удалось записать состояние синхронизации команд: %s", e)
 
 
-def load_next_startup_retry_at() -> float:
-    """Load persisted cooldown timestamp for startup retries."""
+def load_startup_retry_state() -> tuple[float, float]:
+    """Load persisted cooldown timestamp and retry delay for startup retries."""
     try:
         with open(STARTUP_RETRY_STATE_FILE, "r", encoding="utf-8") as f:
             state = json.load(f)
-        return float(state.get("next_retry_at", 0))
+        return float(state.get("next_retry_at", 0)), float(state.get("retry_delay", 60.0))
     except (FileNotFoundError, ValueError, OSError, TypeError):
-        return 0.0
+        return 0.0, 60.0
 
 
-def save_next_startup_retry_at(next_retry_at: float) -> None:
+def save_startup_retry_state(next_retry_at: float, retry_delay: float) -> None:
     try:
         with open(STARTUP_RETRY_STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump({"next_retry_at": next_retry_at}, f)
+            json.dump({"next_retry_at": next_retry_at, "retry_delay": retry_delay}, f)
     except OSError as e:
         logging.warning("Не удалось записать состояние повторного запуска: %s", e)
 
@@ -263,9 +263,21 @@ def main():
         print("❌ Переменная DISCORD_TOKEN не задана.")
         return
 
+    max_retry_delay = float(os.getenv("STARTUP_MAX_RETRY_DELAY", "300"))
+    next_retry_at, retry_delay = load_startup_retry_state()
+    retry_delay = max(1.0, min(retry_delay, max_retry_delay))
+
+    def normalize_retry_after(parsed_retry: float) -> float:
+        """Normalize retry-after to seconds and clamp to configured bounds."""
+        # Платформы/прокси иногда возвращают Retry-After в миллисекундах.
+        if parsed_retry > max_retry_delay and parsed_retry / 1000 <= max_retry_delay:
+            parsed_retry /= 1000
+        return max(1.0, min(parsed_retry, max_retry_delay))
+
     retry_delay = 60.0  # seconds
     max_retry_delay = float(os.getenv("STARTUP_MAX_RETRY_DELAY", "300"))
     next_retry_at = load_next_startup_retry_at()
+
 
     def normalize_retry_after(parsed_retry: float) -> float:
         """Normalize retry-after to seconds and clamp to configured bounds."""
@@ -307,15 +319,16 @@ def main():
         """
 
         delay = max(1.0, min(base_delay, max_retry_delay))
+        next_delay = min(delay * 2, max_retry_delay)
         jittered = delay + random.uniform(0.0, min(5.0, delay * 0.1))
         nonlocal next_retry_at
         logging.warning("%s Retrying bot startup in %.1f seconds", reason, jittered)
         next_retry_at = time.time() + jittered
-        save_next_startup_retry_at(next_retry_at)
+        save_startup_retry_state(next_retry_at, next_delay)
         time.sleep(jittered)
         next_retry_at = 0.0
-        save_next_startup_retry_at(next_retry_at)
-        return min(delay * 2, max_retry_delay)
+        save_startup_retry_state(next_retry_at, next_delay)
+        return next_delay
 
     def sleep_if_cooldown_active() -> None:
         nonlocal next_retry_at
@@ -324,7 +337,7 @@ def main():
         remaining = next_retry_at - time.time()
         if remaining <= 0:
             next_retry_at = 0.0
-            save_next_startup_retry_at(next_retry_at)
+            save_startup_retry_state(next_retry_at, retry_delay)
             return
         remaining = min(remaining, max_retry_delay)
         jittered = remaining + random.uniform(0.0, min(5.0, remaining * 0.1))
@@ -334,25 +347,30 @@ def main():
         )
         time.sleep(jittered)
         next_retry_at = 0.0
-        save_next_startup_retry_at(next_retry_at)
+        save_startup_retry_state(next_retry_at, retry_delay)
 
     while True:
         try:
             sleep_if_cooldown_active()
             bot.run(TOKEN)
+            save_startup_retry_state(0.0, 60.0)
             break
         except discord.LoginFailure:
             print("❌ Неверный токен DISCORD_TOKEN. Проверьте переменную окружения на Render.")
             break
         except discord.HTTPException as e:
             if e.status == 429:
-                retry_delay = get_retry_after(e, retry_delay)
+                retry_after = get_retry_after(e, retry_delay)
                 retry_delay = wait_before_retry(
-                    retry_delay,
+                    max(retry_delay, retry_after),
                     "Login rate limited.",
                 )
+
+                continue
+
                 logging.warning("Restarting process after startup rate limit")
                 os.execv(sys.executable, [sys.executable] + sys.argv)
+
             raise
         except Exception as e:
             if "Session is closed" in str(e):
