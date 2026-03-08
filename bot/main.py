@@ -251,6 +251,18 @@ def save_startup_retry_state(next_retry_at: float, retry_delay: float) -> None:
     except OSError as e:
         logging.warning("Не удалось записать состояние повторного запуска: %s", e)
 
+
+
+def load_next_startup_retry_at() -> float:
+    """Backward-compatible shim for older startup code paths."""
+    next_retry_at, _ = load_startup_retry_state()
+    return next_retry_at
+
+
+def save_next_startup_retry_at(next_retry_at: float) -> None:
+    """Backward-compatible shim for older startup code paths."""
+    _, retry_delay = load_startup_retry_state()
+    save_startup_retry_state(next_retry_at, retry_delay)
 # Основной запуск
 def main():
     global bot
@@ -274,9 +286,11 @@ def main():
             parsed_retry /= 1000
         return max(1.0, min(parsed_retry, max_retry_delay))
 
+
     retry_delay = 60.0  # seconds
     max_retry_delay = float(os.getenv("STARTUP_MAX_RETRY_DELAY", "300"))
     next_retry_at = load_next_startup_retry_at()
+
 
 
     def normalize_retry_after(parsed_retry: float) -> float:
