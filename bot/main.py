@@ -329,7 +329,6 @@ def main():
         next_delay = min(delay * 2, max_retry_delay)
         jittered = delay + random.uniform(0.0, min(5.0, delay * 0.1))
         nonlocal next_retry_at
-        logging.warning("Повторный запуск бота через %.1f секунд", jittered)
         next_retry_at = time.time() + jittered
         save_startup_retry_state(next_retry_at, next_delay)
         time.sleep(jittered)
@@ -348,10 +347,6 @@ def main():
             return
         remaining = min(remaining, max_retry_delay)
         jittered = remaining + random.uniform(0.0, min(5.0, remaining * 0.1))
-        logging.warning(
-            "Startup cooldown active, waiting %.1f seconds before Discord login",
-            jittered,
-        )
         time.sleep(jittered)
         next_retry_at = 0.0
         save_startup_retry_state(next_retry_at, retry_delay)
