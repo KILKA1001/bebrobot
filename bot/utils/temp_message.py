@@ -8,7 +8,7 @@ _MISSING = object()
 
 
 async def send_temp(
-    ctx: commands.Context, *args, delay: float = 2.0, **kwargs
+    ctx: commands.Context, *args, delay: float | None = None, **kwargs
 ):
     """Отправить временное сообщение.
 

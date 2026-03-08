@@ -3,15 +3,15 @@ from discord.errors import HTTPException
 from .rate_limiter import rate_limiter
 
 
-async def safe_send(destination, *args, delay: float = 1.5, **kwargs):
+async def safe_send(destination, *args, delay: float | None = None, **kwargs):
     """Send a message with global rate limiting.
 
     Parameters
     ----------
     destination: discord.abc.Messageable
         Channel, user or interaction to send message to.
-    delay: float
-        Optional delay in seconds after sending to avoid bursts.
+    delay: float | None
+        Optional delay override in seconds. If None, env defaults are used.
     """
     await rate_limiter.wait(delay)
     try:
