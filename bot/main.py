@@ -270,30 +270,40 @@ def main():
         return
 
     retry_delay = 60.0  # seconds
-    max_retry_delay = 3600.0
+    max_retry_delay = float(os.getenv("STARTUP_MAX_RETRY_DELAY", "300"))
     next_retry_at = load_next_startup_retry_at()
 
+    def normalize_retry_after(parsed_retry: float) -> float:
+        """Normalize retry-after to seconds and clamp to configured bounds."""
+        # Платформы/прокси иногда возвращают Retry-After в миллисекундах.
+        if parsed_retry > max_retry_delay and parsed_retry / 1000 <= max_retry_delay:
+            parsed_retry /= 1000
+        return max(1.0, min(parsed_retry, max_retry_delay))
+
     def get_retry_after(exc: discord.HTTPException, default: float) -> float:
-        headers = getattr(exc, 'response', None)
-        if headers is not None:
-            retry = headers.headers.get('Retry-After') or headers.headers.get('retry-after')
+        retry_after_attr = getattr(exc, "retry_after", None)
+        if isinstance(retry_after_attr, (int, float)):
+            return normalize_retry_after(float(retry_after_attr))
+
+        response = getattr(exc, 'response', None)
+        if response is not None:
+            retry = response.headers.get('Retry-After') or response.headers.get('retry-after')
             if retry:
+                retry = retry.strip()
                 try:
-                    return float(retry)
+                    return normalize_retry_after(float(retry))
                 except ValueError:
                     pass
-        match = re.search(r"retry(?:_|-|\s)after[:]?\s*(\d+(?:\.\d+)?)", exc.text or "", re.I)
+
+        match = re.search(r"retry(?:_|-|\s)after[:]?\s*(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|sec|seconds?)?", exc.text or "", re.I)
         if match:
-            try:
-                parsed_retry = float(match.group(1))
-                # Некоторые ответы Discord возвращают retry_after в миллисекундах.
-                # Без нормализации это превращает короткий лимит в много-минутный сон.
-                if parsed_retry >= 1000:
-                    parsed_retry /= 1000
-                return parsed_retry
-            except ValueError:
-                pass
-        return default
+            parsed_retry = float(match.group(1))
+            unit = (match.group(2) or "").lower()
+            if unit.startswith("ms"):
+                parsed_retry /= 1000
+            return normalize_retry_after(parsed_retry)
+
+        return normalize_retry_after(default)
 
     def wait_before_retry(base_delay: float, reason: str) -> float:
         """Sleep before reconnecting and return the next backoff value.
@@ -322,6 +332,7 @@ def main():
             next_retry_at = 0.0
             save_next_startup_retry_at(next_retry_at)
             return
+        remaining = min(remaining, max_retry_delay)
         jittered = remaining + random.uniform(0.0, min(5.0, remaining * 0.1))
         logging.warning(
             "Startup cooldown active, waiting %.1f seconds before Discord login",
