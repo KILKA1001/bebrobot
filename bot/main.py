@@ -23,7 +23,6 @@ import bot.commands.tournament
 import bot.commands.players
 import bot.commands.maps
 from datetime import datetime
-import importlib
 from bot.systems import fines_logic
 import bot.commands.fines
 import bot.data.tournament_db as tournament_db
@@ -68,11 +67,6 @@ class _SuppressKnownRateLimitWarning(logging.Filter):
 
 def configure_logging() -> None:
     logging.getLogger().addFilter(_SuppressKnownRateLimitWarning())
-
-def reload_bot():
-    module = importlib.import_module('bot.commands')
-    module = importlib.reload(module)
-    return module.bot
 
 async def send_greetings(channel, user_list):
     for user_id in user_list:
@@ -357,10 +351,8 @@ def main():
                     retry_delay,
                     "Login rate limited.",
                 )
-                bot = reload_bot()
-                db.bot = bot
-                bot.event(on_ready)
-                continue
+                logging.warning("Restarting process after startup rate limit")
+                os.execv(sys.executable, [sys.executable] + sys.argv)
             raise
         except Exception as e:
             if "Session is closed" in str(e):
@@ -368,10 +360,8 @@ def main():
                     retry_delay,
                     "Session closed.",
                 )
-                bot = reload_bot()
-                db.bot = bot
-                bot.event(on_ready)
-                continue
+                logging.warning("Restarting process after session close during startup")
+                os.execv(sys.executable, [sys.executable] + sys.argv)
             print("❌ Ошибка при запуске бота:", e)
             import traceback
             traceback.print_exc()
