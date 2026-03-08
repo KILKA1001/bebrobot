@@ -44,6 +44,8 @@ active_timers = {}
 
 # Prevent duplicate background tasks if on_ready fires multiple times
 tasks_started = False
+startup_tasks_started = False
+commands_synced = False
 
 bot = command_bot
 db.bot = bot
@@ -73,7 +75,7 @@ async def on_ready():
     print(f'🟢 Бот {bot.user} запущен!')
     print(f'Серверов: {len(bot.guilds)}')
 
-    global tasks_started
+    global tasks_started, startup_tasks_started, commands_synced
     if not tasks_started:
         tasks_started = True
 
@@ -92,11 +94,14 @@ async def on_ready():
         type=discord.ActivityType.listening
     )
     await bot.change_presence(activity=activity)
-    try:
-        await bot.tree.sync()
-        print("🔁 Slash-команды синхронизированы")
-    except Exception as e:
-        print(f"❌ Ошибка синхронизации команд: {e}")
+
+    if not commands_synced:
+        try:
+            await bot.tree.sync()
+            commands_synced = True
+            print("🔁 Slash-команды синхронизированы")
+        except Exception as e:
+            print(f"❌ Ошибка синхронизации команд: {e}")
     
     active_tournaments = tournament_db.get_active_tournaments()
     for tour in active_tournaments:
@@ -133,9 +138,11 @@ async def on_ready():
             round_management_view = RoundManagementView(tour["id"], tournament_logic)
             bot.add_view(round_management_view)
 
-    # 👇 тут будет работать, потому что определена выше
-    asyncio.create_task(autosave_task())
-    asyncio.create_task(monthly_top_task())
+    # Не дублируем фоновые задачи при повторном on_ready (reconnect)
+    if not startup_tasks_started:
+        startup_tasks_started = True
+        asyncio.create_task(autosave_task())
+        asyncio.create_task(monthly_top_task())
 
     print('--- Данные успешно загружены ---')
     print(f'Пользователей: {len(db.scores)}')
