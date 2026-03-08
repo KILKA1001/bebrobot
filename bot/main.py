@@ -49,6 +49,10 @@ COMMAND_SYNC_STATE_FILE = os.getenv(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "command_sync_state.json"),
 )
 COMMAND_SYNC_MIN_INTERVAL = int(os.getenv("COMMAND_SYNC_MIN_INTERVAL", "21600"))
+STARTUP_RETRY_STATE_FILE = os.getenv(
+    "STARTUP_RETRY_STATE_FILE",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "startup_retry_state.json"),
+)
 
 bot = command_bot
 db.bot = bot
@@ -226,6 +230,24 @@ def mark_commands_synced() -> None:
     except OSError as e:
         logging.warning("Не удалось записать состояние синхронизации команд: %s", e)
 
+
+def load_next_startup_retry_at() -> float:
+    """Load persisted cooldown timestamp for startup retries."""
+    try:
+        with open(STARTUP_RETRY_STATE_FILE, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        return float(state.get("next_retry_at", 0))
+    except (FileNotFoundError, ValueError, OSError, TypeError):
+        return 0.0
+
+
+def save_next_startup_retry_at(next_retry_at: float) -> None:
+    try:
+        with open(STARTUP_RETRY_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"next_retry_at": next_retry_at}, f)
+    except OSError as e:
+        logging.warning("Не удалось записать состояние повторного запуска: %s", e)
+
 # Основной запуск
 def main():
     global bot
@@ -239,6 +261,7 @@ def main():
 
     retry_delay = 60.0  # seconds
     max_retry_delay = 3600.0
+    next_retry_at = load_next_startup_retry_at()
 
     def get_retry_after(exc: discord.HTTPException, default: float) -> float:
         headers = getattr(exc, 'response', None)
@@ -266,11 +289,36 @@ def main():
 
         delay = max(1.0, min(base_delay, max_retry_delay))
         jittered = delay + random.uniform(0.0, min(5.0, delay * 0.1))
+        nonlocal next_retry_at
         logging.warning("Retrying bot startup in %.1f seconds", jittered)
+        next_retry_at = time.time() + jittered
+        save_next_startup_retry_at(next_retry_at)
         time.sleep(jittered)
+        next_retry_at = 0.0
+        save_next_startup_retry_at(next_retry_at)
         return min(delay * 2, max_retry_delay)
+
+    def sleep_if_cooldown_active() -> None:
+        nonlocal next_retry_at
+        if next_retry_at <= 0:
+            return
+        remaining = next_retry_at - time.time()
+        if remaining <= 0:
+            next_retry_at = 0.0
+            save_next_startup_retry_at(next_retry_at)
+            return
+        jittered = remaining + random.uniform(0.0, min(5.0, remaining * 0.1))
+        logging.warning(
+            "Startup cooldown active, waiting %.1f seconds before Discord login",
+            jittered,
+        )
+        time.sleep(jittered)
+        next_retry_at = 0.0
+        save_next_startup_retry_at(next_retry_at)
+
     while True:
         try:
+            sleep_if_cooldown_active()
             bot.run(TOKEN)
             break
         except discord.LoginFailure:
