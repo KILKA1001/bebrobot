@@ -199,7 +199,7 @@ def main():
     global bot
     load_dotenv()
     keep_alive()
-    TOKEN = os.getenv('DISCORD_TOKEN')
+    TOKEN = (os.getenv('DISCORD_TOKEN') or '').strip()
 
     if not TOKEN:
         print("❌ Переменная DISCORD_TOKEN не задана.")
@@ -226,6 +226,9 @@ def main():
     while True:
         try:
             bot.run(TOKEN)
+            break
+        except discord.LoginFailure:
+            print("❌ Неверный токен DISCORD_TOKEN. Проверьте переменную окружения на Render.")
             break
         except discord.HTTPException as e:
             if e.status == 429:
