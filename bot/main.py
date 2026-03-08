@@ -274,6 +274,18 @@ def main():
             parsed_retry /= 1000
         return max(1.0, min(parsed_retry, max_retry_delay))
 
+    retry_delay = 60.0  # seconds
+    max_retry_delay = float(os.getenv("STARTUP_MAX_RETRY_DELAY", "300"))
+    next_retry_at = load_next_startup_retry_at()
+
+
+    def normalize_retry_after(parsed_retry: float) -> float:
+        """Normalize retry-after to seconds and clamp to configured bounds."""
+        # Платформы/прокси иногда возвращают Retry-After в миллисекундах.
+        if parsed_retry > max_retry_delay and parsed_retry / 1000 <= max_retry_delay:
+            parsed_retry /= 1000
+        return max(1.0, min(parsed_retry, max_retry_delay))
+
     def get_retry_after(exc: discord.HTTPException, default: float) -> float:
         retry_after_attr = getattr(exc, "retry_after", None)
         if isinstance(retry_after_attr, (int, float)):
@@ -353,7 +365,12 @@ def main():
                     max(retry_delay, retry_after),
                     "Login rate limited.",
                 )
+
                 continue
+
+                logging.warning("Restarting process after startup rate limit")
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+
             raise
         except Exception as e:
             if "Session is closed" in str(e):
