@@ -118,8 +118,13 @@ class Database:
         load_dotenv()
         self.bot = None
         self.bot: Optional[commands.Bot] = None
-        self.url = os.getenv("SUPABASE_URL")
-        self.key = os.getenv("SUPABASE_KEY")
+        self.url = (os.getenv("SUPABASE_URL") or "").strip()
+        self.key = (
+            os.getenv("SUPABASE_KEY")
+            or os.getenv("SUPABASE_SECRET_KEY")
+            or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+            or ""
+        ).strip()
         self.supabase = create_client(self.url, self.key) if self.url and self.key else None
         self.has_was_on_time = True
         self._core_data_loaded = False
