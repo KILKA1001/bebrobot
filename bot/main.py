@@ -366,21 +366,23 @@ def main():
                 # Для входа лучше опираться на Retry-After от Discord,
                 # чтобы не раздувать задержку экспоненциально между перезапусками.
                 retry_delay = wait_before_retry(retry_after, "Login rate limited.")
-
                 continue
-
-                logging.warning("Restarting process after startup rate limit")
-                os.execv(sys.executable, [sys.executable] + sys.argv)
 
             raise
         except Exception as e:
-            if "Session is closed" in str(e):
+            error_text = str(e)
+            if "Session is closed" in error_text:
                 retry_delay = wait_before_retry(
                     retry_delay,
                     "Session closed.",
                 )
-                logging.warning("Restarting process after session close during startup")
-                os.execv(sys.executable, [sys.executable] + sys.argv)
+                continue
+            if "429" in error_text or "rate limit" in error_text.lower():
+                retry_delay = wait_before_retry(
+                    retry_delay,
+                    "Startup transient rate limit.",
+                )
+                continue
             print("❌ Ошибка при запуске бота:", e)
             import traceback
             traceback.print_exc()
