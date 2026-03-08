@@ -66,7 +66,12 @@ class _SuppressKnownRateLimitWarning(logging.Filter):
 
 
 def configure_logging() -> None:
-    logging.getLogger().addFilter(_SuppressKnownRateLimitWarning())
+    root_logger = logging.getLogger()
+    root_logger.addFilter(_SuppressKnownRateLimitWarning())
+
+    # Убираем шумные служебные сообщения библиотек из startup-логов.
+    logging.getLogger("discord.client").setLevel(logging.WARNING)
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
 async def send_greetings(channel, user_list):
     for user_id in user_list:
@@ -313,7 +318,7 @@ def main():
 
         return normalize_retry_after(default)
 
-    def wait_before_retry(base_delay: float, reason: str) -> float:
+    def wait_before_retry(base_delay: float) -> float:
         """Sleep before reconnecting and return the next backoff value.
 
         A small jitter helps avoid synchronized reconnect storms when hosting
@@ -324,7 +329,7 @@ def main():
         next_delay = min(delay * 2, max_retry_delay)
         jittered = delay + random.uniform(0.0, min(5.0, delay * 0.1))
         nonlocal next_retry_at
-        logging.warning("%s Retrying bot startup in %.1f seconds", reason, jittered)
+        logging.warning("Повторный запуск бота через %.1f секунд", jittered)
         next_retry_at = time.time() + jittered
         save_startup_retry_state(next_retry_at, next_delay)
         time.sleep(jittered)
@@ -365,23 +370,17 @@ def main():
                 retry_after = get_retry_after(e, retry_delay)
                 # Для входа лучше опираться на Retry-After от Discord,
                 # чтобы не раздувать задержку экспоненциально между перезапусками.
-                retry_delay = wait_before_retry(retry_after, "Login rate limited.")
+                retry_delay = wait_before_retry(retry_after)
                 continue
 
             raise
         except Exception as e:
             error_text = str(e)
             if "Session is closed" in error_text:
-                retry_delay = wait_before_retry(
-                    retry_delay,
-                    "Session closed.",
-                )
+                retry_delay = wait_before_retry(retry_delay)
                 continue
             if "429" in error_text or "rate limit" in error_text.lower():
-                retry_delay = wait_before_retry(
-                    retry_delay,
-                    "Startup transient rate limit.",
-                )
+                retry_delay = wait_before_retry(retry_delay)
                 continue
             print("❌ Ошибка при запуске бота:", e)
             import traceback
