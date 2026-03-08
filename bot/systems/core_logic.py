@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 import pytz
 import traceback
+import logging
 
 from bot.data import db
 from bot.utils.roles_and_activities import ROLE_THRESHOLDS
@@ -21,24 +22,29 @@ active_timers = {}
 async def update_roles(member: discord.Member):
     user_id = member.id
     user_points = db.scores.get(user_id, 0)
-    user_roles = [role.id for role in member.roles if role.id in ROLE_THRESHOLDS]
+    threshold_role_ids = set(ROLE_THRESHOLDS)
 
-    role_to_add_id = None
+    target_role_id = None
     for role_id, threshold in sorted(ROLE_THRESHOLDS.items(), key=lambda x: x[1], reverse=True):
         if user_points >= threshold:
-            role_to_add_id = role_id
+            target_role_id = role_id
             break
 
-    if role_to_add_id and role_to_add_id not in user_roles:
-        role_to_add = member.guild.get_role(role_to_add_id)
-        if role_to_add:
-            await member.add_roles(role_to_add)
+    desired_roles = [role for role in member.roles if role.id not in threshold_role_ids]
+    if target_role_id:
+        target_role = member.guild.get_role(target_role_id)
+        if target_role:
+            desired_roles.append(target_role)
 
-    for role_id in user_roles:
-        if role_id != role_to_add_id:
-            role_to_remove = member.guild.get_role(role_id)
-            if role_to_remove:
-                await member.remove_roles(role_to_remove)
+    current_role_ids = {role.id for role in member.roles}
+    desired_role_ids = {role.id for role in desired_roles}
+    if current_role_ids == desired_role_ids:
+        return
+
+    try:
+        await member.edit(roles=desired_roles, reason="Обновление роли по баллам")
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        logging.warning("Не удалось обновить роли пользователя %s: %s", user_id, exc)
 
 
 class HistoryView(SafeView):

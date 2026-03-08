@@ -1,6 +1,13 @@
 import discord
 from discord.ui import Button
-from bot.utils import SafeView, safe_send, format_moscow_date
+from bot.utils import (
+    SafeView,
+    safe_send,
+    format_moscow_date,
+    safe_defer,
+    safe_response_send,
+    safe_followup_send,
+)
 from datetime import datetime, timezone, timedelta
 from typing import List
 from bot.data import db
@@ -57,7 +64,7 @@ class FineView(SafeView):
 
     @discord.ui.button(label="💸 Оплатить", style=discord.ButtonStyle.green)
     async def pay(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_message(
+        await safe_response_send(interaction, 
             f"💰 Выберите сумму для оплаты штрафа #{self.fine['id']}",
             view=PaymentMenuView(self.fine),
             ephemeral=True
@@ -65,26 +72,26 @@ class FineView(SafeView):
 
     @discord.ui.button(label="📅 Отсрочка", style=discord.ButtonStyle.blurple)
     async def postpone(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.defer(ephemeral=True)
+        await safe_defer(interaction, ephemeral=True)
         member = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
         is_admin = member.guild_permissions.administrator if member else False
 
         if not is_admin and not db.can_postpone(interaction.user.id):
-            await interaction.followup.send("❌ Отсрочка уже использована за последние 2 месяца", ephemeral=True)
+            await safe_followup_send(interaction, "❌ Отсрочка уже использована за последние 2 месяца", ephemeral=True)
             return
 
         success = db.apply_postponement(self.fine['id'], days=7)
         if success:
             self.fine['due_date'] = (datetime.fromisoformat(self.fine['due_date']) + timedelta(days=7)).isoformat()
             self.fine['postponed_until'] = datetime.now(timezone.utc).isoformat()
-            await interaction.followup.send(f"📅 Срок штрафа #{self.fine['id']} продлён на 7 дней", ephemeral=True)
+            await safe_followup_send(interaction, f"📅 Срок штрафа #{self.fine['id']} продлён на 7 дней", ephemeral=True)
         else:
-            await interaction.followup.send("❌ Ошибка при отсрочке", ephemeral=True)
+            await safe_followup_send(interaction, "❌ Ошибка при отсрочке", ephemeral=True)
 
     @discord.ui.button(label="ℹ️ Подробно", style=discord.ButtonStyle.gray)
     async def details(self, interaction: discord.Interaction, button: Button):
         embed = build_fine_detail_embed(self.fine)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await safe_response_send(interaction, embed=embed, ephemeral=True)
 
 async def process_payment(interaction: discord.Interaction, fine: dict, percent: float):
     user_id = interaction.user.id
@@ -93,16 +100,16 @@ async def process_payment(interaction: discord.Interaction, fine: dict, percent:
     to_pay = round(amount_remaining * percent, 2)
 
     if user_points < to_pay:
-        await interaction.followup.send(f"❌ У вас недостаточно баллов для оплаты {to_pay} баллов.", ephemeral=True)
+        await safe_followup_send(interaction, f"❌ У вас недостаточно баллов для оплаты {to_pay} баллов.", ephemeral=True)
         return
 
     if not db.supabase:
-        await interaction.followup.send("❌ Supabase не инициализирован.", ephemeral=True)
+        await safe_followup_send(interaction, "❌ Supabase не инициализирован.", ephemeral=True)
         return
 
     success = db.record_payment(user_id=user_id, fine_id=fine['id'], amount=to_pay, author_id=user_id)
     if not success:
-        await interaction.followup.send("❌ Ошибка при записи оплаты.", ephemeral=True)
+        await safe_followup_send(interaction, "❌ Ошибка при записи оплаты.", ephemeral=True)
         return
 
     fine['paid_amount'] = round(fine.get('paid_amount', 0) + to_pay, 2)
@@ -115,7 +122,7 @@ async def process_payment(interaction: discord.Interaction, fine: dict, percent:
             "is_paid": fine.get('is_paid', False)
         }).eq("id", fine['id']).execute()
 
-    await interaction.followup.send(f"✅ Вы оплатили {to_pay} баллов штрафа #{fine['id']}", ephemeral=True)
+    await safe_followup_send(interaction, f"✅ Вы оплатили {to_pay} баллов штрафа #{fine['id']}", ephemeral=True)
 
 
 
@@ -126,22 +133,22 @@ class PaymentMenuView(SafeView):
 
     @discord.ui.button(label="📏 100%", style=discord.ButtonStyle.green)
     async def pay_100(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.defer(ephemeral=True)
+        await safe_defer(interaction, ephemeral=True)
         await process_payment(interaction, self.fine, 1.0)
 
     @discord.ui.button(label="🌑 50%", style=discord.ButtonStyle.blurple)
     async def pay_50(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.defer(ephemeral=True)
+        await safe_defer(interaction, ephemeral=True)
         await process_payment(interaction, self.fine, 0.5)
 
     @discord.ui.button(label="🌒 25%", style=discord.ButtonStyle.gray)
     async def pay_25(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.defer(ephemeral=True)
+        await safe_defer(interaction, ephemeral=True)
         await process_payment(interaction, self.fine, 0.25)
 
     @discord.ui.button(label="✏️ Своя сумма", style=discord.ButtonStyle.secondary)
     async def pay_custom(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_message("✏️ Введите сумму в чат (30 сек)", ephemeral=True)
+        await safe_response_send(interaction, "✏️ Введите сумму в чат (30 сек)", ephemeral=True)
 
         def check(m):
             return m.author.id == interaction.user.id and m.channel == interaction.channel
@@ -152,11 +159,11 @@ class PaymentMenuView(SafeView):
             remaining = self.fine["amount"] - self.fine.get("paid_amount", 0)
 
             if amount <= 0 or amount > remaining:
-                await interaction.followup.send(f"❌ От 0 до {remaining:.2f} баллов", ephemeral=True)
+                await safe_followup_send(interaction, f"❌ От 0 до {remaining:.2f} баллов", ephemeral=True)
                 return
 
             if db.scores.get(interaction.user.id, 0) < amount:
-                await interaction.followup.send("❌ Недостаточно баллов", ephemeral=True)
+                await safe_followup_send(interaction, "❌ Недостаточно баллов", ephemeral=True)
                 return
 
             success = db.record_payment(interaction.user.id, self.fine["id"], amount, interaction.user.id)
@@ -164,14 +171,14 @@ class PaymentMenuView(SafeView):
                 updated = db.get_fine_by_id(self.fine["id"])
                 if updated:
                     self.fine.update(updated)
-                await interaction.followup.send(f"✅ Оплачено {amount:.2f} баллов", ephemeral=True)
+                await safe_followup_send(interaction, f"✅ Оплачено {amount:.2f} баллов", ephemeral=True)
             else:
-                await interaction.followup.send("❌ Ошибка при оплате", ephemeral=True)
+                await safe_followup_send(interaction, "❌ Ошибка при оплате", ephemeral=True)
 
         except asyncio.TimeoutError:
-            await interaction.followup.send("⌛ Время истекло", ephemeral=True)
+            await safe_followup_send(interaction, "⌛ Время истекло", ephemeral=True)
         except ValueError:
-            await interaction.followup.send("❌ Неверное число", ephemeral=True)
+            await safe_followup_send(interaction, "❌ Неверное число", ephemeral=True)
 
 
 def get_fine_leaders():

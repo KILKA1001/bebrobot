@@ -3,6 +3,7 @@ import logging
 from discord.ext import commands
 from typing import Optional
 from datetime import datetime, timezone, timedelta
+from collections import UserDict, UserList
 from supabase import create_client
 from postgrest.exceptions import APIError
 from dotenv import load_dotenv
@@ -11,6 +12,98 @@ import asyncio
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+class LazyDict(UserDict):
+    """Словарь с ленивой загрузкой данных при первом доступе."""
+
+    def __init__(self, loader):
+        super().__init__()
+        self._loader = loader
+
+    def _ensure(self):
+        self._loader()
+
+    def __getitem__(self, key):
+        self._ensure()
+        return super().__getitem__(key)
+
+    def __setitem__(self, key, value):
+        self._ensure()
+        return super().__setitem__(key, value)
+
+    def __contains__(self, item):
+        self._ensure()
+        return super().__contains__(item)
+
+    def get(self, key, default=None):
+        self._ensure()
+        return super().get(key, default)
+
+    def items(self):
+        self._ensure()
+        return super().items()
+
+    def values(self):
+        self._ensure()
+        return super().values()
+
+    def keys(self):
+        self._ensure()
+        return super().keys()
+
+    def __iter__(self):
+        self._ensure()
+        return super().__iter__()
+
+    def __len__(self):
+        self._ensure()
+        return super().__len__()
+
+    def clear(self):
+        self._ensure()
+        return super().clear()
+
+    def pop(self, key, default=None):
+        self._ensure()
+        return super().pop(key, default)
+
+    def set_data(self, value):
+        self.data = value
+
+
+class LazyList(UserList):
+    """Список с ленивой загрузкой данных при первом доступе."""
+
+    def __init__(self, loader):
+        super().__init__()
+        self._loader = loader
+
+    def _ensure(self):
+        self._loader()
+
+    def __iter__(self):
+        self._ensure()
+        return super().__iter__()
+
+    def __len__(self):
+        self._ensure()
+        return super().__len__()
+
+    def __getitem__(self, index):
+        self._ensure()
+        return super().__getitem__(index)
+
+    def append(self, item):
+        self._ensure()
+        return super().append(item)
+
+    def insert(self, i, item):
+        self._ensure()
+        return super().insert(i, item)
+
+    def set_data(self, value):
+        self.data = value
 
 class Database:
     _instance = None
@@ -29,9 +122,16 @@ class Database:
         self.key = os.getenv("SUPABASE_KEY")
         self.supabase = create_client(self.url, self.key) if self.url and self.key else None
         self.has_was_on_time = True
+        self._core_data_loaded = False
+        self._fines_data_loaded = False
+
+        self.scores = LazyDict(self.ensure_core_data_loaded)
+        self.actions = LazyList(self.ensure_core_data_loaded)
+        self.history = LazyDict(self.ensure_core_data_loaded)
+        self.fines = LazyList(self.ensure_fines_loaded)
+        self.fine_payments = LazyList(self.ensure_fines_loaded)
+
         self._ensure_tables()
-        self.load_data()
-        self.load_fines()
         self.quick_pay_streak = {}
         self.guild_id = int(os.getenv("GUILD_ID", 0))
         self.fast_payer_role_id = int(os.getenv("FAST_PAYER_ROLE_ID", 0))
@@ -62,8 +162,19 @@ class Database:
         except Exception as e:
             raise RuntimeError(f"Таблица fine_payments не существует или недоступна: {str(e)}")
 
+    def ensure_core_data_loaded(self):
+        if not self._core_data_loaded:
+            self.load_data()
+
+    def ensure_fines_loaded(self):
+        if not self._fines_data_loaded:
+            self.load_fines()
+
     def load_data(self):
         """Загружает все данные с автоматическим восстановлением связей"""
+        if self._core_data_loaded:
+            return
+
         logger.info("⚙️ Синхронизация с Supabase...")
         try:
             if not self.supabase:
@@ -72,7 +183,7 @@ class Database:
             # 1. Загружаем баллы
             scores_response = self.supabase.from_('scores').select('*').execute()
             if hasattr(scores_response, 'data'):
-                self.scores = {int(item['user_id']): float(item['points']) for item in scores_response.data}
+                self.scores.set_data({int(item['user_id']): float(item['points']) for item in scores_response.data})
             else:
                 raise ValueError("Некорректный ответ от Supabase при загрузке баллов")
 
@@ -83,38 +194,43 @@ class Database:
                 .execute()
 
             if hasattr(actions_response, 'data'):
-                self.actions = actions_response.data
+                self.actions.set_data(actions_response.data)
                 self._build_history()
             else:
                 raise ValueError("Некорректный ответ от Supabase при загрузке действий")
 
             logger.info(f"✅ Данные синхронизированы | Пользователей: {len(self.scores)}")
+            self._core_data_loaded = True
 
         except Exception as e:
             logger.error(f"❌ Ошибка синхронизации: {str(e)}")
             traceback.print_exc()
-            self.scores = {}
-            self.actions = []
-            self.history = {}
+            self.scores.set_data({})
+            self.actions.set_data([])
+            self.history.set_data({})
+            self._core_data_loaded = True
 
     def _build_history(self):
         """Строит историю действий"""
-        self.history = {}
+        history = {}
         for action in self.actions:
             user_id = int(action['user_id'])
-            if user_id not in self.history:
-                self.history[user_id] = []
-            self.history[user_id].append({
+            if user_id not in history:
+                history[user_id] = []
+            history[user_id].append({
                 'points': float(action['points']),
                 'reason': action['reason'],
                 'author_id': int(action['author_id']),
                 'timestamp': action['timestamp']
             })
+        self.history.set_data(history)
 
     def update_scores(self, user_id: int, points_change: float):
         """Атомарное обновление баллов с проверкой"""
         if not self.supabase:
             return False
+
+        self.ensure_core_data_loaded()
 
         try:
             # 1. Получаем текущие баллы из локального кеша
@@ -155,6 +271,8 @@ class Database:
 
     def add_action(self, user_id: int, points: float, reason: str, author_id: int, is_undo: bool = False):
         """Добавляет действие с гарантированной синхронизацией"""
+        self.ensure_core_data_loaded()
+
         try:
             # 1. Обновляем баллы
             if not self.update_scores(user_id, points):
@@ -216,6 +334,9 @@ class Database:
             if not self.supabase:
                 logger.warning("⚠️ Supabase не инициализирован")
                 return
+
+            if not self._core_data_loaded:
+                return
                 
             if self.scores:
                 scores_data = [{"user_id": k, "points": v} for k, v in self.scores.items()]
@@ -256,25 +377,31 @@ class Database:
 #Штрафы
     def load_fines(self):
         """Загружает штрафы и оплаты из Supabase"""
+        if self._fines_data_loaded:
+            return
+
         if not self.supabase:
-            self.fines = []
-            self.fine_payments = []
+            self.fines.set_data([])
+            self.fine_payments.set_data([])
+            self._fines_data_loaded = True
             return
 
         try:
             fines_resp = self.supabase.table("fines").select("*").execute()
             payments_resp = self.supabase.table("fine_payments").select("*").execute()
 
-            self.fines = fines_resp.data if hasattr(fines_resp, "data") else []
-            self.fine_payments = payments_resp.data if hasattr(payments_resp, "data") else []
+            self.fines.set_data(fines_resp.data if hasattr(fines_resp, "data") else [])
+            self.fine_payments.set_data(payments_resp.data if hasattr(payments_resp, "data") else [])
 
             logger.info(f"✅ Загружено штрафов: {len(self.fines)}, оплат: {len(self.fine_payments)}")
+            self._fines_data_loaded = True
 
         except Exception as e:
             logger.error(f"❌ Ошибка при загрузке штрафов: {str(e)}")
             traceback.print_exc()
-            self.fines = []
-            self.fine_payments = []
+            self.fines.set_data([])
+            self.fine_payments.set_data([])
+            self._fines_data_loaded = True
 
     def add_fine(self, user_id: int, author_id: int, amount: float, fine_type: int, reason: str, due_date: datetime):
         """Создаёт штраф"""

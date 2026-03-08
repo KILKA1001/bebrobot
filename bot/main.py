@@ -94,7 +94,6 @@ async def on_ready():
     if not tasks_started:
         tasks_started = True
 
-        db.load_data()
 
         asyncio.create_task(fines_logic.check_overdue_fines(bot))
         asyncio.create_task(fines_logic.debt_repayment_loop(bot))
@@ -163,9 +162,7 @@ async def on_ready():
         asyncio.create_task(autosave_task())
         asyncio.create_task(monthly_top_task())
 
-    print('--- Данные успешно загружены ---')
-    print(f'Пользователей: {len(db.scores)}')
-    print(f'Историй действий: {sum(len(v) for v in db.history.values())}')
+    print('--- Ленивый режим загрузки данных активирован ---')
     print("📡 Задачи активированы.")
 
 async def monthly_top_task():

@@ -1,6 +1,8 @@
 import discord
 import logging
 
+from .safe_interaction import safe_followup_send, safe_response_send
+
 logger = logging.getLogger(__name__)
 
 
@@ -15,12 +17,12 @@ class SafeView(discord.ui.View):
     ) -> None:
         try:
             if interaction.response.is_done():
-                await interaction.followup.send(
-                    f"❌ Ошибка: {error}", ephemeral=True
+                await safe_followup_send(
+                    interaction, f"❌ Ошибка: {error}", ephemeral=True
                 )
             else:
-                await interaction.response.send_message(
-                    f"❌ Ошибка: {error}", ephemeral=True
+                await safe_response_send(
+                    interaction, f"❌ Ошибка: {error}", ephemeral=True
                 )
         except Exception:
             pass
