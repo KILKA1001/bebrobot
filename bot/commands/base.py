@@ -55,6 +55,19 @@ bot = commands.Bot(
 )
 
 
+@bot.before_invoke
+async def show_loading_state(ctx: commands.Context):
+    """Показывает Discord-индикатор загрузки для slash/hybrid-команд."""
+    if not ctx.interaction:
+        return
+    if ctx.interaction.response.is_done():
+        return
+    try:
+        await ctx.defer()
+    except discord.HTTPException:
+        pass
+
+
 def has_points_permission(ctx: commands.Context) -> bool:
     """Check if user can modify points."""
     if ctx.author.guild_permissions.administrator:
