@@ -22,4 +22,15 @@ __all__ = [
     "TIME_FORMAT",
     "DATE_FORMAT",
     "format_points",
+    "safe_defer",
+    "safe_response_send",
+    "safe_followup_send",
+    "safe_edit_original_response",
 ]
+
+from .safe_interaction import (
+    safe_defer,
+    safe_response_send,
+    safe_followup_send,
+    safe_edit_original_response,
+)
