@@ -285,7 +285,12 @@ def main():
         match = re.search(r"retry(?:_|-|\s)after[:]?\s*(\d+(?:\.\d+)?)", exc.text or "", re.I)
         if match:
             try:
-                return float(match.group(1))
+                parsed_retry = float(match.group(1))
+                # Некоторые ответы Discord возвращают retry_after в миллисекундах.
+                # Без нормализации это превращает короткий лимит в много-минутный сон.
+                if parsed_retry >= 1000:
+                    parsed_retry /= 1000
+                return parsed_retry
             except ValueError:
                 pass
         return default
