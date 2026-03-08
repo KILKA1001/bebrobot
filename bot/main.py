@@ -57,6 +57,18 @@ STARTUP_RETRY_STATE_FILE = os.getenv(
 bot = command_bot
 db.bot = bot
 
+
+class _SuppressKnownRateLimitWarning(logging.Filter):
+    """Filter noisy upstream 429 warnings that we already handle explicitly."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        return "API rate limited (HTTP 429)" not in message
+
+
+def configure_logging() -> None:
+    logging.getLogger().addFilter(_SuppressKnownRateLimitWarning())
+
 def reload_bot():
     module = importlib.import_module('bot.commands')
     module = importlib.reload(module)
@@ -252,6 +264,7 @@ def save_next_startup_retry_at(next_retry_at: float) -> None:
 def main():
     global bot
     load_dotenv()
+    configure_logging()
     keep_alive()
     TOKEN = (os.getenv('DISCORD_TOKEN') or '').strip()
 
@@ -280,7 +293,7 @@ def main():
                 pass
         return default
 
-    def wait_before_retry(base_delay: float) -> float:
+    def wait_before_retry(base_delay: float, reason: str) -> float:
         """Sleep before reconnecting and return the next backoff value.
 
         A small jitter helps avoid synchronized reconnect storms when hosting
@@ -290,7 +303,7 @@ def main():
         delay = max(1.0, min(base_delay, max_retry_delay))
         jittered = delay + random.uniform(0.0, min(5.0, delay * 0.1))
         nonlocal next_retry_at
-        logging.warning("Retrying bot startup in %.1f seconds", jittered)
+        logging.warning("%s Retrying bot startup in %.1f seconds", reason, jittered)
         next_retry_at = time.time() + jittered
         save_next_startup_retry_at(next_retry_at)
         time.sleep(jittered)
@@ -327,10 +340,10 @@ def main():
         except discord.HTTPException as e:
             if e.status == 429:
                 retry_delay = get_retry_after(e, retry_delay)
-                logging.warning(
-                    "Login rate limited, retrying in %s seconds", retry_delay
+                retry_delay = wait_before_retry(
+                    retry_delay,
+                    "Login rate limited.",
                 )
-                retry_delay = wait_before_retry(retry_delay)
                 bot = reload_bot()
                 db.bot = bot
                 bot.event(on_ready)
@@ -338,10 +351,10 @@ def main():
             raise
         except Exception as e:
             if "Session is closed" in str(e):
-                logging.warning(
-                    "Session closed, retrying in %s seconds", retry_delay
+                retry_delay = wait_before_retry(
+                    retry_delay,
+                    "Session closed.",
                 )
-                retry_delay = wait_before_retry(retry_delay)
                 bot = reload_bot()
                 db.bot = bot
                 bot.event(on_ready)
