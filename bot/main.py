@@ -12,6 +12,7 @@ import logging
 import time
 import re
 import random
+import json
 from dotenv import load_dotenv
 import pytz
 from discord.ext import commands
@@ -47,6 +48,12 @@ active_timers = {}
 tasks_started = False
 startup_tasks_started = False
 commands_synced = False
+
+COMMAND_SYNC_STATE_FILE = os.getenv(
+    "COMMAND_SYNC_STATE_FILE",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "command_sync_state.json"),
+)
+COMMAND_SYNC_MIN_INTERVAL = int(os.getenv("COMMAND_SYNC_MIN_INTERVAL", "21600"))
 
 bot = command_bot
 db.bot = bot
@@ -98,9 +105,13 @@ async def on_ready():
 
     if not commands_synced:
         try:
-            await bot.tree.sync()
+            if should_sync_commands():
+                await bot.tree.sync()
+                mark_commands_synced()
+                print("🔁 Slash-команды синхронизированы")
+            else:
+                print("⏭️ Синхронизация slash-команд пропущена (слишком рано после прошлого запуска)")
             commands_synced = True
-            print("🔁 Slash-команды синхронизированы")
         except Exception as e:
             print(f"❌ Ошибка синхронизации команд: {e}")
     
@@ -201,6 +212,28 @@ async def monthly_top_task():
                 print(f"❌ Ошибка автозапуска топа месяца: {e}")
 
         await asyncio.sleep(3600)
+
+
+def should_sync_commands() -> bool:
+    if os.getenv("FORCE_COMMAND_SYNC", "").lower() in {"1", "true", "yes"}:
+        return True
+
+    try:
+        with open(COMMAND_SYNC_STATE_FILE, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        last_synced = float(state.get("last_synced", 0))
+    except (FileNotFoundError, ValueError, OSError, TypeError):
+        return True
+
+    return (time.time() - last_synced) >= max(0, COMMAND_SYNC_MIN_INTERVAL)
+
+
+def mark_commands_synced() -> None:
+    try:
+        with open(COMMAND_SYNC_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"last_synced": time.time()}, f)
+    except OSError as e:
+        logging.warning("Не удалось записать состояние синхронизации команд: %s", e)
 
 # Основной запуск
 def main():
