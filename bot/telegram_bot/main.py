@@ -1,7 +1,13 @@
 """Telegram runtime module, called from unified launcher in `bot/main.py`."""
 
 import asyncio
+import contextlib
+import hashlib
 import logging
+import os
+from pathlib import Path
+
+import fcntl
 
 from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import Command
@@ -73,6 +79,20 @@ async def link_command(message: Message) -> None:
 
 
 async def run_polling(token: str) -> None:
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+    lock_path = Path(f"/tmp/bebrobot_telegram_polling_{token_hash}.lock")
+    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        logger.warning(
+            "telegram polling already running (lock=%s), exiting duplicate process",
+            lock_path,
+        )
+        os.close(lock_fd)
+        return
+
     bot = Bot(token=token)
     dp = Dispatcher()
     dp.include_router(router)
@@ -89,6 +109,9 @@ async def run_polling(token: str) -> None:
         await dp.start_polling(bot)
     finally:
         await bot.session.close()
+        with contextlib.suppress(OSError):
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
 
 
 def main() -> None:
