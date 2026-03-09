@@ -28,6 +28,7 @@ def main() -> int:
     print("== account_id NULL audit ==")
     totals = 0
     for table in TABLES:
+
         try:
             resp = sb.table(table).select("id", count="exact").is_("account_id", "null").limit(1).execute()
             missing = resp.count or 0
@@ -35,6 +36,12 @@ def main() -> int:
             print(f"{table}: missing_account_id={missing}")
         except Exception as e:
             print(f"{table}: account_id column missing or inaccessible ({e})")
+
+        resp = sb.table(table).select("id", count="exact").is_("account_id", "null").limit(1).execute()
+        missing = resp.count or 0
+        totals += missing
+        print(f"{table}: missing_account_id={missing}")
+
 
     print("\n== identity resolve health ==")
     no_identity = 0

@@ -7,10 +7,16 @@
 
 ## 2) Hardening rollout
 1. Execute `sql/p3_account_hardening.sql`.
+
 2. Script is idempotent and creates missing `account_id` columns if needed.
 3. Run readiness checks (NULL `account_id` counters by table).
 4. If all zeros, enable strict mode (`SET NOT NULL`) per table.
 5. Re-run checks and verify no write failures.
+
+2. Run readiness checks (NULL `account_id` counters by table).
+3. If all zeros, enable strict mode (`SET NOT NULL`) per table.
+4. Re-run checks and verify no write failures.
+
 
 ## 3) Operations
 ### Merge duplicate accounts
