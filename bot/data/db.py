@@ -128,6 +128,7 @@ class Database:
         self.supabase = create_client(self.url, self.key) if self.url and self.key else None
         self.has_was_on_time = True
         self._core_data_loaded = False
+        self._core_data_loading = False
         self._fines_data_loaded = False
 
         self.scores = LazyDict(self.ensure_core_data_loaded)
@@ -168,7 +169,7 @@ class Database:
             raise RuntimeError(f"Таблица fine_payments не существует или недоступна: {str(e)}")
 
     def ensure_core_data_loaded(self):
-        if not self._core_data_loaded:
+        if not self._core_data_loaded and not self._core_data_loading:
             self.load_data()
 
     def ensure_fines_loaded(self):
@@ -177,9 +178,10 @@ class Database:
 
     def load_data(self):
         """Загружает все данные с автоматическим восстановлением связей"""
-        if self._core_data_loaded:
+        if self._core_data_loaded or self._core_data_loading:
             return
 
+        self._core_data_loading = True
         logger.info("⚙️ Синхронизация с Supabase...")
         try:
             if not self.supabase:
@@ -214,11 +216,13 @@ class Database:
             self.actions.set_data([])
             self.history.set_data({})
             self._core_data_loaded = True
+        finally:
+            self._core_data_loading = False
 
     def _build_history(self):
         """Строит историю действий"""
         history = {}
-        for action in self.actions:
+        for action in self.actions.data:
             user_id = int(action['user_id'])
             if user_id not in history:
                 history[user_id] = []
