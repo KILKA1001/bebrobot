@@ -204,8 +204,8 @@ class Database:
             else:
                 raise ValueError("Некорректный ответ от Supabase при загрузке действий")
 
-            logger.info(f"✅ Данные синхронизированы | Пользователей: {len(self.scores)}")
             self._core_data_loaded = True
+            logger.info(f"✅ Данные синхронизированы | Пользователей: {len(self.scores.data)}")
 
         except Exception as e:
             logger.error(f"❌ Ошибка синхронизации: {str(e)}")
@@ -398,8 +398,8 @@ class Database:
             self.fines.set_data(fines_resp.data if hasattr(fines_resp, "data") else [])
             self.fine_payments.set_data(payments_resp.data if hasattr(payments_resp, "data") else [])
 
-            logger.info(f"✅ Загружено штрафов: {len(self.fines)}, оплат: {len(self.fine_payments)}")
             self._fines_data_loaded = True
+            logger.info(f"✅ Загружено штрафов: {len(self.fines.data)}, оплат: {len(self.fine_payments.data)}")
 
         except Exception as e:
             logger.error(f"❌ Ошибка при загрузке штрафов: {str(e)}")
