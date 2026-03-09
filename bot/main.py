@@ -3,8 +3,6 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-# Основные импорты Discord
-import discord
 
 # Системные импорты
 import asyncio
@@ -14,6 +12,46 @@ import re
 import random
 import json
 from dotenv import load_dotenv
+
+
+def _resolve_runtime() -> str:
+    """Resolve runtime mode for unified launcher.
+
+    Priority:
+    1) explicit BOT_RUNTIME (discord/telegram/both)
+    2) auto both when both tokens are set
+    3) auto telegram when only TELEGRAM_BOT_TOKEN is set
+    4) default discord
+    """
+
+    explicit = (os.getenv("BOT_RUNTIME") or "").strip().lower()
+    if explicit:
+        if explicit in {"telegram", "tg"}:
+            return "telegram"
+        if explicit in {"both", "all"}:
+            return "both"
+        return "discord"
+
+    has_discord_token = bool((os.getenv("DISCORD_TOKEN") or "").strip())
+    has_telegram_token = bool((os.getenv("TELEGRAM_BOT_TOKEN") or "").strip())
+    if has_discord_token and has_telegram_token:
+        return "both"
+    if has_telegram_token and not has_discord_token:
+        return "telegram"
+    return "discord"
+
+
+# Unified runtime bootstrap: allow Telegram mode without importing Discord subsystems.
+load_dotenv()
+_RUNTIME = _resolve_runtime()
+if _RUNTIME == "telegram":
+    from bot.telegram_bot.main import main as run_telegram_main
+
+    run_telegram_main()
+    raise SystemExit(0)
+
+# Основные импорты Discord (below runtime bootstrap on purpose)
+import discord
 import pytz
 from bot.commands import bot as command_bot
 # Локальные импорты
@@ -30,6 +68,8 @@ from bot.systems.tournament_logic import BettingView
 from bot.systems.interactive_rounds import RoundManagementView
 from bot.systems.tournament_logic import create_tournament_logic
 from bot.utils import safe_send
+from bot.telegram_bot.main import run_polling as run_telegram_polling
+
 
 # Константы
 TIME_FORMAT = "%H:%M (%d.%m.%Y)"
@@ -72,6 +112,7 @@ def configure_logging() -> None:
     # Убираем шумные служебные сообщения библиотек из startup-логов.
     logging.getLogger("discord.client").setLevel(logging.WARNING)
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
 
 async def send_greetings(channel, user_list):
     for user_id in user_list:
@@ -269,10 +310,12 @@ def save_next_startup_retry_at(next_retry_at: float) -> None:
     _, retry_delay = load_startup_retry_state()
     save_startup_retry_state(next_retry_at, retry_delay)
 # Основной запуск
-def main():
+
+def run_discord_main():
     global bot
     load_dotenv()
     configure_logging()
+
     keep_alive()
     TOKEN = (os.getenv('DISCORD_TOKEN') or '').strip()
 
@@ -381,6 +424,56 @@ def main():
             import traceback
             traceback.print_exc()
             break
+
+async def _run_both_async(discord_token: str, telegram_token: str) -> None:
+    discord_task = asyncio.create_task(bot.start(discord_token), name="discord-runtime")
+    telegram_task = asyncio.create_task(run_telegram_polling(telegram_token), name="telegram-runtime")
+
+    done, pending = await asyncio.wait(
+        {discord_task, telegram_task},
+        return_when=asyncio.FIRST_EXCEPTION,
+    )
+
+    first_exc = None
+    for task in done:
+        exc = task.exception()
+        if exc is not None:
+            first_exc = exc
+            break
+
+    for task in pending:
+        task.cancel()
+
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+    if first_exc is not None:
+        raise first_exc
+
+
+def run_both_main() -> None:
+    load_dotenv()
+    configure_logging()
+    keep_alive()
+
+    discord_token = (os.getenv('DISCORD_TOKEN') or '').strip()
+    telegram_token = (os.getenv('TELEGRAM_BOT_TOKEN') or '').strip()
+    if not discord_token or not telegram_token:
+        print("❌ Для BOT_RUNTIME=both нужны DISCORD_TOKEN и TELEGRAM_BOT_TOKEN.")
+        return
+
+    asyncio.run(_run_both_async(discord_token, telegram_token))
+
+
+def main():
+    """Launcher for discord/both modes (telegram-only handled at import bootstrap)."""
+
+    if _RUNTIME == "both":
+        run_both_main()
+        return
+
+    run_discord_main()
+
 
 if __name__ == "__main__":
     main()

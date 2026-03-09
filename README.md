@@ -94,7 +94,26 @@ python bot/main.py
 
 
 
+## 🤖 Telegram (подготовка)
+- Переменная токена для Render: `TELEGRAM_BOT_TOKEN`.
+- Единая точка запуска: `python bot/main.py`.
+- Выбор рантайма через `BOT_RUNTIME`:
+  - `BOT_RUNTIME=discord` (только Discord)
+  - `BOT_RUNTIME=telegram` (только Telegram)
+  - `BOT_RUNTIME=both` (запуск Telegram + Discord одновременно в одном asyncio event loop / основном потоке)
+- Если `BOT_RUNTIME` не задан, лаунчер автоматически:
+  - выберет `both`, когда заданы и `DISCORD_TOKEN`, и `TELEGRAM_BOT_TOKEN`;
+  - выберет `telegram`, когда задан только `TELEGRAM_BOT_TOKEN`.
+- `bot/telegram_bot/main.py` — это Telegram runtime-модуль, который вызывается из `bot/main.py` при `BOT_RUNTIME=telegram`.
+- В Telegram-режиме поднимается polling-loop (aiogram) и в лог пишется `telegram bot started`.
+- В Telegram-режиме доступны команды `/start`, `/link`, `/helpy` (список команд обновляется через Telegram API при запуске).
+- Telegram-код изолирован в `bot/telegram_bot/`, чтобы не смешивать с Discord-рантаймом.
+
 ## 🔐 Account-first migration (P3)
 - SQL hardening script: `sql/p3_account_hardening.sql`
 - Audit script: `python scripts/check_account_migration.py`
 - Ops runbook: `docs/account_migration_runbook.md`
+
+## 📁 Структура Telegram-кода
+- Весь код, связанный с Telegram, расположен в `bot/telegram_bot/`.
+- Текущий обработчик привязки Telegram: `bot/telegram_bot/link_handler.py`.
