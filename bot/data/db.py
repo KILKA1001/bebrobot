@@ -132,6 +132,7 @@ class Database:
         self._fines_data_loaded = False
         self._account_to_discord_cache = {}
         self._table_account_id_support = {}
+        self._account_metrics = {}
 
         self.scores = LazyDict(self.ensure_core_data_loaded)
         self.actions = LazyList(self.ensure_core_data_loaded)
@@ -192,8 +193,13 @@ class Database:
                 .execute()
             )
             if response.data:
-                return response.data[0].get("account_id")
+                account_id = response.data[0].get("account_id")
+                if account_id:
+                    self._inc_metric("operations_with_account_id")
+                return account_id
+            self._inc_metric("operations_without_account_id")
         except Exception as e:
+            self._inc_metric("identity_resolve_errors")
             logger.warning("Не удалось получить account_id для user_id=%s: %s", user_id, e)
         return None
 
@@ -273,6 +279,8 @@ class Database:
         account_id = self._get_account_id_for_discord_user(user_id)
         if account_id:
             payload["account_id"] = account_id
+        else:
+            self._inc_metric("operations_without_account_id")
         return payload
 
     def _table_supports_account_id(self, table_name: str) -> bool:
@@ -297,6 +305,12 @@ class Database:
         if self._table_supports_account_id(table_name):
             return self._with_account_id(user_id, payload)
         return payload
+
+    def _inc_metric(self, name: str, value: int = 1) -> None:
+        self._account_metrics[name] = self._account_metrics.get(name, 0) + value
+
+    def get_account_metrics_snapshot(self) -> dict:
+        return dict(self._account_metrics)
       
     def load_data(self):
         """Загружает все данные с автоматическим восстановлением связей"""
@@ -869,12 +883,16 @@ class Database:
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }).execute()
 
-            history_payload = self._with_optional_account_id("bank_history", user_id, {
+            history_payload = {
                 "user_id": user_id,
                 "amount": -amount,
                 "reason": reason,
                 "timestamp": datetime.now(timezone.utc).isoformat()
-            })
+            }
+            if self._table_supports_account_id("bank_history"):
+                account_id = self._get_account_id_for_discord_user(user_id)
+                if account_id:
+                    history_payload["account_id"] = account_id
 
             self.supabase.table("bank_history").insert(history_payload).execute()
 
@@ -887,12 +905,16 @@ class Database:
         try:
             if not self.supabase:
                 return False
-            history_payload = self._with_optional_account_id("bank_history", user_id, {
+            history_payload = {
                 "user_id": user_id,
                 "amount": amount,
                 "reason": reason,
                 "timestamp": datetime.now(timezone.utc).isoformat()
-            })
+            }
+            if self._table_supports_account_id("bank_history"):
+                account_id = self._get_account_id_for_discord_user(user_id)
+                if account_id:
+                    history_payload["account_id"] = account_id
 
             self.supabase.table("bank_history").insert(history_payload).execute()
             return True
@@ -916,10 +938,14 @@ class Database:
             new_value = max(current + amount, 0)
 
             # Обновляем значение
-            upsert_payload = self._with_optional_account_id("scores", user_id, {
+            upsert_payload = {
                 "user_id": user_id,
                 field: new_value
-            })
+            }
+            if self._table_supports_account_id("scores"):
+                account_id = self._get_account_id_for_discord_user(user_id)
+                if account_id:
+                    upsert_payload["account_id"] = account_id
 
             self.supabase.table("scores").upsert(upsert_payload).execute()
 
@@ -931,13 +957,17 @@ class Database:
     def log_ticket_action(self, user_id: int, ticket_type: str, amount: int, reason: str, author_id: int):
         """Логирует изменение билетов в ticket_actions"""
         try:
-            payload = self._with_optional_account_id("ticket_actions", user_id, {
+            payload = {
                 "user_id": user_id,
                 "ticket_type": ticket_type,
                 "amount": amount,
                 "reason": reason,
                 "author_id": author_id,
-            })
+            }
+            if self._table_supports_account_id("ticket_actions"):
+                account_id = self._get_account_id_for_discord_user(user_id)
+                if account_id:
+                    payload["account_id"] = account_id
 
             self.supabase.table("ticket_actions").insert(payload).execute()
         except Exception as e:
@@ -964,29 +994,53 @@ class Database:
     def transfer_user_data(self, old_id: int, new_id: int) -> bool:
         """
         Переносит все данные (баллы, билеты, логи) от old_id → new_id.
+        account-first: сначала account_id, затем fallback по user_id.
         """
         try:
             old_account_id = self._get_account_id_for_discord_user(old_id)
             new_account_id = self._get_account_id_for_discord_user(new_id)
+
             scores_has_account = self._table_supports_account_id("scores")
             actions_has_account = self._table_supports_account_id("actions")
             ticket_actions_has_account = self._table_supports_account_id("ticket_actions")
-            bank_history_has_account = self._table_supports_account_id("bank_history")
 
-            # Перенос записи в scores
-            score = None
-            if old_account_id and scores_has_account:
-                score = self.supabase.table("scores").select("*").eq("account_id", old_account_id).limit(1).execute()
-            if not score or not score.data:
-                score = self.supabase.table("scores").select("*").eq("user_id", old_id).limit(1).execute()
+            def _fetch_scores_row_by_identity(account_id: Optional[str], user_id: int) -> Optional[dict]:
+                row = None
+                if account_id and scores_has_account:
+                    response = (
+                        self.supabase.table("scores")
+                        .select("*")
+                        .eq("account_id", account_id)
+                        .limit(1)
+                        .execute()
+                    )
+                    if response.data:
+                        row = response.data[0]
+                if row is None:
+                    response = (
+                        self.supabase.table("scores")
+                        .select("*")
+                        .eq("user_id", user_id)
+                        .limit(1)
+                        .execute()
+                    )
+                    if response.data:
+                        row = response.data[0]
+                return row
 
-            if score.data:
-                data = score.data[0]
+            old_score = _fetch_scores_row_by_identity(old_account_id, old_id)
+            new_score = _fetch_scores_row_by_identity(new_account_id, new_id)
+
+            if old_score:
+                merged_points = float((new_score or {}).get("points", 0)) + float(old_score.get("points", 0))
+                merged_tickets_normal = int((new_score or {}).get("tickets_normal", 0) or 0) + int(old_score.get("tickets_normal", 0) or 0)
+                merged_tickets_gold = int((new_score or {}).get("tickets_gold", 0) or 0) + int(old_score.get("tickets_gold", 0) or 0)
+
                 upsert_payload = {
                     "user_id": new_id,
-                    "points": data.get("points", 0),
-                    "tickets_normal": data.get("tickets_normal", 0),
-                    "tickets_gold": data.get("tickets_gold", 0)
+                    "points": merged_points,
+                    "tickets_normal": merged_tickets_normal,
+                    "tickets_gold": merged_tickets_gold,
                 }
                 if new_account_id and scores_has_account:
                     upsert_payload["account_id"] = new_account_id
@@ -997,38 +1051,25 @@ class Database:
                     self.supabase.table("scores").delete().eq("account_id", old_account_id).execute()
                 self.supabase.table("scores").delete().eq("user_id", old_id).execute()
 
-            # Перенос логов
             action_update = {"user_id": new_id}
             ticket_update = {"user_id": new_id}
-            bank_history_update = {"user_id": new_id}
+
             if new_account_id and actions_has_account:
                 action_update["account_id"] = new_account_id
             if new_account_id and ticket_actions_has_account:
                 ticket_update["account_id"] = new_account_id
-            if new_account_id and bank_history_has_account:
-                bank_history_update["account_id"] = new_account_id
-
-            actions_query = self.supabase.table("actions").update(action_update)
-            ticket_query = self.supabase.table("ticket_actions").update(ticket_update)
-            bank_history_query = self.supabase.table("bank_history").update(bank_history_update)
 
             if old_account_id and actions_has_account:
-                actions_query.eq("account_id", old_account_id).execute()
+                self.supabase.table("actions").update(action_update).eq("account_id", old_account_id).execute()
                 self.supabase.table("actions").update(action_update).eq("user_id", old_id).is_("account_id", "null").execute()
             else:
-                actions_query.eq("user_id", old_id).execute()
+                self.supabase.table("actions").update(action_update).eq("user_id", old_id).execute()
 
             if old_account_id and ticket_actions_has_account:
-                ticket_query.eq("account_id", old_account_id).execute()
+                self.supabase.table("ticket_actions").update(ticket_update).eq("account_id", old_account_id).execute()
                 self.supabase.table("ticket_actions").update(ticket_update).eq("user_id", old_id).is_("account_id", "null").execute()
             else:
-                ticket_query.eq("user_id", old_id).execute()
-
-            if old_account_id and bank_history_has_account:
-                bank_history_query.eq("account_id", old_account_id).execute()
-                self.supabase.table("bank_history").update(bank_history_update).eq("user_id", old_id).is_("account_id", "null").execute()
-            else:
-                bank_history_query.eq("user_id", old_id).execute()
+                self.supabase.table("ticket_actions").update(ticket_update).eq("user_id", old_id).execute()
 
             self.load_data()
             return True
