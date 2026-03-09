@@ -266,7 +266,7 @@ class Database:
         except Exception as e:
             logger.warning("Не удалось прочитать scores для user_id=%s: %s", user_id, e)
         return None
-
+      
     def load_data(self):
         """Загружает все данные с автоматическим восстановлением связей"""
         if self._core_data_loaded or self._core_data_loading:
