@@ -838,12 +838,17 @@ class Database:
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }).execute()
 
-            self.supabase.table("bank_history").insert({
+            history_payload = {
                 "user_id": user_id,
                 "amount": -amount,
                 "reason": reason,
                 "timestamp": datetime.now(timezone.utc).isoformat()
-            }).execute()
+            }
+            account_id = self._get_account_id_for_discord_user(user_id)
+            if account_id:
+                history_payload["account_id"] = account_id
+
+            self.supabase.table("bank_history").insert(history_payload).execute()
 
             return True
         except Exception as e:
@@ -854,12 +859,17 @@ class Database:
         try:
             if not self.supabase:
                 return False
-            self.supabase.table("bank_history").insert({
+            history_payload = {
                 "user_id": user_id,
                 "amount": amount,
                 "reason": reason,
                 "timestamp": datetime.now(timezone.utc).isoformat()
-            }).execute()
+            }
+            account_id = self._get_account_id_for_discord_user(user_id)
+            if account_id:
+                history_payload["account_id"] = account_id
+
+            self.supabase.table("bank_history").insert(history_payload).execute()
             return True
         except Exception as e:
             logger.error(f"Ошибка записи операции в банк: {e}")
@@ -881,10 +891,15 @@ class Database:
             new_value = max(current + amount, 0)
 
             # Обновляем значение
-            self.supabase.table("scores").upsert({
+            upsert_payload = {
                 "user_id": user_id,
                 field: new_value
-            }).execute()
+            }
+            account_id = self._get_account_id_for_discord_user(user_id)
+            if account_id:
+                upsert_payload["account_id"] = account_id
+
+            self.supabase.table("scores").upsert(upsert_payload).execute()
 
             return True
         except Exception as e:
@@ -894,13 +909,18 @@ class Database:
     def log_ticket_action(self, user_id: int, ticket_type: str, amount: int, reason: str, author_id: int):
         """Логирует изменение билетов в ticket_actions"""
         try:
-            self.supabase.table("ticket_actions").insert({
-            "user_id": user_id,
-            "ticket_type": ticket_type,
-            "amount": amount,
-            "reason": reason,
-            "author_id": author_id
-            }).execute()
+            payload = {
+                "user_id": user_id,
+                "ticket_type": ticket_type,
+                "amount": amount,
+                "reason": reason,
+                "author_id": author_id,
+            }
+            account_id = self._get_account_id_for_discord_user(user_id)
+            if account_id:
+                payload["account_id"] = account_id
+
+            self.supabase.table("ticket_actions").insert(payload).execute()
         except Exception as e:
             logger.error(f"Ошибка логирования тикета: {e}")
 
@@ -927,21 +947,54 @@ class Database:
         Переносит все данные (баллы, билеты, логи) от old_id → new_id.
         """
         try:
+            old_account_id = self._get_account_id_for_discord_user(old_id)
+            new_account_id = self._get_account_id_for_discord_user(new_id)
+
             # Перенос записи в scores
-            score = self.supabase.table("scores").select("*").eq("user_id", old_id).execute()
+            score = None
+            if old_account_id:
+                score = self.supabase.table("scores").select("*").eq("account_id", old_account_id).limit(1).execute()
+            if not score or not score.data:
+                score = self.supabase.table("scores").select("*").eq("user_id", old_id).limit(1).execute()
+
             if score.data:
                 data = score.data[0]
-                self.supabase.table("scores").upsert({
+                upsert_payload = {
                     "user_id": new_id,
                     "points": data.get("points", 0),
                     "tickets_normal": data.get("tickets_normal", 0),
                     "tickets_gold": data.get("tickets_gold", 0)
-                }).execute()
+                }
+                if new_account_id:
+                    upsert_payload["account_id"] = new_account_id
+
+                self.supabase.table("scores").upsert(upsert_payload).execute()
+
+                if old_account_id:
+                    self.supabase.table("scores").delete().eq("account_id", old_account_id).execute()
                 self.supabase.table("scores").delete().eq("user_id", old_id).execute()
 
             # Перенос логов
-            self.supabase.table("actions").update({"user_id": new_id}).eq("user_id", old_id).execute()
-            self.supabase.table("ticket_actions").update({"user_id": new_id}).eq("user_id", old_id).execute()
+            action_update = {"user_id": new_id}
+            ticket_update = {"user_id": new_id}
+            if new_account_id:
+                action_update["account_id"] = new_account_id
+                ticket_update["account_id"] = new_account_id
+
+            actions_query = self.supabase.table("actions").update(action_update)
+            ticket_query = self.supabase.table("ticket_actions").update(ticket_update)
+
+            if old_account_id:
+                actions_query.eq("account_id", old_account_id).execute()
+                ticket_query.eq("account_id", old_account_id).execute()
+
+                # Legacy fallback: переносим только legacy-строки без account_id,
+                # чтобы не делать повторный апдейт уже перенесённых account-based записей.
+                self.supabase.table("actions").update(action_update).eq("user_id", old_id).is_("account_id", "null").execute()
+                self.supabase.table("ticket_actions").update(ticket_update).eq("user_id", old_id).is_("account_id", "null").execute()
+            else:
+                actions_query.eq("user_id", old_id).execute()
+                ticket_query.eq("user_id", old_id).execute()
 
             self.load_data()
             return True
