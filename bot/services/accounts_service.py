@@ -32,14 +32,8 @@ class AccountsService:
             if response.data:
                 return response.data[0].get("account_id")
         except Exception as e:
-
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("identity_resolve_errors")
-
-
-            if hasattr(db, "_inc_metric"):
-                db._inc_metric("identity_resolve_errors")
-
             logger.warning("resolve_account_id failed (%s:%s): %s", provider, provider_user_id, e)
         return None
 
@@ -56,28 +50,14 @@ class AccountsService:
     def issue_discord_telegram_link_code(discord_user_id: int) -> Tuple[bool, str]:
         """DS -> one-time code для TG /link <code>."""
         if not db.supabase:
-
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("link_issue_fail")
-
-
-            if hasattr(db, "_inc_metric"):
-                db._inc_metric("link_issue_fail")
-
-
             return False, "База данных недоступна"
 
         discord_account_id = AccountsService.resolve_account_id("discord", str(discord_user_id))
         if not discord_account_id:
-
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("link_issue_fail")
-
-
-            if hasattr(db, "_inc_metric"):
-                db._inc_metric("link_issue_fail")
-
-
             return False, "Discord account identity не найден"
 
         now = datetime.now(timezone.utc)
@@ -96,7 +76,6 @@ class AccountsService:
 
         try:
             db.supabase.table("account_link_codes").insert(payload).execute()
-
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("link_issue_success")
             logger.info("link_code_issued discord_user_id=%s", discord_user_id)
@@ -104,12 +83,6 @@ class AccountsService:
         except Exception as e:
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("link_issue_fail")
-
-            logger.info("link_code_issued discord_user_id=%s", discord_user_id)
-            return True, code
-        except Exception as e:
-
-
             logger.error("issue_discord_telegram_link_code failed: %s", e)
             return False, "Не удалось создать код привязки"
 
@@ -117,20 +90,14 @@ class AccountsService:
     def consume_telegram_link_code(telegram_user_id: int, code: str) -> Tuple[bool, str]:
         """TG /link <code> -> bind telegram identity to account."""
         if not db.supabase:
-
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("link_consume_fail")
             return False, "База данных недоступна"
+
         code = (code or "").strip().upper()
         if not code:
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("link_consume_fail")
-
-            return False, "База данных недоступна"
-        code = (code or "").strip().upper()
-        if not code:
-
-
             return False, "Пустой код"
 
         try:
@@ -142,16 +109,8 @@ class AccountsService:
                 .execute()
             )
             if not lookup.data:
-       
                 if hasattr(db, "_inc_metric"):
                     db._inc_metric("link_consume_fail")
-
-
-                
-                if hasattr(db, "_inc_metric"):
-                    db._inc_metric("link_consume_fail")
-
-
                 return False, "Код не найден"
 
             row = lookup.data[0]
@@ -160,28 +119,16 @@ class AccountsService:
             attempts = int(row.get("attempts", 0) or 0)
 
             if row.get("is_used"):
-
-                
                 if hasattr(db, "_inc_metric"):
                     db._inc_metric("link_consume_fail")
                 return False, "Код уже использован"
             if now > expires_at:
-                
                 if hasattr(db, "_inc_metric"):
                     db._inc_metric("link_consume_fail")
                 return False, "Срок действия кода истёк"
             if attempts >= AccountsService.MAX_ATTEMPTS:
-                
                 if hasattr(db, "_inc_metric"):
                     db._inc_metric("link_consume_fail")
-
-
-                return False, "Код уже использован"
-            if now > expires_at:
-                return False, "Срок действия кода истёк"
-            if attempts >= AccountsService.MAX_ATTEMPTS:
-
-
                 return False, "Превышено число попыток"
 
             # one-time attempt accounting
@@ -189,16 +136,8 @@ class AccountsService:
 
             account_id = row.get("account_id")
             if not account_id:
-    
                 if hasattr(db, "_inc_metric"):
                     db._inc_metric("link_consume_fail")
-
-
-                
-                if hasattr(db, "_inc_metric"):
-                    db._inc_metric("link_consume_fail")
-
-
                 return False, "Код не содержит account_id"
 
             identity_payload = {
@@ -217,7 +156,6 @@ class AccountsService:
                 }
             ).eq("code", code).execute()
 
-
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("link_consume_success")
             logger.info("link_code_consumed telegram_user_id=%s account_id=%s", telegram_user_id, account_id)
@@ -225,12 +163,5 @@ class AccountsService:
         except Exception as e:
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("link_consume_fail")
-
-
-            logger.info("link_code_consumed telegram_user_id=%s account_id=%s", telegram_user_id, account_id)
-            return True, "Аккаунт успешно привязан"
-        except Exception as e:
-
-
             logger.error("consume_telegram_link_code failed: %s", e)
             return False, "Ошибка привязки"
