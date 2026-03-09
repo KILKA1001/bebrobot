@@ -94,7 +94,16 @@ python bot/main.py
 
 
 
+## 🤖 Telegram (подготовка)
+- Переменная токена для Render: `TELEGRAM_BOT_TOKEN`.
+- Отдельный entrypoint Telegram-каркаса: `python -m bot.telegram_bot.main`.
+- Telegram-код изолирован в `bot/telegram_bot/`, чтобы не смешивать с Discord-рантаймом.
+
 ## 🔐 Account-first migration (P3)
 - SQL hardening script: `sql/p3_account_hardening.sql`
 - Audit script: `python scripts/check_account_migration.py`
 - Ops runbook: `docs/account_migration_runbook.md`
+
+## 📁 Структура Telegram-кода
+- Весь код, связанный с Telegram, расположен в `bot/telegram_bot/`.
+- Текущий обработчик привязки Telegram: `bot/telegram_bot/link_handler.py`.
