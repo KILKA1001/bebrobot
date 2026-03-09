@@ -40,3 +40,4 @@ class FinesService:
                 db._inc_metric("identity_resolve_errors")
             return []
         return db.get_user_fines(discord_user_id, active_only=active_only)
+

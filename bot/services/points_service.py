@@ -33,3 +33,4 @@ class PointsService:
                 db._inc_metric("identity_resolve_errors")
             return False
         return db.add_action(discord_user_id, -points, reason, author_id)
+

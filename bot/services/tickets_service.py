@@ -33,3 +33,4 @@ class TicketsService:
                 db._inc_metric("identity_resolve_errors")
             return False
         return db.remove_ticket(discord_user_id, ticket_type, amount, reason, author_id)
+
