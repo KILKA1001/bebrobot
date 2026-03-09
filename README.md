@@ -96,7 +96,11 @@ python bot/main.py
 
 ## 🤖 Telegram (подготовка)
 - Переменная токена для Render: `TELEGRAM_BOT_TOKEN`.
-- Отдельный entrypoint Telegram-каркаса: `python -m bot.telegram_bot.main`.
+- Единая точка запуска: `python bot/main.py`.
+- Выбор рантайма через `BOT_RUNTIME`:
+  - `BOT_RUNTIME=discord` (по умолчанию)
+  - `BOT_RUNTIME=telegram`
+- `bot/telegram_bot/main.py` — это Telegram runtime-модуль, который вызывается из `bot/main.py` при `BOT_RUNTIME=telegram`.
 - Telegram-код изолирован в `bot/telegram_bot/`, чтобы не смешивать с Discord-рантаймом.
 
 ## 🔐 Account-first migration (P3)

@@ -1,6 +1,7 @@
-"""Telegram bot entrypoint scaffold.
+"""Telegram runtime module, called from unified launcher in `bot/main.py`.
 
-Keeps Telegram runtime separated from Discord runtime.
+Not a required separate process entrypoint anymore; we keep it as an isolated
+Telegram runtime function to avoid mixing Telegram code with Discord logic.
 """
 
 from bot.telegram_bot.config import TELEGRAM_BOT_TOKEN_ENV, get_telegram_bot_token
