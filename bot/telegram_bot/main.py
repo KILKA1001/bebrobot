@@ -72,7 +72,7 @@ async def link_command(message: Message) -> None:
     await message.answer(f"{prefix} {payload}")
 
 
-async def _run_polling(token: str) -> None:
+async def run_polling(token: str) -> None:
     bot = Bot(token=token)
     dp = Dispatcher()
     dp.include_router(router)
@@ -100,7 +100,7 @@ def main() -> None:
             "Добавьте её в Render перед запуском Telegram-процесса."
         )
 
-    asyncio.run(_run_polling(token))
+    asyncio.run(run_polling(token))
 
 
 if __name__ == "__main__":
