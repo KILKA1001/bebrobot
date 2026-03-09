@@ -92,3 +92,9 @@ python bot/main.py
 - При выборе режима **TEST** банк ставок и балансы пользователей не изменяются,
   что удобно для отладки.
 
+
+
+## 🔐 Account-first migration (P3)
+- SQL hardening script: `sql/p3_account_hardening.sql`
+- Audit script: `python scripts/check_account_migration.py`
+- Ops runbook: `docs/account_migration_runbook.md`

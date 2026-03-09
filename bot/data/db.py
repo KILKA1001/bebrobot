@@ -132,6 +132,7 @@ class Database:
         self._fines_data_loaded = False
         self._account_to_discord_cache = {}
         self._table_account_id_support = {}
+        self._account_metrics = {}
 
         self.scores = LazyDict(self.ensure_core_data_loaded)
         self.actions = LazyList(self.ensure_core_data_loaded)
@@ -192,8 +193,13 @@ class Database:
                 .execute()
             )
             if response.data:
-                return response.data[0].get("account_id")
+                account_id = response.data[0].get("account_id")
+                if account_id:
+                    self._inc_metric("operations_with_account_id")
+                return account_id
+            self._inc_metric("operations_without_account_id")
         except Exception as e:
+            self._inc_metric("identity_resolve_errors")
             logger.warning("Не удалось получить account_id для user_id=%s: %s", user_id, e)
         return None
 
@@ -273,6 +279,8 @@ class Database:
         account_id = self._get_account_id_for_discord_user(user_id)
         if account_id:
             payload["account_id"] = account_id
+        else:
+            self._inc_metric("operations_without_account_id")
         return payload
 
     def _table_supports_account_id(self, table_name: str) -> bool:
@@ -297,6 +305,12 @@ class Database:
         if self._table_supports_account_id(table_name):
             return self._with_account_id(user_id, payload)
         return payload
+
+    def _inc_metric(self, name: str, value: int = 1) -> None:
+        self._account_metrics[name] = self._account_metrics.get(name, 0) + value
+
+    def get_account_metrics_snapshot(self) -> dict:
+        return dict(self._account_metrics)
       
     def load_data(self):
         """Загружает все данные с автоматическим восстановлением связей"""
