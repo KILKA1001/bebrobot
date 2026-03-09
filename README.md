@@ -101,6 +101,8 @@ python bot/main.py
   - `BOT_RUNTIME=discord` (по умолчанию)
   - `BOT_RUNTIME=telegram`
 - `bot/telegram_bot/main.py` — это Telegram runtime-модуль, который вызывается из `bot/main.py` при `BOT_RUNTIME=telegram`.
+- В Telegram-режиме поднимается polling-loop (aiogram) и в лог пишется `telegram bot started`.
+- В Telegram-режиме доступны команды `/start`, `/link`, `/helpy` (список команд обновляется через Telegram API при запуске).
 - Telegram-код изолирован в `bot/telegram_bot/`, чтобы не смешивать с Discord-рантаймом.
 
 ## 🔐 Account-first migration (P3)
