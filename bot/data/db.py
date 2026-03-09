@@ -950,11 +950,11 @@ class Database:
                         .execute()
                     )
                     if not legacy_updated.data:
-                        self.supabase.table("scores").insert({
+                        insert_payload = self._with_optional_account_id("scores", user_id, {
                             "user_id": user_id,
-                            "account_id": account_id,
                             field: new_value,
-                        }).execute()
+                        })
+                        self.supabase.table("scores").insert(insert_payload).execute()
             else:
                 legacy_updated = (
                     self.supabase.table("scores")
@@ -963,10 +963,11 @@ class Database:
                     .execute()
                 )
                 if not legacy_updated.data:
-                    self.supabase.table("scores").insert({
+                    insert_payload = self._with_optional_account_id("scores", user_id, {
                         "user_id": user_id,
                         field: new_value,
-                    }).execute()
+                    })
+                    self.supabase.table("scores").insert(insert_payload).execute()
 
             return True
         except Exception as e:
