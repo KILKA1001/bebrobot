@@ -5,6 +5,7 @@ from . import fines  # noqa: F401
 from . import tournament  # noqa: F401
 from . import tickets  # noqa: F401
 from . import maps  # noqa: F401
+from . import linking  # noqa: F401
 
 # Import specific commands for explicit access if needed
 from .fines import (
@@ -24,6 +25,7 @@ from .tournament import (
     tournamentadmin,
 )
 from .maps import mapinfo
+from .linking import link_telegram
 
 __all__ = [
     "bot",
@@ -40,4 +42,5 @@ __all__ = [
     "jointournament",
     "tournamentadmin",
     "mapinfo",
+    "link_telegram",
 ]

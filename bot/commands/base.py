@@ -21,6 +21,7 @@ from bot.systems.core_logic import (
 )
 from bot.utils import send_temp, format_moscow_time, format_points
 from bot.utils.api_monitor import monitor
+from bot.services import PointsService
 from bot import COMMAND_PREFIX
 
 
@@ -86,9 +87,7 @@ async def add_points(
     try:
         points_float = float(points.replace(",", "."))
         user_id = member.id
-        current = db.scores.get(user_id, 0)
-        db.scores[user_id] = max(current + points_float, 0)
-        db.add_action(user_id, points_float, reason, ctx.author.id)
+        PointsService.add_points(user_id, points_float, reason, ctx.author.id)
         await update_roles(member)
         embed = discord.Embed(
             title="🎉 Баллы начислены!", color=discord.Color.green()
@@ -139,8 +138,7 @@ async def remove_points(
             )
             await send_temp(ctx, embed=embed, delete_after=None)
             return
-        db.scores[user_id] = current_points - points_float
-        db.add_action(user_id, -points_float, reason, ctx.author.id)
+        PointsService.remove_points(user_id, points_float, reason, ctx.author.id)
         await update_roles(member)
         embed = discord.Embed(
             title="⚠️ Баллы сняты!", color=discord.Color.red()
