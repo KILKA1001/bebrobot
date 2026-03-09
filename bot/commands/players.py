@@ -16,11 +16,11 @@ from bot.commands.base import bot
 
 @bot.hybrid_command(name="register", description="Добавить игрока в систему")
 @commands.has_permissions(administrator=True)
-async def register(ctx: commands.Context, nick: str, tg_username: str):
+async def register(ctx: commands.Context, nick: str):
     """
-    /register <nick> <@tg_username>
+    /register <nick>
     """
-    await register_player(ctx, nick, tg_username)
+    await register_player(ctx, nick)
 
 
 # ─── Список игроков ──────────────────────────────────────────────────────────
@@ -49,7 +49,7 @@ async def editplayer(
 ):
     """
     Редактирует поле игрока:
-    /editplayer <player_id> <nick|tg_username> <new_value>
+    /editplayer <player_id> <nick> <new_value>
     """
     await edit_player(ctx, player_id, field, new_value)
 

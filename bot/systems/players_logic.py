@@ -2,12 +2,9 @@ import discord
 from discord import ui, Embed
 from bot.utils import SafeView
 from discord.ext import commands
-from functools import partial
-
 from bot.data.players_db import (
     create_player,
     get_player_by_id,
-    get_player_by_tg,
     list_players,
     update_player_field,
     delete_player,
@@ -25,24 +22,16 @@ from bot.utils import send_temp
 async def register_player(
     ctx: commands.Context,
     nick: str,
-    tg_username: str
 ) -> None:
     """
     Создаёт нового игрока в системе.
+
+    Legacy Telegram username-поле удалено из пользовательского потока.
+    Связка аккаунтов выполняется через новую account-based систему.
     """
-    # проверяем формат TG-username
-    if not tg_username.startswith("@"):
-        await send_temp(ctx, "❌ Telegram-ник должен начинаться с `@`.")
-        return
-
-    # проверяем, что такого TG ещё нет
-    if get_player_by_tg(tg_username):
-        await send_temp(ctx, "❌ Пользователь с таким Telegram-ником уже зарегистрирован.")
-        return
-
-    pid = create_player(nick, tg_username)
+    pid = create_player(nick)
     if pid is not None:
-        await send_temp(ctx, f"✅ Игрок #{pid} добавлен: `{nick}`, {tg_username}")
+        await send_temp(ctx, f"✅ Игрок #{pid} добавлен: `{nick}`")
     else:
         await send_temp(ctx, "❌ Ошибка при создании игрока.")
 
@@ -87,7 +76,6 @@ async def list_players_view(
 ) -> None:
     """
     Выводит Embed со списком игроков постранично и кнопками навигации.
-    Каждому игроку соответствует кнопка 📋, которая шлёт его tg_username в личку.
     """
     per_page = 5
     rows, pages = list_players(page, per_page)
@@ -99,25 +87,11 @@ async def list_players_view(
     for p in rows:
         embed.add_field(
             name=f"#{p['id']} • {p['nick']}",
-            value=p['tg_username'],
+            value='🔗 Telegram-привязка перенесена в account identity (заглушка)',
             inline=False
         )
 
     view = SafeView(timeout=120)
-
-    # Кнопки для копирования Telegram-ника
-    for p in rows:
-        btn = ui.Button(
-            label=f"📋 {p['id']}",
-            style=discord.ButtonStyle.secondary,
-            custom_id=f"copy_{p['id']}"
-        )
-        async def _copy(interaction: discord.Interaction, tg_username: str):
-            await interaction.response.send_message(
-                f"Telegram-ник игрока: `{tg_username}`", ephemeral=True
-            )
-        btn.callback = partial(_copy, tg_username=p['tg_username'])
-        view.add_item(btn)
 
     # Навигационные кнопки
     prev_btn = ui.Button(label="◀️", style=discord.ButtonStyle.primary)
@@ -134,7 +108,7 @@ async def list_players_view(
         for p2 in new_rows:
             new_embed.add_field(
                 name=f"#{p2['id']} • {p2['nick']}",
-                value=p2['tg_username'],
+                value='🔗 Telegram-привязка перенесена в account identity (заглушка)',
                 inline=False
             )
         prev_btn.disabled = new_page <= 1
@@ -152,7 +126,7 @@ async def list_players_view(
         for p2 in new_rows:
             new_embed.add_field(
                 name=f"#{p2['id']} • {p2['nick']}",
-                value=p2['tg_username'],
+                value='🔗 Telegram-привязка перенесена в account identity (заглушка)',
                 inline=False
             )
         prev_btn.disabled = new_page <= 1
@@ -173,14 +147,12 @@ async def edit_player(
     new_value: str
 ) -> None:
     """
-    Редактирует nick или tg_username игрока.
-    """
-    if field not in ("nick", "tg_username"):
-        await send_temp(ctx, "❌ Можно править только `nick` или `tg_username`.")
-        return
+    Редактирует данные игрока.
 
-    if field == "tg_username" and not new_value.startswith("@"):
-        await send_temp(ctx, "❌ Telegram-ник должен начинаться с `@`.")
+    Поля legacy Telegram удалены из доступного интерфейса.
+    """
+    if field != "nick":
+        await send_temp(ctx, "⚠️ Поле недоступно. Сейчас можно менять только `nick`. Новая Telegram-привязка будет через account identity.")
         return
 
     ok = update_player_field(player_id, field, new_value)

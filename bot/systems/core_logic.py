@@ -384,7 +384,7 @@ def get_help_embed(category: str) -> discord.Embed:
     elif category == "admin_players":
         embed.title = "👥 Админ: Игроки"
         embed.description = (
-            "`/register <nick> <@tg>` — добавить игрока\n"
+            "`/register <nick>` — добавить игрока\n"
             "`/listplayers [страница]` — список игроков\n"
             "`/editplayer id поле значение` — изменить данные игрока\n"
             "`/deleteplayer id` — удалить игрока\n"
