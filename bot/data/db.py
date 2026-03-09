@@ -130,6 +130,7 @@ class Database:
         self._core_data_loaded = False
         self._core_data_loading = False
         self._fines_data_loaded = False
+        self._account_to_discord_cache = {}
 
         self.scores = LazyDict(self.ensure_core_data_loaded)
         self.actions = LazyList(self.ensure_core_data_loaded)
@@ -195,6 +196,77 @@ class Database:
             logger.warning("Не удалось получить account_id для user_id=%s: %s", user_id, e)
         return None
 
+    def _get_discord_user_for_account_id(self, account_id: str) -> Optional[int]:
+        """Возвращает Discord user_id для account_id (если есть связь)."""
+        if not account_id:
+            return None
+        if account_id in self._account_to_discord_cache:
+            return self._account_to_discord_cache[account_id]
+        if not self.supabase:
+            return None
+        try:
+            response = (
+                self.supabase.table("account_identities")
+                .select("provider_user_id")
+                .eq("provider", "discord")
+                .eq("account_id", account_id)
+                .limit(1)
+                .execute()
+            )
+            if response.data:
+                discord_user_id = int(response.data[0]["provider_user_id"])
+                self._account_to_discord_cache[account_id] = discord_user_id
+                return discord_user_id
+        except Exception as e:
+            logger.warning("Не удалось получить discord user_id для account_id=%s: %s", account_id, e)
+        return None
+
+    def _resolve_user_id_from_row(self, row: dict) -> Optional[int]:
+        """Определяет user_id для локальных кешей, предпочитая account-based данные."""
+        account_id = row.get("account_id")
+        if account_id:
+            mapped = self._get_discord_user_for_account_id(account_id)
+            if mapped is not None:
+                return mapped
+        user_id = row.get("user_id")
+        if user_id is None:
+            return None
+        try:
+            return int(user_id)
+        except (TypeError, ValueError):
+            return None
+
+    def _get_scores_row_for_user(self, user_id: int, fields: str) -> Optional[dict]:
+        """Читает запись scores с приоритетом account_id, затем fallback на user_id."""
+        if not self.supabase:
+            return None
+
+        account_id = self._get_account_id_for_discord_user(user_id)
+        try:
+            if account_id:
+                by_account = (
+                    self.supabase.table("scores")
+                    .select(fields)
+                    .eq("account_id", account_id)
+                    .limit(1)
+                    .execute()
+                )
+                if by_account.data:
+                    return by_account.data[0]
+
+            by_user = (
+                self.supabase.table("scores")
+                .select(fields)
+                .eq("user_id", user_id)
+                .limit(1)
+                .execute()
+            )
+            if by_user.data:
+                return by_user.data[0]
+        except Exception as e:
+            logger.warning("Не удалось прочитать scores для user_id=%s: %s", user_id, e)
+        return None
+      
     def load_data(self):
         """Загружает все данные с автоматическим восстановлением связей"""
         if self._core_data_loaded or self._core_data_loading:
@@ -209,7 +281,13 @@ class Database:
             # 1. Загружаем баллы
             scores_response = self.supabase.from_('scores').select('*').execute()
             if hasattr(scores_response, 'data'):
-                self.scores.set_data({int(item['user_id']): float(item['points']) for item in scores_response.data})
+                scores_data = {}
+                for item in scores_response.data:
+                    resolved_user_id = self._resolve_user_id_from_row(item)
+                    if resolved_user_id is None:
+                        continue
+                    scores_data[resolved_user_id] = float(item['points'])
+                self.scores.set_data(scores_data)
             else:
                 raise ValueError("Некорректный ответ от Supabase при загрузке баллов")
 
@@ -242,7 +320,9 @@ class Database:
         """Строит историю действий"""
         history = {}
         for action in self.actions.data:
-            user_id = int(action['user_id'])
+            user_id = self._resolve_user_id_from_row(action)
+            if user_id is None:
+                continue
             if user_id not in history:
                 history[user_id] = []
             history[user_id].append({
@@ -270,11 +350,8 @@ class Database:
                 # Fallback для пользователей, которых ещё нет в кеше
                 # (например, если запись была добавлена извне).
                 try:
-                    current = self.supabase.table("scores")\
-                        .select("points")\
-                        .eq("user_id", user_id)\
-                        .execute()
-                    current_points = float(current.data[0]['points']) if current.data else 0
+                    score_row = self._get_scores_row_for_user(user_id, "points")
+                    current_points = float(score_row["points"]) if score_row else 0
                 except Exception:
                     current_points = 0
 
@@ -474,9 +551,13 @@ class Database:
 
     def get_user_fines(self, user_id: int, active_only: bool = True):
         """Возвращает список штрафов пользователя"""
+        account_id = self._get_account_id_for_discord_user(user_id)
         return [
             fine for fine in self.fines
-            if fine["user_id"] == user_id
+            if (
+                fine.get("user_id") == user_id
+                or (account_id and fine.get("account_id") == account_id)
+            )
             and (not active_only or (not fine["is_paid"] and not fine["is_canceled"]))
         ]
 
@@ -795,8 +876,8 @@ class Database:
         field = f"tickets_{ticket_type}"
         try:
             # Получаем текущее значение
-            response = self.supabase.table("scores").select(field).eq("user_id", user_id).execute()
-            current = int(response.data[0][field]) if response.data else 0
+            score_row = self._get_scores_row_for_user(user_id, field)
+            current = int(score_row[field]) if score_row and score_row.get(field) is not None else 0
             new_value = max(current + amount, 0)
 
             # Обновляем значение
