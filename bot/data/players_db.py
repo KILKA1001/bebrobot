@@ -10,13 +10,12 @@ assert db.supabase, "Supabase client not initialized"
 supabase = db.supabase
 
 
-def create_player(nick: str, tg_username: str) -> Optional[int]:
-    """Добавляет нового игрока и возвращает его ID."""
-    res = (
-        supabase.table("players")
-        .insert({"nick": nick, "tg_username": tg_username})
-        .execute()
-    )
+def create_player(nick: str) -> Optional[int]:
+    """Добавляет нового игрока и возвращает его ID.
+
+    Legacy Telegram-поле больше не используется для новой интеграции аккаунтов.
+    """
+    res = supabase.table("players").insert({"nick": nick}).execute()
     if res.data:
         return res.data[0].get("id")
     return None
@@ -28,15 +27,10 @@ def get_player_by_id(player_id: int) -> Optional[dict]:
     return res.data
 
 
-def get_player_by_tg(tg_username: str) -> Optional[dict]:
-    res = (
-        supabase.table("players")
-        .select("*")
-        .eq("tg_username", tg_username)
-        .limit(1)
-        .execute()
-    )
-    return res.data[0] if res.data else None
+def get_player_by_tg(_tg_username: str) -> Optional[dict]:
+    """Legacy stub: Telegram username-based lookup is deprecated."""
+    logger.warning("get_player_by_tg is deprecated and always returns None")
+    return None
 
 
 def list_players(page: int = 1, per_page: int = 5) -> Tuple[List[dict], int]:
@@ -51,7 +45,7 @@ def list_players(page: int = 1, per_page: int = 5) -> Tuple[List[dict], int]:
 
     res = (
         supabase.table("players")
-        .select("id, nick, tg_username")
+        .select("id, nick")
         .order("id", desc=False)
         .range(offset, offset + per_page - 1)
         .execute()
@@ -61,7 +55,7 @@ def list_players(page: int = 1, per_page: int = 5) -> Tuple[List[dict], int]:
 
 def update_player_field(player_id: int, field_name: str, new_value: str) -> bool:
     """
-    Обновляет single-поле nick или tg_username и пишет лог изменения.
+    Обновляет поле игрока и пишет лог изменения.
     """
     # 1) прочитать старое значение
     existing = get_player_by_id(player_id)
