@@ -17,10 +17,14 @@ class _TableOp:
         self._filters = []
         self._limit = None
         self._payload = None
+
         self._action = "select"
 
     def select(self, _fields):
         self._action = "select"
+
+
+    def select(self, _fields):
         return self
 
     def eq(self, key, value):
@@ -46,6 +50,7 @@ class _TableOp:
         self._action = "update"
         return self
 
+
     def delete(self):
         self._action = "delete"
         return self
@@ -58,6 +63,17 @@ class _TableOp:
             return _Resp([dict(self._payload)])
 
         if self._action == "upsert":
+    def execute(self):
+        rows = self.fake_db.tables[self.table_name]
+
+        if getattr(self, "_action", None) == "select":
+            pass
+
+        if getattr(self, "_action", None) == "insert":
+            rows.append(dict(self._payload))
+            return _Resp([dict(self._payload)])
+
+        if getattr(self, "_action", None) == "upsert":
             if self.table_name == "account_identities":
                 key = (self._payload["provider"], self._payload["provider_user_id"])
                 for row in rows:
@@ -67,13 +83,16 @@ class _TableOp:
             rows.append(dict(self._payload))
             return _Resp([dict(self._payload)])
 
+
         if self._action == "update":
+        if getattr(self, "_action", None) == "update":
             matched = []
             for row in rows:
                 if all(str(row.get(k)) == str(v) for k, v in self._filters):
                     row.update(self._payload)
                     matched.append(dict(row))
             return _Resp(matched)
+
 
         if self._action == "delete":
             kept = []
@@ -103,7 +122,12 @@ class _FakeSupabase:
         }
 
     def table(self, name):
+
         return _TableOp(self, name)
+
+        op = _TableOp(self, name)
+        op._action = "select"
+        return op
 
 
 class _FakeDb:
@@ -120,6 +144,7 @@ class AccountsServiceTests(unittest.TestCase):
         self.fake_db = _FakeDb()
         self.patcher = patch("bot.services.accounts_service.db", self.fake_db)
         self.patcher.start()
+
         self.fake_db.supabase.tables["account_identities"].append(
             {"account_id": "acc-discord-1", "provider": "discord", "provider_user_id": "111"}
         )
@@ -130,10 +155,18 @@ class AccountsServiceTests(unittest.TestCase):
     def test_link_flow_valid_code(self):
         ok, code = AccountsService.issue_discord_telegram_link_code(111)
         self.assertTrue(ok)
+
         ok, message = AccountsService.consume_telegram_link_code(222, code)
         self.assertTrue(ok)
         self.assertEqual(message, "Аккаунт успешно привязан")
         self.assertEqual(AccountsService.resolve_telegram_account_id(222), "acc-discord-1")
+
+        ok, message = AccountsService.consume_telegram_link_code(222, code)
+        self.assertTrue(ok)
+        self.assertEqual(message, "Аккаунт успешно привязан")
+
+        telegram_identity = AccountsService.resolve_telegram_account_id(222)
+        self.assertEqual(telegram_identity, "acc-discord-1")
 
     def test_link_flow_expired_code(self):
         now = datetime.now(timezone.utc)
@@ -146,6 +179,7 @@ class AccountsServiceTests(unittest.TestCase):
                 "attempts": 0,
             }
         )
+
         ok, message = AccountsService.consume_telegram_link_code(222, "EXPIRED1")
         self.assertFalse(ok)
         self.assertEqual(message, "Срок действия кода истёк")
@@ -161,6 +195,7 @@ class AccountsServiceTests(unittest.TestCase):
                 "attempts": 1,
             }
         )
+
         ok, message = AccountsService.consume_telegram_link_code(222, "USEDCODE")
         self.assertFalse(ok)
         self.assertEqual(message, "Код уже использован")
@@ -171,10 +206,18 @@ class AccountsServiceTests(unittest.TestCase):
         )
         ok, code = AccountsService.issue_discord_telegram_link_code(111)
         self.assertTrue(ok)
+
         ok, message = AccountsService.consume_telegram_link_code(222, code)
         self.assertTrue(ok)
         self.assertEqual(message, "Аккаунт успешно привязан")
         self.assertEqual(AccountsService.resolve_telegram_account_id(222), "acc-discord-1")
+
+        ok, message = AccountsService.consume_telegram_link_code(222, code)
+        self.assertTrue(ok)
+        self.assertEqual(message, "Аккаунт успешно привязан")
+
+        telegram_identity = AccountsService.resolve_telegram_account_id(222)
+        self.assertEqual(telegram_identity, "acc-discord-1")
 
     def test_resolve_account_id_by_discord_and_telegram(self):
         self.fake_db.supabase.tables["account_identities"].extend(
