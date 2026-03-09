@@ -555,8 +555,8 @@ class Database:
         return [
             fine for fine in self.fines
             if (
-                fine.get("user_id") == user_id
-                or (account_id and fine.get("account_id") == account_id)
+                (account_id and fine.get("account_id") == account_id)
+                or (not account_id and fine.get("user_id") == user_id)
             )
             and (not active_only or (not fine["is_paid"] and not fine["is_canceled"]))
         ]
