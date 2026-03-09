@@ -1,48 +1,45 @@
 # Account-first Migration Runbook (P3)
 
 ## 1) Preconditions
-- Deploy code with account-aware reads/writes (P1/P2 done).
-- Ensure `account_identities` has unique `(provider, provider_user_id)`.
-- Announce maintenance window for strict-mode ALTERs.
+- Runtime is account-aware for reads/writes (P1/P2 complete).
+- `account_identities` enforces uniqueness on `(provider, provider_user_id)`.
+- Maintenance window is planned for strict-mode toggles.
 
 ## 2) Hardening rollout
-1. Execute `sql/p3_account_hardening.sql`.
+1. Run `sql/p3_account_hardening.sql`.
+2. Run readiness checks for NULL `account_id` in hot tables.
+3. If all checks are zero, enable strict mode (`SET NOT NULL`) table-by-table.
+4. Verify writes continue successfully and monitor fallback/identity metrics.
 
-2. Script is idempotent and creates missing `account_id` columns if needed.
-3. Run readiness checks (NULL `account_id` counters by table).
-4. If all zeros, enable strict mode (`SET NOT NULL`) per table.
-5. Re-run checks and verify no write failures.
+## 3) Legacy cleanup policy
+Remove legacy `user_id` fallback paths only when:
+- all critical operations run stably via `account_id`,
+- monitoring shows no unresolved identity spikes,
+- operational rollback is tested.
 
-2. Run readiness checks (NULL `account_id` counters by table).
-3. If all zeros, enable strict mode (`SET NOT NULL`) per table.
-4. Re-run checks and verify no write failures.
-
-
-## 3) Operations
+## 4) Operations
 ### Merge duplicate accounts
-1. Choose target `account_id` (canonical) and source `account_id` (to merge).
+1. Select canonical `account_id` (target) and deprecated `account_id` (source).
 2. Repoint identities:
    - `UPDATE account_identities SET account_id = :target WHERE account_id = :source;`
 3. Repoint hot tables:
    - `scores/actions/ticket_actions/bank_history/fines/fine_payments` set `account_id=:target` where `:source`.
-4. Aggregate score/ticket values in `scores` to a single target row.
-5. Remove obsolete source rows after validation.
+4. Consolidate duplicated `scores` rows (sum points/tickets).
+5. Validate and remove obsolete source rows.
 
-### Unlink / relink provider
-- Unlink: delete a specific row from `account_identities` by `(provider, provider_user_id)`.
-- Relink: use Discord `/link_telegram` + Telegram `/link <code>` flow.
+### Unlink / relink
+- Unlink: remove row in `account_identities` by `(provider, provider_user_id)`.
+- Relink: Discord `/link_telegram` -> Telegram `/link <code>`.
 
-## 4) Monitoring
+## 5) Monitoring
 Track:
-- Link success rate = `link_consume_success / (link_consume_success + link_consume_fail)`
-- Identity resolve errors = `identity_resolve_errors`
-- Fallback share = `operations_without_account_id / (operations_with_account_id + operations_without_account_id)`
+- link success/fail rate (`link_consume_success`, `link_consume_fail`),
+- operations without resolved `account_id` (`operations_without_account_id`),
+- identity resolution errors (`identity_resolve_errors`),
+- unlink success/fail (`unlink_success`, `unlink_fail`).
 
-Source of counters: in-process metrics from data/service layer logs.
-
-## 5) Rollback
-1. Keep NOT NULL changes for tables already clean; rollback code first if runtime issues.
-2. If required, temporarily remove strict constraints for affected table:
-   - `ALTER TABLE <table> ALTER COLUMN account_id DROP NOT NULL;`
-3. Continue writes in fallback mode (`user_id`) while investigating.
-4. Re-run migration checks before re-enabling strict mode.
+## 6) Rollback
+1. Roll back code if runtime behavior degrades.
+2. Run `sql/p3_account_hardening_rollback.sql` (or affected statements only).
+3. Continue in fallback mode while investigating.
+4. Re-run readiness checks before re-enabling strict mode.

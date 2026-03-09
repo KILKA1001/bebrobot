@@ -86,6 +86,45 @@ class AccountsService:
             logger.error("issue_discord_telegram_link_code failed: %s", e)
             return False, "Не удалось создать код привязки"
 
+
+    @staticmethod
+    def unlink_identity(provider: str, provider_user_id: str) -> Tuple[bool, str]:
+        """Удаляет связь identity (provider/provider_user_id) без изменения UX-команд."""
+        if not db.supabase:
+            if hasattr(db, "_inc_metric"):
+                db._inc_metric("unlink_fail")
+            return False, "База данных недоступна"
+
+        provider = (provider or "").strip().lower()
+        provider_user_id = str(provider_user_id or "").strip()
+        if not provider or not provider_user_id:
+            if hasattr(db, "_inc_metric"):
+                db._inc_metric("unlink_fail")
+            return False, "Некорректные параметры unlink"
+
+        try:
+            result = (
+                db.supabase.table("account_identities")
+                .delete()
+                .eq("provider", provider)
+                .eq("provider_user_id", provider_user_id)
+                .execute()
+            )
+            if not result.data:
+                if hasattr(db, "_inc_metric"):
+                    db._inc_metric("unlink_fail")
+                return False, "Связь не найдена"
+
+            if hasattr(db, "_inc_metric"):
+                db._inc_metric("unlink_success")
+            logger.info("identity_unlinked provider=%s provider_user_id=%s", provider, provider_user_id)
+            return True, "Связь удалена"
+        except Exception as e:
+            if hasattr(db, "_inc_metric"):
+                db._inc_metric("unlink_fail")
+            logger.error("unlink_identity failed (%s:%s): %s", provider, provider_user_id, e)
+            return False, "Ошибка unlink"
+
     @staticmethod
     def consume_telegram_link_code(telegram_user_id: int, code: str) -> Tuple[bool, str]:
         """TG /link <code> -> bind telegram identity to account."""

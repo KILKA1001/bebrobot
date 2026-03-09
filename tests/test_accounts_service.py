@@ -18,6 +18,12 @@ class _TableOp:
         self._limit = None
         self._payload = None
 
+        self._action = "select"
+
+    def select(self, _fields):
+        self._action = "select"
+
+
     def select(self, _fields):
         return self
 
@@ -44,6 +50,19 @@ class _TableOp:
         self._action = "update"
         return self
 
+
+    def delete(self):
+        self._action = "delete"
+        return self
+
+    def execute(self):
+        rows = self.fake_db.tables[self.table_name]
+
+        if self._action == "insert":
+            rows.append(dict(self._payload))
+            return _Resp([dict(self._payload)])
+
+        if self._action == "upsert":
     def execute(self):
         rows = self.fake_db.tables[self.table_name]
 
@@ -64,6 +83,8 @@ class _TableOp:
             rows.append(dict(self._payload))
             return _Resp([dict(self._payload)])
 
+
+        if self._action == "update":
         if getattr(self, "_action", None) == "update":
             matched = []
             for row in rows:
@@ -71,6 +92,18 @@ class _TableOp:
                     row.update(self._payload)
                     matched.append(dict(row))
             return _Resp(matched)
+
+
+        if self._action == "delete":
+            kept = []
+            deleted = []
+            for row in rows:
+                if all(str(row.get(k)) == str(v) for k, v in self._filters):
+                    deleted.append(dict(row))
+                else:
+                    kept.append(row)
+            self.fake_db.tables[self.table_name] = kept
+            return _Resp(deleted)
 
         selected = []
         for row in rows:
@@ -89,6 +122,9 @@ class _FakeSupabase:
         }
 
     def table(self, name):
+
+        return _TableOp(self, name)
+
         op = _TableOp(self, name)
         op._action = "select"
         return op
@@ -119,6 +155,11 @@ class AccountsServiceTests(unittest.TestCase):
     def test_link_flow_valid_code(self):
         ok, code = AccountsService.issue_discord_telegram_link_code(111)
         self.assertTrue(ok)
+
+        ok, message = AccountsService.consume_telegram_link_code(222, code)
+        self.assertTrue(ok)
+        self.assertEqual(message, "Аккаунт успешно привязан")
+        self.assertEqual(AccountsService.resolve_telegram_account_id(222), "acc-discord-1")
 
         ok, message = AccountsService.consume_telegram_link_code(222, code)
         self.assertTrue(ok)
@@ -169,6 +210,11 @@ class AccountsServiceTests(unittest.TestCase):
         ok, message = AccountsService.consume_telegram_link_code(222, code)
         self.assertTrue(ok)
         self.assertEqual(message, "Аккаунт успешно привязан")
+        self.assertEqual(AccountsService.resolve_telegram_account_id(222), "acc-discord-1")
+
+        ok, message = AccountsService.consume_telegram_link_code(222, code)
+        self.assertTrue(ok)
+        self.assertEqual(message, "Аккаунт успешно привязан")
 
         telegram_identity = AccountsService.resolve_telegram_account_id(222)
         self.assertEqual(telegram_identity, "acc-discord-1")
@@ -180,9 +226,17 @@ class AccountsServiceTests(unittest.TestCase):
                 {"account_id": "acc-discord-1", "provider": "discord", "provider_user_id": "444"},
             ]
         )
-
         self.assertEqual(AccountsService.resolve_account_id("discord", "444"), "acc-discord-1")
         self.assertEqual(AccountsService.resolve_telegram_account_id(333), "acc-discord-1")
+
+    def test_unlink_identity(self):
+        self.fake_db.supabase.tables["account_identities"].append(
+            {"account_id": "acc-discord-1", "provider": "telegram", "provider_user_id": "555"}
+        )
+        ok, message = AccountsService.unlink_identity("telegram", "555")
+        self.assertTrue(ok)
+        self.assertEqual(message, "Связь удалена")
+        self.assertIsNone(AccountsService.resolve_telegram_account_id(555))
 
 
 if __name__ == "__main__":

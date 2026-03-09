@@ -311,6 +311,24 @@ class Database:
 
     def get_account_metrics_snapshot(self) -> dict:
         return dict(self._account_metrics)
+
+    def get_account_metrics_report(self) -> dict:
+        snapshot = self.get_account_metrics_snapshot()
+        link_success = snapshot.get("link_consume_success", 0)
+        link_fail = snapshot.get("link_consume_fail", 0)
+        with_account = snapshot.get("operations_with_account_id", 0)
+        without_account = snapshot.get("operations_without_account_id", 0)
+        identity_errors = snapshot.get("identity_resolve_errors", 0)
+
+        link_total = link_success + link_fail
+        ops_total = with_account + without_account
+
+        return {
+            **snapshot,
+            "link_success_rate": (link_success / link_total) if link_total else 0.0,
+            "operations_without_account_share": (without_account / ops_total) if ops_total else 0.0,
+            "identity_resolve_errors": identity_errors,
+        }
       
     def load_data(self):
         """Загружает все данные с автоматическим восстановлением связей"""
