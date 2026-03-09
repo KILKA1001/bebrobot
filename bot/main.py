@@ -14,6 +14,16 @@ import re
 import random
 import json
 from dotenv import load_dotenv
+
+# Unified runtime bootstrap: allow Telegram mode without importing Discord subsystems.
+load_dotenv()
+_RUNTIME = (os.getenv("BOT_RUNTIME") or "discord").strip().lower()
+if _RUNTIME == "telegram":
+    from bot.telegram_bot.main import main as run_telegram_main
+
+    run_telegram_main()
+    raise SystemExit(0)
+
 import pytz
 from bot.commands import bot as command_bot
 # Локальные импорты
@@ -269,7 +279,8 @@ def save_next_startup_retry_at(next_retry_at: float) -> None:
     _, retry_delay = load_startup_retry_state()
     save_startup_retry_state(next_retry_at, retry_delay)
 # Основной запуск
-def main():
+
+def run_discord_main():
     global bot
     load_dotenv()
     configure_logging()
@@ -381,6 +392,15 @@ def main():
             import traceback
             traceback.print_exc()
             break
+
+def main():
+    """Discord launcher (Telegram mode is bootstrapped at module import stage)."""
+
+    if _RUNTIME != "discord":
+        print(f"⚠️ Неизвестный BOT_RUNTIME={_RUNTIME!r}. Использую режим discord.")
+
+    run_discord_main()
+
 
 if __name__ == "__main__":
     main()
