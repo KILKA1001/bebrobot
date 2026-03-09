@@ -3,8 +3,6 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-# Основные импорты Discord
-import discord
 
 # Системные импорты
 import asyncio
@@ -15,15 +13,40 @@ import random
 import json
 from dotenv import load_dotenv
 
+
+def _resolve_runtime() -> str:
+    """Resolve runtime mode for unified launcher.
+
+    Priority:
+    1) explicit BOT_RUNTIME
+    2) telegram fallback when only TELEGRAM_BOT_TOKEN is provided
+    3) default discord
+    """
+
+    explicit = (os.getenv("BOT_RUNTIME") or "").strip().lower()
+    if explicit:
+        if explicit in {"telegram", "tg"}:
+            return "telegram"
+        return "discord"
+
+    has_discord_token = bool((os.getenv("DISCORD_TOKEN") or "").strip())
+    has_telegram_token = bool((os.getenv("TELEGRAM_BOT_TOKEN") or "").strip())
+    if has_telegram_token and not has_discord_token:
+        return "telegram"
+    return "discord"
+
+
 # Unified runtime bootstrap: allow Telegram mode without importing Discord subsystems.
 load_dotenv()
-_RUNTIME = (os.getenv("BOT_RUNTIME") or "discord").strip().lower()
+_RUNTIME = _resolve_runtime()
 if _RUNTIME == "telegram":
     from bot.telegram_bot.main import main as run_telegram_main
 
     run_telegram_main()
     raise SystemExit(0)
 
+# Основные импорты Discord (below runtime bootstrap on purpose)
+import discord
 import pytz
 from bot.commands import bot as command_bot
 # Локальные импорты
@@ -395,9 +418,6 @@ def run_discord_main():
 
 def main():
     """Discord launcher (Telegram mode is bootstrapped at module import stage)."""
-
-    if _RUNTIME != "discord":
-        print(f"⚠️ Неизвестный BOT_RUNTIME={_RUNTIME!r}. Использую режим discord.")
 
     run_discord_main()
 

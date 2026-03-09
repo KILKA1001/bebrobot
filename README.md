@@ -100,6 +100,7 @@ python bot/main.py
 - Выбор рантайма через `BOT_RUNTIME`:
   - `BOT_RUNTIME=discord` (по умолчанию)
   - `BOT_RUNTIME=telegram`
+- Если `BOT_RUNTIME` не задан, лаунчер автоматически выберет Telegram-режим, когда задан только `TELEGRAM_BOT_TOKEN` (и не задан `DISCORD_TOKEN`).
 - `bot/telegram_bot/main.py` — это Telegram runtime-модуль, который вызывается из `bot/main.py` при `BOT_RUNTIME=telegram`.
 - В Telegram-режиме поднимается polling-loop (aiogram) и в лог пишется `telegram bot started`.
 - В Telegram-режиме доступны команды `/start`, `/link`, `/helpy` (список команд обновляется через Telegram API при запуске).
