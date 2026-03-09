@@ -176,6 +176,25 @@ class Database:
         if not self._fines_data_loaded:
             self.load_fines()
 
+    def _get_account_id_for_discord_user(self, user_id: int) -> Optional[str]:
+        """Возвращает account_id для Discord user_id (если есть связь)."""
+        if not self.supabase:
+            return None
+        try:
+            response = (
+                self.supabase.table("account_identities")
+                .select("account_id")
+                .eq("provider", "discord")
+                .eq("provider_user_id", str(user_id))
+                .limit(1)
+                .execute()
+            )
+            if response.data:
+                return response.data[0].get("account_id")
+        except Exception as e:
+            logger.warning("Не удалось получить account_id для user_id=%s: %s", user_id, e)
+        return None
+
     def load_data(self):
         """Загружает все данные с автоматическим восстановлением связей"""
         if self._core_data_loaded or self._core_data_loading:
@@ -262,11 +281,16 @@ class Database:
             new_points = max(current_points + points_change, 0)  # Не уходим в минус
 
             # 2. Обновляем баллы через upsert
+            account_id = self._get_account_id_for_discord_user(user_id)
+            upsert_payload = {
+                "user_id": user_id,
+                "points": new_points,
+            }
+            if account_id:
+                upsert_payload["account_id"] = account_id
+
             result = self.supabase.table("scores")\
-                .upsert({
-                    "user_id": user_id,
-                    "points": new_points
-                })\
+                .upsert(upsert_payload)\
                 .execute()
 
             if result:
@@ -295,6 +319,9 @@ class Database:
                 "author_id": author_id,
                 "action_type": "remove" if points < 0 else "add"
             }
+            account_id = self._get_account_id_for_discord_user(user_id)
+            if account_id:
+                action["account_id"] = account_id
             # Добавляем is_undo только если True
             if is_undo:
                 action["is_undo"] = True
@@ -419,14 +446,19 @@ class Database:
             return None
 
         try:
-            result = self.supabase.table("fines").insert({
+            payload = {
                 "user_id": user_id,
                 "author_id": author_id,
                 "amount": amount,
                 "type": fine_type,
                 "reason": reason,
                 "due_date": due_date.isoformat()
-            }).execute()
+            }
+            account_id = self._get_account_id_for_discord_user(user_id)
+            if account_id:
+                payload["account_id"] = account_id
+
+            result = self.supabase.table("fines").insert(payload).execute()
 
             if not result.data:
                 raise ValueError("❌ Пустой ответ от Supabase при создании штрафа")
@@ -500,12 +532,16 @@ class Database:
                 return False
 
             # 2. Добавляем запись в fine_payments
-            self.supabase.table("fine_payments").insert({
+            payment_payload = {
                 "fine_id": fine_id,
                 "user_id": user_id,
                 "amount": amount,
                 "author_id": author_id
-            }).execute()
+            }
+            account_id = self._get_account_id_for_discord_user(user_id)
+            if account_id:
+                payment_payload["account_id"] = account_id
+            self.supabase.table("fine_payments").insert(payment_payload).execute()
 
             # 3. Лог действия
             self.add_action(user_id, -amount, f"Оплата штрафа ID #{fine_id}", author_id)
