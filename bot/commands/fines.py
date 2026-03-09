@@ -8,6 +8,7 @@ from bot.utils import send_temp, build_top_embed, safe_send, format_moscow_date
 import os
 
 from bot.data import db
+from bot.services import FinesService
 from bot.systems.fines_logic import (
     build_fine_embed,
     build_fine_detail_embed,
@@ -55,7 +56,7 @@ async def fine(
             days=14 if fine_type == 1 else 30
         )
 
-        fine = db.add_fine(
+        fine = FinesService.create_fine(
             user_id=member.id,
             author_id=ctx.author.id,
             amount=amount_value,
@@ -115,7 +116,7 @@ async def fine(
 )
 async def myfines(ctx):
     user_id = ctx.author.id
-    fines = db.get_user_fines(user_id)
+    fines = FinesService.get_user_fines(user_id)
 
     if not fines:
         await send_temp(ctx, "✅ У вас нет активных штрафов!")
