@@ -889,10 +889,7 @@ class Database:
                 "reason": reason,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
-            if self._table_supports_account_id("bank_history"):
-                account_id = self._get_account_id_for_discord_user(user_id)
-                if account_id:
-                    history_payload["account_id"] = account_id
+            history_payload = self._with_optional_account_id("bank_history", user_id, history_payload)
 
             self.supabase.table("bank_history").insert(history_payload).execute()
 
@@ -911,10 +908,7 @@ class Database:
                 "reason": reason,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
-            if self._table_supports_account_id("bank_history"):
-                account_id = self._get_account_id_for_discord_user(user_id)
-                if account_id:
-                    history_payload["account_id"] = account_id
+            history_payload = self._with_optional_account_id("bank_history", user_id, history_payload)
 
             self.supabase.table("bank_history").insert(history_payload).execute()
             return True
@@ -932,22 +926,47 @@ class Database:
 
         field = f"tickets_{ticket_type}"
         try:
-            # Получаем текущее значение
-            score_row = self._get_scores_row_for_user(user_id, field)
+            # Получаем текущую запись c account-first приоритетом
+            score_row = self._get_scores_row_for_user(user_id, f"user_id,account_id,{field}")
             current = int(score_row[field]) if score_row and score_row.get(field) is not None else 0
             new_value = max(current + amount, 0)
+            account_id = self._get_account_id_for_discord_user(user_id)
+            scores_has_account = self._table_supports_account_id("scores")
 
-            # Обновляем значение
-            upsert_payload = {
-                "user_id": user_id,
-                field: new_value
-            }
-            if self._table_supports_account_id("scores"):
-                account_id = self._get_account_id_for_discord_user(user_id)
-                if account_id:
-                    upsert_payload["account_id"] = account_id
-
-            self.supabase.table("scores").upsert(upsert_payload).execute()
+            # account-first update + safe legacy fallback
+            if account_id and scores_has_account:
+                updated = (
+                    self.supabase.table("scores")
+                    .update({field: new_value, "user_id": user_id, "account_id": account_id})
+                    .eq("account_id", account_id)
+                    .execute()
+                )
+                if not updated.data:
+                    legacy_updated = (
+                        self.supabase.table("scores")
+                        .update({field: new_value, "account_id": account_id})
+                        .eq("user_id", user_id)
+                        .is_("account_id", "null")
+                        .execute()
+                    )
+                    if not legacy_updated.data:
+                        self.supabase.table("scores").insert({
+                            "user_id": user_id,
+                            "account_id": account_id,
+                            field: new_value,
+                        }).execute()
+            else:
+                legacy_updated = (
+                    self.supabase.table("scores")
+                    .update({field: new_value})
+                    .eq("user_id", user_id)
+                    .execute()
+                )
+                if not legacy_updated.data:
+                    self.supabase.table("scores").insert({
+                        "user_id": user_id,
+                        field: new_value,
+                    }).execute()
 
             return True
         except Exception as e:
@@ -964,10 +983,7 @@ class Database:
                 "reason": reason,
                 "author_id": author_id,
             }
-            if self._table_supports_account_id("ticket_actions"):
-                account_id = self._get_account_id_for_discord_user(user_id)
-                if account_id:
-                    payload["account_id"] = account_id
+            payload = self._with_optional_account_id("ticket_actions", user_id, payload)
 
             self.supabase.table("ticket_actions").insert(payload).execute()
         except Exception as e:
@@ -1070,6 +1086,17 @@ class Database:
                 self.supabase.table("ticket_actions").update(ticket_update).eq("user_id", old_id).is_("account_id", "null").execute()
             else:
                 self.supabase.table("ticket_actions").update(ticket_update).eq("user_id", old_id).execute()
+
+            bank_history_has_account = self._table_supports_account_id("bank_history")
+            bank_history_update = {"user_id": new_id}
+            if new_account_id and bank_history_has_account:
+                bank_history_update["account_id"] = new_account_id
+
+            if old_account_id and bank_history_has_account:
+                self.supabase.table("bank_history").update(bank_history_update).eq("account_id", old_account_id).execute()
+                self.supabase.table("bank_history").update(bank_history_update).eq("user_id", old_id).is_("account_id", "null").execute()
+            else:
+                self.supabase.table("bank_history").update(bank_history_update).eq("user_id", old_id).execute()
 
             self.load_data()
             return True
