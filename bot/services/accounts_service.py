@@ -46,6 +46,18 @@ class AccountsService:
         return "".join(secrets.choice(alphabet) for _ in range(length))
 
     @staticmethod
+    def _format_db_error(error: Exception) -> str:
+        """Return readable Supabase/PostgREST error details for logs."""
+        if error is None:
+            return "unknown error"
+        parts = [str(error)]
+        for attr in ("message", "details", "hint", "code"):
+            value = getattr(error, attr, None)
+            if value:
+                parts.append(f"{attr}={value}")
+        return " | ".join(p for p in parts if p)
+
+    @staticmethod
     def _create_account() -> Optional[str]:
         if not db.supabase:
             return None
@@ -132,37 +144,51 @@ class AccountsService:
             },
         ]
 
+        table_errors: dict[str, str] = {}
+
         for table_name in AccountsService.LINK_CODES_TABLES:
             for variant in payload_variants:
                 try:
                     db.supabase.table(table_name).insert(variant, returning="minimal").execute()
                     return True
-                except TypeError as e:
-                    logger.debug("link code insert with returning failed for table=%s: %s", table_name, e)
+                except TypeError:
                     try:
                         db.supabase.table(table_name).insert(variant).execute()
                         return True
                     except Exception as legacy_error:
-                        logger.debug(
-                            "link code legacy insert failed for table=%s payload_keys=%s: %s",
+                        table_errors[table_name] = AccountsService._format_db_error(legacy_error)
+                        logger.warning(
+                            "link code insert failed (legacy) table=%s payload_keys=%s error=%s",
                             table_name,
                             sorted(variant.keys()),
-                            legacy_error,
+                            table_errors[table_name],
                         )
                         continue
                 except Exception as e:
-                    logger.debug(
-                        "link code insert failed for table=%s payload_keys=%s: %s",
+                    table_errors[table_name] = AccountsService._format_db_error(e)
+                    logger.warning(
+                        "link code insert failed table=%s payload_keys=%s error=%s",
                         table_name,
                         sorted(variant.keys()),
-                        e,
+                        table_errors[table_name],
                     )
                     continue
+
+            if table_name in table_errors:
+                logger.error(
+                    "link code table rejected all payload variants table=%s source=%s:%s last_error=%s",
+                    table_name,
+                    source_provider,
+                    source_provider_user_id,
+                    table_errors[table_name],
+                )
+
         logger.error(
-            "failed to persist link code in all candidate tables=%s for source=%s:%s",
+            "failed to persist link code in all candidate tables=%s for source=%s:%s errors=%s",
             AccountsService.LINK_CODES_TABLES,
             source_provider,
             source_provider_user_id,
+            table_errors,
         )
         return False
 
@@ -174,7 +200,12 @@ class AccountsService:
                 if lookup.data:
                     return table_name, lookup.data[0]
             except Exception as e:
-                logger.debug("link code lookup failed for table=%s code=%s: %s", table_name, code, e)
+                logger.warning(
+                    "link code lookup failed table=%s code=%s error=%s",
+                    table_name,
+                    code,
+                    AccountsService._format_db_error(e),
+                )
                 continue
         logger.warning("link code not found in candidate tables=%s code=%s", AccountsService.LINK_CODES_TABLES, code)
         return None, None
@@ -234,12 +265,12 @@ class AccountsService:
                 db.supabase.table(table_name).update(payload).eq("code", code).execute()
                 return
             except Exception as e:
-                logger.debug(
-                    "link code update failed for table=%s code=%s payload_keys=%s: %s",
+                logger.warning(
+                    "link code update failed table=%s code=%s payload_keys=%s error=%s",
                     table_name,
                     code,
                     sorted(payload.keys()),
-                    e,
+                    AccountsService._format_db_error(e),
                 )
                 continue
         logger.warning("all link code updates failed for table=%s code=%s", table_name, code)
