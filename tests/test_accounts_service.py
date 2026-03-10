@@ -115,6 +115,7 @@ class _FakeDb:
             "account_identities": [],
             "account_link_codes": [],
             "link_tokens": [],
+            "scores": [],
         }
         self.account_seq = 0
         self.supabase = _FakeSupabase(self)
@@ -217,10 +218,18 @@ class AccountsServiceTests(unittest.TestCase):
 
     def test_profile_contains_link_status(self):
         AccountsService.register_identity("discord", "111")
+        self.fake_db.tables["scores"].append({"user_id": "111", "points": 125})
         profile = AccountsService.get_profile("discord", "111", "Nick")
         self.assertIsNotNone(profile)
         self.assertEqual(profile["link_status"], "Не привязан")
         self.assertEqual(profile["nulls_brawl_id"], "—")
+        self.assertEqual(profile["points"], "125")
+
+    def test_profile_points_requires_discord_link(self):
+        AccountsService.register_identity("telegram", "222")
+        profile = AccountsService.get_profile("telegram", "222", "Nick")
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile["points"], "Привяжите Discord для получения информации (временно).")
 
     def test_link_flow_with_legacy_link_tokens_table(self):
         AccountsService.register_identity("discord", "111")

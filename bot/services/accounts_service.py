@@ -544,6 +544,17 @@ class AccountsService:
         return AccountsService.issue_link_code("telegram", str(telegram_user_id), "discord")
 
     @staticmethod
+    def _format_points(points_value: object) -> str:
+        try:
+            points_float = float(points_value)
+        except (TypeError, ValueError):
+            return "0"
+
+        if points_float.is_integer():
+            return str(int(points_float))
+        return f"{points_float:.2f}".rstrip("0").rstrip(".")
+
+    @staticmethod
     def get_profile(provider: str, provider_user_id: str, display_name: Optional[str] = None) -> Optional[dict]:
         account_id = AccountsService.resolve_account_id(provider, provider_user_id)
         if not account_id or not db.supabase:
@@ -563,11 +574,31 @@ class AccountsService:
 
         has_discord = any(identity.get("provider") == "discord" for identity in identities)
         has_telegram = any(identity.get("provider") == "telegram" for identity in identities)
+        discord_identity = next((identity for identity in identities if identity.get("provider") == "discord"), None)
 
         custom_nick = display_name or "Пользователь"
         description = "Описание не заполнено"
         nulls_id = "—"
         nulls_status = "Не подтвержден (заглушка)"
+        points = "Привяжите Discord для получения информации (временно)."
+
+        if discord_identity:
+            discord_user_id = discord_identity.get("provider_user_id")
+            try:
+                points_response = (
+                    db.supabase.table("scores")
+                    .select("points")
+                    .eq("user_id", str(discord_user_id))
+                    .limit(1)
+                    .execute()
+                )
+                points_rows = points_response.data or []
+                if points_rows:
+                    points = AccountsService._format_points(points_rows[0].get("points", 0))
+                else:
+                    points = "0"
+            except Exception as e:
+                logger.warning("get_profile points failed for %s: %s", account_id, e)
 
         return {
             "account_id": account_id,
@@ -578,6 +609,7 @@ class AccountsService:
             "link_status": "Привязан" if has_discord and has_telegram else "Не привязан",
             "nulls_brawl_id": nulls_id,
             "nulls_status": nulls_status,
+            "points": points,
         }
 
     @staticmethod
