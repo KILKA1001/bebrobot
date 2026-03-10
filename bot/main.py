@@ -19,10 +19,9 @@ from bot.telegram_bot.config import get_telegram_bot_token
 def _resolve_runtime() -> str:
     """Resolve runtime mode for unified launcher.
 
-    Priority:
-    1) explicit BOT_RUNTIME (discord/telegram/both)
-    2) auto telegram when only TELEGRAM_BOT_TOKEN is set
-    3) default discord (including case when both tokens are set)
+    Runtime mode must be controlled only via BOT_RUNTIME.
+    Bot tokens are treated purely as credentials for the selected runtime
+    and never as implicit launch switches.
     """
 
     explicit = (os.getenv("BOT_RUNTIME") or "").strip().lower()
@@ -33,10 +32,6 @@ def _resolve_runtime() -> str:
             return "both"
         return "discord"
 
-    has_discord_token = bool((os.getenv("DISCORD_TOKEN") or "").strip())
-    has_telegram_token = bool(get_telegram_bot_token())
-    if has_telegram_token and not has_discord_token:
-        return "telegram"
     return "discord"
 
 
