@@ -61,6 +61,36 @@ class AccountsService:
     def _is_unique_violation(error: Exception) -> bool:
         return str(getattr(error, "code", "")) == "23505" or "duplicate key value" in str(error).lower()
 
+
+    @staticmethod
+    def _rebind_account_id(from_account_id: str, to_account_id: str) -> None:
+        if not from_account_id or not to_account_id or str(from_account_id) == str(to_account_id):
+            return
+
+        db.supabase.table("account_identities").update({"account_id": to_account_id}).eq("account_id", from_account_id).execute()
+
+        for table_name in ("scores", "actions", "ticket_actions", "bank_history", "fines", "fine_payments"):
+            try:
+                db.supabase.table(table_name).update({"account_id": to_account_id}).eq("account_id", from_account_id).execute()
+            except Exception as e:
+                logger.debug(
+                    "rebind_account_id skipped table=%s from_account_id=%s to_account_id=%s error=%s",
+                    table_name,
+                    from_account_id,
+                    to_account_id,
+                    AccountsService._format_db_error(e),
+                )
+
+        try:
+            db.supabase.table("accounts").delete().eq("id", from_account_id).execute()
+        except Exception as e:
+            logger.debug(
+                "rebind_account_id accounts cleanup skipped from_account_id=%s to_account_id=%s error=%s",
+                from_account_id,
+                to_account_id,
+                AccountsService._format_db_error(e),
+            )
+
     @staticmethod
     def _create_account() -> Optional[str]:
         if not db.supabase:
@@ -362,14 +392,15 @@ class AccountsService:
 
             existing_account_id = AccountsService.resolve_account_id(target_provider, target_provider_user_id)
             if existing_account_id and str(existing_account_id) != str(account_id):
-                logger.warning(
-                    "consume_link_code identity belongs to another account provider=%s provider_user_id=%s existing_account_id=%s requested_account_id=%s",
+                logger.info(
+                    "consume_link_code merging duplicate accounts provider=%s provider_user_id=%s from_account_id=%s to_account_id=%s",
                     target_provider,
                     target_provider_user_id,
                     existing_account_id,
                     account_id,
                 )
-                return False, "Этот аккаунт уже привязан к другому профилю"
+                AccountsService._rebind_account_id(str(existing_account_id), str(account_id))
+                existing_account_id = str(account_id)
 
             if not existing_account_id:
                 identity_payload = {
@@ -388,14 +419,14 @@ class AccountsService:
                     if AccountsService._is_unique_violation(e):
                         existing_account_id = AccountsService.resolve_account_id(target_provider, target_provider_user_id)
                         if existing_account_id and str(existing_account_id) != str(account_id):
-                            logger.warning(
-                                "consume_link_code identity belongs to another account after retry provider=%s provider_user_id=%s existing_account_id=%s requested_account_id=%s",
+                            logger.info(
+                                "consume_link_code merging duplicate accounts after retry provider=%s provider_user_id=%s from_account_id=%s to_account_id=%s",
                                 target_provider,
                                 target_provider_user_id,
                                 existing_account_id,
                                 account_id,
                             )
-                            return False, "Этот аккаунт уже привязан к другому профилю"
+                            AccountsService._rebind_account_id(str(existing_account_id), str(account_id))
                     else:
                         raise
 

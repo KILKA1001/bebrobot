@@ -187,7 +187,7 @@ class AccountsServiceTests(unittest.TestCase):
         self.assertEqual(message, "Срок действия кода истёк")
 
 
-    def test_consume_link_code_fails_when_target_identity_belongs_to_another_account(self):
+    def test_consume_link_code_merges_when_target_identity_belongs_to_another_account(self):
         AccountsService.register_identity("discord", "111")
         AccountsService.register_identity("telegram", "222")
 
@@ -195,8 +195,12 @@ class AccountsServiceTests(unittest.TestCase):
         self.assertTrue(ok)
 
         ok, message = AccountsService.consume_telegram_link_code(222, code)
-        self.assertFalse(ok)
-        self.assertEqual(message, "Этот аккаунт уже привязан к другому профилю")
+        self.assertTrue(ok)
+        self.assertEqual(message, "Аккаунт успешно привязан")
+
+        discord_account = AccountsService.resolve_account_id("discord", "111")
+        telegram_account = AccountsService.resolve_account_id("telegram", "222")
+        self.assertEqual(discord_account, telegram_account)
 
     def test_profile_contains_link_status(self):
         AccountsService.register_identity("discord", "111")
