@@ -96,6 +96,10 @@ def _patch_aiogram_conflict_behavior() -> None:
 
 
 async def run_polling(token: str) -> None:
+    # Important for BOT_RUNTIME=both where unified launcher calls run_polling()
+    # directly and bypasses telegram main().
+    _patch_aiogram_conflict_behavior()
+
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
     lock_path = Path(f"/tmp/bebrobot_telegram_polling_{token_hash}.lock")
     lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
