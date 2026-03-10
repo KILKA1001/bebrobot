@@ -75,12 +75,27 @@ class AccountsService:
         }
 
         try:
-            db.supabase.table("account_link_codes").insert(payload).execute()
+            # NOTE:
+            # Some PostgREST/RLS setups allow INSERT, but deny SELECT on the
+            # same table. In that case default "return=representation" may fail
+            # with 404 "JSON could not be generated" even when write is valid.
+            # We only need best-effort write here, so request minimal return.
+            db.supabase.table("account_link_codes").insert(payload, returning="minimal").execute()
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("link_issue_success")
             logger.info("link_code_issued discord_user_id=%s", discord_user_id)
             return True, code
         except Exception as e:
+            # Fallback for older supabase-py versions without `returning` kwarg.
+            if isinstance(e, TypeError):
+                try:
+                    db.supabase.table("account_link_codes").insert(payload).execute()
+                    if hasattr(db, "_inc_metric"):
+                        db._inc_metric("link_issue_success")
+                    logger.info("link_code_issued discord_user_id=%s", discord_user_id)
+                    return True, code
+                except Exception as nested_e:
+                    e = nested_e
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("link_issue_fail")
             logger.error("issue_discord_telegram_link_code failed: %s", e)
