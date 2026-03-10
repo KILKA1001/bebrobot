@@ -19,9 +19,8 @@ def _resolve_runtime() -> str:
 
     Priority:
     1) explicit BOT_RUNTIME (discord/telegram/both)
-    2) auto both when both tokens are set
-    3) auto telegram when only TELEGRAM_BOT_TOKEN is set
-    4) default discord
+    2) auto telegram when only TELEGRAM_BOT_TOKEN is set
+    3) default discord (including case when both tokens are set)
     """
 
     explicit = (os.getenv("BOT_RUNTIME") or "").strip().lower()
@@ -34,8 +33,6 @@ def _resolve_runtime() -> str:
 
     has_discord_token = bool((os.getenv("DISCORD_TOKEN") or "").strip())
     has_telegram_token = bool((os.getenv("TELEGRAM_BOT_TOKEN") or "").strip())
-    if has_discord_token and has_telegram_token:
-        return "both"
     if has_telegram_token and not has_discord_token:
         return "telegram"
     return "discord"

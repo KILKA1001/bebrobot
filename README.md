@@ -102,7 +102,7 @@ python bot/main.py
   - `BOT_RUNTIME=telegram` (только Telegram)
   - `BOT_RUNTIME=both` (запуск Telegram + Discord одновременно в одном asyncio event loop / основном потоке)
 - Если `BOT_RUNTIME` не задан, лаунчер автоматически:
-  - выберет `both`, когда заданы и `DISCORD_TOKEN`, и `TELEGRAM_BOT_TOKEN`;
+  - выберет `discord`, когда заданы и `DISCORD_TOKEN`, и `TELEGRAM_BOT_TOKEN` (без параллельного старта Telegram);
   - выберет `telegram`, когда задан только `TELEGRAM_BOT_TOKEN`.
 - `bot/telegram_bot/main.py` — это Telegram runtime-модуль, который вызывается из `bot/main.py` при `BOT_RUNTIME=telegram`.
 - В Telegram-режиме поднимается polling-loop (aiogram) и в лог пишется `telegram bot started`.
