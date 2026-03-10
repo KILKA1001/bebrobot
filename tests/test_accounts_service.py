@@ -149,6 +149,7 @@ class AccountsServiceTests(unittest.TestCase):
         ok, message = AccountsService.consume_telegram_link_code(222, code)
         self.assertTrue(ok)
         self.assertEqual(message, "Аккаунт успешно привязан")
+        self.assertTrue(self.fake_db.tables["account_link_codes"][0]["is_used"])
 
         discord_account = AccountsService.resolve_account_id("discord", "111")
         telegram_account = AccountsService.resolve_account_id("telegram", "222")
@@ -167,6 +168,18 @@ class AccountsServiceTests(unittest.TestCase):
         telegram_account = AccountsService.resolve_account_id("telegram", "333")
         discord_account = AccountsService.resolve_account_id("discord", "444")
         self.assertEqual(discord_account, telegram_account)
+
+    def test_issue_link_code_reuses_active_code_instead_of_generating_new_one(self):
+        AccountsService.register_identity("discord", "111")
+
+        ok, first_code = AccountsService.issue_discord_telegram_link_code(111)
+        self.assertTrue(ok)
+        self.assertEqual(len(self.fake_db.tables["account_link_codes"]), 1)
+
+        ok, second_code = AccountsService.issue_discord_telegram_link_code(111)
+        self.assertTrue(ok)
+        self.assertEqual(first_code, second_code)
+        self.assertEqual(len(self.fake_db.tables["account_link_codes"]), 1)
 
     def test_link_flow_expired_code(self):
         AccountsService.register_identity("discord", "111")
