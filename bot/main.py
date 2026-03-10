@@ -13,6 +13,8 @@ import random
 import json
 from dotenv import load_dotenv
 
+from bot.telegram_bot.config import get_telegram_bot_token
+
 
 def _resolve_runtime() -> str:
     """Resolve runtime mode for unified launcher.
@@ -32,7 +34,7 @@ def _resolve_runtime() -> str:
         return "discord"
 
     has_discord_token = bool((os.getenv("DISCORD_TOKEN") or "").strip())
-    has_telegram_token = bool((os.getenv("TELEGRAM_BOT_TOKEN") or "").strip())
+    has_telegram_token = bool(get_telegram_bot_token())
     if has_telegram_token and not has_discord_token:
         return "telegram"
     return "discord"
@@ -454,9 +456,9 @@ def run_both_main() -> None:
     keep_alive()
 
     discord_token = (os.getenv('DISCORD_TOKEN') or '').strip()
-    telegram_token = (os.getenv('TELEGRAM_BOT_TOKEN') or '').strip()
+    telegram_token = get_telegram_bot_token()
     if not discord_token or not telegram_token:
-        print("❌ Для BOT_RUNTIME=both нужны DISCORD_TOKEN и TELEGRAM_BOT_TOKEN.")
+        print("❌ Для BOT_RUNTIME=both нужны DISCORD_TOKEN и TELEGRAM_BOT_TOKEN (или TELEGRAM_API_TOKEN).")
         return
 
     asyncio.run(_run_both_async(discord_token, telegram_token))

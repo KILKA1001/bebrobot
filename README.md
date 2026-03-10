@@ -95,15 +95,15 @@ python bot/main.py
 
 
 ## 🤖 Telegram (подготовка)
-- Переменная токена для Render: `TELEGRAM_BOT_TOKEN`.
+- Переменная токена для Render: `TELEGRAM_BOT_TOKEN` (или запасной алиас `TELEGRAM_API_TOKEN`).
 - Единая точка запуска: `python bot/main.py`.
 - Выбор рантайма через `BOT_RUNTIME`:
   - `BOT_RUNTIME=discord` (только Discord)
   - `BOT_RUNTIME=telegram` (только Telegram)
   - `BOT_RUNTIME=both` (запуск Telegram + Discord одновременно в одном asyncio event loop / основном потоке)
 - Если `BOT_RUNTIME` не задан, лаунчер автоматически:
-  - выберет `discord`, когда заданы и `DISCORD_TOKEN`, и `TELEGRAM_BOT_TOKEN` (без параллельного старта Telegram);
-  - выберет `telegram`, когда задан только `TELEGRAM_BOT_TOKEN`.
+  - выберет `discord`, когда заданы и `DISCORD_TOKEN`, и Telegram-токен (`TELEGRAM_BOT_TOKEN`/`TELEGRAM_API_TOKEN`) (без параллельного старта Telegram);
+  - выберет `telegram`, когда задан только Telegram-токен (`TELEGRAM_BOT_TOKEN`/`TELEGRAM_API_TOKEN`).
 - `bot/telegram_bot/main.py` — это Telegram runtime-модуль, который вызывается из `bot/main.py` при `BOT_RUNTIME=telegram`.
 - В Telegram-режиме поднимается polling-loop (aiogram) и в лог пишется `telegram bot started`.
 - В Telegram-режиме доступны команды `/start`, `/link`, `/helpy` (список команд обновляется через Telegram API при запуске).
