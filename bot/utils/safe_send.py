@@ -18,7 +18,11 @@ async def safe_send(destination, *args, delay: float | None = None, **kwargs):
     try:
         if isinstance(destination, commands.Context) and destination.interaction:
             if destination.interaction.response.is_done():
-                return await destination.interaction.followup.send(*args, **kwargs)
+                delete_after = kwargs.pop("delete_after", None)
+                message = await destination.interaction.followup.send(*args, **kwargs)
+                if delete_after is not None:
+                    await message.delete(delay=delete_after)
+                return message
             return await destination.interaction.response.send_message(*args, **kwargs)
         return await destination.send(*args, **kwargs)
     except HTTPException as e:
