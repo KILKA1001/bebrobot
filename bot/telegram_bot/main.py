@@ -18,11 +18,7 @@ from aiogram.utils.backoff import Backoff, BackoffConfig
 from aiogram.types import BotCommand
 
 from bot.telegram_bot.commands import get_commands_router
-from bot.telegram_bot.config import (
-    TELEGRAM_API_TOKEN_ENV,
-    TELEGRAM_BOT_TOKEN_ENV,
-    get_telegram_bot_token,
-)
+from bot.telegram_bot.config import TELEGRAM_BOT_TOKEN_ENV, get_telegram_bot_token
 
 logger = logging.getLogger(__name__)
 
@@ -162,8 +158,8 @@ def main() -> None:
     token = get_telegram_bot_token()
     if not token:
         raise RuntimeError(
-            f"Не заданы переменные окружения {TELEGRAM_BOT_TOKEN_ENV} и {TELEGRAM_API_TOKEN_ENV}. "
-            "Добавьте одну из них в Render перед запуском Telegram-процесса."
+            f"Не задана переменная окружения {TELEGRAM_BOT_TOKEN_ENV}. "
+            "Добавьте её в Render перед запуском Telegram-процесса."
         )
 
     asyncio.run(run_polling(token))

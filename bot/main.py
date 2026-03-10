@@ -453,7 +453,7 @@ def run_both_main() -> None:
     discord_token = (os.getenv('DISCORD_TOKEN') or '').strip()
     telegram_token = get_telegram_bot_token()
     if not discord_token or not telegram_token:
-        print("❌ Для BOT_RUNTIME=both нужны DISCORD_TOKEN и TELEGRAM_BOT_TOKEN (или TELEGRAM_API_TOKEN).")
+        print("❌ Для BOT_RUNTIME=both нужны DISCORD_TOKEN и TELEGRAM_BOT_TOKEN.")
         return
 
     asyncio.run(_run_both_async(discord_token, telegram_token))
