@@ -1,5 +1,6 @@
 import logging
 from discord.errors import HTTPException
+from discord.ext import commands
 from .rate_limiter import rate_limiter
 
 
@@ -15,6 +16,10 @@ async def safe_send(destination, *args, delay: float | None = None, **kwargs):
     """
     await rate_limiter.wait(delay)
     try:
+        if isinstance(destination, commands.Context) and destination.interaction:
+            if destination.interaction.response.is_done():
+                return await destination.interaction.followup.send(*args, **kwargs)
+            return await destination.interaction.response.send_message(*args, **kwargs)
         return await destination.send(*args, **kwargs)
     except HTTPException as e:
         if e.status == 429:
