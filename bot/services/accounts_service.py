@@ -17,6 +17,7 @@ class AccountsService:
     LINK_TTL_MINUTES = 10
     MAX_ATTEMPTS = 5
     LINK_CODE_GENERATION_ATTEMPTS = 3
+    LINK_CODES_TABLES = ("account_link_codes", "link_tokens")
 
     @staticmethod
     def resolve_account_id(provider: str, provider_user_id: str) -> Optional[str]:
@@ -131,19 +132,31 @@ class AccountsService:
             },
         ]
 
-        for variant in payload_variants:
-            try:
-                db.supabase.table("account_link_codes").insert(variant, returning="minimal").execute()
-                return True
-            except TypeError:
+        for table_name in AccountsService.LINK_CODES_TABLES:
+            for variant in payload_variants:
                 try:
-                    db.supabase.table("account_link_codes").insert(variant).execute()
+                    db.supabase.table(table_name).insert(variant, returning="minimal").execute()
                     return True
+                except TypeError:
+                    try:
+                        db.supabase.table(table_name).insert(variant).execute()
+                        return True
+                    except Exception:
+                        continue
                 except Exception:
                     continue
+        return False
+
+    @staticmethod
+    def _find_link_code(code: str):
+        for table_name in AccountsService.LINK_CODES_TABLES:
+            try:
+                lookup = db.supabase.table(table_name).select("*").eq("code", code).limit(1).execute()
+                if lookup.data:
+                    return table_name, lookup.data[0]
             except Exception:
                 continue
-        return False
+        return None, None
 
     @staticmethod
     def issue_link_code(source_provider: str, source_provider_user_id: str, target_provider: str) -> Tuple[bool, str]:
@@ -194,10 +207,10 @@ class AccountsService:
         return False, "Не удалось создать код привязки"
 
     @staticmethod
-    def _safe_update_code(code: str, payloads: list[dict]) -> None:
+    def _safe_update_code(table_name: str, code: str, payloads: list[dict]) -> None:
         for payload in payloads:
             try:
-                db.supabase.table("account_link_codes").update(payload).eq("code", code).execute()
+                db.supabase.table(table_name).update(payload).eq("code", code).execute()
                 return
             except Exception:
                 continue
@@ -219,13 +232,12 @@ class AccountsService:
             return False, "Пустой код"
 
         try:
-            lookup = db.supabase.table("account_link_codes").select("*").eq("code", code).limit(1).execute()
-            if not lookup.data:
+            table_name, row = AccountsService._find_link_code(code)
+            if not row:
                 if hasattr(db, "_inc_metric"):
                     db._inc_metric("link_consume_fail")
                 return False, "Код не найден"
 
-            row = lookup.data[0]
             now = datetime.now(timezone.utc)
             expires_at_raw = row.get("expires_at")
             if not expires_at_raw:
@@ -250,7 +262,7 @@ class AccountsService:
             if expected_target and expected_target != target_provider:
                 return False, f"Этот код предназначен для {expected_target}"
 
-            AccountsService._safe_update_code(code, [{"attempts": attempts + 1}])
+            AccountsService._safe_update_code(table_name, code, [{"attempts": attempts + 1}])
 
             account_id = row.get("account_id")
             if not account_id:
@@ -264,6 +276,7 @@ class AccountsService:
             db.supabase.table("account_identities").upsert(identity_payload).execute()
 
             AccountsService._safe_update_code(
+                table_name,
                 code,
                 [
                     {

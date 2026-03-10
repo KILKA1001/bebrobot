@@ -114,6 +114,7 @@ class _FakeDb:
             "accounts": [],
             "account_identities": [],
             "account_link_codes": [],
+            "link_tokens": [],
         }
         self.account_seq = 0
         self.supabase = _FakeSupabase(self)
@@ -191,6 +192,18 @@ class AccountsServiceTests(unittest.TestCase):
         self.assertIsNotNone(profile)
         self.assertEqual(profile["link_status"], "Не привязан")
         self.assertEqual(profile["nulls_brawl_id"], "—")
+
+    def test_link_flow_with_legacy_link_tokens_table(self):
+        AccountsService.register_identity("discord", "111")
+        self.fake_db.tables.pop("account_link_codes", None)
+
+        ok, code = AccountsService.issue_discord_telegram_link_code(111)
+        self.assertTrue(ok)
+        self.assertEqual(len(self.fake_db.tables["link_tokens"]), 1)
+
+        ok, message = AccountsService.consume_telegram_link_code(222, code)
+        self.assertTrue(ok)
+        self.assertEqual(message, "Аккаунт успешно привязан")
 
 
 if __name__ == "__main__":
