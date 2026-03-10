@@ -10,6 +10,7 @@ from pathlib import Path
 import fcntl
 
 from aiogram import Bot, Dispatcher
+from aiogram.exceptions import TelegramConflictError
 from aiogram.types import BotCommand
 
 from bot.telegram_bot.commands import get_commands_router
@@ -59,7 +60,14 @@ async def run_polling(token: str) -> None:
 
         # Start clean in polling mode.
         await bot.delete_webhook(drop_pending_updates=True)
-        await dp.start_polling(bot)
+        try:
+            await dp.start_polling(bot)
+        except TelegramConflictError:
+            logger.error(
+                "telegram polling conflict detected: another instance is already consuming updates; "
+                "stopping this process to avoid endless retries"
+            )
+            return
     finally:
         await bot.session.close()
         with contextlib.suppress(OSError):
