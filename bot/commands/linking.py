@@ -9,6 +9,11 @@ from bot.utils import send_temp
     description="Сгенерировать код для привязки Telegram аккаунта",
 )
 async def link_telegram(ctx):
+    # Для slash-вызова подтверждаем interaction сразу,
+    # чтобы Discord не оставлял команду в вечном "думает..."
+    if ctx.interaction and not ctx.interaction.response.is_done():
+        await ctx.interaction.response.defer(thinking=True)
+
     success, payload = issue_discord_telegram_link_code(ctx.author.id)
     if not success:
         await send_temp(ctx, f"❌ {payload}", delete_after=None)
