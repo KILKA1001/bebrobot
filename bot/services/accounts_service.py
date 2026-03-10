@@ -15,6 +15,7 @@ class AccountsService:
     LINK_CODE_LEN = 8
     LINK_TTL_MINUTES = 10
     MAX_ATTEMPTS = 5
+    LINK_CODE_GENERATION_ATTEMPTS = 3
 
     @staticmethod
     def resolve_account_id(provider: str, provider_user_id: str) -> Optional[str]:
@@ -62,44 +63,55 @@ class AccountsService:
 
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(minutes=AccountsService.LINK_TTL_MINUTES)
-        code = AccountsService._generate_link_code()
+        for attempt in range(1, AccountsService.LINK_CODE_GENERATION_ATTEMPTS + 1):
+            code = AccountsService._generate_link_code()
+            payload = {
+                "code": code,
+                "account_id": discord_account_id,
+                "discord_user_id": str(discord_user_id),
+                "created_at": now.isoformat(),
+                "expires_at": expires_at.isoformat(),
+                "is_used": False,
+                "attempts": 0,
+            }
 
-        payload = {
-            "code": code,
-            "account_id": discord_account_id,
-            "discord_user_id": str(discord_user_id),
-            "created_at": now.isoformat(),
-            "expires_at": expires_at.isoformat(),
-            "is_used": False,
-            "attempts": 0,
-        }
+            try:
+                # NOTE:
+                # Some PostgREST/RLS setups allow INSERT, but deny SELECT on the
+                # same table. In that case default "return=representation" may fail
+                # with 404 "JSON could not be generated" even when write is valid.
+                # We only need best-effort write here, so request minimal return.
+                db.supabase.table("account_link_codes").insert(payload, returning="minimal").execute()
+                if hasattr(db, "_inc_metric"):
+                    db._inc_metric("link_issue_success")
+                logger.info("link_code_issued discord_user_id=%s", discord_user_id)
+                return True, code
+            except Exception as e:
+                # Fallback for older supabase-py versions without `returning` kwarg.
+                if isinstance(e, TypeError):
+                    try:
+                        db.supabase.table("account_link_codes").insert(payload).execute()
+                        if hasattr(db, "_inc_metric"):
+                            db._inc_metric("link_issue_success")
+                        logger.info("link_code_issued discord_user_id=%s", discord_user_id)
+                        return True, code
+                    except Exception as nested_e:
+                        e = nested_e
 
-        try:
-            # NOTE:
-            # Some PostgREST/RLS setups allow INSERT, but deny SELECT on the
-            # same table. In that case default "return=representation" may fail
-            # with 404 "JSON could not be generated" even when write is valid.
-            # We only need best-effort write here, so request minimal return.
-            db.supabase.table("account_link_codes").insert(payload, returning="minimal").execute()
-            if hasattr(db, "_inc_metric"):
-                db._inc_metric("link_issue_success")
-            logger.info("link_code_issued discord_user_id=%s", discord_user_id)
-            return True, code
-        except Exception as e:
-            # Fallback for older supabase-py versions without `returning` kwarg.
-            if isinstance(e, TypeError):
-                try:
-                    db.supabase.table("account_link_codes").insert(payload).execute()
-                    if hasattr(db, "_inc_metric"):
-                        db._inc_metric("link_issue_success")
-                    logger.info("link_code_issued discord_user_id=%s", discord_user_id)
-                    return True, code
-                except Exception as nested_e:
-                    e = nested_e
-            if hasattr(db, "_inc_metric"):
-                db._inc_metric("link_issue_fail")
-            logger.error("issue_discord_telegram_link_code failed: %s", e)
-            return False, "Не удалось создать код привязки"
+                error_text = str(e).lower()
+                is_duplicate_code = "duplicate key" in error_text and "account_link_codes" in error_text
+                if is_duplicate_code and attempt < AccountsService.LINK_CODE_GENERATION_ATTEMPTS:
+                    logger.warning(
+                        "issue_discord_telegram_link_code duplicate code, retrying (%s/%s)",
+                        attempt,
+                        AccountsService.LINK_CODE_GENERATION_ATTEMPTS,
+                    )
+                    continue
+
+                if hasattr(db, "_inc_metric"):
+                    db._inc_metric("link_issue_fail")
+                logger.error("issue_discord_telegram_link_code failed: %s", e)
+                return False, "Не удалось создать код привязки"
 
 
     @staticmethod
