@@ -287,8 +287,19 @@ class AccountsService:
         code = (code or "").strip().upper()
 
         if target_provider not in ("discord", "telegram") or not target_provider_user_id:
+            logger.warning(
+                "consume_link_code invalid params target_provider=%s target_provider_user_id=%s code=%s",
+                target_provider,
+                target_provider_user_id,
+                code,
+            )
             return False, "Некорректные параметры привязки"
         if not code:
+            logger.warning(
+                "consume_link_code empty code target_provider=%s target_provider_user_id=%s",
+                target_provider,
+                target_provider_user_id,
+            )
             return False, "Пустой код"
 
         try:
@@ -296,11 +307,18 @@ class AccountsService:
             if not row:
                 if hasattr(db, "_inc_metric"):
                     db._inc_metric("link_consume_fail")
+                logger.warning(
+                    "consume_link_code code not found target_provider=%s target_provider_user_id=%s code=%s",
+                    target_provider,
+                    target_provider_user_id,
+                    code,
+                )
                 return False, "Код не найден"
 
             now = datetime.now(timezone.utc)
             expires_at_raw = row.get("expires_at")
             if not expires_at_raw:
+                logger.warning("consume_link_code corrupted code without expires_at code=%s table=%s", code, table_name)
                 return False, "Код повреждён"
             expires_at = datetime.fromisoformat(str(expires_at_raw).replace("Z", "+00:00"))
             attempts = int(row.get("attempts", 0) or 0)
@@ -308,24 +326,34 @@ class AccountsService:
             if row.get("is_used"):
                 if hasattr(db, "_inc_metric"):
                     db._inc_metric("link_consume_fail")
+                logger.warning("consume_link_code code already used code=%s table=%s", code, table_name)
                 return False, "Код уже использован"
             if now > expires_at:
                 if hasattr(db, "_inc_metric"):
                     db._inc_metric("link_consume_fail")
+                logger.warning("consume_link_code code expired code=%s expires_at=%s now=%s", code, expires_at.isoformat(), now.isoformat())
                 return False, "Срок действия кода истёк"
             if attempts >= AccountsService.MAX_ATTEMPTS:
                 if hasattr(db, "_inc_metric"):
                     db._inc_metric("link_consume_fail")
+                logger.warning("consume_link_code attempts exceeded code=%s attempts=%s", code, attempts)
                 return False, "Превышено число попыток"
 
             expected_target = row.get("target_provider")
             if expected_target and expected_target != target_provider:
+                logger.warning(
+                    "consume_link_code wrong target expected=%s actual=%s code=%s",
+                    expected_target,
+                    target_provider,
+                    code,
+                )
                 return False, f"Этот код предназначен для {expected_target}"
 
             AccountsService._safe_update_code(table_name, code, [{"attempts": attempts + 1}])
 
             account_id = row.get("account_id")
             if not account_id:
+                logger.warning("consume_link_code missing account_id code=%s table=%s", code, table_name)
                 return False, "Код не содержит account_id"
 
             identity_payload = {
@@ -355,7 +383,13 @@ class AccountsService:
         except Exception as e:
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("link_consume_fail")
-            logger.error("consume_link_code failed: %s", e)
+            logger.exception(
+                "consume_link_code failed target_provider=%s target_provider_user_id=%s code=%s error=%s",
+                target_provider,
+                target_provider_user_id,
+                code,
+                AccountsService._format_db_error(e),
+            )
             return False, "Ошибка привязки"
 
     @staticmethod
