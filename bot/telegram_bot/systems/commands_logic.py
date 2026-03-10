@@ -1,15 +1,49 @@
+from bot.services import AccountsService
 from bot.telegram_bot.link_handler import handle_link_command
+from bot.systems.linking_logic import issue_telegram_discord_link_code, register_telegram_account
 
 
 HELPY_TEXT = (
     "📚 Список команд:\n"
-    "/link <код> — привязать Telegram к Discord аккаунту\n"
+    "/register — зарегистрировать общий аккаунт\n"
+    "/profile — показать профиль общего аккаунта\n"
+    "/link <код> — привязать Telegram к аккаунту по коду из Discord\n"
+    "/link_discord — получить код для привязки Discord\n"
     "/helpy — показать это сообщение"
 )
 
 
 def get_helpy_text() -> str:
     return HELPY_TEXT
+
+
+def process_register_command(telegram_user_id: int | None) -> str:
+    if telegram_user_id is None:
+        return "Не удалось определить пользователя Telegram."
+
+    success, payload = register_telegram_account(telegram_user_id)
+    prefix = "✅" if success else "❌"
+    return f"{prefix} {payload}"
+
+
+def process_profile_command(telegram_user_id: int | None, display_name: str | None = None) -> str:
+    if telegram_user_id is None:
+        return "❌ Не удалось определить пользователя Telegram."
+
+    data = AccountsService.get_profile("telegram", str(telegram_user_id), display_name=display_name)
+    if not data:
+        return "❌ Профиль не найден. Сначала выполните /register"
+
+    return (
+        f"👤 {data['custom_nick']}\n"
+        f"ID общего аккаунта: `{data['account_id']}`\n"
+        f"Telegram: `{data['telegram_id'] or 'не привязан'}`\n"
+        f"Discord: `{data['discord_id'] or 'не привязан'}`\n"
+        f"ID NULS (заглушка): `{data['nulls_id']}`\n\n"
+        f"Описание: {data['description'][:100]}\n\n"
+        f"🔗 TG ↔ DC: *{data['link_status']}*\n"
+        f"🛡️ NULS: *{data['nulls_status']}*"
+    )
 
 
 def process_link_command(message_text: str, telegram_user_id: int | None) -> str:
@@ -25,3 +59,19 @@ def process_link_command(message_text: str, telegram_user_id: int | None) -> str
     success, payload = handle_link_command(telegram_user_id, code)
     prefix = "✅" if success else "❌"
     return f"{prefix} {payload}"
+
+
+def process_link_discord_command(telegram_user_id: int | None) -> str:
+    if telegram_user_id is None:
+        return "Не удалось определить пользователя Telegram."
+
+    success, payload = issue_telegram_discord_link_code(telegram_user_id)
+    if not success:
+        return f"❌ {payload}"
+
+    return (
+        "🔗 Код привязки Discord сгенерирован.\n"
+        f"Код: `{payload}`\n"
+        f"Срок действия: {AccountsService.LINK_TTL_MINUTES} минут.\n"
+        "Используйте в Discord: `/link <код>`"
+    )
