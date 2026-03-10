@@ -355,7 +355,13 @@ class AccountsService:
         except Exception as e:
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("link_consume_fail")
-            logger.error("consume_link_code failed: %s", e)
+            logger.exception(
+                "consume_link_code failed target_provider=%s target_provider_user_id=%s code=%s error=%s",
+                target_provider,
+                target_provider_user_id,
+                code,
+                AccountsService._format_db_error(e),
+            )
             return False, "Ошибка привязки"
 
     @staticmethod
