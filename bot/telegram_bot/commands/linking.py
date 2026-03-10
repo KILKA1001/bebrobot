@@ -1,4 +1,5 @@
 from aiogram import Router
+from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import Message
 
@@ -40,7 +41,7 @@ async def profile_command(message: Message) -> None:
             photos = await message.bot.get_user_profile_photos(user_id, limit=1)
             if photos.total_count > 0 and photos.photos and photos.photos[0]:
                 file_id = photos.photos[0][-1].file_id
-                await message.answer_photo(photo=file_id, caption=response)
+                await message.answer_photo(photo=file_id, caption=response, parse_mode=ParseMode.HTML)
                 return True
         except Exception:
             return False
@@ -53,7 +54,7 @@ async def profile_command(message: Message) -> None:
     if await _send_avatar_caption(bot_user.id):
         return
 
-    await message.answer(response)
+    await message.answer(response, parse_mode=ParseMode.HTML)
 
 
 @router.message(Command("link"))

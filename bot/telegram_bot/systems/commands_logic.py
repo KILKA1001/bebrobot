@@ -1,3 +1,5 @@
+from html import escape
+
 from bot.services import AccountsService
 from bot.telegram_bot.link_handler import handle_link_command
 from bot.systems.linking_logic import issue_telegram_discord_link_code, register_telegram_account
@@ -34,13 +36,32 @@ def process_profile_command(telegram_user_id: int | None, display_name: str | No
     if not data:
         return "❌ Профиль не найден. Сначала выполните /register"
 
-    title_name = display_name or data["custom_nick"]
+    title_name = escape(display_name or data["custom_nick"])
+    safe_description = escape(data["description"][:100])
+    safe_nulls_id = escape(data["nulls_brawl_id"])
+    safe_link_status = escape(data["link_status"])
+    safe_nulls_status = escape(data["nulls_status"])
+
     return (
-        f"👤 {title_name}\n\n"
-        f"Описание: {data['description'][:100]}\n\n"
-        f"🔗 TG ↔ DC: {data['link_status']}\n"
-        f"🛡️ Null's Brawl: {data['nulls_status']}\n"
-        f"Айди в Null's Brawl: {data['nulls_brawl_id']}"
+        "👤 <b><a href=\"tg://user?id={telegram_user_id}\">{title_name}</a></b>\n"
+        "▫️ <i>Роль: скоро будет</i>\n\n"
+        "━━━━━━━━━━━━━━\n"
+        "<b>Общая информация</b>\n"
+        "Айди в Null's Brawl: <code>{safe_nulls_id}</code>\n"
+        "━━━━━━━━━━━━━━\n"
+        "<b>Описание</b>\n"
+        "{safe_description}\n"
+        "━━━━━━━━━━━━━━\n"
+        "<b>Дополнительная информация</b>\n"
+        "🔗 TG ↔ DC: {safe_link_status}\n"
+        "🛡️ Null's Brawl: {safe_nulls_status}"
+    ).format(
+        telegram_user_id=telegram_user_id,
+        title_name=title_name,
+        safe_nulls_id=safe_nulls_id,
+        safe_description=safe_description,
+        safe_link_status=safe_link_status,
+        safe_nulls_status=safe_nulls_status,
     )
 
 
