@@ -41,13 +41,15 @@ def process_profile_command(telegram_user_id: int | None, display_name: str | No
     safe_nulls_id = escape(data["nulls_brawl_id"])
     safe_link_status = escape(data["link_status"])
     safe_nulls_status = escape(data["nulls_status"])
+    safe_points = escape(str(data["points"]))
 
     return (
-        "👤 <b><a href=\"tg://user?id={telegram_user_id}\">{title_name}</a></b>\n"
-        "▫️ <i>Роль: скоро будет</i>\n\n"
+        "👤 <b><a href=\"tg://user?id={telegram_user_id}\">{title_name}</a></b>\n\n"
         "━━━━━━━━━━━━━━\n"
         "<b>Общая информация</b>\n"
+        "Звания: <i>скоро будет</i>\n"
         "Айди в Null's Brawl: <code>{safe_nulls_id}</code>\n"
+        "Баллы: {safe_points}\n"
         "━━━━━━━━━━━━━━\n"
         "<b>Описание</b>\n"
         "{safe_description}\n"
@@ -62,8 +64,8 @@ def process_profile_command(telegram_user_id: int | None, display_name: str | No
         safe_description=safe_description,
         safe_link_status=safe_link_status,
         safe_nulls_status=safe_nulls_status,
+        safe_points=safe_points,
     )
-
 
 def process_link_command(message_text: str, telegram_user_id: int | None) -> str:
     text = (message_text or "").strip()

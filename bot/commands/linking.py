@@ -51,17 +51,24 @@ async def profile(ctx):
         return
 
     embed = discord.Embed(title=f"👤 {ctx.author.display_name}", color=discord.Color.blurple())
-    embed.description = data["description"][:100]
-    embed.add_field(name="Пользователь Discord", value=ctx.author.mention, inline=False)
     embed.add_field(
-        name="Статусы",
+        name="**Общая информация**",
+        value=(
+            "Звания: *скоро будет*\n"
+            f"Айди в Null's Brawl: `{data['nulls_brawl_id']}`\n"
+            f"Баллы: {data['points']}"
+        ),
+        inline=False,
+    )
+    embed.add_field(name="**Описание**", value=data["description"][:100], inline=False)
+    embed.add_field(
+        name="**Дополнительная информация**",
         value=(
             f"🔗 TG ↔ DC: **{data['link_status']}**\n"
             f"🛡️ Null's Brawl: **{data['nulls_status']}**"
         ),
         inline=False,
     )
-    embed.add_field(name="Айди в Null's Brawl", value=f"`{data['nulls_brawl_id']}`", inline=False)
     thumbnail_url = None
     if getattr(ctx.author, "avatar", None):
         thumbnail_url = ctx.author.display_avatar.url
