@@ -58,6 +58,10 @@ class AccountsService:
         return " | ".join(p for p in parts if p)
 
     @staticmethod
+    def _is_unique_violation(error: Exception) -> bool:
+        return str(getattr(error, "code", "")) == "23505" or "duplicate key value" in str(error).lower()
+
+    @staticmethod
     def _create_account() -> Optional[str]:
         if not db.supabase:
             return None
@@ -356,12 +360,44 @@ class AccountsService:
                 logger.warning("consume_link_code missing account_id code=%s table=%s", code, table_name)
                 return False, "Код не содержит account_id"
 
-            identity_payload = {
-                "account_id": account_id,
-                "provider": target_provider,
-                "provider_user_id": target_provider_user_id,
-            }
-            db.supabase.table("account_identities").upsert(identity_payload).execute()
+            existing_account_id = AccountsService.resolve_account_id(target_provider, target_provider_user_id)
+            if existing_account_id and str(existing_account_id) != str(account_id):
+                logger.warning(
+                    "consume_link_code identity belongs to another account provider=%s provider_user_id=%s existing_account_id=%s requested_account_id=%s",
+                    target_provider,
+                    target_provider_user_id,
+                    existing_account_id,
+                    account_id,
+                )
+                return False, "Этот аккаунт уже привязан к другому профилю"
+
+            if not existing_account_id:
+                identity_payload = {
+                    "account_id": account_id,
+                    "provider": target_provider,
+                    "provider_user_id": target_provider_user_id,
+                }
+                try:
+                    db.supabase.table("account_identities").upsert(
+                        identity_payload,
+                        on_conflict="provider,provider_user_id",
+                    ).execute()
+                except TypeError:
+                    db.supabase.table("account_identities").upsert(identity_payload).execute()
+                except Exception as e:
+                    if AccountsService._is_unique_violation(e):
+                        existing_account_id = AccountsService.resolve_account_id(target_provider, target_provider_user_id)
+                        if existing_account_id and str(existing_account_id) != str(account_id):
+                            logger.warning(
+                                "consume_link_code identity belongs to another account after retry provider=%s provider_user_id=%s existing_account_id=%s requested_account_id=%s",
+                                target_provider,
+                                target_provider_user_id,
+                                existing_account_id,
+                                account_id,
+                            )
+                            return False, "Этот аккаунт уже привязан к другому профилю"
+                    else:
+                        raise
 
             AccountsService._safe_update_code(
                 table_name,

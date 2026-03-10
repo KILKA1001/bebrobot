@@ -36,7 +36,7 @@ class _TableOp:
         self._action = "insert"
         return self
 
-    def upsert(self, payload):
+    def upsert(self, payload, **_kwargs):
         self._payload = payload
         self._action = "upsert"
         return self
@@ -185,6 +185,18 @@ class AccountsServiceTests(unittest.TestCase):
         ok, message = AccountsService.consume_telegram_link_code(222, "EXPIRED1")
         self.assertFalse(ok)
         self.assertEqual(message, "Срок действия кода истёк")
+
+
+    def test_consume_link_code_fails_when_target_identity_belongs_to_another_account(self):
+        AccountsService.register_identity("discord", "111")
+        AccountsService.register_identity("telegram", "222")
+
+        ok, code = AccountsService.issue_discord_telegram_link_code(111)
+        self.assertTrue(ok)
+
+        ok, message = AccountsService.consume_telegram_link_code(222, code)
+        self.assertFalse(ok)
+        self.assertEqual(message, "Этот аккаунт уже привязан к другому профилю")
 
     def test_profile_contains_link_status(self):
         AccountsService.register_identity("discord", "111")
