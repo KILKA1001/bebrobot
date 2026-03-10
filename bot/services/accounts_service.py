@@ -17,6 +17,7 @@ class AccountsService:
     LINK_TTL_MINUTES = 10
     MAX_ATTEMPTS = 5
     LINK_CODE_GENERATION_ATTEMPTS = 3
+    LINK_CODES_TABLES = ("account_link_codes", "link_tokens")
 
     @staticmethod
     def resolve_account_id(provider: str, provider_user_id: str) -> Optional[str]:
@@ -43,6 +44,18 @@ class AccountsService:
     def _generate_link_code(length: int = LINK_CODE_LEN) -> str:
         alphabet = string.ascii_uppercase + string.digits
         return "".join(secrets.choice(alphabet) for _ in range(length))
+
+    @staticmethod
+    def _format_db_error(error: Exception) -> str:
+        """Return readable Supabase/PostgREST error details for logs."""
+        if error is None:
+            return "unknown error"
+        parts = [str(error)]
+        for attr in ("message", "details", "hint", "code"):
+            value = getattr(error, attr, None)
+            if value:
+                parts.append(f"{attr}={value}")
+        return " | ".join(p for p in parts if p)
 
     @staticmethod
     def _create_account() -> Optional[str]:
@@ -131,19 +144,71 @@ class AccountsService:
             },
         ]
 
-        for variant in payload_variants:
-            try:
-                db.supabase.table("account_link_codes").insert(variant, returning="minimal").execute()
-                return True
-            except TypeError:
+        table_errors: dict[str, str] = {}
+
+        for table_name in AccountsService.LINK_CODES_TABLES:
+            for variant in payload_variants:
                 try:
-                    db.supabase.table("account_link_codes").insert(variant).execute()
+                    db.supabase.table(table_name).insert(variant, returning="minimal").execute()
                     return True
-                except Exception:
+                except TypeError:
+                    try:
+                        db.supabase.table(table_name).insert(variant).execute()
+                        return True
+                    except Exception as legacy_error:
+                        table_errors[table_name] = AccountsService._format_db_error(legacy_error)
+                        logger.warning(
+                            "link code insert failed (legacy) table=%s payload_keys=%s error=%s",
+                            table_name,
+                            sorted(variant.keys()),
+                            table_errors[table_name],
+                        )
+                        continue
+                except Exception as e:
+                    table_errors[table_name] = AccountsService._format_db_error(e)
+                    logger.warning(
+                        "link code insert failed table=%s payload_keys=%s error=%s",
+                        table_name,
+                        sorted(variant.keys()),
+                        table_errors[table_name],
+                    )
                     continue
-            except Exception:
-                continue
+
+            if table_name in table_errors:
+                logger.error(
+                    "link code table rejected all payload variants table=%s source=%s:%s last_error=%s",
+                    table_name,
+                    source_provider,
+                    source_provider_user_id,
+                    table_errors[table_name],
+                )
+
+        logger.error(
+            "failed to persist link code in all candidate tables=%s for source=%s:%s errors=%s",
+            AccountsService.LINK_CODES_TABLES,
+            source_provider,
+            source_provider_user_id,
+            table_errors,
+        )
         return False
+
+    @staticmethod
+    def _find_link_code(code: str):
+        for table_name in AccountsService.LINK_CODES_TABLES:
+            try:
+                lookup = db.supabase.table(table_name).select("*").eq("code", code).limit(1).execute()
+                if lookup.data:
+                    return table_name, lookup.data[0]
+            except Exception as e:
+                logger.warning(
+                    "link code lookup failed table=%s code=%s error=%s",
+                    table_name,
+                    code,
+                    AccountsService._format_db_error(e),
+                )
+                continue
+        logger.warning("link code not found in candidate tables=%s code=%s", AccountsService.LINK_CODES_TABLES, code)
+        return None, None
 
     @staticmethod
     def issue_link_code(source_provider: str, source_provider_user_id: str, target_provider: str) -> Tuple[bool, str]:
@@ -194,13 +259,21 @@ class AccountsService:
         return False, "Не удалось создать код привязки"
 
     @staticmethod
-    def _safe_update_code(code: str, payloads: list[dict]) -> None:
+    def _safe_update_code(table_name: str, code: str, payloads: list[dict]) -> None:
         for payload in payloads:
             try:
-                db.supabase.table("account_link_codes").update(payload).eq("code", code).execute()
+                db.supabase.table(table_name).update(payload).eq("code", code).execute()
                 return
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    "link code update failed table=%s code=%s payload_keys=%s error=%s",
+                    table_name,
+                    code,
+                    sorted(payload.keys()),
+                    AccountsService._format_db_error(e),
+                )
                 continue
+        logger.warning("all link code updates failed for table=%s code=%s", table_name, code)
 
     @staticmethod
     def consume_link_code(target_provider: str, target_provider_user_id: str, code: str) -> Tuple[bool, str]:
@@ -219,13 +292,12 @@ class AccountsService:
             return False, "Пустой код"
 
         try:
-            lookup = db.supabase.table("account_link_codes").select("*").eq("code", code).limit(1).execute()
-            if not lookup.data:
+            table_name, row = AccountsService._find_link_code(code)
+            if not row:
                 if hasattr(db, "_inc_metric"):
                     db._inc_metric("link_consume_fail")
                 return False, "Код не найден"
 
-            row = lookup.data[0]
             now = datetime.now(timezone.utc)
             expires_at_raw = row.get("expires_at")
             if not expires_at_raw:
@@ -250,7 +322,7 @@ class AccountsService:
             if expected_target and expected_target != target_provider:
                 return False, f"Этот код предназначен для {expected_target}"
 
-            AccountsService._safe_update_code(code, [{"attempts": attempts + 1}])
+            AccountsService._safe_update_code(table_name, code, [{"attempts": attempts + 1}])
 
             account_id = row.get("account_id")
             if not account_id:
@@ -264,6 +336,7 @@ class AccountsService:
             db.supabase.table("account_identities").upsert(identity_payload).execute()
 
             AccountsService._safe_update_code(
+                table_name,
                 code,
                 [
                     {
