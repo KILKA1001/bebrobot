@@ -266,6 +266,17 @@ class AccountsService:
                 db._inc_metric("link_issue_fail")
             return False, "Сначала зарегистрируйтесь в боте"
 
+        reusable_code = AccountsService._find_reusable_link_code(
+            str(account_id),
+            source_provider,
+            source_provider_user_id,
+            target_provider,
+        )
+        if reusable_code:
+            if hasattr(db, "_inc_metric"):
+                db._inc_metric("link_issue_success")
+            return True, reusable_code
+
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(minutes=AccountsService.LINK_TTL_MINUTES)
 
@@ -293,11 +304,18 @@ class AccountsService:
         return False, "Не удалось создать код привязки"
 
     @staticmethod
-    def _safe_update_code(table_name: str, code: str, payloads: list[dict]) -> None:
+    def _safe_update_code(table_name: str, code: str, payloads: list[dict]) -> bool:
         for payload in payloads:
             try:
-                db.supabase.table(table_name).update(payload).eq("code", code).execute()
-                return
+                update_response = db.supabase.table(table_name).update(payload).eq("code", code).execute()
+                if update_response.data:
+                    return True
+                logger.warning(
+                    "link code update affected zero rows table=%s code=%s payload_keys=%s",
+                    table_name,
+                    code,
+                    sorted(payload.keys()),
+                )
             except Exception as e:
                 logger.warning(
                     "link code update failed table=%s code=%s payload_keys=%s error=%s",
@@ -308,6 +326,51 @@ class AccountsService:
                 )
                 continue
         logger.warning("all link code updates failed for table=%s code=%s", table_name, code)
+        return False
+
+    @staticmethod
+    def _find_reusable_link_code(
+        account_id: str,
+        source_provider: str,
+        source_provider_user_id: str,
+        target_provider: str,
+    ) -> Optional[str]:
+        now = datetime.now(timezone.utc)
+
+        for table_name in AccountsService.LINK_CODES_TABLES:
+            query_variants = [
+                [
+                    ("account_id", account_id),
+                    ("source_provider", source_provider),
+                    ("source_provider_user_id", source_provider_user_id),
+                    ("target_provider", target_provider),
+                    ("is_used", False),
+                ],
+                [("account_id", account_id), ("is_used", False)],
+            ]
+
+            for filters in query_variants:
+                try:
+                    query = db.supabase.table(table_name).select("*")
+                    for key, value in filters:
+                        query = query.eq(key, value)
+                    lookup = query.limit(20).execute()
+                except Exception:
+                    continue
+
+                for row in lookup.data or []:
+                    code = str(row.get("code") or "").strip().upper()
+                    expires_at_raw = row.get("expires_at")
+                    if not code or not expires_at_raw:
+                        continue
+                    try:
+                        expires_at = datetime.fromisoformat(str(expires_at_raw).replace("Z", "+00:00"))
+                    except ValueError:
+                        continue
+                    if now <= expires_at and not row.get("is_used"):
+                        return code
+
+        return None
 
     @staticmethod
     def consume_link_code(target_provider: str, target_provider_user_id: str, code: str) -> Tuple[bool, str]:
@@ -430,7 +493,7 @@ class AccountsService:
                     else:
                         raise
 
-            AccountsService._safe_update_code(
+            is_marked_used = AccountsService._safe_update_code(
                 table_name,
                 code,
                 [
@@ -443,6 +506,11 @@ class AccountsService:
                     {"is_used": True, "used_at": now.isoformat()},
                 ],
             )
+            if not is_marked_used:
+                if hasattr(db, "_inc_metric"):
+                    db._inc_metric("link_consume_fail")
+                logger.error("consume_link_code failed to mark code as used code=%s table=%s", code, table_name)
+                return False, "Не удалось завершить привязку, попробуйте позже"
 
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("link_consume_success")
