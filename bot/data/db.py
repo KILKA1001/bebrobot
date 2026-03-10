@@ -4,7 +4,7 @@ from discord.ext import commands
 from typing import Optional
 from datetime import datetime, timezone, timedelta
 from collections import UserDict, UserList
-from supabase import create_client
+from supabase import create_client, ClientOptions
 from postgrest.exceptions import APIError
 from dotenv import load_dotenv
 import traceback
@@ -125,7 +125,15 @@ class Database:
             or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
             or ""
         ).strip()
-        self.supabase = create_client(self.url, self.key) if self.url and self.key else None
+        postgrest_timeout = float(os.getenv("SUPABASE_POSTGREST_TIMEOUT_SEC", "20"))
+        if self.url and self.key:
+            self.supabase = create_client(
+                self.url,
+                self.key,
+                options=ClientOptions(postgrest_client_timeout=postgrest_timeout),
+            )
+        else:
+            self.supabase = None
         self.has_was_on_time = True
         self._core_data_loaded = False
         self._core_data_loading = False
