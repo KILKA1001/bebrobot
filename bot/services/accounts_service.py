@@ -137,14 +137,33 @@ class AccountsService:
                 try:
                     db.supabase.table(table_name).insert(variant, returning="minimal").execute()
                     return True
-                except TypeError:
+                except TypeError as e:
+                    logger.debug("link code insert with returning failed for table=%s: %s", table_name, e)
                     try:
                         db.supabase.table(table_name).insert(variant).execute()
                         return True
-                    except Exception:
+                    except Exception as legacy_error:
+                        logger.debug(
+                            "link code legacy insert failed for table=%s payload_keys=%s: %s",
+                            table_name,
+                            sorted(variant.keys()),
+                            legacy_error,
+                        )
                         continue
-                except Exception:
+                except Exception as e:
+                    logger.debug(
+                        "link code insert failed for table=%s payload_keys=%s: %s",
+                        table_name,
+                        sorted(variant.keys()),
+                        e,
+                    )
                     continue
+        logger.error(
+            "failed to persist link code in all candidate tables=%s for source=%s:%s",
+            AccountsService.LINK_CODES_TABLES,
+            source_provider,
+            source_provider_user_id,
+        )
         return False
 
     @staticmethod
@@ -154,8 +173,10 @@ class AccountsService:
                 lookup = db.supabase.table(table_name).select("*").eq("code", code).limit(1).execute()
                 if lookup.data:
                     return table_name, lookup.data[0]
-            except Exception:
+            except Exception as e:
+                logger.debug("link code lookup failed for table=%s code=%s: %s", table_name, code, e)
                 continue
+        logger.warning("link code not found in candidate tables=%s code=%s", AccountsService.LINK_CODES_TABLES, code)
         return None, None
 
     @staticmethod
@@ -212,8 +233,16 @@ class AccountsService:
             try:
                 db.supabase.table(table_name).update(payload).eq("code", code).execute()
                 return
-            except Exception:
+            except Exception as e:
+                logger.debug(
+                    "link code update failed for table=%s code=%s payload_keys=%s: %s",
+                    table_name,
+                    code,
+                    sorted(payload.keys()),
+                    e,
+                )
                 continue
+        logger.warning("all link code updates failed for table=%s code=%s", table_name, code)
 
     @staticmethod
     def consume_link_code(target_provider: str, target_provider_user_id: str, code: str) -> Tuple[bool, str]:
