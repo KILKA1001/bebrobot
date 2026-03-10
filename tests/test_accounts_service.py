@@ -135,7 +135,7 @@ class AccountsServiceTests(unittest.TestCase):
     def test_register_creates_account_and_identity(self):
         ok, message = AccountsService.register_identity("discord", "111")
         self.assertTrue(ok)
-        self.assertIn("account_id", message)
+        self.assertEqual(message, "Регистрация завершена")
         self.assertEqual(len(self.fake_db.tables["accounts"]), 1)
         self.assertEqual(len(self.fake_db.tables["account_identities"]), 1)
 
@@ -190,6 +190,7 @@ class AccountsServiceTests(unittest.TestCase):
         profile = AccountsService.get_profile("discord", "111", "Nick")
         self.assertIsNotNone(profile)
         self.assertEqual(profile["link_status"], "Не привязан")
+        self.assertEqual(profile["nulls_brawl_id"], "—")
 
 
 if __name__ == "__main__":

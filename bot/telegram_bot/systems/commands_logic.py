@@ -34,15 +34,13 @@ def process_profile_command(telegram_user_id: int | None, display_name: str | No
     if not data:
         return "❌ Профиль не найден. Сначала выполните /register"
 
+    title_name = display_name or data["custom_nick"]
     return (
-        f"👤 {data['custom_nick']}\n"
-        f"ID общего аккаунта: `{data['account_id']}`\n"
-        f"Telegram: `{data['telegram_id'] or 'не привязан'}`\n"
-        f"Discord: `{data['discord_id'] or 'не привязан'}`\n"
-        f"ID NULS (заглушка): `{data['nulls_id']}`\n\n"
+        f"👤 {title_name}\n\n"
         f"Описание: {data['description'][:100]}\n\n"
-        f"🔗 TG ↔ DC: *{data['link_status']}*\n"
-        f"🛡️ NULS: *{data['nulls_status']}*"
+        f"🔗 TG ↔ DC: {data['link_status']}\n"
+        f"🛡️ Null's Brawl: {data['nulls_status']}\n"
+        f"Айди в Null's Brawl: {data['nulls_brawl_id']}"
     )
 
 

@@ -50,21 +50,25 @@ async def profile(ctx):
         await send_temp(ctx, "❌ Профиль не найден. Сначала выполните `/register_account`.", delete_after=None)
         return
 
-    embed = discord.Embed(title=f"👤 {data['custom_nick']}", color=discord.Color.blurple())
-    embed.add_field(name="ID общего аккаунта", value=f"`{data['account_id']}`", inline=False)
-    embed.add_field(name="Discord", value=f"`{data['discord_id'] or 'не привязан'}`", inline=True)
-    embed.add_field(name="Telegram", value=f"`{data['telegram_id'] or 'не привязан'}`", inline=True)
-    embed.add_field(name="Айди из NULS (заглушка)", value=f"`{data['nulls_id']}`", inline=False)
-    embed.add_field(name="Описание", value=data["description"][:100], inline=False)
+    embed = discord.Embed(title=f"👤 {ctx.author.display_name}", color=discord.Color.blurple())
+    embed.description = data["description"][:100]
+    embed.add_field(name="Пользователь Discord", value=ctx.author.mention, inline=False)
     embed.add_field(
         name="Статусы",
         value=(
             f"🔗 TG ↔ DC: **{data['link_status']}**\n"
-            f"🛡️ NULS: **{data['nulls_status']}**"
+            f"🛡️ Null's Brawl: **{data['nulls_status']}**"
         ),
         inline=False,
     )
-    if ctx.author.display_avatar:
-        embed.set_thumbnail(url=ctx.author.display_avatar.url)
+    embed.add_field(name="Айди в Null's Brawl", value=f"`{data['nulls_brawl_id']}`", inline=False)
+    thumbnail_url = None
+    if getattr(ctx.author, "avatar", None):
+        thumbnail_url = ctx.author.display_avatar.url
+    elif getattr(ctx.bot, "user", None) and getattr(ctx.bot.user, "display_avatar", None):
+        thumbnail_url = ctx.bot.user.display_avatar.url
+
+    if thumbnail_url:
+        embed.set_thumbnail(url=thumbnail_url)
 
     await send_temp(ctx, embed=embed, delete_after=None)

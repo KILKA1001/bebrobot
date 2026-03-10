@@ -51,18 +51,22 @@ class AccountsService:
 
         try:
             created = db.supabase.table("accounts").insert({}, returning="representation").execute()
+            if created.data:
+                account_id = created.data[0].get("id")
+                if account_id:
+                    return str(account_id)
         except TypeError:
-            created = db.supabase.table("accounts").insert({}).execute()
+            try:
+                created = db.supabase.table("accounts").insert({}).execute()
+                if created.data:
+                    account_id = created.data[0].get("id")
+                    if account_id:
+                        return str(account_id)
+            except Exception as e:
+                logger.error("create account failed (legacy): %s", e)
         except Exception as e:
             logger.error("create account failed: %s", e)
-            return None
 
-        if created.data:
-            account_id = created.data[0].get("id")
-            if account_id:
-                return str(account_id)
-
-        # Fallback for RLS/minimal return mode: use explicit uuid and retry insert.
         account_id = str(uuid.uuid4())
         try:
             db.supabase.table("accounts").insert({"id": account_id}, returning="minimal").execute()
@@ -86,7 +90,7 @@ class AccountsService:
 
         existing_account_id = AccountsService.resolve_account_id(provider, provider_user_id)
         if existing_account_id:
-            return True, f"Уже зарегистрирован. account_id: {existing_account_id}"
+            return True, "Уже зарегистрирован"
 
         account_id = AccountsService._create_account()
         if not account_id:
@@ -99,10 +103,47 @@ class AccountsService:
         }
         try:
             db.supabase.table("account_identities").insert(payload).execute()
-            return True, f"Регистрация завершена. account_id: {account_id}"
+            return True, "Регистрация завершена"
         except Exception as e:
             logger.error("register identity failed (%s:%s): %s", provider, provider_user_id, e)
             return False, "Не удалось создать привязку identity"
+
+    @staticmethod
+    def _insert_link_code_with_fallback(payload: dict, source_provider: str, source_provider_user_id: str) -> bool:
+        payload_variants = [
+            payload,
+            {
+                "code": payload["code"],
+                "account_id": payload["account_id"],
+                "discord_user_id": source_provider_user_id if source_provider == "discord" else None,
+                "created_at": payload["created_at"],
+                "expires_at": payload["expires_at"],
+                "is_used": payload["is_used"],
+                "attempts": payload["attempts"],
+            },
+            {
+                "code": payload["code"],
+                "account_id": payload["account_id"],
+                "created_at": payload["created_at"],
+                "expires_at": payload["expires_at"],
+                "is_used": payload["is_used"],
+                "attempts": payload["attempts"],
+            },
+        ]
+
+        for variant in payload_variants:
+            try:
+                db.supabase.table("account_link_codes").insert(variant, returning="minimal").execute()
+                return True
+            except TypeError:
+                try:
+                    db.supabase.table("account_link_codes").insert(variant).execute()
+                    return True
+                except Exception:
+                    continue
+            except Exception:
+                continue
+        return False
 
     @staticmethod
     def issue_link_code(source_provider: str, source_provider_user_id: str, target_provider: str) -> Tuple[bool, str]:
@@ -129,7 +170,7 @@ class AccountsService:
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(minutes=AccountsService.LINK_TTL_MINUTES)
 
-        for attempt in range(1, AccountsService.LINK_CODE_GENERATION_ATTEMPTS + 1):
+        for _ in range(AccountsService.LINK_CODE_GENERATION_ATTEMPTS):
             code = AccountsService._generate_link_code()
             payload = {
                 "code": code,
@@ -142,33 +183,24 @@ class AccountsService:
                 "is_used": False,
                 "attempts": 0,
             }
-            try:
-                db.supabase.table("account_link_codes").insert(payload, returning="minimal").execute()
+
+            if AccountsService._insert_link_code_with_fallback(payload, source_provider, source_provider_user_id):
                 if hasattr(db, "_inc_metric"):
                     db._inc_metric("link_issue_success")
                 return True, code
-            except TypeError:
-                try:
-                    db.supabase.table("account_link_codes").insert(payload).execute()
-                    if hasattr(db, "_inc_metric"):
-                        db._inc_metric("link_issue_success")
-                    return True, code
-                except Exception as nested_e:
-                    e = nested_e
-            except Exception as e:
-                pass
 
-            error_text = str(e).lower()
-            is_duplicate_code = "duplicate key" in error_text and "account_link_codes" in error_text
-            if is_duplicate_code and attempt < AccountsService.LINK_CODE_GENERATION_ATTEMPTS:
-                continue
-
-            if hasattr(db, "_inc_metric"):
-                db._inc_metric("link_issue_fail")
-            logger.error("issue_link_code failed: %s", e)
-            return False, "Не удалось создать код привязки"
-
+        if hasattr(db, "_inc_metric"):
+            db._inc_metric("link_issue_fail")
         return False, "Не удалось создать код привязки"
+
+    @staticmethod
+    def _safe_update_code(code: str, payloads: list[dict]) -> None:
+        for payload in payloads:
+            try:
+                db.supabase.table("account_link_codes").update(payload).eq("code", code).execute()
+                return
+            except Exception:
+                continue
 
     @staticmethod
     def consume_link_code(target_provider: str, target_provider_user_id: str, code: str) -> Tuple[bool, str]:
@@ -195,7 +227,10 @@ class AccountsService:
 
             row = lookup.data[0]
             now = datetime.now(timezone.utc)
-            expires_at = datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00"))
+            expires_at_raw = row.get("expires_at")
+            if not expires_at_raw:
+                return False, "Код повреждён"
+            expires_at = datetime.fromisoformat(str(expires_at_raw).replace("Z", "+00:00"))
             attempts = int(row.get("attempts", 0) or 0)
 
             if row.get("is_used"):
@@ -215,7 +250,7 @@ class AccountsService:
             if expected_target and expected_target != target_provider:
                 return False, f"Этот код предназначен для {expected_target}"
 
-            db.supabase.table("account_link_codes").update({"attempts": attempts + 1}).eq("code", code).execute()
+            AccountsService._safe_update_code(code, [{"attempts": attempts + 1}])
 
             account_id = row.get("account_id")
             if not account_id:
@@ -228,14 +263,18 @@ class AccountsService:
             }
             db.supabase.table("account_identities").upsert(identity_payload).execute()
 
-            db.supabase.table("account_link_codes").update(
-                {
-                    "is_used": True,
-                    "used_at": now.isoformat(),
-                    "used_by_provider": target_provider,
-                    "used_by_provider_user_id": target_provider_user_id,
-                }
-            ).eq("code", code).execute()
+            AccountsService._safe_update_code(
+                code,
+                [
+                    {
+                        "is_used": True,
+                        "used_at": now.isoformat(),
+                        "used_by_provider": target_provider,
+                        "used_by_provider_user_id": target_provider_user_id,
+                    },
+                    {"is_used": True, "used_at": now.isoformat()},
+                ],
+            )
 
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("link_consume_success")
@@ -280,13 +319,8 @@ class AccountsService:
         except Exception as e:
             logger.warning("get_profile identities failed for %s: %s", account_id, e)
 
-        discord_id = None
-        telegram_id = None
-        for identity in identities:
-            if identity.get("provider") == "discord":
-                discord_id = identity.get("provider_user_id")
-            if identity.get("provider") == "telegram":
-                telegram_id = identity.get("provider_user_id")
+        has_discord = any(identity.get("provider") == "discord" for identity in identities)
+        has_telegram = any(identity.get("provider") == "telegram" for identity in identities)
 
         custom_nick = display_name or "Пользователь"
         description = "Описание не заполнено"
@@ -297,10 +331,10 @@ class AccountsService:
             "account_id": account_id,
             "custom_nick": custom_nick,
             "description": description,
-            "discord_id": discord_id,
-            "telegram_id": telegram_id,
-            "link_status": "Привязан" if discord_id and telegram_id else "Не привязан",
-            "nulls_id": nulls_id,
+            "has_discord": has_discord,
+            "has_telegram": has_telegram,
+            "link_status": "Привязан" if has_discord and has_telegram else "Не привязан",
+            "nulls_brawl_id": nulls_id,
             "nulls_status": nulls_status,
         }
 
