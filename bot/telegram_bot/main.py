@@ -60,6 +60,20 @@ async def run_polling(token: str) -> None:
 
         # Start clean in polling mode.
         await bot.delete_webhook(drop_pending_updates=True)
+
+        # Fast-fail before Dispatcher's internal long backoff loop if another
+        # process is already consuming updates for the same bot token.
+        # `timeout=0` keeps this check instantaneous.
+        try:
+            await bot.get_updates(timeout=0, limit=1)
+        except TelegramConflictError:
+            logger.error(
+                "telegram polling preflight failed: another getUpdates consumer is active. "
+                "Ensure only one Telegram runtime is running for this token "
+                "(for example, only one process with BOT_RUNTIME=telegram/both)."
+            )
+            return
+
         try:
             await dp.start_polling(bot)
         except TelegramConflictError:
