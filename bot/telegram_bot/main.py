@@ -11,6 +11,10 @@ import fcntl
 
 from aiogram import Bot, Dispatcher
 from aiogram.exceptions import TelegramConflictError
+from aiogram.methods import GetUpdates
+from aiogram.dispatcher.dispatcher import DEFAULT_BACKOFF_CONFIG
+from aiogram.dispatcher.dispatcher import loggers as aiogram_loggers
+from aiogram.utils.backoff import Backoff, BackoffConfig
 from aiogram.types import BotCommand
 
 from bot.telegram_bot.commands import get_commands_router
@@ -30,6 +34,65 @@ def _configure_logging() -> None:
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+
+
+def _patch_aiogram_conflict_behavior() -> None:
+    """Stop polling immediately when Telegram reports getUpdates conflict.
+
+    By default aiogram treats all getUpdates errors as transient and retries
+    forever with backoff, which creates noisy logs when another bot instance is
+    already polling. We keep the default behavior for other errors.
+    """
+
+    async def _listen_updates_with_conflict_exit(
+        cls,
+        bot: Bot,
+        polling_timeout: int = 30,
+        backoff_config: BackoffConfig = DEFAULT_BACKOFF_CONFIG,
+        allowed_updates: list[str] | None = None,
+    ):
+        backoff = Backoff(config=backoff_config)
+        get_updates = GetUpdates(timeout=polling_timeout, allowed_updates=allowed_updates)
+        kwargs = {}
+        if bot.session.timeout:
+            kwargs["request_timeout"] = int(bot.session.timeout + polling_timeout)
+        failed = False
+        while True:
+            try:
+                updates = await bot(get_updates, **kwargs)
+            except TelegramConflictError:
+                aiogram_loggers.dispatcher.error(
+                    "Polling stopped due to TelegramConflictError: another getUpdates consumer is active "
+                    "(bot id = %d)",
+                    bot.id,
+                )
+                return
+            except Exception as e:  # noqa: BLE001
+                failed = True
+                aiogram_loggers.dispatcher.error("Failed to fetch updates - %s: %s", type(e).__name__, e)
+                aiogram_loggers.dispatcher.warning(
+                    "Sleep for %f seconds and try again... (tryings = %d, bot id = %d)",
+                    backoff.next_delay,
+                    backoff.counter,
+                    bot.id,
+                )
+                await backoff.asleep()
+                continue
+
+            if failed:
+                aiogram_loggers.dispatcher.info(
+                    "Connection established (tryings = %d, bot id = %d)",
+                    backoff.counter,
+                    bot.id,
+                )
+                backoff.reset()
+                failed = False
+
+            for update in updates:
+                yield update
+                get_updates.offset = update.update_id + 1
+
+    Dispatcher._listen_updates = classmethod(_listen_updates_with_conflict_exit)
 
 
 async def run_polling(token: str) -> None:
@@ -91,6 +154,7 @@ async def run_polling(token: str) -> None:
 
 def main() -> None:
     _configure_logging()
+    _patch_aiogram_conflict_behavior()
     token = get_telegram_bot_token()
     if not token:
         raise RuntimeError(
