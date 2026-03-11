@@ -182,6 +182,17 @@ class AccountsServiceTests(unittest.TestCase):
         self.assertEqual(first_code, second_code)
         self.assertEqual(len(self.fake_db.tables["account_link_codes"]), 1)
 
+    def test_issue_link_code_fails_when_target_provider_already_linked(self):
+        AccountsService.register_identity("discord", "111")
+        ok, code = AccountsService.issue_discord_telegram_link_code(111)
+        self.assertTrue(ok)
+        self.assertTrue(code)
+        AccountsService.consume_telegram_link_code(222, code)
+
+        ok, message = AccountsService.issue_discord_telegram_link_code(111)
+        self.assertFalse(ok)
+        self.assertEqual(message, "Аккаунт уже привязан к telegram")
+
     def test_link_flow_expired_code(self):
         AccountsService.register_identity("discord", "111")
         now = datetime.now(timezone.utc)
