@@ -10,6 +10,10 @@ from bot.systems.linking_logic import (
 from bot.utils import send_temp
 
 
+def _is_private_context(ctx) -> bool:
+    return getattr(ctx, "guild", None) is None
+
+
 @bot.hybrid_command(name="register_account", description="Зарегистрировать общий аккаунт")
 async def register_account(ctx):
     success, payload = register_discord_account(ctx.author.id)
@@ -19,6 +23,10 @@ async def register_account(ctx):
 
 @bot.hybrid_command(name="link_telegram", description="Сгенерировать код для привязки Telegram аккаунта")
 async def link_telegram(ctx):
+    if not _is_private_context(ctx):
+        await send_temp(ctx, "❌ Команда привязки доступна только в личных сообщениях с ботом.", delete_after=None)
+        return
+
     success, payload = issue_discord_telegram_link_code(ctx.author.id)
     if not success:
         await send_temp(ctx, f"❌ {payload}", delete_after=None)
@@ -38,6 +46,10 @@ async def link_telegram(ctx):
 
 @bot.hybrid_command(name="link", description="Привязать Discord к аккаунту по коду из Telegram")
 async def link(ctx, code: str):
+    if not _is_private_context(ctx):
+        await send_temp(ctx, "❌ Команда привязки доступна только в личных сообщениях с ботом.", delete_after=None)
+        return
+
     success, payload = consume_discord_link_code(ctx.author.id, code)
     prefix = "✅" if success else "❌"
     await send_temp(ctx, f"{prefix} {payload}", delete_after=None)

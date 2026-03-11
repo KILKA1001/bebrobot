@@ -1,7 +1,11 @@
 import unittest
 from unittest.mock import patch
 
-from bot.telegram_bot.systems.commands_logic import process_profile_command
+from bot.telegram_bot.systems.commands_logic import (
+    process_link_command,
+    process_link_discord_command,
+    process_profile_command,
+)
 
 
 class TelegramCommandsLogicTests(unittest.TestCase):
@@ -42,6 +46,20 @@ class TelegramCommandsLogicTests(unittest.TestCase):
 
         mock_get_profile.assert_called_once_with("telegram", "100", display_name="Caller")
         self.assertIn('tg://user?id=100', result)
+
+    @patch("bot.telegram_bot.systems.commands_logic.handle_link_command")
+    def test_link_command_restricted_to_private_chat(self, mock_handle_link):
+        result = process_link_command('/link ABC123', telegram_user_id=100, is_private_chat=False)
+
+        self.assertEqual(result, '❌ Команда привязки доступна только в личных сообщениях с ботом.')
+        mock_handle_link.assert_not_called()
+
+    @patch("bot.telegram_bot.systems.commands_logic.issue_telegram_discord_link_code")
+    def test_link_discord_command_restricted_to_private_chat(self, mock_issue_link_code):
+        result = process_link_discord_command(telegram_user_id=100, is_private_chat=False)
+
+        self.assertEqual(result, '❌ Команда привязки доступна только в личных сообщениях с ботом.')
+        mock_issue_link_code.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -75,7 +75,14 @@ def process_profile_command(
         safe_points=safe_points,
     )
 
-def process_link_command(message_text: str, telegram_user_id: int | None) -> str:
+def process_link_command(
+    message_text: str,
+    telegram_user_id: int | None,
+    is_private_chat: bool = True,
+) -> str:
+    if not is_private_chat:
+        return "❌ Команда привязки доступна только в личных сообщениях с ботом."
+
     text = (message_text or "").strip()
     parts = text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
@@ -90,7 +97,13 @@ def process_link_command(message_text: str, telegram_user_id: int | None) -> str
     return f"{prefix} {payload}"
 
 
-def process_link_discord_command(telegram_user_id: int | None) -> str:
+def process_link_discord_command(
+    telegram_user_id: int | None,
+    is_private_chat: bool = True,
+) -> str:
+    if not is_private_chat:
+        return "❌ Команда привязки доступна только в личных сообщениях с ботом."
+
     if telegram_user_id is None:
         return "Не удалось определить пользователя Telegram."
 
