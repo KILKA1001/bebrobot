@@ -116,6 +116,7 @@ class _FakeDb:
             "account_link_codes": [],
             "link_tokens": [],
             "scores": [],
+            "profile_title_roles": [],
         }
         self.account_seq = 0
         self.supabase = _FakeSupabase(self)
@@ -130,6 +131,8 @@ class AccountsServiceTests(unittest.TestCase):
         self.fake_db = _FakeDb()
         self.patcher = patch("bot.services.accounts_service.db", self.fake_db)
         self.patcher.start()
+        AccountsService._account_titles_cache = {}
+        AccountsService._title_roles_cache = None
 
     def tearDown(self):
         self.patcher.stop()
@@ -235,6 +238,37 @@ class AccountsServiceTests(unittest.TestCase):
         self.assertEqual(profile["link_status"], "Не привязан")
         self.assertEqual(profile["nulls_brawl_id"], "—")
         self.assertEqual(profile["points"], "125")
+        self.assertEqual(profile["titles_text"], "Нет званий")
+
+    def test_save_and_read_account_titles(self):
+        AccountsService.register_identity("discord", "111")
+        account_id = AccountsService.resolve_account_id("discord", "111")
+        self.assertIsNotNone(account_id)
+
+        ok = AccountsService.save_account_titles(account_id, ["Глава клуба", "Главный вице"], source="discord")
+        self.assertTrue(ok)
+
+        profile = AccountsService.get_profile("discord", "111", "Nick")
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile["titles"], ["Глава клуба", "Главный вице"])
+        self.assertEqual(profile["titles_text"], "Глава клуба, Главный вице")
+
+
+    def test_get_configured_title_roles_from_db(self):
+        self.fake_db.tables["profile_title_roles"].extend(
+            [
+                {"discord_role_id": "101", "title_name": "Глава клуба", "is_active": True},
+                {"discord_role_id": 102, "title_name": "Главный вице", "is_active": True},
+                {"discord_role_id": 103, "title_name": "", "is_active": True},
+                {"discord_role_id": "bad", "title_name": "Ветеран города", "is_active": True},
+                {"discord_role_id": 104, "title_name": "Участник клубов", "is_active": False},
+            ]
+        )
+
+        AccountsService._title_roles_cache = None
+        mapping = AccountsService.get_configured_title_roles()
+
+        self.assertEqual(mapping, {101: "Глава клуба", 102: "Главный вице"})
 
     def test_profile_points_requires_discord_link(self):
         AccountsService.register_identity("telegram", "222")

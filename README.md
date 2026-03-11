@@ -26,6 +26,9 @@ pip install -r requirements.txt
      TOURNAMENT_ROLE_IDS=ID_роли1,ID_роли2
      BOT_API_DELAY_SECONDS=3.0
      BOT_API_DELAY_JITTER=0.8
+     PROFILE_DISCORD_TITLE_ROLE_IDS=ID_роли_главы,ID_роли_вице
+     PROFILE_DISCORD_TITLE_ROLE_NAMES=Глава клуба,Главный вице
+     PROFILE_TITLES_SYNC_INTERVAL_SEC=900
      ```
      Здесь `ID_роли` — числовые идентификаторы ролей, которым разрешены
      соответствующие действия.
@@ -33,6 +36,14 @@ pip install -r requirements.txt
      `BOT_API_DELAY_SECONDS` и `BOT_API_DELAY_JITTER` помогают распределять
      запросы к API во времени (чтобы реже ловить 429). Первый задаёт базовую
      задержку между запросами, второй добавляет случайный разброс сверху.
+
+     `PROFILE_DISCORD_TITLE_ROLE_IDS` и/или `PROFILE_DISCORD_TITLE_ROLE_NAMES` задают роли Discord,
+     которые бот переносит в поле званий профиля общего аккаунта (fallback, если таблица БД не заполнена).
+
+     Приоритетный способ: таблица `profile_title_roles` (см. `sql/p5_profile_title_roles.sql`)
+     с маппингом `discord_role_id -> title_name`. Это позволяет хранить звания централизованно в БД.
+
+     `PROFILE_TITLES_SYNC_INTERVAL_SEC` задаёт интервал (в секундах) для фоновой синхронизации званий.
 
 3. **Запуск бота**:
 ```bash
