@@ -266,6 +266,28 @@ class AccountsService:
                 db._inc_metric("link_issue_fail")
             return False, "Сначала зарегистрируйтесь в боте"
 
+        try:
+            identities_response = (
+                db.supabase.table("account_identities")
+                .select("provider")
+                .eq("account_id", str(account_id))
+                .execute()
+            )
+            identities = identities_response.data or []
+            if any(identity.get("provider") == target_provider for identity in identities):
+                if hasattr(db, "_inc_metric"):
+                    db._inc_metric("link_issue_fail")
+                return False, f"Аккаунт уже привязан к {target_provider}"
+        except Exception as e:
+            logger.warning(
+                "issue_link_code identity lookup failed source=%s:%s target=%s account_id=%s error=%s",
+                source_provider,
+                source_provider_user_id,
+                target_provider,
+                account_id,
+                AccountsService._format_db_error(e),
+            )
+
         reusable_code = AccountsService._find_reusable_link_code(
             str(account_id),
             source_provider,
