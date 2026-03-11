@@ -116,6 +116,7 @@ class _FakeDb:
             "account_link_codes": [],
             "link_tokens": [],
             "scores": [],
+            "actions": [],
             "profile_title_roles": [],
         }
         self.account_seq = 0
@@ -273,11 +274,20 @@ class AccountsServiceTests(unittest.TestCase):
 
         self.assertEqual(mapping, {101: "Глава клуба", 102: "Главный вице"})
 
-    def test_profile_points_requires_discord_link(self):
+    def test_profile_points_for_telegram_profile_reads_account_actions(self):
         AccountsService.register_identity("telegram", "222")
+        account_id = AccountsService.resolve_account_id("telegram", "222")
+        self.assertIsNotNone(account_id)
+        self.fake_db.tables["actions"].extend(
+            [
+                {"account_id": account_id, "points": 10},
+                {"account_id": account_id, "points": -3.5},
+            ]
+        )
+
         profile = AccountsService.get_profile("telegram", "222", "Nick")
         self.assertIsNotNone(profile)
-        self.assertEqual(profile["points"], "Привяжите Discord для получения информации (временно).")
+        self.assertEqual(profile["points"], "6.5")
 
     def test_link_flow_with_legacy_link_tokens_table(self):
         AccountsService.register_identity("discord", "111")
