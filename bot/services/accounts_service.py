@@ -601,9 +601,9 @@ class AccountsService:
         has_telegram = any(identity.get("provider") == "telegram" for identity in identities)
         discord_identity = next((identity for identity in identities if identity.get("provider") == "discord"), None)
 
-        custom_nick = display_name or "Пользователь"
-        description = "Описание не заполнено"
-        nulls_id = "—"
+        custom_nick = display_name or str(AccountsService.PROFILE_FIELDS_CONFIG["custom_nick"]["default"])
+        description = str(AccountsService.PROFILE_FIELDS_CONFIG["description"]["default"])
+        nulls_id = str(AccountsService.PROFILE_FIELDS_CONFIG["nulls_brawl_id"]["default"])
         nulls_status = "Не подтвержден (заглушка)"
         points = "Привяжите Discord для получения информации (временно)."
         titles: list[str] = AccountsService.get_account_titles(account_id)
