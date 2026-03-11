@@ -589,6 +589,51 @@ class AccountsService:
         return f"{points_float:.2f}".rstrip("0").rstrip(".")
 
     @staticmethod
+    def _load_points_from_actions(account_id: str, discord_identity: Optional[dict]) -> Optional[float]:
+        """Возвращает баланс по сумме действий, чтобы не зависеть от дублей в scores."""
+        if not db.supabase:
+            return None
+
+        action_rows: list[dict] = []
+        try:
+            action_response = (
+                db.supabase.table("actions")
+                .select("points")
+                .eq("account_id", str(account_id))
+                .execute()
+            )
+            action_rows = action_response.data or []
+        except Exception as e:
+            logger.exception(
+                "get_profile actions read failed account_id=%s error=%s",
+                account_id,
+                AccountsService._format_db_error(e),
+            )
+
+        if not action_rows and discord_identity:
+            discord_user_id = discord_identity.get("provider_user_id")
+            if discord_user_id:
+                try:
+                    action_response = (
+                        db.supabase.table("actions")
+                        .select("points")
+                        .eq("user_id", str(discord_user_id))
+                        .execute()
+                    )
+                    action_rows = action_response.data or []
+                except Exception as e:
+                    logger.exception(
+                        "get_profile actions fallback failed account_id=%s discord_user_id=%s error=%s",
+                        account_id,
+                        discord_user_id,
+                        AccountsService._format_db_error(e),
+                    )
+
+        if action_rows:
+            return sum(float(row.get("points") or 0) for row in action_rows)
+        return None
+
+    @staticmethod
     def _normalize_profile_field_value(field_name: str, value: object) -> str:
         config = AccountsService.PROFILE_FIELDS_CONFIG.get(field_name, {})
         default_value = str(config.get("default", ""))
@@ -696,6 +741,15 @@ class AccountsService:
         if not titles:
             logger.info("get_profile no titles yet account_id=%s provider=%s", account_id, provider)
 
+        points_from_actions = AccountsService._load_points_from_actions(str(account_id), discord_identity)
+        if points_from_actions is not None:
+            points = AccountsService._format_points(points_from_actions)
+        else:
+            logger.warning(
+                "get_profile actions points unavailable account_id=%s; fallback to scores snapshot",
+                account_id,
+            )
+
         try:
             points_response = (
                 db.supabase.table("scores")
@@ -715,9 +769,16 @@ class AccountsService:
                     .execute()
                 )
                 points_rows = points_response.data or []
-            points = AccountsService._format_points(points_rows[0].get("points", 0)) if points_rows else "0"
+            if points_from_actions is None:
+                points = AccountsService._format_points(points_rows[0].get("points", 0)) if points_rows else "0"
         except Exception as e:
-            logger.warning("get_profile points failed for %s: %s", account_id, e)
+            logger.exception(
+                "get_profile points failed account_id=%s provider=%s provider_user_id=%s error=%s",
+                account_id,
+                provider,
+                provider_user_id,
+                AccountsService._format_db_error(e),
+            )
 
         return {
             "account_id": account_id,
