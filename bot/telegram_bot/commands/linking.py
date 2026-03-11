@@ -2,6 +2,7 @@ import logging
 
 from aiogram import F, Router
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -23,6 +24,33 @@ _EDIT_FIELD_LABELS = {
     "nulls_brawl_id": "Null's Brawl ID",
 }
 _PENDING_EDIT_FIELD: dict[int, str] = {}
+
+
+def _is_chat_send_permissions_error(error: TelegramBadRequest) -> bool:
+    return "not enough rights to send" in str(error).lower()
+
+
+async def _safe_answer(
+    message: Message,
+    text: str,
+    *,
+    parse_mode: ParseMode | None = None,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> bool:
+    try:
+        await message.answer(text, parse_mode=parse_mode, reply_markup=reply_markup)
+        return True
+    except TelegramBadRequest as error:
+        if _is_chat_send_permissions_error(error):
+            logger.warning(
+                "message send skipped due to missing chat permissions chat_id=%s user_id=%s error=%s",
+                message.chat.id,
+                message.from_user.id if message.from_user is not None else None,
+                error,
+            )
+            return False
+        logger.exception("message send failed chat_id=%s", message.chat.id)
+        return False
 
 
 def _profile_settings_keyboard() -> InlineKeyboardMarkup:
@@ -64,7 +92,7 @@ async def profile_command(message: Message) -> None:
     )
 
     if target_user_id is None:
-        await message.answer(response)
+        await _safe_answer(message, response)
         return
 
     reply_markup = None
@@ -85,6 +113,17 @@ async def profile_command(message: Message) -> None:
                     reply_markup=reply_markup,
                 )
                 return True
+        except TelegramBadRequest as error:
+            if _is_chat_send_permissions_error(error):
+                logger.warning(
+                    "photo send skipped due to missing chat permissions chat_id=%s target_user_id=%s error=%s",
+                    message.chat.id,
+                    user_id,
+                    error,
+                )
+                return False
+            logger.exception("failed to send profile avatar due to telegram error user_id=%s", user_id)
+            return False
         except Exception:
             logger.exception("failed to send profile avatar user_id=%s", user_id)
             return False
@@ -97,7 +136,7 @@ async def profile_command(message: Message) -> None:
     if await _send_avatar_caption(bot_user.id):
         return
 
-    await message.answer(response, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+    await _safe_answer(message, response, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
 
 
 @router.message(Command("profile_edit"))
