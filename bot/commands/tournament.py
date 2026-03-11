@@ -22,6 +22,7 @@ from bot.data.tournament_db import get_tournament_status, get_tournament_info
 # Import the bot instance from base.py instead of creating a new one
 from bot.commands.base import bot
 from bot.utils import send_temp
+from bot.services import AuthorityService
 
 # Дополнительные структуры для хранения авторов турниров и подтверждений
 tournament_admins: dict[int, int] = {}
@@ -39,7 +40,9 @@ TOURNAMENT_ROLE_IDS = tuple(
 def has_tournament_permission(ctx: commands.Context) -> bool:
     if ctx.author.guild_permissions.administrator:
         return True
-    return any(role.id in TOURNAMENT_ROLE_IDS for role in ctx.author.roles)
+    if any(role.id in TOURNAMENT_ROLE_IDS for role in ctx.author.roles):
+        return True
+    return AuthorityService.has_command_permission("discord", str(ctx.author.id), "tournament_manage")
 
 
 @bot.hybrid_command(

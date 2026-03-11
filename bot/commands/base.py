@@ -3,6 +3,7 @@ from discord.ext import commands
 from aiohttp import TraceConfig
 from typing import Optional
 import os
+import logging
 
 from bot.data import db
 from bot.utils.roles_and_activities import (
@@ -21,7 +22,7 @@ from bot.systems.core_logic import (
 )
 from bot.utils import send_temp, format_moscow_time, format_points
 from bot.utils.api_monitor import monitor
-from bot.services import PointsService
+from bot.services import PointsService, AuthorityService
 from bot import COMMAND_PREFIX
 
 
@@ -36,6 +37,7 @@ intents.members = True
 intents.message_content = True
 
 trace_config = TraceConfig()
+logger = logging.getLogger(__name__)
 
 # Дополнительные роли, которым разрешено начислять и снимать баллы
 POINTS_ROLE_IDS = tuple(
@@ -73,7 +75,22 @@ def has_points_permission(ctx: commands.Context) -> bool:
     """Check if user can modify points."""
     if ctx.author.guild_permissions.administrator:
         return True
-    return any(role.id in POINTS_ROLE_IDS for role in ctx.author.roles)
+    if any(role.id in POINTS_ROLE_IDS for role in ctx.author.roles):
+        return True
+    return AuthorityService.has_command_permission("discord", str(ctx.author.id), "points_manage")
+
+
+async def _check_command_authority(ctx: commands.Context, command_key: str, target: discord.Member | None = None) -> bool:
+    if ctx.author.guild_permissions.administrator:
+        return True
+    if not AuthorityService.has_command_permission("discord", str(ctx.author.id), command_key):
+        await send_temp(ctx, "❌ Недостаточно полномочий для этой команды.")
+        return False
+    if target and target.id != ctx.author.id:
+        if not AuthorityService.can_manage_target("discord", str(ctx.author.id), "discord", str(target.id)):
+            await send_temp(ctx, "❌ Нельзя выполнять действия над пользователем с равным/более высоким званием.")
+            return False
+    return True
 
 
 
@@ -84,6 +101,8 @@ def has_points_permission(ctx: commands.Context) -> bool:
 async def add_points(
     ctx, member: discord.Member, points: str, *, reason: str = "Без причины"
 ):
+    if not await _check_command_authority(ctx, "points_manage", member):
+        return
     try:
         points_float = float(points.replace(",", "."))
         user_id = member.id
@@ -109,6 +128,7 @@ async def add_points(
         )
         await send_temp(ctx, embed=embed, delete_after=None)
     except ValueError:
+        logger.exception("add_points invalid value author_id=%s target_id=%s points=%s", ctx.author.id, member.id, points)
         await send_temp(ctx, "Ошибка: введите корректное число", delete_after=None)
 
 
@@ -117,6 +137,8 @@ async def add_points(
 async def remove_points(
     ctx, member: discord.Member, points: str, *, reason: str = "Без причины"
 ):
+    if not await _check_command_authority(ctx, "points_manage", member):
+        return
     try:
         points_float = float(points.replace(",", "."))
         if points_float <= 0:
@@ -160,6 +182,7 @@ async def remove_points(
         )
         await send_temp(ctx, embed=embed, delete_after=None)
     except ValueError:
+        logger.exception("remove_points invalid value author_id=%s target_id=%s points=%s", ctx.author.id, member.id, points)
         await send_temp(
             ctx, "Ошибка: введите корректное число больше 0", delete_after=None
         )
@@ -247,8 +270,9 @@ async def activities_cmd(ctx):
 @bot.hybrid_command(
     name="undo", description="Отменить последние начисления или списания"
 )
-@commands.has_permissions(administrator=True)
 async def undo(ctx, member: discord.Member, count: int = 1):
+    if not await _check_command_authority(ctx, "undo_manage", member):
+        return
     user_id = member.id
     user_history = db.history.get(user_id, [])
     if len(user_history) < count:
@@ -299,8 +323,9 @@ async def undo(ctx, member: discord.Member, count: int = 1):
 @bot.hybrid_command(
     name="awardmonthtop", description="Начислить бонусы за выбранный месяц"
 )
-@commands.has_permissions(administrator=True)
 async def award_monthtop(ctx, month: Optional[int] = None, year: Optional[int] = None):
+    if not await _check_command_authority(ctx, "monthtop_manage"):
+        return
     await run_monthly_top(ctx, month, year)
 
 
@@ -334,8 +359,9 @@ async def bank_balance(ctx):
 @bot.hybrid_command(
     name="bankadd", description="Добавить баллы в клубный банк"
 )
-@commands.has_permissions(administrator=True)
 async def bank_add(ctx, amount: float, *, reason: str = "Без причины"):
+    if not await _check_command_authority(ctx, "bank_manage"):
+        return
     if amount <= 0:
         await send_temp(ctx, "❌ Сумма должна быть больше 0")
         return
@@ -347,8 +373,9 @@ async def bank_add(ctx, amount: float, *, reason: str = "Без причины")
 
 
 @bot.hybrid_command(name="bankspend", description="Потратить баллы из банка")
-@commands.has_permissions(administrator=True)
 async def bank_spend(ctx, amount: float, *, reason: str = "Без причины"):
+    if not await _check_command_authority(ctx, "bank_manage"):
+        return
     if amount <= 0:
         await send_temp(ctx, "❌ Сумма должна быть больше 0")
         return
@@ -365,8 +392,9 @@ async def bank_spend(ctx, amount: float, *, reason: str = "Без причины
 
 
 @bot.hybrid_command(name="bankhistory", description="История операций клуба")
-@commands.has_permissions(administrator=True)
 async def bank_history(ctx):
+    if not await _check_command_authority(ctx, "bank_manage"):
+        return
     if not db.supabase:
         await send_temp(ctx, "❌ Supabase не инициализирован")
         return
@@ -397,6 +425,7 @@ async def bank_history(ctx):
             )
         await send_temp(ctx, embed=embed)
     except Exception as e:
+        logger.exception("bank_history failed author_id=%s", ctx.author.id)
         await send_temp(ctx, f"❌ Ошибка получения истории: {str(e)}")
 
 
