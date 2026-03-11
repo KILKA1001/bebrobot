@@ -21,26 +21,6 @@ class AccountsService:
     LINK_CODES_TABLES = ("account_link_codes", "link_tokens")
     _account_titles_cache: dict[str, list[str]] = {}
     _title_roles_cache: dict[int, str] | None = None
-    PROFILE_FIELDS_CONFIG: dict[str, dict[str, object]] = {
-        "custom_nick": {
-            "column": "custom_nick",
-            "max_length": 32,
-            "label": "Никнейм",
-            "default": "Пользователь",
-        },
-        "description": {
-            "column": "profile_description",
-            "max_length": 100,
-            "label": "Описание",
-            "default": "Описание не заполнено",
-        },
-        "nulls_brawl_id": {
-            "column": "nulls_brawl_id",
-            "max_length": 32,
-            "label": "Null's Brawl ID",
-            "default": "—",
-        },
-    }
 
     @staticmethod
     def resolve_account_id(provider: str, provider_user_id: str) -> Optional[str]:
@@ -627,26 +607,13 @@ class AccountsService:
         nulls_status = "Не подтвержден (заглушка)"
         points = "Привяжите Discord для получения информации (временно)."
         titles: list[str] = AccountsService.get_account_titles(account_id)
-        titles_text = ", ".join(titles) if titles else "Нет званий"
-
-        try:
-            account_response = (
-                db.supabase.table("accounts")
-                .select("custom_nick,profile_description,nulls_brawl_id")
-                .eq("id", str(account_id))
-                .limit(1)
-                .execute()
-            )
-            account_rows = account_response.data or []
-            if account_rows:
-                account_row = account_rows[0]
-                custom_nick = str(account_row.get("custom_nick") or custom_nick).strip() or custom_nick
-                description = str(account_row.get("profile_description") or description).strip() or description
-                nulls_id = str(account_row.get("nulls_brawl_id") or nulls_id).strip() or nulls_id
-                if nulls_id != "—":
-                    nulls_status = "Указан в профиле"
-        except Exception as e:
-            logger.warning("get_profile account custom fields failed for %s: %s", account_id, e)
+        titles_text = (
+            ", ".join(titles)
+            if titles
+            else "Привяжите Discord и/или подтвердите скрином свое звание администрации клуба для получения звания (временно)"
+        )
+        if not titles:
+            logger.info("get_profile no titles yet account_id=%s provider=%s", account_id, provider)
 
         if discord_identity:
             discord_user_id = discord_identity.get("provider_user_id")
@@ -679,44 +646,6 @@ class AccountsService:
             "titles": titles,
             "titles_text": titles_text,
         }
-
-    @staticmethod
-    def update_profile_field(provider: str, provider_user_id: str, field_name: str, value: str) -> Tuple[bool, str]:
-        field_config = AccountsService.PROFILE_FIELDS_CONFIG.get(str(field_name or "").strip())
-        if not field_config:
-            logger.error("update_profile_field failed: unsupported field_name=%s", field_name)
-            return False, "Нельзя изменить это поле профиля"
-
-        normalized_value = str(value or "").strip()
-        max_length = int(field_config["max_length"])
-        if len(normalized_value) > max_length:
-            return False, f"Слишком длинное значение. Максимум {max_length} символов"
-
-        account_id = AccountsService.resolve_account_id(provider, provider_user_id)
-        if not account_id:
-            return False, "Профиль не найден. Сначала зарегистрируйтесь"
-        if not db.supabase:
-            return False, "База данных недоступна"
-
-        default_value = str(field_config["default"])
-        value_to_store = normalized_value or default_value
-        payload = {
-            str(field_config["column"]): value_to_store,
-            "profile_updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-
-        try:
-            db.supabase.table("accounts").update(payload).eq("id", str(account_id)).execute()
-            return True, f"Поле «{field_config['label']}» обновлено"
-        except Exception as e:
-            logger.exception(
-                "update_profile_field failed provider=%s provider_user_id=%s field=%s error=%s",
-                provider,
-                provider_user_id,
-                field_name,
-                AccountsService._format_db_error(e),
-            )
-            return False, "Не удалось обновить профиль, попробуйте позже"
 
     @staticmethod
     def get_account_titles(account_id: str) -> list[str]:

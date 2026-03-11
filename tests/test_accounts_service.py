@@ -238,7 +238,10 @@ class AccountsServiceTests(unittest.TestCase):
         self.assertEqual(profile["link_status"], "Не привязан")
         self.assertEqual(profile["nulls_brawl_id"], "—")
         self.assertEqual(profile["points"], "125")
-        self.assertEqual(profile["titles_text"], "Нет званий")
+        self.assertEqual(
+            profile["titles_text"],
+            "Привяжите Discord и/или подтвердите скрином свое звание администрации клуба для получения звания (временно)",
+        )
 
     def test_save_and_read_account_titles(self):
         AccountsService.register_identity("discord", "111")
@@ -253,25 +256,6 @@ class AccountsServiceTests(unittest.TestCase):
         self.assertEqual(profile["titles"], ["Глава клуба", "Главный вице"])
         self.assertEqual(profile["titles_text"], "Глава клуба, Главный вице")
 
-
-
-    def test_update_profile_field_updates_account_row(self):
-        AccountsService.register_identity("telegram", "555")
-
-        ok, message = AccountsService.update_profile_field("telegram", "555", "custom_nick", "Bebra")
-        self.assertTrue(ok)
-        self.assertIn("обновлено", message)
-
-        account_id = AccountsService.resolve_account_id("telegram", "555")
-        row = next((r for r in self.fake_db.tables["accounts"] if r.get("id") == account_id), None)
-        self.assertIsNotNone(row)
-        self.assertEqual(row.get("custom_nick"), "Bebra")
-
-    def test_update_profile_field_rejects_too_long_value(self):
-        AccountsService.register_identity("telegram", "556")
-        ok, message = AccountsService.update_profile_field("telegram", "556", "description", "a" * 101)
-        self.assertFalse(ok)
-        self.assertIn("Максимум", message)
 
     def test_get_configured_title_roles_from_db(self):
         self.fake_db.tables["profile_title_roles"].extend(
