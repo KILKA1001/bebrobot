@@ -589,6 +589,59 @@ class AccountsService:
         return f"{points_float:.2f}".rstrip("0").rstrip(".")
 
     @staticmethod
+    def _read_points_from_table(table_name: str, account_id: Optional[str], discord_user_id: Optional[str]) -> Optional[float]:
+        """Reads points rows and returns max non-negative value for account/user fallback."""
+        if not db.supabase:
+            return None
+
+        rows: list[dict] = []
+        try:
+            if account_id:
+                by_account = (
+                    db.supabase.table(table_name)
+                    .select("points")
+                    .eq("account_id", str(account_id))
+                    .execute()
+                )
+                rows.extend(by_account.data or [])
+
+            if discord_user_id:
+                by_user = (
+                    db.supabase.table(table_name)
+                    .select("points")
+                    .eq("user_id", str(discord_user_id))
+                    .execute()
+                )
+                rows.extend(by_user.data or [])
+        except Exception as e:
+            logger.exception(
+                "read points failed table=%s account_id=%s discord_user_id=%s error=%s",
+                table_name,
+                account_id,
+                discord_user_id,
+                AccountsService._format_db_error(e),
+            )
+            return None
+
+        parsed_points: list[float] = []
+        for row in rows:
+            try:
+                parsed_points.append(float(row.get("points") or 0))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "invalid points value table=%s account_id=%s discord_user_id=%s row=%s",
+                    table_name,
+                    account_id,
+                    discord_user_id,
+                    row,
+                )
+
+        if not parsed_points:
+            return None
+
+        return max(max(parsed_points), 0.0)
+
+    @staticmethod
     def _normalize_profile_field_value(field_name: str, value: object) -> str:
         config = AccountsService.PROFILE_FIELDS_CONFIG.get(field_name, {})
         default_value = str(config.get("default", ""))
@@ -696,28 +749,36 @@ class AccountsService:
         if not titles:
             logger.info("get_profile no titles yet account_id=%s provider=%s", account_id, provider)
 
-        try:
-            points_response = (
-                db.supabase.table("scores")
-                .select("points")
-                .eq("account_id", str(account_id))
-                .limit(1)
-                .execute()
-            )
-            points_rows = points_response.data or []
-            if not points_rows and discord_identity:
-                discord_user_id = discord_identity.get("provider_user_id")
-                points_response = (
-                    db.supabase.table("scores")
-                    .select("points")
-                    .eq("user_id", str(discord_user_id))
-                    .limit(1)
-                    .execute()
+        discord_user_id = str(discord_identity.get("provider_user_id")) if discord_identity else None
+        if discord_user_id:
+            try:
+                score_points = AccountsService._read_points_from_table("scores", account_id, discord_user_id)
+                action_points = AccountsService._read_points_from_table("actions", account_id, discord_user_id)
+
+                chosen_points = score_points
+                if action_points is not None:
+                    if score_points is None:
+                        chosen_points = action_points
+                    elif abs(score_points - action_points) > 0.0001:
+                        logger.warning(
+                            "points mismatch account_id=%s discord_user_id=%s scores=%.4f actions=%.4f; using actions",
+                            account_id,
+                            discord_user_id,
+                            score_points,
+                            action_points,
+                        )
+                        chosen_points = action_points
+
+                points = AccountsService._format_points(chosen_points if chosen_points is not None else 0)
+            except Exception as e:
+                logger.exception(
+                    "get_profile points failed account_id=%s provider=%s provider_user_id=%s error=%s",
+                    account_id,
+                    provider,
+                    provider_user_id,
+                    AccountsService._format_db_error(e),
                 )
-                points_rows = points_response.data or []
-            points = AccountsService._format_points(points_rows[0].get("points", 0)) if points_rows else "0"
-        except Exception as e:
-            logger.warning("get_profile points failed for %s: %s", account_id, e)
+                points = "0"
 
         return {
             "account_id": account_id,
