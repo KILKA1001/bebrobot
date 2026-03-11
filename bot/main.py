@@ -56,6 +56,7 @@ import bot.commands.players
 import bot.commands.maps
 from datetime import datetime
 from bot.systems import fines_logic
+from bot.systems.profile_titles_logic import profile_titles_sync_loop
 import bot.commands.fines
 import bot.data.tournament_db as tournament_db
 from bot.systems.tournament_logic import BettingView
@@ -136,6 +137,7 @@ async def on_ready():
         from bot.systems.tournament_logic import tournament_reminder_loop, registration_deadline_loop
         asyncio.create_task(tournament_reminder_loop(bot))
         asyncio.create_task(registration_deadline_loop(bot))
+        asyncio.create_task(profile_titles_sync_loop(bot))
 
     activity = discord.Activity(
         name="Привет! Напиши команду /helpy чтобы увидеть все команды 🧠",
