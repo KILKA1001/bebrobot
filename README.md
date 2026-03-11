@@ -95,6 +95,7 @@ python bot/main.py
 
 
 ## 🤖 Telegram (подготовка)
+- Матрица паритета команд Discord/Telegram: [docs/command_parity_matrix.md](docs/command_parity_matrix.md) (обновляется вместе с новыми user-facing командами).
 - Переменная токена для Render: `TELEGRAM_BOT_TOKEN`.
 - Единая точка запуска: `python bot/main.py`.
 - Выбор рантайма через `BOT_RUNTIME`:
