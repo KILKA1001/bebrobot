@@ -43,6 +43,9 @@ pip install -r requirements.txt
      Приоритетный способ: таблица `profile_title_roles` (см. `sql/p5_profile_title_roles.sql`)
      с маппингом `discord_role_id -> title_name`. Это позволяет хранить звания централизованно в БД.
 
+     Быстрое заполнение таблицы готовым шаблоном: `sql/p6_profile_title_roles_seed_template.sql`
+     (замените NULL на свои ID ролей и выполните запрос).
+
      `PROFILE_TITLES_SYNC_INTERVAL_SEC` задаёт интервал (в секундах) для фоновой синхронизации званий.
 
 3. **Запуск бота**:
