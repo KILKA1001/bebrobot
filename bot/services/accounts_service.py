@@ -19,6 +19,11 @@ class AccountsService:
     MAX_ATTEMPTS = 5
     LINK_CODE_GENERATION_ATTEMPTS = 3
     LINK_CODES_TABLES = ("account_link_codes", "link_tokens")
+    PROFILE_FIELDS_CONFIG = {
+        "custom_nick": {"default": "Игрок", "max_length": 32, "label": "Никнейм"},
+        "description": {"default": "—", "max_length": 100, "label": "Описание"},
+        "nulls_brawl_id": {"default": "—", "max_length": 32, "label": "Null's Brawl ID"},
+    }
     _account_titles_cache: dict[str, list[str]] = {}
     _title_roles_cache: dict[int, str] | None = None
 
@@ -580,6 +585,53 @@ class AccountsService:
         return f"{points_float:.2f}".rstrip("0").rstrip(".")
 
     @staticmethod
+    def _normalize_profile_field_value(field_name: str, value: object) -> str:
+        config = AccountsService.PROFILE_FIELDS_CONFIG.get(field_name, {})
+        default_value = str(config.get("default", ""))
+        max_length = int(config.get("max_length", 255))
+        normalized = str(value or "").strip()
+        if not normalized:
+            return default_value
+        return normalized[:max_length]
+
+    @staticmethod
+    def update_profile_field(provider: str, provider_user_id: str, field_name: str, value: str) -> Tuple[bool, str]:
+        config = AccountsService.PROFILE_FIELDS_CONFIG.get(field_name)
+        if not config:
+            logger.warning(
+                "update_profile_field unknown field provider=%s provider_user_id=%s field=%s",
+                provider,
+                provider_user_id,
+                field_name,
+            )
+            return False, "Неизвестное поле профиля"
+
+        account_id = AccountsService.resolve_account_id(provider, provider_user_id)
+        if not account_id or not db.supabase:
+            logger.warning(
+                "update_profile_field failed to resolve account provider=%s provider_user_id=%s field=%s",
+                provider,
+                provider_user_id,
+                field_name,
+            )
+            return False, "Профиль не найден. Сначала зарегистрируйтесь"
+
+        normalized = AccountsService._normalize_profile_field_value(field_name, value)
+        try:
+            db.supabase.table("accounts").update({field_name: normalized}).eq("id", str(account_id)).execute()
+            return True, f"{config['label']} обновлён"
+        except Exception as e:
+            logger.exception(
+                "update_profile_field failed account_id=%s provider=%s provider_user_id=%s field=%s error=%s",
+                account_id,
+                provider,
+                provider_user_id,
+                field_name,
+                AccountsService._format_db_error(e),
+            )
+            return False, "Не удалось обновить профиль"
+
+    @staticmethod
     def get_profile(provider: str, provider_user_id: str, display_name: Optional[str] = None) -> Optional[dict]:
         account_id = AccountsService.resolve_account_id(provider, provider_user_id)
         if not account_id or not db.supabase:
@@ -604,6 +656,31 @@ class AccountsService:
         custom_nick = display_name or str(AccountsService.PROFILE_FIELDS_CONFIG["custom_nick"]["default"])
         description = str(AccountsService.PROFILE_FIELDS_CONFIG["description"]["default"])
         nulls_id = str(AccountsService.PROFILE_FIELDS_CONFIG["nulls_brawl_id"]["default"])
+        try:
+            account_response = (
+                db.supabase.table("accounts")
+                .select("custom_nick,description,nulls_brawl_id")
+                .eq("id", str(account_id))
+                .limit(1)
+                .execute()
+            )
+            account_rows = account_response.data or []
+            if account_rows:
+                account_row = account_rows[0]
+                custom_nick = AccountsService._normalize_profile_field_value(
+                    "custom_nick",
+                    account_row.get("custom_nick") or display_name,
+                )
+                description = AccountsService._normalize_profile_field_value("description", account_row.get("description"))
+                nulls_id = AccountsService._normalize_profile_field_value("nulls_brawl_id", account_row.get("nulls_brawl_id"))
+        except Exception as e:
+            logger.exception(
+                "get_profile account fields read failed account_id=%s provider=%s provider_user_id=%s error=%s",
+                account_id,
+                provider,
+                provider_user_id,
+                AccountsService._format_db_error(e),
+            )
         nulls_status = "Не подтвержден (заглушка)"
         points = "Привяжите Discord для получения информации (временно)."
         titles: list[str] = AccountsService.get_account_titles(account_id)
