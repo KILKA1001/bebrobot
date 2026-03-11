@@ -692,9 +692,17 @@ class AccountsService:
         if not titles:
             logger.info("get_profile no titles yet account_id=%s provider=%s", account_id, provider)
 
-        if discord_identity:
-            discord_user_id = discord_identity.get("provider_user_id")
-            try:
+        try:
+            points_response = (
+                db.supabase.table("scores")
+                .select("points")
+                .eq("account_id", str(account_id))
+                .limit(1)
+                .execute()
+            )
+            points_rows = points_response.data or []
+            if not points_rows and discord_identity:
+                discord_user_id = discord_identity.get("provider_user_id")
                 points_response = (
                     db.supabase.table("scores")
                     .select("points")
@@ -703,12 +711,9 @@ class AccountsService:
                     .execute()
                 )
                 points_rows = points_response.data or []
-                if points_rows:
-                    points = AccountsService._format_points(points_rows[0].get("points", 0))
-                else:
-                    points = "0"
-            except Exception as e:
-                logger.warning("get_profile points failed for %s: %s", account_id, e)
+            points = AccountsService._format_points(points_rows[0].get("points", 0)) if points_rows else "0"
+        except Exception as e:
+            logger.warning("get_profile points failed for %s: %s", account_id, e)
 
         return {
             "account_id": account_id,

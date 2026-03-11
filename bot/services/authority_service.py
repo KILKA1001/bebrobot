@@ -21,6 +21,14 @@ TITLE_WEIGHTS: dict[str, int] = {
     "участник клубов": 0,
 }
 
+TITLE_ALIASES: tuple[tuple[str, int], ...] = (
+    ("глава клуба", 100),
+    ("главный вице", 100),
+    ("вице города", 80),
+    ("ветеран города", 30),
+    ("участник клубов", 0),
+)
+
 COMMAND_LEVELS: dict[str, int] = {
     "points_manage": 30,
     "fine_create": 30,
@@ -36,6 +44,17 @@ COMMAND_LEVELS: dict[str, int] = {
 
 class AuthorityService:
     @staticmethod
+    def _title_weight(title: str) -> int:
+        normalized = str(title).strip().lower()
+        direct = TITLE_WEIGHTS.get(normalized)
+        if direct is not None:
+            return direct
+        for alias, weight in TITLE_ALIASES:
+            if alias in normalized:
+                return weight
+        return 0
+
+    @staticmethod
     def resolve_authority(provider: str, provider_user_id: str) -> AuthorityResult:
         try:
             account_id = AccountsService.resolve_account_id(provider, str(provider_user_id))
@@ -44,9 +63,17 @@ class AuthorityService:
             titles = tuple(AccountsService.get_account_titles(account_id))
             max_weight = 0
             for title in titles:
-                weight = TITLE_WEIGHTS.get(str(title).strip().lower(), 0)
+                weight = AuthorityService._title_weight(title)
                 if weight > max_weight:
                     max_weight = weight
+            logger.debug(
+                "resolved authority provider=%s provider_user_id=%s account_id=%s titles=%s max_weight=%s",
+                provider,
+                provider_user_id,
+                account_id,
+                titles,
+                max_weight,
+            )
             return AuthorityResult(level=max_weight, rank_weight=max_weight, titles=titles)
         except Exception:
             logger.exception(
