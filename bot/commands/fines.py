@@ -6,9 +6,10 @@ from typing import Optional
 from bot.commands.base import bot
 from bot.utils import send_temp, build_top_embed, safe_send, format_moscow_date
 import os
+import logging
 
 from bot.data import db
-from bot.services import FinesService
+from bot.services import FinesService, AuthorityService
 from bot.systems.fines_logic import (
     build_fine_embed,
     build_fine_detail_embed,
@@ -16,6 +17,8 @@ from bot.systems.fines_logic import (
     AllFinesView,
     get_fine_leaders,
 )
+
+logger = logging.getLogger(__name__)
 
 FINE_ROLE_IDS = tuple(
     int(r) for r in os.getenv("FINE_ROLE_IDS", "").split(",") if r
@@ -25,7 +28,15 @@ FINE_ROLE_IDS = tuple(
 def has_permission(ctx):
     if ctx.author.guild_permissions.administrator:
         return True
-    return any(role.id in FINE_ROLE_IDS for role in ctx.author.roles)
+    if any(role.id in FINE_ROLE_IDS for role in ctx.author.roles):
+        return True
+    return AuthorityService.has_command_permission("discord", str(ctx.author.id), "fine_create")
+
+
+def has_manage_permission(ctx):
+    if ctx.author.guild_permissions.administrator:
+        return True
+    return AuthorityService.has_command_permission("discord", str(ctx.author.id), "fine_manage")
 
 
 @bot.hybrid_command(name="fine", description="Назначить штраф пользователю")
@@ -39,6 +50,9 @@ async def fine(
 ):
     if not has_permission(ctx):
         await send_temp(ctx, "❌ У вас нет прав для назначения штрафов.")
+        return
+    if member.id != ctx.author.id and not AuthorityService.can_manage_target("discord", str(ctx.author.id), "discord", str(member.id)):
+        await send_temp(ctx, "❌ Нельзя назначать штраф пользователю с равным/более высоким званием.")
         return
 
     try:
@@ -131,8 +145,10 @@ async def myfines(ctx):
 @bot.hybrid_command(
     name="allfines", description="Список всех неоплаченных штрафов"
 )
-@commands.has_permissions(administrator=True)
 async def all_fines(ctx):
+    if not has_manage_permission(ctx):
+        await send_temp(ctx, "❌ Недостаточно полномочий для просмотра всех штрафов.")
+        return
     fines = [
         f
         for f in db.fines
@@ -154,7 +170,7 @@ async def finedetails(ctx, fine_id: int):
         await send_temp(ctx, "❌ Штраф не найден.")
         return
 
-    is_admin = ctx.author.guild_permissions.administrator
+    is_admin = ctx.author.guild_permissions.administrator or has_manage_permission(ctx)
     if fine["user_id"] != ctx.author.id and not is_admin:
         await send_temp(ctx, "❌ Вы не можете просматривать чужие штрафы.")
         return
@@ -164,7 +180,6 @@ async def finedetails(ctx, fine_id: int):
 
 
 @bot.hybrid_command(name="editfine", description="Изменить параметры штрафа")
-@commands.has_permissions(administrator=True)
 async def editfine(
     ctx,
     fine_id: int,
@@ -174,6 +189,10 @@ async def editfine(
     *,
     reason: str,
 ):
+    if not has_manage_permission(ctx):
+        await send_temp(ctx, "❌ Недостаточно полномочий для редактирования штрафов.")
+        return
+
     fine = db.get_fine_by_id(fine_id)
     if not fine:
         await send_temp(ctx, "❌ Штраф не найден.")
@@ -212,8 +231,11 @@ async def editfine(
 
 
 @bot.hybrid_command(name="cancel_fine", description="Отменить штраф по ID")
-@commands.has_permissions(administrator=True)
 async def cancel_fine(ctx, fine_id: int):
+    if not has_manage_permission(ctx):
+        await send_temp(ctx, "❌ Недостаточно полномочий для отмены штрафов.")
+        return
+
     fine = db.get_fine_by_id(fine_id)
     if not fine:
         await send_temp(ctx, "❌ Штраф не найден.")
@@ -256,7 +278,7 @@ async def finehistory(
 
     if (
         member.id != ctx.author.id
-        and not ctx.author.guild_permissions.administrator
+        and not (ctx.author.guild_permissions.administrator or has_manage_permission(ctx))
     ):
         await send_temp(
             ctx, "❌ Вы не можете просматривать чужую историю штрафов."

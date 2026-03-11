@@ -10,13 +10,17 @@ from bot.systems.players_logic import (
 )
 
 from bot.commands.base import bot
+from bot.services import AuthorityService
+from bot.utils import send_temp
 
 # ─── Регистрация игрока в системе ────────────────────────────────────────────
 
 
 @bot.hybrid_command(name="register", description="Добавить игрока в систему")
-@commands.has_permissions(administrator=True)
 async def register(ctx: commands.Context, nick: str):
+    if not AuthorityService.has_command_permission("discord", str(ctx.author.id), "players_manage") and not ctx.author.guild_permissions.administrator:
+        await send_temp(ctx, "❌ Недостаточно полномочий для регистрации игроков.")
+        return
     """
     /register <nick>
     """
@@ -43,10 +47,12 @@ async def listplayers(ctx: commands.Context, page: Optional[int] = 1):
 
 
 @bot.hybrid_command(name="editplayer", description="Изменить данные игрока")
-@commands.has_permissions(administrator=True)
 async def editplayer(
     ctx: commands.Context, player_id: int, field: str, *, new_value: str
 ):
+    if not AuthorityService.has_command_permission("discord", str(ctx.author.id), "players_manage") and not ctx.author.guild_permissions.administrator:
+        await send_temp(ctx, "❌ Недостаточно полномочий для редактирования игроков.")
+        return
     """
     Редактирует поле игрока:
     /editplayer <player_id> <nick> <new_value>
@@ -60,8 +66,10 @@ async def editplayer(
 @bot.hybrid_command(
     name="deleteplayer", description="Удалить игрока из системы"
 )
-@commands.has_permissions(administrator=True)
 async def deleteplayer(ctx: commands.Context, player_id: int):
+    if not AuthorityService.has_command_permission("discord", str(ctx.author.id), "players_manage") and not ctx.author.guild_permissions.administrator:
+        await send_temp(ctx, "❌ Недостаточно полномочий для удаления игроков.")
+        return
     """
     Удаляет игрока из системы:
     /deleteplayer <player_id>
@@ -72,10 +80,12 @@ async def deleteplayer(ctx: commands.Context, player_id: int):
 
 
 @bot.hybrid_command(name="playerlogs", description="История изменений игрока")
-@commands.has_permissions(administrator=True)
 async def playerlogs(
     ctx: commands.Context, player_id: int, page: Optional[int] = 1
 ):
+    if not AuthorityService.has_command_permission("discord", str(ctx.author.id), "players_manage") and not ctx.author.guild_permissions.administrator:
+        await send_temp(ctx, "❌ Недостаточно полномочий для просмотра логов игроков.")
+        return
     """
     /playerlogs <player_id> [page]
     Показывает историю правок данных игрока.
