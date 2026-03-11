@@ -1,4 +1,5 @@
 import logging
+import os
 import secrets
 import string
 import uuid
@@ -18,6 +19,8 @@ class AccountsService:
     MAX_ATTEMPTS = 5
     LINK_CODE_GENERATION_ATTEMPTS = 3
     LINK_CODES_TABLES = ("account_link_codes", "link_tokens")
+    _account_titles_cache: dict[str, list[str]] = {}
+    _title_roles_cache: dict[int, str] | None = None
 
     @staticmethod
     def resolve_account_id(provider: str, provider_user_id: str) -> Optional[str]:
@@ -603,6 +606,14 @@ class AccountsService:
         nulls_id = "—"
         nulls_status = "Не подтвержден (заглушка)"
         points = "Привяжите Discord для получения информации (временно)."
+        titles: list[str] = AccountsService.get_account_titles(account_id)
+        titles_text = (
+            ", ".join(titles)
+            if titles
+            else "Привяжите Discord и/или подтвердите скрином свое звание администрации клуба для получения звания (временно)"
+        )
+        if not titles:
+            logger.info("get_profile no titles yet account_id=%s provider=%s", account_id, provider)
 
         if discord_identity:
             discord_user_id = discord_identity.get("provider_user_id")
@@ -632,7 +643,137 @@ class AccountsService:
             "nulls_brawl_id": nulls_id,
             "nulls_status": nulls_status,
             "points": points,
+            "titles": titles,
+            "titles_text": titles_text,
         }
+
+    @staticmethod
+    def get_account_titles(account_id: str) -> list[str]:
+        if not account_id:
+            return []
+
+        cached = AccountsService._account_titles_cache.get(str(account_id))
+        if cached is not None:
+            return list(cached)
+
+        if not db.supabase:
+            return []
+
+        try:
+            response = (
+                db.supabase.table("accounts")
+                .select("titles")
+                .eq("id", str(account_id))
+                .limit(1)
+                .execute()
+            )
+            rows = response.data or []
+            if not rows:
+                return []
+
+            value = rows[0].get("titles")
+            if isinstance(value, list):
+                titles = [str(item).strip() for item in value if str(item).strip()]
+            elif isinstance(value, str):
+                titles = [item.strip() for item in value.split(",") if item.strip()]
+            else:
+                titles = []
+
+            AccountsService._account_titles_cache[str(account_id)] = list(titles)
+            return titles
+        except Exception as e:
+            logger.warning("get_account_titles failed for %s: %s", account_id, e)
+            return []
+
+    @staticmethod
+    def save_account_titles(account_id: str, titles: list[str], source: str = "discord") -> bool:
+        if not account_id:
+            return False
+
+        normalized = [str(item).strip() for item in (titles or []) if str(item).strip()]
+        normalized = list(dict.fromkeys(normalized))
+        AccountsService._account_titles_cache[str(account_id)] = list(normalized)
+
+        if not db.supabase:
+            logger.warning("save_account_titles skipped for account_id=%s source=%s: supabase is unavailable", account_id, source)
+            return False
+
+        payload = {
+            "titles": normalized,
+            "titles_updated_at": datetime.now(timezone.utc).isoformat(),
+            "titles_source": source,
+        }
+        try:
+            db.supabase.table("accounts").update(payload).eq("id", str(account_id)).execute()
+            return True
+        except Exception as e:
+            logger.warning("save_account_titles failed for account_id=%s source=%s error=%s", account_id, source, e)
+            return False
+
+    @staticmethod
+    def get_configured_title_role_ids() -> set[int]:
+        configured = AccountsService.get_configured_title_roles()
+        if configured:
+            return set(configured.keys())
+
+        raw = os.getenv("PROFILE_DISCORD_TITLE_ROLE_IDS", "")
+        result: set[int] = set()
+        for item in raw.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            try:
+                result.add(int(item))
+            except ValueError:
+                logger.warning("PROFILE_DISCORD_TITLE_ROLE_IDS contains invalid role id: %s", item)
+        return result
+
+    @staticmethod
+    def get_configured_title_role_names() -> set[str]:
+        configured = AccountsService.get_configured_title_roles()
+        if configured:
+            return {title.strip().lower() for title in configured.values() if str(title).strip()}
+
+        raw = os.getenv("PROFILE_DISCORD_TITLE_ROLE_NAMES", "")
+        return {item.strip().lower() for item in raw.split(",") if item.strip()}
+
+    @staticmethod
+    def get_configured_title_roles() -> dict[int, str]:
+        """Return Discord role_id -> profile title mapping from DB with env fallback support."""
+        if AccountsService._title_roles_cache is not None:
+            return dict(AccountsService._title_roles_cache)
+
+        if not db.supabase:
+            AccountsService._title_roles_cache = {}
+            return {}
+
+        try:
+            response = (
+                db.supabase.table("profile_title_roles")
+                .select("discord_role_id,title_name,is_active")
+                .eq("is_active", True)
+                .execute()
+            )
+            rows = response.data or []
+            mapping: dict[int, str] = {}
+            for row in rows:
+                role_id_value = row.get("discord_role_id")
+                title_name = str(row.get("title_name") or "").strip()
+                if not role_id_value or not title_name:
+                    continue
+                try:
+                    mapping[int(role_id_value)] = title_name
+                except (TypeError, ValueError):
+                    logger.warning("profile_title_roles contains invalid discord_role_id=%s", role_id_value)
+
+            AccountsService._title_roles_cache = mapping
+            if mapping:
+                logger.info("loaded profile title role mappings from db count=%s", len(mapping))
+            return dict(mapping)
+        except Exception as e:
+            logger.warning("get_configured_title_roles failed, fallback to env mapping: %s", e)
+            AccountsService._title_roles_cache = {}
+            return {}
 
     @staticmethod
     def unlink_identity(provider: str, provider_user_id: str) -> Tuple[bool, str]:
