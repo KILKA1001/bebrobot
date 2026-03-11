@@ -77,7 +77,7 @@ async def profile(ctx):
     embed.add_field(
         name="**Общая информация**",
         value=(
-            "Звания: *скоро будет*\n"
+            f"Звания: {data['titles_text']}\n"
             f"Айди в Null's Brawl: `{data['nulls_brawl_id']}`\n"
             f"Баллы: {data['points']}"
         ),

@@ -50,12 +50,13 @@ def process_profile_command(
     safe_link_status = escape(data["link_status"])
     safe_nulls_status = escape(data["nulls_status"])
     safe_points = escape(str(data["points"]))
+    safe_titles_text = escape(str(data.get("titles_text") or "Нет званий"))
 
     return (
         "👤 <b><a href=\"tg://user?id={telegram_user_id}\">{title_name}</a></b>\n\n"
         "━━━━━━━━━━━━━━\n"
         "<b>Общая информация</b>\n"
-        "Звания: <i>скоро будет</i>\n"
+        "Звания: {safe_titles_text}\n"
         "Айди в Null's Brawl: <code>{safe_nulls_id}</code>\n"
         "Баллы: {safe_points}\n"
         "━━━━━━━━━━━━━━\n"
@@ -73,6 +74,7 @@ def process_profile_command(
         safe_link_status=safe_link_status,
         safe_nulls_status=safe_nulls_status,
         safe_points=safe_points,
+        safe_titles_text=safe_titles_text,
     )
 
 def process_link_command(
