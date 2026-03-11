@@ -10,8 +10,11 @@ HELPY_TEXT = (
     "/profile_edit — открыть меню редактирования профиля\n"
     "/link <код> — привязать Telegram к аккаунту по коду из Discord\n"
     "/link_discord — получить код для привязки Discord\n"
+    "/points [reply|id] — меню управления баллами\n"
+    "/tickets [reply|id] — меню управления билетами\n"
     "/helpy — показать это сообщение"
 )
+
 
 
 def get_helpy_text() -> str:
