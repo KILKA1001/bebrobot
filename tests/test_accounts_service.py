@@ -116,6 +116,7 @@ class _FakeDb:
             "account_link_codes": [],
             "link_tokens": [],
             "scores": [],
+            "actions": [],
             "profile_title_roles": [],
         }
         self.account_seq = 0
@@ -255,6 +256,29 @@ class AccountsServiceTests(unittest.TestCase):
         self.assertIsNotNone(profile)
         self.assertEqual(profile["titles"], ["Глава клуба", "Главный вице"])
         self.assertEqual(profile["titles_text"], "Глава клуба, Главный вице")
+
+    def test_profile_uses_actions_when_scores_outdated(self):
+        AccountsService.register_identity("discord", "111")
+        account_id = AccountsService.resolve_account_id("discord", "111")
+        self.assertIsNotNone(account_id)
+
+        self.fake_db.tables["scores"].append({"account_id": account_id, "user_id": "111", "points": 10})
+        self.fake_db.tables["actions"].append({"account_id": account_id, "user_id": "111", "points": 42})
+
+        profile = AccountsService.get_profile("discord", "111", "Nick")
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile["points"], "42")
+
+    def test_profile_falls_back_to_scores_when_actions_missing(self):
+        AccountsService.register_identity("discord", "111")
+        account_id = AccountsService.resolve_account_id("discord", "111")
+        self.assertIsNotNone(account_id)
+
+        self.fake_db.tables["scores"].append({"account_id": account_id, "user_id": "111", "points": 77})
+
+        profile = AccountsService.get_profile("discord", "111", "Nick")
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile["points"], "77")
 
 
     def test_get_configured_title_roles_from_db(self):

@@ -43,3 +43,67 @@ Track:
 2. Run `sql/p3_account_hardening_rollback.sql` (or affected statements only).
 3. Continue in fallback mode while investigating.
 4. Re-run readiness checks before re-enabling strict mode.
+
+## 7) One-off: rebuild `scores.points` from `actions`
+When recalculating points from history, keep in mind that CTEs (`WITH ...`) are scoped to
+**one SQL statement only**. If you need the same derived dataset for both `UPDATE` and `INSERT`,
+repeat the CTE in each statement (or materialize it to a temporary table).
+
+```sql
+BEGIN;
+
+-- A) Update existing rows in scores
+WITH normalized_totals AS (
+    SELECT
+        account_id,
+        user_id,
+        GREATEST(SUM(points), 0)::numeric AS total_points
+    FROM actions
+    GROUP BY account_id, user_id
+)
+UPDATE scores s
+SET points = nt.total_points
+FROM normalized_totals nt
+WHERE (
+        s.account_id IS NOT NULL
+        AND nt.account_id IS NOT NULL
+        AND s.account_id = nt.account_id
+      )
+   OR (
+        s.account_id IS NULL
+        AND nt.account_id IS NULL
+        AND s.user_id = nt.user_id
+      );
+
+-- B) Insert missing rows into scores (CTE must be redeclared)
+WITH normalized_totals AS (
+    SELECT
+        account_id,
+        user_id,
+        GREATEST(SUM(points), 0)::numeric AS total_points
+    FROM actions
+    GROUP BY account_id, user_id
+)
+INSERT INTO scores (user_id, account_id, points)
+SELECT
+    nt.user_id,
+    nt.account_id,
+    nt.total_points
+FROM normalized_totals nt
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM scores s
+    WHERE (
+            s.account_id IS NOT NULL
+            AND nt.account_id IS NOT NULL
+            AND s.account_id = nt.account_id
+          )
+       OR (
+            s.account_id IS NULL
+            AND nt.account_id IS NULL
+            AND s.user_id = nt.user_id
+          )
+);
+
+COMMIT;
+```
