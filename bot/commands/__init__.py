@@ -25,7 +25,7 @@ from .tournament import (
     tournamentadmin,
 )
 from .maps import mapinfo
-from .linking import link_telegram, link, profile, register_account
+from .linking import link_telegram, link, profile, profile_edit, register_account
 
 __all__ = [
     "bot",
@@ -45,5 +45,6 @@ __all__ = [
     "link_telegram",
     "link",
     "profile",
+    "profile_edit",
     "register_account",
 ]

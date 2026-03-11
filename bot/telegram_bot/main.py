@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 BOT_COMMANDS = [
     BotCommand(command="register", description="Зарегистрировать общий аккаунт"),
     BotCommand(command="profile", description="Показать профиль общего аккаунта"),
+    BotCommand(command="profile_edit", description="Настройки и редактирование профиля"),
     BotCommand(command="link", description="Привязать Telegram по коду из Discord"),
     BotCommand(command="link_discord", description="Сгенерировать код для привязки Discord"),
     BotCommand(command="helpy", description="Список команд"),

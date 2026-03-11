@@ -1,3 +1,5 @@
+import logging
+
 import discord
 
 from bot.commands.base import bot
@@ -9,9 +11,81 @@ from bot.systems.linking_logic import (
 )
 from bot.utils import send_temp
 
+logger = logging.getLogger(__name__)
+
 
 def _is_private_context(ctx) -> bool:
     return getattr(ctx, "guild", None) is None
+
+
+class ProfileEditModal(discord.ui.Modal):
+    def __init__(self, field_name: str, title_text: str, placeholder: str, max_length: int):
+        super().__init__(title=f"Изменить: {title_text}")
+        self.field_name = field_name
+        self.field_label = title_text
+        self.value_input = discord.ui.TextInput(
+            label=title_text,
+            style=discord.TextStyle.paragraph,
+            max_length=max_length,
+            required=False,
+            placeholder=placeholder,
+        )
+        self.add_item(self.value_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            value = str(self.value_input.value or "").strip()
+            success, payload = AccountsService.update_profile_field(
+                "discord",
+                str(interaction.user.id),
+                self.field_name,
+                value,
+            )
+            prefix = "✅" if success else "❌"
+            await interaction.response.send_message(f"{prefix} {payload}", ephemeral=True)
+        except Exception:
+            logger.exception(
+                "discord profile edit modal submit failed user_id=%s field=%s",
+                getattr(interaction.user, "id", None),
+                self.field_name,
+            )
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Не удалось сохранить изменения профиля.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Не удалось сохранить изменения профиля.", ephemeral=True)
+
+
+class ProfileEditView(discord.ui.View):
+    def __init__(self, user_id: int):
+        super().__init__(timeout=300)
+        self.user_id = user_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Редактировать можно только свой профиль.", ephemeral=True)
+            return False
+        if interaction.guild is not None:
+            await interaction.response.send_message("❌ Редактирование профиля доступно только в ЛС с ботом.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="✏️ Никнейм", style=discord.ButtonStyle.primary)
+    async def edit_nickname(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        await interaction.response.send_modal(
+            ProfileEditModal("custom_nick", "Никнейм", "Например: Bebra Hero", max_length=32)
+        )
+
+    @discord.ui.button(label="📝 Описание", style=discord.ButtonStyle.secondary)
+    async def edit_description(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        await interaction.response.send_modal(
+            ProfileEditModal("description", "Описание", "Коротко расскажи о себе", max_length=100)
+        )
+
+    @discord.ui.button(label="🆔 Null's ID", style=discord.ButtonStyle.secondary)
+    async def edit_nulls_id(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        await interaction.response.send_modal(
+            ProfileEditModal("nulls_brawl_id", "Null's Brawl ID", "Например: #ABCD123", max_length=32)
+        )
 
 
 @bot.hybrid_command(name="register_account", description="Зарегистрировать общий аккаунт")
@@ -73,7 +147,7 @@ async def profile(ctx):
         await send_temp(ctx, "❌ Профиль не найден. Сначала выполните `/register_account`.", delete_after=None)
         return
 
-    embed = discord.Embed(title=f"👤 {display_name}", color=discord.Color.blurple())
+    embed = discord.Embed(title=f"👤 {data['custom_nick']}", color=discord.Color.blurple())
     embed.add_field(
         name="**Общая информация**",
         value=(
@@ -102,3 +176,17 @@ async def profile(ctx):
         embed.set_thumbnail(url=thumbnail_url)
 
     await send_temp(ctx, embed=embed, delete_after=None)
+
+
+@bot.hybrid_command(name="profile_edit", description="Настройки и редактирование своего профиля")
+async def profile_edit(ctx):
+    if not _is_private_context(ctx):
+        await send_temp(ctx, "❌ Редактирование профиля доступно только в личных сообщениях с ботом.", delete_after=None)
+        return
+
+    embed = discord.Embed(
+        title="⚙️ Настройки профиля",
+        description="Выберите, какое поле хотите изменить.",
+        color=discord.Color.blue(),
+    )
+    await send_temp(ctx, embed=embed, view=ProfileEditView(ctx.author.id), delete_after=None)
