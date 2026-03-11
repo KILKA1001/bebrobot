@@ -45,12 +45,23 @@ async def link(ctx, code: str):
 
 @bot.hybrid_command(name="profile", description="Показать профиль общего аккаунта")
 async def profile(ctx):
-    data = AccountsService.get_profile("discord", str(ctx.author.id), display_name=ctx.author.display_name)
+    target_user = ctx.author
+    reference = getattr(ctx.message, "reference", None)
+    if reference and reference.message_id and ctx.guild:
+        try:
+            referenced_message = await ctx.channel.fetch_message(reference.message_id)
+            if referenced_message and referenced_message.author:
+                target_user = referenced_message.author
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+
+    display_name = getattr(target_user, "display_name", None) or getattr(target_user, "name", None)
+    data = AccountsService.get_profile("discord", str(target_user.id), display_name=display_name)
     if not data:
         await send_temp(ctx, "❌ Профиль не найден. Сначала выполните `/register_account`.", delete_after=None)
         return
 
-    embed = discord.Embed(title=f"👤 {ctx.author.display_name}", color=discord.Color.blurple())
+    embed = discord.Embed(title=f"👤 {display_name}", color=discord.Color.blurple())
     embed.add_field(
         name="**Общая информация**",
         value=(
@@ -70,8 +81,8 @@ async def profile(ctx):
         inline=False,
     )
     thumbnail_url = None
-    if getattr(ctx.author, "avatar", None):
-        thumbnail_url = ctx.author.display_avatar.url
+    if getattr(target_user, "avatar", None):
+        thumbnail_url = target_user.display_avatar.url
     elif getattr(ctx.bot, "user", None) and getattr(ctx.bot.user, "display_avatar", None):
         thumbnail_url = ctx.bot.user.display_avatar.url
 

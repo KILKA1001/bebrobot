@@ -30,9 +30,19 @@ async def register_command(message: Message) -> None:
 async def profile_command(message: Message) -> None:
     telegram_user_id = message.from_user.id if message.from_user is not None else None
     display_name = message.from_user.full_name if message.from_user is not None else None
-    response = process_profile_command(telegram_user_id, display_name=display_name)
 
-    if telegram_user_id is None:
+    target_user = message.reply_to_message.from_user if message.reply_to_message else None
+    target_user_id = target_user.id if target_user is not None else telegram_user_id
+    target_display_name = target_user.full_name if target_user is not None else display_name
+
+    response = process_profile_command(
+        telegram_user_id,
+        display_name=display_name,
+        target_telegram_user_id=target_user_id,
+        target_display_name=target_display_name,
+    )
+
+    if target_user_id is None:
         await message.answer(response)
         return
 
@@ -47,7 +57,7 @@ async def profile_command(message: Message) -> None:
             return False
         return False
 
-    if await _send_avatar_caption(telegram_user_id):
+    if await _send_avatar_caption(target_user_id):
         return
 
     bot_user = await message.bot.get_me()

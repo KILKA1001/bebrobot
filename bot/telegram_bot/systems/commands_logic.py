@@ -28,15 +28,23 @@ def process_register_command(telegram_user_id: int | None) -> str:
     return f"{prefix} {payload}"
 
 
-def process_profile_command(telegram_user_id: int | None, display_name: str | None = None) -> str:
-    if telegram_user_id is None:
+def process_profile_command(
+    telegram_user_id: int | None,
+    display_name: str | None = None,
+    target_telegram_user_id: int | None = None,
+    target_display_name: str | None = None,
+) -> str:
+    lookup_user_id = target_telegram_user_id or telegram_user_id
+    lookup_display_name = target_display_name or display_name
+
+    if lookup_user_id is None:
         return "❌ Не удалось определить пользователя Telegram."
 
-    data = AccountsService.get_profile("telegram", str(telegram_user_id), display_name=display_name)
+    data = AccountsService.get_profile("telegram", str(lookup_user_id), display_name=lookup_display_name)
     if not data:
         return "❌ Профиль не найден. Сначала выполните /register"
 
-    title_name = escape(display_name or data["custom_nick"])
+    title_name = escape(lookup_display_name or data["custom_nick"])
     safe_description = escape(data["description"][:100])
     safe_nulls_id = escape(data["nulls_brawl_id"])
     safe_link_status = escape(data["link_status"])
@@ -58,7 +66,7 @@ def process_profile_command(telegram_user_id: int | None, display_name: str | No
         "🔗 TG ↔ DC: {safe_link_status}\n"
         "🛡️ Null's Brawl: {safe_nulls_status}"
     ).format(
-        telegram_user_id=telegram_user_id,
+        telegram_user_id=lookup_user_id,
         title_name=title_name,
         safe_nulls_id=safe_nulls_id,
         safe_description=safe_description,
