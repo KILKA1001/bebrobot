@@ -485,15 +485,17 @@ class AccountsService:
 
             existing_account_id = AccountsService.resolve_account_id(target_provider, target_provider_user_id)
             if existing_account_id and str(existing_account_id) != str(account_id):
-                logger.info(
-                    "consume_link_code merging duplicate accounts provider=%s provider_user_id=%s from_account_id=%s to_account_id=%s",
+                if hasattr(db, "_inc_metric"):
+                    db._inc_metric("link_consume_fail")
+                logger.error(
+                    "consume_link_code refused cross-account merge target_provider=%s target_provider_user_id=%s code=%s existing_account_id=%s requested_account_id=%s",
                     target_provider,
                     target_provider_user_id,
+                    code,
                     existing_account_id,
                     account_id,
                 )
-                AccountsService._rebind_account_id(str(existing_account_id), str(account_id))
-                existing_account_id = str(account_id)
+                return False, "Этот профиль уже привязан к другому общему аккаунту. Сначала отвяжите его через администратора"
 
             if not existing_account_id:
                 identity_payload = {
@@ -512,14 +514,16 @@ class AccountsService:
                     if AccountsService._is_unique_violation(e):
                         existing_account_id = AccountsService.resolve_account_id(target_provider, target_provider_user_id)
                         if existing_account_id and str(existing_account_id) != str(account_id):
-                            logger.info(
-                                "consume_link_code merging duplicate accounts after retry provider=%s provider_user_id=%s from_account_id=%s to_account_id=%s",
+                            logger.error(
+                                "consume_link_code unique violation with cross-account binding target_provider=%s target_provider_user_id=%s code=%s existing_account_id=%s requested_account_id=%s",
                                 target_provider,
                                 target_provider_user_id,
                                 existing_account_id,
                                 account_id,
                             )
-                            AccountsService._rebind_account_id(str(existing_account_id), str(account_id))
+                            if hasattr(db, "_inc_metric"):
+                                db._inc_metric("link_consume_fail")
+                            return False, "Этот профиль уже привязан к другому общему аккаунту. Сначала отвяжите его через администратора"
                     else:
                         raise
 
