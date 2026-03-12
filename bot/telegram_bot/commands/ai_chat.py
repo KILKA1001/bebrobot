@@ -36,6 +36,28 @@ def _is_command_text(text: str) -> bool:
     return any(lowered == cmd or lowered.startswith(f"{cmd} ") for cmd in KNOWN_COMMAND_PREFIXES)
 
 
+def _is_bot_mentioned(message: Message, bot_id: int | None, bot_username: str | None) -> bool:
+    entities = message.entities or []
+    text = message.text or ""
+
+    normalized_username = (bot_username or "").lstrip("@").lower()
+    for entity in entities:
+        if entity.type == "text_mention" and entity.user is not None and bot_id is not None:
+            if entity.user.id == bot_id:
+                return True
+
+        if entity.type != "mention":
+            continue
+
+        start = entity.offset
+        end = entity.offset + entity.length
+        mention_text = text[start:end].strip().lstrip("@").lower()
+        if mention_text and mention_text == normalized_username:
+            return True
+
+    return False
+
+
 @router.message(F.text)
 async def handle_guiy_chat(message: Message) -> None:
     text = (message.text or "").strip()
@@ -78,23 +100,30 @@ async def handle_guiy_chat(message: Message) -> None:
         and message.reply_to_message.from_user
         and message.reply_to_message.from_user.id == bot_user.id
     )
+    is_bot_mention = _is_bot_mentioned(message, bot_user.id, bot_user.username)
 
-    if not (is_named or is_reply_to_bot):
+    if not (is_named or is_reply_to_bot or is_bot_mention):
         logger.debug(
-            "telegram ai skipped because trigger not matched chat_id=%s user_id=%s text=%s",
+            "telegram ai skipped because trigger not matched chat_id=%s user_id=%s is_named=%s "
+            "is_reply_to_bot=%s is_bot_mention=%s text=%s",
             message.chat.id,
             sender_id,
+            is_named,
+            is_reply_to_bot,
+            is_bot_mention,
             text[:120],
         )
         return
 
     try:
         logger.info(
-            "telegram ai trigger matched chat_id=%s user_id=%s is_named=%s is_reply_to_bot=%s text=%s",
+            "telegram ai trigger matched chat_id=%s user_id=%s is_named=%s is_reply_to_bot=%s "
+            "is_bot_mention=%s text=%s",
             message.chat.id,
             sender_id,
             is_named,
             is_reply_to_bot,
+            is_bot_mention,
             text[:160],
         )
         reply = await generate_guiy_reply(

@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from types import SimpleNamespace
 
 from unittest.mock import AsyncMock, patch
 
@@ -16,7 +17,7 @@ from bot.services.ai_service import (
     _resolve_candidate_models,
     generate_guiy_reply,
 )
-from bot.telegram_bot.commands.ai_chat import _is_command_text
+from bot.telegram_bot.commands.ai_chat import _is_bot_mentioned, _is_command_text
 from bot.utils.guiy_typing import calculate_typing_delay_seconds
 
 
@@ -49,6 +50,30 @@ class GuiyAIGuardsTests(unittest.TestCase):
 
     def test_is_command_text_for_regular_text(self):
         self.assertFalse(_is_command_text("Гуй, привет"))
+
+    def test_is_bot_mentioned_by_username_entity(self):
+        message = SimpleNamespace(
+            text="Привет, @GuiyBot",
+            entities=[SimpleNamespace(type="mention", offset=8, length=8)],
+        )
+
+        self.assertTrue(_is_bot_mentioned(message, bot_id=123, bot_username="GuiyBot"))
+
+    def test_is_bot_mentioned_by_text_mention_entity(self):
+        message = SimpleNamespace(
+            text="Привет",
+            entities=[SimpleNamespace(type="text_mention", user=SimpleNamespace(id=123))],
+        )
+
+        self.assertTrue(_is_bot_mentioned(message, bot_id=123, bot_username="GuiyBot"))
+
+    def test_is_bot_mentioned_returns_false_for_other_users(self):
+        message = SimpleNamespace(
+            text="Привет, @OtherBot",
+            entities=[SimpleNamespace(type="mention", offset=8, length=9)],
+        )
+
+        self.assertFalse(_is_bot_mentioned(message, bot_id=123, bot_username="GuiyBot"))
 
     def test_calculate_typing_delay_has_minimum_for_empty_text(self):
         self.assertEqual(calculate_typing_delay_seconds(""), 1.2)
