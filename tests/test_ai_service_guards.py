@@ -71,6 +71,15 @@ class GuiyAIGuardsTests(unittest.TestCase):
         self.assertTrue(_is_name_trigger("Гуй, ты тут?"))
         self.assertTrue(_is_name_trigger("guiy answer me"))
 
+    def test_name_trigger_supports_standalone_name_without_punctuation(self):
+        self.assertTrue(_is_name_trigger("гуй"))
+        self.assertTrue(_is_name_trigger("GUIY"))
+
+    def test_default_prompt_contains_extended_bebr_lore(self):
+        self.assertIn("Bebr Джоджо", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
+        self.assertIn("Хохохо", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
+        self.assertIn("Фимоза Бебр", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
+
     def test_is_command_text_for_regular_text(self):
         self.assertFalse(_is_command_text("Гуй, привет"))
 
