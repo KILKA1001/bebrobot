@@ -117,18 +117,18 @@ class GuiyAIGuardsTests(unittest.TestCase):
     @patch.dict("os.environ", {}, clear=True)
     def test_resolve_models_default_order(self):
         models = _resolve_candidate_models()
-        self.assertEqual(models, ("gemini-2.5-flash",))
+        self.assertEqual(models, ("qwen/qwen3-coder:free",))
 
 
-    @patch.dict("os.environ", {"GEMINI_USE_FREE_TIER": "0"}, clear=True)
+    @patch.dict("os.environ", {"OPENROUTER_USE_FREE_TIER": "0"}, clear=True)
     def test_resolve_models_still_pinned_when_free_tier_disabled(self):
         models = _resolve_candidate_models()
-        self.assertEqual(models, ("gemini-2.5-flash",))
+        self.assertEqual(models, ("qwen/qwen3-coder:free",))
 
-    @patch.dict("os.environ", {"GEMINI_MODEL": "gemini-2.0-flash", "GEMINI_MODELS": "gemini-1.5-flash"}, clear=True)
-    def test_resolve_models_ignores_env_overrides(self):
+    @patch.dict("os.environ", {"OPENROUTER_MODEL": "openai/gpt-4o-mini", "OPENROUTER_MODELS": "openai/gpt-4o-mini,qwen/qwen3-coder:free"}, clear=True)
+    def test_resolve_models_respects_env_overrides(self):
         models = _resolve_candidate_models()
-        self.assertEqual(models, ("gemini-2.5-flash",))
+        self.assertEqual(models, ("openai/gpt-4o-mini", "qwen/qwen3-coder:free"))
 
 
     @patch.dict("os.environ", {}, clear=True)
