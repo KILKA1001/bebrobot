@@ -176,7 +176,16 @@ def _force_guiy_prefix(reply_text: str) -> str:
     if not cleaned:
         return ""
     if cleaned.lower().startswith("гуй:"):
-        return cleaned.split(":", 1)[1].strip()
+        cleaned = cleaned.split(":", 1)[1].strip()
+
+    # Gemini can occasionally return mock dialogue blocks, e.g.
+    # "Гуй: ...\nПользователь: ...". In chats this looks like a cut-off
+    # answer, so we keep only Guiy's first turn.
+    speaker_break = re.search(r"\n\s*(?:пользователь|user|ты|человек)\s*:", cleaned, re.IGNORECASE)
+    if speaker_break:
+        logger.warning("guiy reply contained dialogue block; trimming trailing speaker labels")
+        cleaned = cleaned[: speaker_break.start()].strip()
+
     return cleaned
 
 
