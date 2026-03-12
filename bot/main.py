@@ -10,6 +10,8 @@ import logging
 import time
 import random
 import json
+import contextlib
+import re
 from dotenv import load_dotenv
 
 from bot.telegram_bot.config import get_telegram_bot_token
@@ -499,8 +501,73 @@ def run_discord_main():
             break
 
 async def _run_both_async(discord_token: str, telegram_token: str) -> None:
-    discord_task = asyncio.create_task(bot.start(discord_token), name="discord-runtime")
-    telegram_task = asyncio.create_task(run_telegram_polling(telegram_token), name="telegram-runtime")
+    async def _run_discord_with_retries() -> None:
+        retry_delay = 5.0
+        max_retry_delay = float(os.getenv("BOTH_RUNTIME_MAX_RETRY_DELAY", "300"))
+
+        while True:
+            try:
+                logging.info("discord runtime starting (both mode)")
+                await bot.start(discord_token)
+                logging.warning("discord runtime stopped unexpectedly; restarting")
+            except discord.LoginFailure:
+                logging.exception("discord login failure in both mode; stopping both runtimes")
+                raise
+            except asyncio.CancelledError:
+                logging.info("discord runtime cancelled")
+                raise
+            except discord.HTTPException as exc:
+                if exc.status in {429, 500, 502, 503, 504}:
+                    logging.exception(
+                        "discord runtime transient HTTP error in both mode (status=%s); retry in %.1fs",
+                        exc.status,
+                        retry_delay,
+                    )
+                else:
+                    logging.exception("discord runtime unrecoverable HTTP error in both mode")
+                    raise
+            except discord.DiscordServerError:
+                logging.exception(
+                    "discord runtime server error in both mode; retry in %.1fs",
+                    retry_delay,
+                )
+            except Exception as exc:
+                error_text = str(exc)
+                if "Session is closed" in error_text or "429" in error_text or "rate limit" in error_text.lower():
+                    logging.exception("discord runtime transient error in both mode; retry in %.1fs", retry_delay)
+                else:
+                    logging.exception("discord runtime fatal error in both mode")
+                    raise
+
+            with contextlib.suppress(Exception):
+                await bot.close()
+
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, max_retry_delay)
+
+    async def _run_telegram_with_retries() -> None:
+        retry_delay = 5.0
+        max_retry_delay = float(os.getenv("BOTH_RUNTIME_MAX_RETRY_DELAY", "300"))
+
+        while True:
+            try:
+                logging.info("telegram runtime starting (both mode)")
+                await run_telegram_polling(telegram_token)
+                logging.warning("telegram runtime stopped; restarting")
+            except asyncio.CancelledError:
+                logging.info("telegram runtime cancelled")
+                raise
+            except Exception:
+                logging.exception(
+                    "telegram runtime error in both mode; retry in %.1fs",
+                    retry_delay,
+                )
+
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, max_retry_delay)
+
+    discord_task = asyncio.create_task(_run_discord_with_retries(), name="discord-runtime")
+    telegram_task = asyncio.create_task(_run_telegram_with_retries(), name="telegram-runtime")
 
     done, pending = await asyncio.wait(
         {discord_task, telegram_task},
