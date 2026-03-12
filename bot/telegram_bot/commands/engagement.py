@@ -1,5 +1,6 @@
 import logging
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 
 from aiogram import F, Router
 from aiogram.enums import ParseMode
@@ -19,16 +20,39 @@ class PendingAction:
     operation: str
     target_provider_user_id: str
     actor_provider_user_id: str
+    created_at: float = field(default_factory=time.time)
 
 
 _PENDING_ACTIONS: dict[int, PendingAction] = {}
 
 
+PENDING_ACTION_TTL_SECONDS = 600
+
+
+def _is_pending_action_expired(pending: PendingAction) -> bool:
+    return (time.time() - pending.created_at) > PENDING_ACTION_TTL_SECONDS
+
 
 def has_pending_action(telegram_user_id: int | None) -> bool:
     if telegram_user_id is None:
         return False
-    return telegram_user_id in _PENDING_ACTIONS
+
+    pending = _PENDING_ACTIONS.get(telegram_user_id)
+    if not pending:
+        return False
+
+    if _is_pending_action_expired(pending):
+        logger.info(
+            "pending action expired user_id=%s domain=%s operation=%s ttl_seconds=%s",
+            telegram_user_id,
+            pending.domain,
+            pending.operation,
+            PENDING_ACTION_TTL_SECONDS,
+        )
+        _PENDING_ACTIONS.pop(telegram_user_id, None)
+        return False
+
+    return True
 
 
 def _can_manage_tickets(actor_titles: tuple[str, ...], actor_level: int) -> bool:
@@ -288,14 +312,17 @@ async def tickets_callback(callback: CallbackQuery) -> None:
         await callback.answer("Ошибка меню билетов", show_alert=True)
 
 
-@router.message()
+@router.message(F.from_user, F.from_user.id.func(has_pending_action))
 async def pending_action_handler(message: Message) -> None:
-    if not message.from_user:
-        return
-    pending = _PENDING_ACTIONS.get(message.from_user.id)
-    if not pending:
+    if not has_pending_action(message.from_user.id):
+        logger.warning(
+            "pending action handler invoked without pending state user_id=%s chat_id=%s",
+            message.from_user.id,
+            message.chat.id if message.chat else None,
+        )
         return
 
+    pending = _PENDING_ACTIONS.get(message.from_user.id)
     try:
         raw = (message.text or "").strip()
         if "|" not in raw:
