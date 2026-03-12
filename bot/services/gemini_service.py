@@ -11,20 +11,12 @@ logger = logging.getLogger(__name__)
 
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 DEFAULT_GEMINI_MODELS = (
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
+    "gemini-2.5-flash",
 )
 
 # Conservative default chain for projects that only use Gemini free tier.
 FREE_TIER_GEMINI_MODELS = (
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
-)
-
-# Conservative default chain for projects that only use Gemini free tier.
-FREE_TIER_GEMINI_MODELS = (
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-8b",
+    "gemini-2.5-flash",
 )
 
 # Global backoff guard for quota/rate-limit errors.
@@ -85,26 +77,24 @@ def _resolve_candidate_models() -> tuple[str, ...]:
         "off",
     }
 
-    from_env: list[str] = []
+    if explicit_model and explicit_model != "gemini-2.5-flash":
+        logger.error(
+            "GEMINI_MODEL=%s is ignored; service is pinned to gemini-2.5-flash",
+            explicit_model,
+        )
     if models_env:
-        from_env.extend(m.strip() for m in models_env.split(",") if m.strip())
-    if explicit_model:
-        from_env.insert(0, explicit_model)
+        logger.error(
+            "GEMINI_MODELS=%s is ignored; service is pinned to gemini-2.5-flash",
+            models_env,
+        )
 
-    ordered: list[str] = []
-    seen: set[str] = set()
-    baseline_models = FREE_TIER_GEMINI_MODELS if use_free_tier else DEFAULT_GEMINI_MODELS
-    for model in [*from_env, *baseline_models]:
-        if model not in seen:
-            seen.add(model)
-            ordered.append(model)
-
+    pinned_models = ("gemini-2.5-flash",)
     logger.info(
         "Gemini model chain resolved use_free_tier=%s models=%s",
         use_free_tier,
-        ",".join(ordered),
+        ",".join(pinned_models),
     )
-    return tuple(ordered)
+    return pinned_models
 
 
 def _build_generate_url(model: str) -> str:
