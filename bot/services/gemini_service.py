@@ -12,7 +12,13 @@ logger = logging.getLogger(__name__)
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 DEFAULT_GEMINI_MODELS = (
     "gemini-2.0-flash",
-    "gemini-2.0-flash-lite",
+    "gemini-1.5-flash",
+)
+
+# Conservative default chain for projects that only use Gemini free tier.
+FREE_TIER_GEMINI_MODELS = (
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
 )
 
 # Conservative default chain for projects that only use Gemini free tier.
