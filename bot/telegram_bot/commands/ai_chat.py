@@ -3,6 +3,7 @@ import logging
 import re
 
 from aiogram import F, Router
+from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
 from bot.services.ai_service import generate_guiy_reply
@@ -24,6 +25,7 @@ KNOWN_COMMAND_PREFIXES = (
     "/points",
     "/tickets",
     "/helpy",
+    "/guiy",
 )
 
 
@@ -35,6 +37,77 @@ def _is_command_text(text: str) -> bool:
         return False
     return any(lowered == cmd or lowered.startswith(f"{cmd} ") for cmd in KNOWN_COMMAND_PREFIXES)
 
+
+
+
+def _is_name_trigger(text: str) -> bool:
+    lowered = text.lower()
+    return bool(re.search(r"\bгуй\b", lowered) or re.search(r"\bguiy\b", lowered))
+
+
+async def _generate_and_send_reply(message: Message, text: str) -> None:
+    sender_id = message.from_user.id if message.from_user else None
+    reply = await generate_guiy_reply(
+        text,
+        provider="telegram",
+        user_id=sender_id,
+        conversation_id=message.chat.id,
+    )
+    if not reply:
+        logger.warning(
+            "telegram ai reply is empty chat_id=%s user_id=%s",
+            message.chat.id,
+            sender_id,
+        )
+        return
+
+    typing_delay = calculate_typing_delay_seconds(reply)
+    logger.info(
+        "telegram ai typing simulation chat_id=%s user_id=%s delay=%ss reply_len=%s",
+        message.chat.id,
+        sender_id,
+        typing_delay,
+        len(reply),
+    )
+    try:
+        await message.bot.send_chat_action(message.chat.id, "typing")
+        await asyncio.sleep(typing_delay)
+    except Exception:
+        logger.exception(
+            "telegram typing simulation failed chat_id=%s user_id=%s",
+            message.chat.id,
+            sender_id,
+        )
+
+    await message.answer(reply)
+
+
+@router.message(Command("guiy"))
+async def guiy_command(message: Message, command: CommandObject) -> None:
+    sender_id = message.from_user.id if message.from_user else None
+    if has_pending_action(sender_id) or has_pending_profile_edit(sender_id):
+        logger.info(
+            "telegram ai /guiy skipped due to active command flow chat_id=%s user_id=%s",
+            message.chat.id,
+            sender_id,
+        )
+        return
+
+    prompt = (command.args or "").strip()
+    if not prompt:
+        await message.answer("Напиши после команды текст: /guiy <сообщение>")
+        return
+
+    logger.info(
+        "telegram ai /guiy trigger matched chat_id=%s user_id=%s text=%s",
+        message.chat.id,
+        sender_id,
+        prompt[:160],
+    )
+    try:
+        await _generate_and_send_reply(message, prompt)
+    except Exception:
+        logger.exception("telegram ai /guiy reply failed chat_id=%s user_id=%s", message.chat.id, sender_id)
 
 def _is_bot_mentioned(message: Message, bot_id: int | None, bot_username: str | None) -> bool:
     entities = message.entities or []
@@ -82,8 +155,7 @@ async def handle_guiy_chat(message: Message) -> None:
         )
         return
 
-    lowered = text.lower()
-    is_named = re.search(r"\bгуй\b", lowered) is not None
+    is_named = _is_name_trigger(text)
 
     try:
         bot_user = await message.bot.get_me()
@@ -103,7 +175,7 @@ async def handle_guiy_chat(message: Message) -> None:
     is_bot_mention = _is_bot_mentioned(message, bot_user.id, bot_user.username)
 
     if not (is_named or is_reply_to_bot or is_bot_mention):
-        logger.debug(
+        logger.info(
             "telegram ai skipped because trigger not matched chat_id=%s user_id=%s is_named=%s "
             "is_reply_to_bot=%s is_bot_mention=%s text=%s",
             message.chat.id,
@@ -126,39 +198,7 @@ async def handle_guiy_chat(message: Message) -> None:
             is_bot_mention,
             text[:160],
         )
-        reply = await generate_guiy_reply(
-            text,
-            provider="telegram",
-            user_id=sender_id,
-            conversation_id=message.chat.id,
-        )
-        if not reply:
-            logger.warning(
-                "telegram ai reply is empty chat_id=%s user_id=%s",
-                message.chat.id,
-                sender_id,
-            )
-            return
-
-        typing_delay = calculate_typing_delay_seconds(reply)
-        logger.info(
-            "telegram ai typing simulation chat_id=%s user_id=%s delay=%ss reply_len=%s",
-            message.chat.id,
-            sender_id,
-            typing_delay,
-            len(reply),
-        )
-        try:
-            await message.bot.send_chat_action(message.chat.id, "typing")
-            await asyncio.sleep(typing_delay)
-        except Exception:
-            logger.exception(
-                "telegram typing simulation failed chat_id=%s user_id=%s",
-                message.chat.id,
-                sender_id,
-            )
-
-        await message.answer(reply)
+        await _generate_and_send_reply(message, text)
     except Exception:
         logger.exception(
             "telegram ai reply failed chat_id=%s user_id=%s",

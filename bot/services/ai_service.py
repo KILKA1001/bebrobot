@@ -69,8 +69,8 @@ LORE_CHARACTERS = {
     },
     "oleg": {
         "canonical": "Олег",
-        "aliases": ("олег",),
-        "env_prefixes": ("GUIY_OLEG",),
+        "aliases": ("олег", "отчим", "муж эмочки"),
+        "env_prefixes": ("GUIY_OLEG", "GUIY_STEPFATHER"),
     },
 }
 
@@ -253,6 +253,12 @@ def _is_lore_character_user(
     for env_prefix in character["env_prefixes"]:
         account_ids.update(_parse_env_id_set(f"{env_prefix}_ACCOUNT_IDS"))
     if not account_ids:
+        logger.warning(
+            "guiy lore character ids not configured character=%s provider=%s expected_envs=%s",
+            character_key,
+            normalized_provider,
+            ",".join(f"{env_prefix}_{provider_suffix}_IDS/{env_prefix}_ACCOUNT_IDS" for env_prefix in character["env_prefixes"]),
+        )
         return False
 
     try:

@@ -32,6 +32,7 @@ BOT_COMMANDS = [
     BotCommand(command="points", description="Меню управления баллами"),
     BotCommand(command="tickets", description="Меню управления билетами"),
     BotCommand(command="helpy", description="Список команд"),
+    BotCommand(command="guiy", description="Обратиться к Гую (особенно в группе)"),
 ]
 
 

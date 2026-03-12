@@ -1,4 +1,5 @@
 import logging
+import time
 
 from aiogram import F, Router
 from aiogram.enums import ParseMode
@@ -26,10 +27,36 @@ _EDIT_FIELD_LABELS = {
 _PENDING_EDIT_FIELD: dict[int, str] = {}
 
 
+PENDING_PROFILE_EDIT_TTL_SECONDS = 900
+_PENDING_EDIT_FIELD_CREATED_AT: dict[int, float] = {}
+
+
+def _has_non_expired_profile_edit(telegram_user_id: int) -> bool:
+    field_name = _PENDING_EDIT_FIELD.get(telegram_user_id)
+    created_at = _PENDING_EDIT_FIELD_CREATED_AT.get(telegram_user_id)
+    if not field_name or created_at is None:
+        _PENDING_EDIT_FIELD.pop(telegram_user_id, None)
+        _PENDING_EDIT_FIELD_CREATED_AT.pop(telegram_user_id, None)
+        return False
+
+    if (time.time() - created_at) > PENDING_PROFILE_EDIT_TTL_SECONDS:
+        logger.info(
+            "profile_edit pending state expired user_id=%s field=%s ttl_seconds=%s",
+            telegram_user_id,
+            field_name,
+            PENDING_PROFILE_EDIT_TTL_SECONDS,
+        )
+        _PENDING_EDIT_FIELD.pop(telegram_user_id, None)
+        _PENDING_EDIT_FIELD_CREATED_AT.pop(telegram_user_id, None)
+        return False
+
+    return True
+
+
 def has_pending_profile_edit(telegram_user_id: int | None) -> bool:
     if telegram_user_id is None:
         return False
-    return telegram_user_id in _PENDING_EDIT_FIELD
+    return _has_non_expired_profile_edit(telegram_user_id)
 
 
 def _is_chat_send_permissions_error(error: TelegramBadRequest) -> bool:
@@ -198,6 +225,7 @@ async def profile_edit_field_callback(callback: CallbackQuery) -> None:
             return
 
         _PENDING_EDIT_FIELD[callback.from_user.id] = field_name
+        _PENDING_EDIT_FIELD_CREATED_AT[callback.from_user.id] = time.time()
         await callback.message.answer(
             f"✍️ Введите новое значение для поля <b>{_EDIT_FIELD_LABELS[field_name]}</b>.\n"
             "Чтобы очистить поле, отправьте символ <code>-</code>.",
@@ -211,8 +239,7 @@ async def profile_edit_field_callback(callback: CallbackQuery) -> None:
 
 @router.message(F.chat.type == "private", F.from_user, F.from_user.id.func(has_pending_profile_edit))
 async def profile_edit_value_handler(message: Message) -> None:
-    pending_field = _PENDING_EDIT_FIELD.get(message.from_user.id)
-    if not pending_field:
+    if not _has_non_expired_profile_edit(message.from_user.id):
         logger.warning(
             "profile_edit handler invoked without pending field user_id=%s chat_id=%s",
             message.from_user.id,
@@ -220,6 +247,7 @@ async def profile_edit_value_handler(message: Message) -> None:
         )
         return
 
+    pending_field = _PENDING_EDIT_FIELD.get(message.from_user.id)
     try:
         value = (message.text or "").strip()
         if value == "-":
@@ -233,6 +261,7 @@ async def profile_edit_value_handler(message: Message) -> None:
         )
 
         _PENDING_EDIT_FIELD.pop(message.from_user.id, None)
+        _PENDING_EDIT_FIELD_CREATED_AT.pop(message.from_user.id, None)
         prefix = "✅" if success else "❌"
         await message.answer(f"{prefix} {payload}")
 
@@ -251,6 +280,7 @@ async def profile_edit_value_handler(message: Message) -> None:
     except Exception:
         logger.exception("profile_edit value handler failed user_id=%s", message.from_user.id)
         _PENDING_EDIT_FIELD.pop(message.from_user.id, None)
+        _PENDING_EDIT_FIELD_CREATED_AT.pop(message.from_user.id, None)
         await message.answer("❌ Ошибка обновления профиля. Попробуйте позже.")
 
 
