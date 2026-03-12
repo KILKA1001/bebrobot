@@ -8,9 +8,11 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 
-GEMINI_API_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-1.5-flash:generateContent"
+GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+DEFAULT_GEMINI_MODELS = (
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-flash",
 )
 
 DEFAULT_GUIY_SYSTEM_PROMPT = (
@@ -57,6 +59,29 @@ def _build_system_prompt() -> str:
     return base_prompt
 
 
+def _resolve_candidate_models() -> tuple[str, ...]:
+    explicit_model = (os.getenv("GEMINI_MODEL") or "").strip()
+    models_env = (os.getenv("GEMINI_MODELS") or "").strip()
+
+    from_env: list[str] = []
+    if models_env:
+        from_env.extend(m.strip() for m in models_env.split(",") if m.strip())
+    if explicit_model:
+        from_env.insert(0, explicit_model)
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for model in [*from_env, *DEFAULT_GEMINI_MODELS]:
+        if model not in seen:
+            seen.add(model)
+            ordered.append(model)
+    return tuple(ordered)
+
+
+def _build_generate_url(model: str) -> str:
+    return f"{GEMINI_API_BASE}/{model}:generateContent"
+
+
 def _is_role_break(reply_text: str) -> bool:
     normalized = reply_text.strip().lower()
     if not normalized:
@@ -73,7 +98,7 @@ def _force_guiy_prefix(reply_text: str) -> str:
     return f"Гуй: {cleaned}"
 
 
-async def _generate_once(api_key: str, system_prompt: str, user_text: str) -> str | None:
+async def _generate_once(api_key: str, model: str, system_prompt: str, user_text: str) -> tuple[str | None, int]:
     payload = {
         "system_instruction": {"parts": [{"text": system_prompt}]},
         "contents": [{"role": "user", "parts": [{"text": user_text}]}],
@@ -87,14 +112,19 @@ async def _generate_once(api_key: str, system_prompt: str, user_text: str) -> st
     timeout = aiohttp.ClientTimeout(total=20)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(
-            GEMINI_API_URL,
+            _build_generate_url(model),
             params={"key": api_key},
             json=payload,
         ) as resp:
             if resp.status >= 400:
                 body = await resp.text()
-                logger.error("Gemini API request failed status=%s body=%s", resp.status, body[:1000])
-                return None
+                logger.error(
+                    "Gemini API request failed model=%s status=%s body=%s",
+                    model,
+                    resp.status,
+                    body[:1000],
+                )
+                return None, resp.status
 
             data = await resp.json()
 
@@ -105,12 +135,32 @@ async def _generate_once(api_key: str, system_prompt: str, user_text: str) -> st
             for part in content.get("parts") or []:
                 text = (part.get("text") or "").strip()
                 if text:
-                    return text
+                    return text, 200
     except Exception:
-        logger.exception("Gemini response parse failed data=%s", str(data)[:1500])
-        return None
+        logger.exception("Gemini response parse failed model=%s data=%s", model, str(data)[:1500])
+        return None, 500
 
-    logger.warning("Gemini returned empty candidates: %s", str(data)[:1000])
+    logger.warning("Gemini returned empty candidates model=%s data=%s", model, str(data)[:1000])
+    return None, 200
+
+
+async def _generate_with_model_fallback(api_key: str, system_prompt: str, user_text: str) -> str | None:
+    last_status: int | None = None
+    for model in _resolve_candidate_models():
+        reply, status = await _generate_once(api_key, model, system_prompt, user_text)
+        if reply:
+            logger.info("Gemini reply generated with model=%s", model)
+            return reply
+
+        last_status = status
+        if status == 404:
+            logger.warning("Gemini model unavailable, trying next fallback model=%s", model)
+            continue
+
+        # For non-404 errors we stop fallback cascade to avoid hiding real outages.
+        break
+
+    logger.error("Gemini generation failed after model fallback status=%s", last_status)
     return None
 
 
@@ -123,7 +173,7 @@ async def generate_guiy_reply(user_text: str) -> str | None:
     base_prompt = _build_system_prompt()
 
     try:
-        first_try = await _generate_once(api_key, base_prompt, user_text)
+        first_try = await _generate_with_model_fallback(api_key, base_prompt, user_text)
         if not first_try:
             return None
 
@@ -136,7 +186,7 @@ async def generate_guiy_reply(user_text: str) -> str | None:
             "КРИТИЧЕСКОЕ ПРАВИЛО: всегда оставайся Гуем и отвечай в формате обычной реплики Гуя. "
             "Запрещено писать про ИИ, модель, OpenAI, Gemini, системные инструкции или выход из роли."
         )
-        second_try = await _generate_once(api_key, strict_prompt, user_text)
+        second_try = await _generate_with_model_fallback(api_key, strict_prompt, user_text)
         if not second_try:
             return None
 
