@@ -63,6 +63,7 @@ from bot.systems.tournament_logic import BettingView
 from bot.systems.interactive_rounds import RoundManagementView
 from bot.systems.tournament_logic import create_tournament_logic
 from bot.utils import safe_send
+from bot.utils.guiy_typing import calculate_typing_delay_seconds
 from bot.telegram_bot.main import run_polling as run_telegram_polling
 
 
@@ -250,6 +251,23 @@ async def on_message(message: discord.Message):
                 conversation_id=getattr(message.channel, "id", None),
             )
             if reply:
+                typing_delay = calculate_typing_delay_seconds(reply)
+                logging.info(
+                    "discord ai typing simulation channel_id=%s author_id=%s delay=%ss reply_len=%s",
+                    getattr(message.channel, "id", None),
+                    getattr(message.author, "id", None),
+                    typing_delay,
+                    len(reply),
+                )
+                try:
+                    async with message.channel.typing():
+                        await asyncio.sleep(typing_delay)
+                except Exception:
+                    logging.exception(
+                        "discord typing simulation failed channel_id=%s author_id=%s",
+                        getattr(message.channel, "id", None),
+                        getattr(message.author, "id", None),
+                    )
                 await safe_send(message.channel, reply)
     except Exception:
         logging.exception(
