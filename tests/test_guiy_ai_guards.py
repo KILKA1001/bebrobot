@@ -40,7 +40,7 @@ class GuiyAIGuardsTests(unittest.TestCase):
     @patch.dict("os.environ", {}, clear=True)
     def test_resolve_models_default_order(self):
         models = _resolve_candidate_models()
-        self.assertGreaterEqual(len(models), 3)
+        self.assertGreaterEqual(len(models), 2)
         self.assertEqual(models[0], "gemini-2.0-flash")
 
     @patch.dict("os.environ", {"GEMINI_MODEL": "gemini-2.5-flash", "GEMINI_MODELS": "gemini-2.0-flash-lite, gemini-1.5-flash"}, clear=True)
@@ -104,6 +104,7 @@ class GuiyAIGuardsTests(unittest.TestCase):
     @patch("bot.services.gemini_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=None)
     def test_generate_reply_reports_quota_cooldown(self, mock_generate):
         old = gemini_service._GEMINI_COOLDOWN_UNTIL
+        old_hard = gemini_service._GEMINI_HARD_QUOTA_UNTIL
         try:
             gemini_service._GEMINI_COOLDOWN_UNTIL = 9999999999
             reply = asyncio.run(generate_guiy_reply("Гуй, ты тут?"))
@@ -111,6 +112,22 @@ class GuiyAIGuardsTests(unittest.TestCase):
             mock_generate.assert_not_called()
         finally:
             gemini_service._GEMINI_COOLDOWN_UNTIL = old
+            gemini_service._GEMINI_HARD_QUOTA_UNTIL = old_hard
+
+    @patch.dict("os.environ", {"GEMINI_API_KEY": "x"}, clear=True)
+    @patch("bot.services.gemini_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=None)
+    def test_generate_reply_reports_hard_quota_cooldown(self, mock_generate):
+        old = gemini_service._GEMINI_COOLDOWN_UNTIL
+        old_hard = gemini_service._GEMINI_HARD_QUOTA_UNTIL
+        try:
+            gemini_service._GEMINI_COOLDOWN_UNTIL = 9999999999
+            gemini_service._GEMINI_HARD_QUOTA_UNTIL = 9999999999
+            reply = asyncio.run(generate_guiy_reply("Гуй, ты тут?"))
+            self.assertIn("бесплатная квота Gemini исчерпана", reply)
+            mock_generate.assert_not_called()
+        finally:
+            gemini_service._GEMINI_COOLDOWN_UNTIL = old
+            gemini_service._GEMINI_HARD_QUOTA_UNTIL = old_hard
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,11 +13,11 @@ GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 DEFAULT_GEMINI_MODELS = (
     "gemini-2.0-flash",
     "gemini-2.0-flash-lite",
-    "gemini-1.5-flash",
 )
 
 # Global backoff guard for quota/rate-limit errors.
 _GEMINI_COOLDOWN_UNTIL = 0.0
+_GEMINI_HARD_QUOTA_UNTIL = 0.0
 
 DEFAULT_GUIY_SYSTEM_PROMPT = (
     "Ты персонаж по имени Гуй. "
@@ -150,10 +150,13 @@ def _is_hard_quota_exhausted(body: str) -> bool:
 
 
 def _set_gemini_cooldown(seconds: int, *, hard_quota: bool = False) -> None:
-    global _GEMINI_COOLDOWN_UNTIL
+    global _GEMINI_COOLDOWN_UNTIL, _GEMINI_HARD_QUOTA_UNTIL
     max_window = 900 if hard_quota else 90
     bounded = max(10, min(seconds, max_window))
-    _GEMINI_COOLDOWN_UNTIL = max(_GEMINI_COOLDOWN_UNTIL, time.time() + bounded)
+    until = time.time() + bounded
+    _GEMINI_COOLDOWN_UNTIL = max(_GEMINI_COOLDOWN_UNTIL, until)
+    if hard_quota:
+        _GEMINI_HARD_QUOTA_UNTIL = max(_GEMINI_HARD_QUOTA_UNTIL, until)
     logger.warning(
         "Gemini cooldown enabled for %ss (hard_quota=%s until=%s)",
         bounded,
@@ -164,6 +167,11 @@ def _set_gemini_cooldown(seconds: int, *, hard_quota: bool = False) -> None:
 
 def _get_cooldown_remaining() -> int:
     remaining = int(_GEMINI_COOLDOWN_UNTIL - time.time())
+    return max(0, remaining)
+
+
+def _get_hard_quota_remaining() -> int:
+    remaining = int(_GEMINI_HARD_QUOTA_UNTIL - time.time())
     return max(0, remaining)
 
 
@@ -257,6 +265,21 @@ async def _generate_with_model_fallback(api_key: str, system_prompt: str, user_t
     return None
 
 
+def _build_cooldown_reply() -> str:
+    hard_quota_remaining = _get_hard_quota_remaining()
+    if hard_quota_remaining > 0:
+        logger.warning(
+            "Gemini hard quota cooldown active remaining=%ss; requires billing/quota update in Google AI Studio",
+            hard_quota_remaining,
+        )
+        return _fallback_reply(
+            f"бесплатная квота Gemini исчерпана, проверь billing/лимиты в Google AI Studio и подожди {hard_quota_remaining}с"
+        )
+
+    cooldown_remaining = _get_cooldown_remaining()
+    return _fallback_reply(f"лимит Gemini, подожди {cooldown_remaining}с")
+
+
 async def generate_guiy_reply(user_text: str) -> str | None:
     api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
     if not api_key:
@@ -266,7 +289,7 @@ async def generate_guiy_reply(user_text: str) -> str | None:
     cooldown_remaining = _get_cooldown_remaining()
     if cooldown_remaining > 0:
         logger.warning("Gemini request skipped due to active cooldown remaining=%ss", cooldown_remaining)
-        return _fallback_reply(f"лимит Gemini, подожди {cooldown_remaining}с")
+        return _build_cooldown_reply()
 
     base_prompt = _build_system_prompt()
 
@@ -275,7 +298,7 @@ async def generate_guiy_reply(user_text: str) -> str | None:
         if not first_try:
             cooldown_remaining = _get_cooldown_remaining()
             if cooldown_remaining > 0:
-                return _fallback_reply(f"лимит Gemini, подожди {cooldown_remaining}с")
+                return _build_cooldown_reply()
             return _fallback_reply("ошибка Gemini API")
 
         if not _is_role_break(first_try):
@@ -291,7 +314,7 @@ async def generate_guiy_reply(user_text: str) -> str | None:
         if not second_try:
             cooldown_remaining = _get_cooldown_remaining()
             if cooldown_remaining > 0:
-                return _fallback_reply(f"лимит Gemini, подожди {cooldown_remaining}с")
+                return _build_cooldown_reply()
             return _fallback_reply("повторная ошибка Gemini API")
 
         if _is_role_break(second_try):
