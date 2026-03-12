@@ -16,11 +16,15 @@ logger = logging.getLogger(__name__)
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_OPENROUTER_MODELS = (
     "qwen/qwen3-coder:free",
+    "mistralai/mistral-small-3.2-24b-instruct:free",
+    "deepseek/deepseek-chat-v3-0324:free",
 )
 
 # Conservative fallback list for free-tier usage.
 FREE_TIER_OPENROUTER_MODELS = (
     "qwen/qwen3-coder:free",
+    "mistralai/mistral-small-3.2-24b-instruct:free",
+    "deepseek/deepseek-chat-v3-0324:free",
 )
 
 # Global backoff guard for quota/rate-limit errors.
@@ -219,6 +223,11 @@ def _resolve_candidate_models() -> tuple[str, ...]:
         use_free_tier,
         ",".join(models),
     )
+    if len(models) < 2:
+        logger.warning(
+            "OpenRouter fallback chain has only one model; temporary provider 429 may fully block replies model=%s",
+            models[0] if models else "<empty>",
+        )
     return models
 
 

@@ -118,13 +118,13 @@ class GuiyAIGuardsTests(unittest.TestCase):
     @patch.dict("os.environ", {}, clear=True)
     def test_resolve_models_default_order(self):
         models = _resolve_candidate_models()
-        self.assertEqual(models, ("qwen/qwen3-coder:free",))
+        self.assertEqual(models, ("qwen/qwen3-coder:free", "mistralai/mistral-small-3.2-24b-instruct:free", "deepseek/deepseek-chat-v3-0324:free"))
 
 
     @patch.dict("os.environ", {"OPENROUTER_USE_FREE_TIER": "0"}, clear=True)
     def test_resolve_models_still_pinned_when_free_tier_disabled(self):
         models = _resolve_candidate_models()
-        self.assertEqual(models, ("qwen/qwen3-coder:free",))
+        self.assertEqual(models, ("qwen/qwen3-coder:free", "mistralai/mistral-small-3.2-24b-instruct:free", "deepseek/deepseek-chat-v3-0324:free"))
 
     @patch.dict("os.environ", {"OPENROUTER_MODEL": "openai/gpt-4o-mini", "OPENROUTER_MODELS": "openai/gpt-4o-mini,qwen/qwen3-coder:free"}, clear=True)
     def test_resolve_models_respects_env_overrides(self):
