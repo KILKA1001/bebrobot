@@ -280,7 +280,15 @@ def _is_lore_character_user(
 
     provider_suffix = normalized_provider.upper()
     for env_prefix in character["env_prefixes"]:
-        if normalized_user_id in _parse_env_id_set(f"{env_prefix}_{provider_suffix}_IDS"):
+        direct_env = f"{env_prefix}_{provider_suffix}_IDS"
+        if normalized_user_id in _parse_env_id_set(direct_env):
+            logger.info(
+                "guiy lore character recognized by provider id character=%s provider=%s user_id=%s env=%s",
+                character_key,
+                normalized_provider,
+                normalized_user_id,
+                direct_env,
+            )
             return True
 
     account_ids: set[str] = set()
@@ -299,12 +307,23 @@ def _is_lore_character_user(
         account_id = AccountsService.resolve_account_id(normalized_provider, normalized_user_id)
     except Exception:
         logger.exception(
-            "guiy lore character account resolve failed character=%s provider=%s",
+            "guiy lore character account resolve failed character=%s provider=%s user_id=%s",
             character_key,
             normalized_provider,
+            normalized_user_id,
         )
         return False
-    return bool(account_id and str(account_id) in account_ids)
+
+    if account_id and str(account_id) in account_ids:
+        logger.info(
+            "guiy lore character recognized by shared account character=%s provider=%s user_id=%s account_id=%s",
+            character_key,
+            normalized_provider,
+            normalized_user_id,
+            account_id,
+        )
+        return True
+    return False
 
 
 def _inject_identity_claim_context(

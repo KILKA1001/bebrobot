@@ -179,6 +179,31 @@ class GuiyAIGuardsTests(unittest.TestCase):
         )
         self.assertIn("корректно подтвердил роль", prompt)
 
+
+    @patch.dict("os.environ", {"GUIY_OLEG_ACCOUNT_IDS": "oleg-acc"}, clear=True)
+    @patch("bot.services.ai_service.AccountsService.resolve_account_id", return_value="oleg-acc")
+    def test_inject_identity_claim_context_accepts_oleg_by_shared_account(self, mock_resolve):
+        prompt = _inject_identity_claim_context(
+            "base",
+            provider="telegram",
+            user_id="700",
+            user_text="я олег",
+        )
+        self.assertIn("корректно подтвердил роль", prompt)
+        mock_resolve.assert_called_once_with("telegram", "700")
+
+    @patch.dict("os.environ", {"GUIY_STEPFATHER_ACCOUNT_IDS": "step-acc"}, clear=True)
+    @patch("bot.services.ai_service.AccountsService.resolve_account_id", return_value="step-acc")
+    def test_inject_identity_claim_context_accepts_stepfather_by_shared_account_alias(self, mock_resolve):
+        prompt = _inject_identity_claim_context(
+            "base",
+            provider="telegram",
+            user_id="701",
+            user_text="я отчим",
+        )
+        self.assertIn("корректно подтвердил роль", prompt)
+        mock_resolve.assert_called_once_with("telegram", "701")
+
     @patch.dict("os.environ", {"GUIY_OLEG_TELEGRAM_IDS": "999"}, clear=True)
     def test_inject_identity_claim_context_accepts_verified_user(self):
         prompt = _inject_identity_claim_context(
