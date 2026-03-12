@@ -14,6 +14,7 @@ import json
 from dotenv import load_dotenv
 
 from bot.telegram_bot.config import get_telegram_bot_token
+from bot.services.gemini_service import generate_guiy_reply
 
 
 def _resolve_runtime() -> str:
@@ -199,6 +200,47 @@ async def on_ready():
 
     print('--- Ленивый режим загрузки данных активирован ---')
     print("📡 Задачи активированы.")
+
+
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot:
+        return
+
+    try:
+        content = (message.content or "").strip()
+        lowered = content.lower()
+
+        is_reply_to_bot = False
+        if message.reference and message.reference.message_id:
+            ref_msg = message.reference.resolved
+            if ref_msg is None and message.channel:
+                try:
+                    ref_msg = await message.channel.fetch_message(message.reference.message_id)
+                except Exception:
+                    logging.exception(
+                        "failed to fetch referenced message channel_id=%s message_id=%s",
+                        getattr(message.channel, "id", None),
+                        message.reference.message_id,
+                    )
+            if isinstance(ref_msg, discord.Message) and ref_msg.author and ref_msg.author.id == bot.user.id:
+                is_reply_to_bot = True
+
+        is_named = "гуй" in lowered
+
+        if is_named or is_reply_to_bot:
+            reply = await generate_guiy_reply(content)
+            if reply:
+                await safe_send(message.channel, reply)
+    except Exception:
+        logging.exception(
+            "discord ai reply failed guild_id=%s channel_id=%s author_id=%s",
+            getattr(message.guild, "id", None),
+            getattr(message.channel, "id", None),
+            getattr(message.author, "id", None),
+        )
+
+    await bot.process_commands(message)
 
 async def monthly_top_task():
     await bot.wait_until_ready()
