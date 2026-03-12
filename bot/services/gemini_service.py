@@ -12,7 +12,13 @@ logger = logging.getLogger(__name__)
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 DEFAULT_GEMINI_MODELS = (
     "gemini-2.0-flash",
-    "gemini-2.0-flash-lite",
+    "gemini-1.5-flash",
+)
+
+# Conservative default chain for projects that only use Gemini free tier.
+FREE_TIER_GEMINI_MODELS = (
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
 )
 
 # Global backoff guard for quota/rate-limit errors.
@@ -66,6 +72,12 @@ def _build_system_prompt() -> str:
 def _resolve_candidate_models() -> tuple[str, ...]:
     explicit_model = (os.getenv("GEMINI_MODEL") or "").strip()
     models_env = (os.getenv("GEMINI_MODELS") or "").strip()
+    use_free_tier = (os.getenv("GEMINI_USE_FREE_TIER") or "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
 
     from_env: list[str] = []
     if models_env:
@@ -75,10 +87,17 @@ def _resolve_candidate_models() -> tuple[str, ...]:
 
     ordered: list[str] = []
     seen: set[str] = set()
-    for model in [*from_env, *DEFAULT_GEMINI_MODELS]:
+    baseline_models = FREE_TIER_GEMINI_MODELS if use_free_tier else DEFAULT_GEMINI_MODELS
+    for model in [*from_env, *baseline_models]:
         if model not in seen:
             seen.add(model)
             ordered.append(model)
+
+    logger.info(
+        "Gemini model chain resolved use_free_tier=%s models=%s",
+        use_free_tier,
+        ",".join(ordered),
+    )
     return tuple(ordered)
 
 
