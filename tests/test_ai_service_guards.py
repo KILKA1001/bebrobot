@@ -8,6 +8,7 @@ from bot.services import ai_service
 from bot.services.ai_service import (
     _extract_retry_after_seconds,
     _force_guiy_prefix,
+    _inject_dialog_memory_context,
     _inject_dialog_participants_context,
     _inject_user_context,
     _is_father_user,
@@ -25,6 +26,7 @@ class GuiyAIGuardsTests(unittest.TestCase):
 
     def setUp(self):
         ai_service._DIALOG_ACTIVE_USERS.clear()
+        ai_service._DIALOG_MEMORY.clear()
 
     def test_role_break_detects_model_leak(self):
         self.assertTrue(_is_role_break("Я языковая модель, не могу войти в роль"))
@@ -139,6 +141,51 @@ class GuiyAIGuardsTests(unittest.TestCase):
         )
         self.assertIn("333", prompt)
         self.assertNotIn("111", prompt)
+
+
+    @patch("bot.services.ai_service.time.time", side_effect=[1000, 1001, 1002])
+    def test_inject_dialog_memory_context_includes_recent_turns(self, _mock_time):
+        ai_service._register_dialog_memory_turn(
+            provider="telegram",
+            conversation_id="chat-memory",
+            speaker="Пользователь 1",
+            text="Привет",
+        )
+        ai_service._register_dialog_memory_turn(
+            provider="telegram",
+            conversation_id="chat-memory",
+            speaker="Гуй",
+            text="Здарова, где огурцы?",
+        )
+        prompt = _inject_dialog_memory_context(
+            "base",
+            provider="telegram",
+            conversation_id="chat-memory",
+        )
+        self.assertIn("Пользователь 1: Привет", prompt)
+        self.assertIn("Гуй: Здарова, где огурцы?", prompt)
+
+    @patch("bot.services.ai_service.time.time", side_effect=[1000, 2801, 2802])
+    def test_inject_dialog_memory_context_expires_old_turns(self, _mock_time):
+        ai_service._register_dialog_memory_turn(
+            provider="telegram",
+            conversation_id="chat-memory-ttl",
+            speaker="Пользователь 1",
+            text="Старая реплика",
+        )
+        ai_service._register_dialog_memory_turn(
+            provider="telegram",
+            conversation_id="chat-memory-ttl",
+            speaker="Пользователь 2",
+            text="Новая реплика",
+        )
+        prompt = _inject_dialog_memory_context(
+            "base",
+            provider="telegram",
+            conversation_id="chat-memory-ttl",
+        )
+        self.assertNotIn("Старая реплика", prompt)
+        self.assertIn("Новая реплика", prompt)
 
     @patch.dict("os.environ", {}, clear=True)
     def test_resolve_models_default_order(self):
