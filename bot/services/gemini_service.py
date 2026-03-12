@@ -149,11 +149,17 @@ def _is_hard_quota_exhausted(body: str) -> bool:
     return has_limit_zero and has_free_tier_metric and has_quota_signal
 
 
-def _set_gemini_cooldown(seconds: int) -> None:
+def _set_gemini_cooldown(seconds: int, *, hard_quota: bool = False) -> None:
     global _GEMINI_COOLDOWN_UNTIL
-    bounded = max(10, min(seconds, 900))
+    max_window = 900 if hard_quota else 90
+    bounded = max(10, min(seconds, max_window))
     _GEMINI_COOLDOWN_UNTIL = max(_GEMINI_COOLDOWN_UNTIL, time.time() + bounded)
-    logger.warning("Gemini cooldown enabled for %ss (until=%s)", bounded, int(_GEMINI_COOLDOWN_UNTIL))
+    logger.warning(
+        "Gemini cooldown enabled for %ss (hard_quota=%s until=%s)",
+        bounded,
+        hard_quota,
+        int(_GEMINI_COOLDOWN_UNTIL),
+    )
 
 
 def _get_cooldown_remaining() -> int:
@@ -195,7 +201,8 @@ async def _generate_once(api_key: str, model: str, system_prompt: str, user_text
                     body[:1000],
                 )
                 if resp.status == 429:
-                    if _is_hard_quota_exhausted(body):
+                    is_hard_quota = _is_hard_quota_exhausted(body)
+                    if is_hard_quota:
                         retry_after = 3600
                         logger.error(
                             "Gemini hard quota exhausted model=%s; enabling extended cooldown=%ss body=%s",
@@ -205,7 +212,7 @@ async def _generate_once(api_key: str, model: str, system_prompt: str, user_text
                         )
                     else:
                         retry_after = _extract_retry_after_seconds(resp.headers, body) or 60
-                    _set_gemini_cooldown(retry_after)
+                    _set_gemini_cooldown(retry_after, hard_quota=is_hard_quota)
                 return None, resp.status
 
             data = await resp.json()
@@ -235,11 +242,15 @@ async def _generate_with_model_fallback(api_key: str, system_prompt: str, user_t
             return reply
 
         last_status = status
-        if status == 404:
-            logger.warning("Gemini model unavailable, trying next fallback model=%s", model)
+        if status in {404, 429, 500, 502, 503, 504}:
+            logger.warning(
+                "Gemini model failed status=%s, trying next fallback model=%s",
+                status,
+                model,
+            )
             continue
 
-        # For non-404 errors we stop fallback cascade to avoid hiding real outages.
+        # For non-retriable errors we stop fallback cascade to avoid hiding real outages.
         break
 
     logger.error("Gemini generation failed after model fallback status=%s", last_status)
