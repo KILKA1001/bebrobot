@@ -31,6 +31,11 @@ USER_DIALOG_TTL_SECONDS = 300
 MAX_TRACKED_USERS_PER_DIALOG = 8
 _DIALOG_ACTIVE_USERS: dict[str, dict[str, float]] = {}
 
+CONVERSATION_MEMORY_TTL_SECONDS = 1800
+MAX_MEMORY_TURNS_PER_DIALOG = 12
+MAX_MEMORY_TEXT_CHARS = 700
+_DIALOG_MEMORY: dict[str, list[dict[str, str | float]]] = {}
+
 DEFAULT_GUIY_SYSTEM_PROMPT = (
     "Ты персонаж по имени Гуй. "
     "Ты НИКОГДА не выходишь из роли Гуя и не переключаешься на другие роли/персонажи. "
@@ -193,6 +198,87 @@ def _inject_dialog_participants_context(
         f"Контекст чата: в последние {USER_DIALOG_TTL_SECONDS} секунд(ы) активны пользователи с ID: {', '.join(active_user_ids)}. "
         f"Сейчас отвечает пользователю с ID {normalized_user_id}. "
         "Не путай собеседников между собой и отвечай только текущему пользователю."
+    )
+
+
+def _trim_memory_text(text: str) -> str:
+    cleaned = (text or "").strip()
+    if len(cleaned) <= MAX_MEMORY_TEXT_CHARS:
+        return cleaned
+    return f"{cleaned[:MAX_MEMORY_TEXT_CHARS].rstrip()}…"
+
+
+def _register_dialog_memory_turn(
+    *,
+    provider: str | None,
+    conversation_id: str | int | None,
+    speaker: str,
+    text: str,
+) -> None:
+    dialog_key = _build_dialog_key(provider, conversation_id)
+    normalized_text = _trim_memory_text(text)
+    now = time.time()
+    if not dialog_key or not normalized_text:
+        return
+
+    memory = _DIALOG_MEMORY.get(dialog_key, [])
+    ttl_threshold = now - CONVERSATION_MEMORY_TTL_SECONDS
+    memory = [entry for entry in memory if float(entry.get("ts", 0.0)) >= ttl_threshold]
+
+    memory.append({"speaker": speaker, "text": normalized_text, "ts": now})
+    if len(memory) > MAX_MEMORY_TURNS_PER_DIALOG:
+        memory = memory[-MAX_MEMORY_TURNS_PER_DIALOG:]
+
+    _DIALOG_MEMORY[dialog_key] = memory
+    logger.info(
+        "guiy dialog memory updated dialog_key=%s speaker=%s turns=%s",
+        dialog_key,
+        speaker,
+        len(memory),
+    )
+
+
+def _inject_dialog_memory_context(
+    base_prompt: str,
+    *,
+    provider: str | None,
+    conversation_id: str | int | None,
+) -> str:
+    dialog_key = _build_dialog_key(provider, conversation_id)
+    now = time.time()
+    if not dialog_key:
+        return base_prompt
+
+    memory = _DIALOG_MEMORY.get(dialog_key, [])
+    ttl_threshold = now - CONVERSATION_MEMORY_TTL_SECONDS
+    memory = [entry for entry in memory if float(entry.get("ts", 0.0)) >= ttl_threshold]
+    _DIALOG_MEMORY[dialog_key] = memory
+
+    if not memory:
+        return base_prompt
+
+    lines: list[str] = []
+    for entry in memory:
+        speaker = str(entry.get("speaker", "Участник")).strip() or "Участник"
+        text = _trim_memory_text(str(entry.get("text", "")))
+        if not text:
+            continue
+        lines.append(f"- {speaker}: {text}")
+
+    if not lines:
+        return base_prompt
+
+    logger.info(
+        "guiy dialog memory injected dialog_key=%s turns=%s",
+        dialog_key,
+        len(lines),
+    )
+    history_text = "\n".join(lines)
+    return (
+        f"{base_prompt}\n\n"
+        "Контекст последних реплик в этом чате (сначала старые, потом новые):\n"
+        f"{history_text}\n"
+        "Учитывай этот контекст и продолжай диалог последовательно, без выдумывания фактов."
     )
 
 
@@ -495,6 +581,18 @@ async def generate_guiy_reply(
         conversation_id=conversation_id,
         user_id=user_id,
     )
+    base_prompt = _inject_dialog_memory_context(
+        base_prompt,
+        provider=provider,
+        conversation_id=conversation_id,
+    )
+
+    _register_dialog_memory_turn(
+        provider=provider,
+        conversation_id=conversation_id,
+        speaker=f"Пользователь {str(user_id).strip() if user_id is not None else 'unknown'}",
+        text=user_text,
+    )
 
     try:
         await _throttle_ai_reply()
@@ -506,7 +604,14 @@ async def generate_guiy_reply(
             return _fallback_reply("ошибка Groq API")
 
         if not _is_role_break(first_try):
-            return _force_guiy_prefix(first_try)
+            cleaned_reply = _force_guiy_prefix(first_try)
+            _register_dialog_memory_turn(
+                provider=provider,
+                conversation_id=conversation_id,
+                speaker="Гуй",
+                text=cleaned_reply,
+            )
+            return cleaned_reply
 
         logger.warning("AI role-break detected, retry with stricter lock")
         strict_prompt = (
@@ -525,7 +630,14 @@ async def generate_guiy_reply(
             logger.error("AI role-break persisted after retry")
             return "Слышь, без смены роли. Говори по делу."
 
-        return _force_guiy_prefix(second_try)
+        cleaned_reply = _force_guiy_prefix(second_try)
+        _register_dialog_memory_turn(
+            provider=provider,
+            conversation_id=conversation_id,
+            speaker="Гуй",
+            text=cleaned_reply,
+        )
+        return cleaned_reply
     except Exception:
         logger.exception("AI request crashed")
         return _fallback_reply("внутренняя ошибка")
