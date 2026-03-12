@@ -24,8 +24,8 @@ FREE_TIER_OPENROUTER_MODELS = (
 )
 
 # Global backoff guard for quota/rate-limit errors.
-_GEMINI_COOLDOWN_UNTIL = 0.0
-_GEMINI_HARD_QUOTA_UNTIL = 0.0
+_AI_COOLDOWN_UNTIL = 0.0
+_AI_HARD_QUOTA_UNTIL = 0.0
 
 USER_DIALOG_TTL_SECONDS = 300
 MAX_TRACKED_USERS_PER_DIALOG = 8
@@ -58,7 +58,6 @@ ROLE_BREAK_PATTERNS = (
     r"\bкак\s+ии\b",
     r"\bкак\s+ai\b",
     r"\bopenai\b",
-    r"\bgemini\b",
     r"\bopenrouter\b",
     r"\bне\s+могу\s+войти\s+в\s+роль\b",
     r"\bя\s+не\s+гуй\b",
@@ -197,9 +196,9 @@ def _inject_dialog_participants_context(
 
 
 def _resolve_candidate_models() -> tuple[str, ...]:
-    explicit_model = (os.getenv("OPENROUTER_MODEL") or os.getenv("GEMINI_MODEL") or "").strip()
-    models_env = (os.getenv("OPENROUTER_MODELS") or os.getenv("GEMINI_MODELS") or "").strip()
-    use_free_tier = (os.getenv("OPENROUTER_USE_FREE_TIER") or os.getenv("GEMINI_USE_FREE_TIER") or "1").strip().lower() not in {
+    explicit_model = (os.getenv("OPENROUTER_MODEL") or "").strip()
+    models_env = (os.getenv("OPENROUTER_MODELS") or "").strip()
+    use_free_tier = (os.getenv("OPENROUTER_USE_FREE_TIER") or "1").strip().lower() not in {
         "0",
         "false",
         "no",
@@ -237,7 +236,7 @@ def _force_guiy_prefix(reply_text: str) -> str:
     if cleaned.lower().startswith("гуй:"):
         cleaned = cleaned.split(":", 1)[1].strip()
 
-    # Gemini can occasionally return mock dialogue blocks, e.g.
+    # Model can occasionally return mock dialogue blocks, e.g.
     # "Гуй: ...\nПользователь: ...". In chats this looks like a cut-off
     # answer, so we keep only Guiy's first turn.
     speaker_break = re.search(r"\n\s*(?:пользователь|user|ты|человек)\s*:", cleaned, re.IGNORECASE)
@@ -308,29 +307,29 @@ def _is_temporary_upstream_rate_limited(body: str) -> bool:
     )
 
 
-def _set_gemini_cooldown(seconds: int, *, hard_quota: bool = False) -> None:
-    global _GEMINI_COOLDOWN_UNTIL, _GEMINI_HARD_QUOTA_UNTIL
+def _set_ai_cooldown(seconds: int, *, hard_quota: bool = False) -> None:
+    global _AI_COOLDOWN_UNTIL, _AI_HARD_QUOTA_UNTIL
     max_window = 900 if hard_quota else 90
     bounded = max(10, min(seconds, max_window))
     until = time.time() + bounded
-    _GEMINI_COOLDOWN_UNTIL = max(_GEMINI_COOLDOWN_UNTIL, until)
+    _AI_COOLDOWN_UNTIL = max(_AI_COOLDOWN_UNTIL, until)
     if hard_quota:
-        _GEMINI_HARD_QUOTA_UNTIL = max(_GEMINI_HARD_QUOTA_UNTIL, until)
+        _AI_HARD_QUOTA_UNTIL = max(_AI_HARD_QUOTA_UNTIL, until)
     logger.warning(
         "AI cooldown enabled for %ss (hard_quota=%s until=%s)",
         bounded,
         hard_quota,
-        int(_GEMINI_COOLDOWN_UNTIL),
+        int(_AI_COOLDOWN_UNTIL),
     )
 
 
 def _get_cooldown_remaining() -> int:
-    remaining = int(_GEMINI_COOLDOWN_UNTIL - time.time())
+    remaining = int(_AI_COOLDOWN_UNTIL - time.time())
     return max(0, remaining)
 
 
 def _get_hard_quota_remaining() -> int:
-    remaining = int(_GEMINI_HARD_QUOTA_UNTIL - time.time())
+    remaining = int(_AI_HARD_QUOTA_UNTIL - time.time())
     return max(0, remaining)
 
 
@@ -420,7 +419,7 @@ async def _generate_once(
                             retry_after,
                             body[:800],
                         )
-                        _set_gemini_cooldown(retry_after, hard_quota=True)
+                        _set_ai_cooldown(retry_after, hard_quota=True)
                     elif is_temp_provider_limit:
                         logger.warning(
                             "OpenRouter temporary upstream rate limit model=%s; skipping global cooldown to allow model fallback body=%s",
@@ -429,7 +428,7 @@ async def _generate_once(
                         )
                     else:
                         retry_after = _extract_retry_after_seconds(resp.headers, body) or 60
-                        _set_gemini_cooldown(retry_after, hard_quota=False)
+                        _set_ai_cooldown(retry_after, hard_quota=False)
                 return None, resp.status
 
             data = await resp.json()
@@ -497,10 +496,10 @@ async def generate_guiy_reply(
     user_id: str | int | None = None,
     conversation_id: str | int | None = None,
 ) -> str | None:
-    api_key = (os.getenv("OPENROUTER_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
+    api_key = (os.getenv("OPENROUTER_API_KEY") or "").strip()
     if not api_key:
-        logger.error("OPENROUTER_API_KEY/GEMINI_API_KEY is empty, cannot generate ai reply")
-        return _fallback_reply("нет OPENROUTER_API_KEY/GEMINI_API_KEY")
+        logger.error("OPENROUTER_API_KEY is empty, cannot generate ai reply")
+        return _fallback_reply("нет OPENROUTER_API_KEY")
 
     cooldown_remaining = _get_cooldown_remaining()
     if cooldown_remaining > 0:
@@ -531,7 +530,7 @@ async def generate_guiy_reply(
         strict_prompt = (
             f"{base_prompt}\n\n"
             "КРИТИЧЕСКОЕ ПРАВИЛО: всегда оставайся Гуем и отвечай в формате обычной реплики Гуя. "
-            "Запрещено писать про ИИ, модель, OpenAI, Gemini, OpenRouter, системные инструкции или выход из роли."
+            "Запрещено писать про ИИ, модель, OpenAI, OpenRouter, системные инструкции или выход из роли."
         )
         second_try = await _generate_with_model_fallback(api_key, strict_prompt, user_text)
         if not second_try:

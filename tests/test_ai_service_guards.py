@@ -3,8 +3,8 @@ import unittest
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from bot.services import gemini_service
-from bot.services.gemini_service import (
+from bot.services import ai_service
+from bot.services.ai_service import (
     _extract_retry_after_seconds,
     _force_guiy_prefix,
     _inject_dialog_participants_context,
@@ -23,7 +23,7 @@ from bot.utils.guiy_typing import calculate_typing_delay_seconds
 class GuiyAIGuardsTests(unittest.TestCase):
 
     def setUp(self):
-        gemini_service._DIALOG_ACTIVE_USERS.clear()
+        ai_service._DIALOG_ACTIVE_USERS.clear()
 
     def test_role_break_detects_model_leak(self):
         self.assertTrue(_is_role_break("Я языковая модель, не могу войти в роль"))
@@ -65,7 +65,7 @@ class GuiyAIGuardsTests(unittest.TestCase):
         self.assertTrue(_is_father_user("telegram", "100"))
 
     @patch.dict("os.environ", {"GUIY_FATHER_ACCOUNT_IDS": "acc-1"}, clear=True)
-    @patch("bot.services.gemini_service.AccountsService.resolve_account_id", return_value="acc-1")
+    @patch("bot.services.ai_service.AccountsService.resolve_account_id", return_value="acc-1")
     def test_is_father_user_by_shared_account(self, mock_resolve):
         self.assertTrue(_is_father_user("telegram", "321"))
         mock_resolve.assert_called_once_with("telegram", "321")
@@ -92,7 +92,7 @@ class GuiyAIGuardsTests(unittest.TestCase):
         self.assertIn("100", prompt)
         self.assertIn("200", prompt)
 
-    @patch("bot.services.gemini_service.time.time", side_effect=[1000, 1001, 1405])
+    @patch("bot.services.ai_service.time.time", side_effect=[1000, 1001, 1405])
     def test_inject_dialog_participants_context_expires_old_users(self, _mock_time):
         _inject_dialog_participants_context(
             "base",
@@ -170,35 +170,35 @@ class GuiyAIGuardsTests(unittest.TestCase):
         self.assertFalse(_is_temporary_upstream_rate_limited(body))
 
 
-    def test_set_gemini_cooldown_caps_soft_quota(self):
-        old = gemini_service._GEMINI_COOLDOWN_UNTIL
-        now = gemini_service.time.time()
+    def test_set_ai_cooldown_caps_soft_quota(self):
+        old = ai_service._AI_COOLDOWN_UNTIL
+        now = ai_service.time.time()
         try:
-            gemini_service._GEMINI_COOLDOWN_UNTIL = 0
-            gemini_service._set_gemini_cooldown(3600, hard_quota=False)
-            delta = int(gemini_service._GEMINI_COOLDOWN_UNTIL - now)
+            ai_service._AI_COOLDOWN_UNTIL = 0
+            ai_service._set_ai_cooldown(3600, hard_quota=False)
+            delta = int(ai_service._AI_COOLDOWN_UNTIL - now)
             self.assertLessEqual(delta, 91)
         finally:
-            gemini_service._GEMINI_COOLDOWN_UNTIL = old
+            ai_service._AI_COOLDOWN_UNTIL = old
 
-    def test_set_gemini_cooldown_caps_hard_quota(self):
-        old = gemini_service._GEMINI_COOLDOWN_UNTIL
-        now = gemini_service.time.time()
+    def test_set_ai_cooldown_caps_hard_quota(self):
+        old = ai_service._AI_COOLDOWN_UNTIL
+        now = ai_service.time.time()
         try:
-            gemini_service._GEMINI_COOLDOWN_UNTIL = 0
-            gemini_service._set_gemini_cooldown(7200, hard_quota=True)
-            delta = int(gemini_service._GEMINI_COOLDOWN_UNTIL - now)
+            ai_service._AI_COOLDOWN_UNTIL = 0
+            ai_service._set_ai_cooldown(7200, hard_quota=True)
+            delta = int(ai_service._AI_COOLDOWN_UNTIL - now)
             self.assertLessEqual(delta, 901)
             self.assertGreaterEqual(delta, 10)
         finally:
-            gemini_service._GEMINI_COOLDOWN_UNTIL = old
+            ai_service._AI_COOLDOWN_UNTIL = old
 
     @patch.dict("os.environ", {"OPENROUTER_API_KEY": "x", "OPENROUTER_MODELS": "qwen/qwen3-coder:free,openai/gpt-4o-mini"}, clear=True)
-    @patch("bot.services.gemini_service.aiohttp.ClientSession")
+    @patch("bot.services.ai_service.aiohttp.ClientSession")
     def test_generate_once_temporary_upstream_429_does_not_enable_cooldown(self, mock_session_cls):
-        old = gemini_service._GEMINI_COOLDOWN_UNTIL
+        old = ai_service._AI_COOLDOWN_UNTIL
         try:
-            gemini_service._GEMINI_COOLDOWN_UNTIL = 0
+            ai_service._AI_COOLDOWN_UNTIL = 0
 
             response_mock = AsyncMock()
             response_mock.status = 429
@@ -218,7 +218,7 @@ class GuiyAIGuardsTests(unittest.TestCase):
             mock_session_cls.return_value = session_ctx
 
             reply, status = asyncio.run(
-                gemini_service._generate_once(
+                ai_service._generate_once(
                     "x",
                     "qwen/qwen3-coder:free",
                     "sys",
@@ -229,43 +229,43 @@ class GuiyAIGuardsTests(unittest.TestCase):
             )
             self.assertIsNone(reply)
             self.assertEqual(status, 429)
-            self.assertEqual(gemini_service._GEMINI_COOLDOWN_UNTIL, 0)
+            self.assertEqual(ai_service._AI_COOLDOWN_UNTIL, 0)
         finally:
-            gemini_service._GEMINI_COOLDOWN_UNTIL = old
+            ai_service._AI_COOLDOWN_UNTIL = old
 
-    @patch.dict("os.environ", {"GEMINI_API_KEY": "x"}, clear=True)
-    @patch("bot.services.gemini_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=None)
+    @patch.dict("os.environ", {"OPENROUTER_API_KEY": "x"}, clear=True)
+    @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=None)
     def test_generate_reply_reports_quota_cooldown(self, mock_generate):
-        old = gemini_service._GEMINI_COOLDOWN_UNTIL
-        old_hard = gemini_service._GEMINI_HARD_QUOTA_UNTIL
+        old = ai_service._AI_COOLDOWN_UNTIL
+        old_hard = ai_service._AI_HARD_QUOTA_UNTIL
         try:
-            gemini_service._GEMINI_COOLDOWN_UNTIL = 9999999999
+            ai_service._AI_COOLDOWN_UNTIL = 9999999999
             reply = asyncio.run(generate_guiy_reply("Гуй, ты тут?"))
             self.assertEqual(reply, "Я очень устал, не мешай мне спать.")
             mock_generate.assert_not_called()
         finally:
-            gemini_service._GEMINI_COOLDOWN_UNTIL = old
-            gemini_service._GEMINI_HARD_QUOTA_UNTIL = old_hard
+            ai_service._AI_COOLDOWN_UNTIL = old
+            ai_service._AI_HARD_QUOTA_UNTIL = old_hard
 
-    @patch.dict("os.environ", {"GEMINI_API_KEY": "x"}, clear=True)
-    @patch("bot.services.gemini_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=None)
+    @patch.dict("os.environ", {"OPENROUTER_API_KEY": "x"}, clear=True)
+    @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=None)
     def test_generate_reply_reports_hard_quota_cooldown(self, mock_generate):
-        old = gemini_service._GEMINI_COOLDOWN_UNTIL
-        old_hard = gemini_service._GEMINI_HARD_QUOTA_UNTIL
+        old = ai_service._AI_COOLDOWN_UNTIL
+        old_hard = ai_service._AI_HARD_QUOTA_UNTIL
         try:
-            gemini_service._GEMINI_COOLDOWN_UNTIL = 9999999999
-            gemini_service._GEMINI_HARD_QUOTA_UNTIL = 9999999999
+            ai_service._AI_COOLDOWN_UNTIL = 9999999999
+            ai_service._AI_HARD_QUOTA_UNTIL = 9999999999
             reply = asyncio.run(generate_guiy_reply("Гуй, ты тут?"))
             self.assertEqual(reply, "Я очень устал, не мешай мне спать.")
             mock_generate.assert_not_called()
         finally:
-            gemini_service._GEMINI_COOLDOWN_UNTIL = old
-            gemini_service._GEMINI_HARD_QUOTA_UNTIL = old_hard
+            ai_service._AI_COOLDOWN_UNTIL = old
+            ai_service._AI_HARD_QUOTA_UNTIL = old_hard
 
-    @patch.dict("os.environ", {"GEMINI_API_KEY": "x"}, clear=True)
-    @patch("bot.services.gemini_service.asyncio.sleep", new_callable=AsyncMock)
-    @patch("bot.services.gemini_service.random.uniform", return_value=3.4)
-    @patch("bot.services.gemini_service._generate_with_model_fallback", new_callable=AsyncMock, return_value="Ответ")
+    @patch.dict("os.environ", {"OPENROUTER_API_KEY": "x"}, clear=True)
+    @patch("bot.services.ai_service.asyncio.sleep", new_callable=AsyncMock)
+    @patch("bot.services.ai_service.random.uniform", return_value=3.4)
+    @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, return_value="Ответ")
     def test_generate_reply_adds_artificial_delay(self, mock_generate, mock_uniform, mock_sleep):
         reply = asyncio.run(generate_guiy_reply("Гуй, ты тут?"))
         self.assertEqual(reply, "Ответ")

@@ -133,7 +133,6 @@ python bot/main.py
   - `OPENROUTER_MODELS` — опциональная fallback-цепочка моделей через запятую (рекомендуется указать 2+ модели, чтобы переживать временные лимиты провайдера одной модели).
   - `OPENROUTER_HTTP_REFERER` — опциональный URL сайта для рейтингов OpenRouter.
   - `OPENROUTER_APP_TITLE` — опциональное название приложения для рейтингов OpenRouter.
-  - Для обратной совместимости остаются `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_MODELS`, `GEMINI_USE_FREE_TIER`.
   - `GUIY_SYSTEM_PROMPT` — опциональный полный system prompt персонажа.
   - `GUIY_EXTRA_LORE` — опциональное доп.описание лора (добавляется к prompt).
 - Telegram-код изолирован в `bot/telegram_bot/`, чтобы не смешивать с Discord-рантаймом.
