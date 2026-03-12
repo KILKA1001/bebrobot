@@ -208,6 +208,11 @@ async def on_message(message: discord.Message):
         return
 
     try:
+        ctx = await bot.get_context(message)
+        if getattr(ctx, "valid", False):
+            await bot.process_commands(message)
+            return
+
         content = (message.content or "").strip()
         lowered = content.lower()
 
