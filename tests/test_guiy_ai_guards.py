@@ -40,14 +40,18 @@ class GuiyAIGuardsTests(unittest.TestCase):
     @patch.dict("os.environ", {}, clear=True)
     def test_resolve_models_default_order(self):
         models = _resolve_candidate_models()
-        self.assertGreaterEqual(len(models), 2)
-        self.assertEqual(models[0], "gemini-2.0-flash")
+        self.assertEqual(models, ("gemini-2.5-flash",))
 
-    @patch.dict("os.environ", {"GEMINI_MODEL": "gemini-2.5-flash", "GEMINI_MODELS": "gemini-2.0-flash-lite, gemini-1.5-flash"}, clear=True)
-    def test_resolve_models_prefers_env(self):
+
+    @patch.dict("os.environ", {"GEMINI_USE_FREE_TIER": "0"}, clear=True)
+    def test_resolve_models_still_pinned_when_free_tier_disabled(self):
         models = _resolve_candidate_models()
-        self.assertEqual(models[0], "gemini-2.5-flash")
-        self.assertIn("gemini-2.0-flash-lite", models)
+        self.assertEqual(models, ("gemini-2.5-flash",))
+
+    @patch.dict("os.environ", {"GEMINI_MODEL": "gemini-2.0-flash", "GEMINI_MODELS": "gemini-1.5-flash"}, clear=True)
+    def test_resolve_models_ignores_env_overrides(self):
+        models = _resolve_candidate_models()
+        self.assertEqual(models, ("gemini-2.5-flash",))
 
 
     @patch.dict("os.environ", {}, clear=True)
