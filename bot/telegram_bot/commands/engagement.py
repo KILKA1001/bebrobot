@@ -39,8 +39,36 @@ def _can_manage_tickets(actor_titles: tuple[str, ...], actor_level: int) -> bool
 
 
 def _parse_target_arg(message: Message) -> int | None:
-    if message.reply_to_message and message.reply_to_message.from_user:
-        return int(message.reply_to_message.from_user.id)
+    def _extract_user_id_from_entities(source_message: Message | None) -> int | None:
+        if source_message is None:
+            return None
+
+        for entity in source_message.entities or []:
+            if entity.type == "text_mention" and entity.user is not None:
+                return int(entity.user.id)
+            if entity.type == "text_link" and entity.url:
+                url = str(entity.url)
+                if url.startswith("tg://user?id="):
+                    raw_user_id = url.split("=", 1)[1]
+                    if raw_user_id.isdigit():
+                        return int(raw_user_id)
+        return None
+
+    if message.reply_to_message:
+        quoted_target_id = _extract_user_id_from_entities(message.reply_to_message)
+        if quoted_target_id is not None:
+            return quoted_target_id
+
+        if message.reply_to_message.from_user:
+            reply_user = message.reply_to_message.from_user
+            if not reply_user.is_bot:
+                return int(reply_user.id)
+            logger.warning(
+                "points/tickets target reply points to bot, trying command text fallback actor_id=%s chat_id=%s reply_user_id=%s",
+                message.from_user.id if message.from_user else None,
+                message.chat.id if message.chat else None,
+                reply_user.id,
+            )
 
     text = (message.text or "").strip()
     parts = text.split(maxsplit=1)
@@ -51,10 +79,9 @@ def _parse_target_arg(message: Message) -> int | None:
     if candidate.isdigit():
         return int(candidate)
 
-    entities = message.entities or []
-    for entity in entities:
-        if entity.type == "text_mention" and entity.user is not None:
-            return int(entity.user.id)
+    mentioned_target_id = _extract_user_id_from_entities(message)
+    if mentioned_target_id is not None:
+        return mentioned_target_id
 
     return None
 
