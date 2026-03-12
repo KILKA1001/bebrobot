@@ -22,11 +22,11 @@ class GuiyAIGuardsTests(unittest.TestCase):
     def test_role_break_allows_in_character_answer(self):
         self.assertFalse(_is_role_break("Гуй: Слышь, давай по делу, где мои огурцы?"))
 
-    def test_force_guiy_prefix_adds_prefix(self):
-        self.assertEqual(_force_guiy_prefix("Принёс огурцы?"), "Гуй: Принёс огурцы?")
+    def test_force_guiy_prefix_keeps_plain_text(self):
+        self.assertEqual(_force_guiy_prefix("Принёс огурцы?"), "Принёс огурцы?")
 
-    def test_force_guiy_prefix_keeps_existing_prefix(self):
-        self.assertEqual(_force_guiy_prefix("Гуй: уже тут"), "Гуй: уже тут")
+    def test_force_guiy_prefix_removes_existing_prefix(self):
+        self.assertEqual(_force_guiy_prefix("Гуй: уже тут"), "уже тут")
 
     def test_is_command_text_for_known_command(self):
         self.assertTrue(_is_command_text("/points 123"))
@@ -57,7 +57,7 @@ class GuiyAIGuardsTests(unittest.TestCase):
     @patch.dict("os.environ", {}, clear=True)
     def test_generate_reply_returns_fallback_when_api_key_missing(self):
         reply = asyncio.run(generate_guiy_reply("Гуй, ты тут?"))
-        self.assertIn("Гуй:", reply)
+        self.assertNotIn("Гуй:", reply)
         self.assertIn("GEMINI_API_KEY", reply)
 
 
@@ -132,6 +132,17 @@ class GuiyAIGuardsTests(unittest.TestCase):
         finally:
             gemini_service._GEMINI_COOLDOWN_UNTIL = old
             gemini_service._GEMINI_HARD_QUOTA_UNTIL = old_hard
+
+    @patch.dict("os.environ", {"GEMINI_API_KEY": "x"}, clear=True)
+    @patch("bot.services.gemini_service.asyncio.sleep", new_callable=AsyncMock)
+    @patch("bot.services.gemini_service.random.uniform", return_value=3.4)
+    @patch("bot.services.gemini_service._generate_with_model_fallback", new_callable=AsyncMock, return_value="Ответ")
+    def test_generate_reply_adds_artificial_delay(self, mock_generate, mock_uniform, mock_sleep):
+        reply = asyncio.run(generate_guiy_reply("Гуй, ты тут?"))
+        self.assertEqual(reply, "Ответ")
+        mock_uniform.assert_called_once_with(3.0, 4.0)
+        mock_sleep.assert_awaited_once_with(3.4)
+        mock_generate.assert_awaited()
 
 if __name__ == "__main__":
     unittest.main()

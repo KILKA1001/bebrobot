@@ -1,5 +1,7 @@
+import asyncio
 import logging
 import os
+import random
 import re
 import time
 
@@ -41,7 +43,8 @@ DEFAULT_GUIY_SYSTEM_PROMPT = (
     "Гуй наивный и непослушный, но старается помогать отцу в работе. "
     "Гуй понимает, что работает ботом и получает за это огурцы в оплату. "
     "Если информации не хватает, не выдумывай факты про реальных людей. "
-    "Отвечай кратко и по делу."
+    "Отвечай кратко и по делу. "
+    "Будь сообразительным: анализируй контекст диалога и предлагай полезный следующий шаг, когда это уместно."
 )
 
 ROLE_BREAK_PATTERNS = (
@@ -113,8 +116,8 @@ def _force_guiy_prefix(reply_text: str) -> str:
     if not cleaned:
         return ""
     if cleaned.lower().startswith("гуй:"):
-        return cleaned
-    return f"Гуй: {cleaned}"
+        return cleaned.split(":", 1)[1].strip()
+    return cleaned
 
 
 def _extract_retry_after_seconds(headers: "aiohttp.typedefs.LooseHeaders", body: str) -> int | None:
@@ -192,9 +195,15 @@ def _get_hard_quota_remaining() -> int:
 
 def _fallback_reply(reason: str) -> str:
     return (
-        "Гуй: Эй, я на месте, но огуречный канал к ИИ сейчас барахлит "
+        "Эй, я на месте, но огуречный канал к ИИ сейчас барахлит "
         f"({reason}). Напиши ещё раз через минутку."
     )
+
+
+async def _throttle_ai_reply() -> None:
+    delay = round(random.uniform(3.0, 4.0), 2)
+    logger.info("Gemini artificial delay enabled delay=%ss", delay)
+    await asyncio.sleep(delay)
 
 
 async def _generate_once(api_key: str, model: str, system_prompt: str, user_text: str) -> tuple[str | None, int]:
@@ -309,6 +318,7 @@ async def generate_guiy_reply(user_text: str) -> str | None:
     base_prompt = _build_system_prompt()
 
     try:
+        await _throttle_ai_reply()
         first_try = await _generate_with_model_fallback(api_key, base_prompt, user_text)
         if not first_try:
             cooldown_remaining = _get_cooldown_remaining()
@@ -334,7 +344,7 @@ async def generate_guiy_reply(user_text: str) -> str | None:
 
         if _is_role_break(second_try):
             logger.error("Gemini role-break persisted after retry")
-            return "Гуй: Слышь, я Гуй. Без смены роли. Говори по делу."
+            return "Слышь, без смены роли. Говори по делу."
 
         return _force_guiy_prefix(second_try)
     except Exception:
