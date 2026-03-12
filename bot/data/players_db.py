@@ -7,6 +7,7 @@ logger = logging.getLogger(__name__)
 
 assert db.supabase, "Supabase client not initialized"
 supabase = db.supabase
+_has_tp_player_id = True
 
 
 def get_player_by_id(player_id: int) -> Optional[dict]:
@@ -39,9 +40,11 @@ def add_player_to_tournament(
         logger.error("add_player_to_tournament called without player identifiers")
         return False
 
+    global _has_tp_player_id
     payload = {"tournament_id": tournament_id, "confirmed": True}
     if player_id is not None:
-        payload["player_id"] = player_id
+        if _has_tp_player_id:
+            payload["player_id"] = player_id
         if discord_user_id is None:
             # В базе столбец discord_user_id обязательный, поэтому,
             # если у игрока нет Discord, используем его player_id как заглушку
@@ -55,6 +58,12 @@ def add_player_to_tournament(
         res = supabase.table("tournament_participants").insert(payload).execute()
         return bool(res.data)
     except APIError as e:
+        if _has_tp_player_id and "player_id" in str(e) and getattr(e, "code", "") == "PGRST204":
+            logger.warning("'player_id' column missing in tournament_participants table")
+            _has_tp_player_id = False
+            payload.pop("player_id", None)
+            retry = supabase.table("tournament_participants").insert(payload).execute()
+            return bool(retry.data)
         if e.code == "23505":
             return False
         logger.error("add_player_to_tournament failed: %s", e)
@@ -67,7 +76,17 @@ def remove_player_from_tournament(player_id: int, tournament_id: int) -> bool:
     """
     Удаляет связь игрока с турниром.
     """
+    global _has_tp_player_id
     try:
+        if not _has_tp_player_id:
+            res = (
+                supabase.table("tournament_participants")
+                .delete()
+                .eq("discord_user_id", player_id)
+                .eq("tournament_id", tournament_id)
+                .execute()
+            )
+            return bool(res.data)
         res = (
             supabase.table("tournament_participants")
             .delete()
@@ -76,6 +95,25 @@ def remove_player_from_tournament(player_id: int, tournament_id: int) -> bool:
             .execute()
         )
         return bool(res.data)
+    except APIError as e:
+        if _has_tp_player_id and "player_id" in str(e) and getattr(e, "code", "") == "PGRST204":
+            logger.warning("'player_id' column missing in tournament_participants table")
+            _has_tp_player_id = False
+            res = (
+                supabase.table("tournament_participants")
+                .delete()
+                .eq("discord_user_id", player_id)
+                .eq("tournament_id", tournament_id)
+                .execute()
+            )
+            return bool(res.data)
+        logger.error(
+            "remove_player_from_tournament APIError for player_id=%s tournament_id=%s: %s",
+            player_id,
+            tournament_id,
+            e,
+        )
+        return False
     except Exception as e:
         logger.error(
             "remove_player_from_tournament failed for player_id=%s tournament_id=%s: %s",

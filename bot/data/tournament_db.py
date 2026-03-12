@@ -17,6 +17,33 @@ logger = logging.getLogger(__name__)
 _has_team_auto = True
 # Флаг наличия столбца status_message_id
 _has_status_msg = True
+# Флаг наличия legacy-столбца player_id в tournament_participants
+_has_tp_player_id = True
+
+
+def _participants_select_fields() -> str:
+    return (
+        "discord_user_id, player_id, confirmed, team_id, team_name"
+        if _has_tp_player_id
+        else "discord_user_id, confirmed, team_id, team_name"
+    )
+
+
+def _participants_team_select_fields() -> str:
+    return (
+        "discord_user_id, player_id, team_id, team_name"
+        if _has_tp_player_id
+        else "discord_user_id, team_id, team_name"
+    )
+
+
+def _normalize_participant_rows(rows: List[dict]) -> List[dict]:
+    normalized: List[dict] = []
+    for row in rows or []:
+        if "player_id" not in row:
+            row = {**row, "player_id": None}
+        normalized.append(row)
+    return normalized
 
 
 def create_tournament_record(
@@ -62,12 +89,14 @@ def add_discord_participant(
     team_name: Optional[str] = None,
 ) -> bool:
     """Для саморегистрации участника (по Discord ID)."""
+    global _has_tp_player_id
     payload = {
         "tournament_id": tournament_id,
         "discord_user_id": discord_user_id,
-        "player_id": None,
         "confirmed": False,
     }
+    if _has_tp_player_id:
+        payload["player_id"] = None
     if team_id is not None:
         payload["team_id"] = team_id
         payload["team_name"] = team_name
@@ -75,6 +104,12 @@ def add_discord_participant(
         res = supabase.table("tournament_participants").insert(payload).execute()
         return bool(res.data)
     except APIError as e:
+        if _has_tp_player_id and "player_id" in str(e) and getattr(e, "code", "") == "PGRST204":
+            logger.warning("'player_id' column missing in tournament_participants table")
+            _has_tp_player_id = False
+            payload.pop("player_id", None)
+            retry = supabase.table("tournament_participants").insert(payload).execute()
+            return bool(retry.data)
         if e.code == "23505":
             return False
         logger.error("add_discord_participant failed: %s", e)
@@ -91,12 +126,14 @@ def add_player_participant(
     team_name: Optional[str] = None,
 ) -> bool:
     """Для админской регистрации (по player_id)."""
+    global _has_tp_player_id
     payload = {
         "tournament_id": tournament_id,
         "discord_user_id": player_id,
-        "player_id": player_id,
         "confirmed": True,
     }
+    if _has_tp_player_id:
+        payload["player_id"] = player_id
     if team_id is not None:
         payload["team_id"] = team_id
         payload["team_name"] = team_name
@@ -104,6 +141,12 @@ def add_player_participant(
         res = supabase.table("tournament_participants").insert(payload).execute()
         return bool(res.data)
     except APIError as e:
+        if _has_tp_player_id and "player_id" in str(e) and getattr(e, "code", "") == "PGRST204":
+            logger.warning("'player_id' column missing in tournament_participants table")
+            _has_tp_player_id = False
+            payload.pop("player_id", None)
+            retry = supabase.table("tournament_participants").insert(payload).execute()
+            return bool(retry.data)
         if e.code == "23505":
             return False
         logger.error("add_player_participant failed: %s", e)
@@ -118,13 +161,28 @@ def list_participants(tournament_id: int) -> List[dict]:
     Возвращает список участников как словари с полями
     {discord_user_id, player_id}.
     """
-    res = (
-        supabase.table("tournament_participants")
-        .select("discord_user_id, player_id, confirmed, team_id, team_name")
-        .eq("tournament_id", tournament_id)
-        .execute()
-    )
-    return res.data or []
+    global _has_tp_player_id
+    try:
+        res = (
+            supabase.table("tournament_participants")
+            .select(_participants_select_fields())
+            .eq("tournament_id", tournament_id)
+            .execute()
+        )
+        return _normalize_participant_rows(res.data or [])
+    except APIError as e:
+        if _has_tp_player_id and "player_id" in str(e) and getattr(e, "code", "") == "PGRST204":
+            logger.warning("'player_id' column missing in tournament_participants table")
+            _has_tp_player_id = False
+            res = (
+                supabase.table("tournament_participants")
+                .select(_participants_select_fields())
+                .eq("tournament_id", tournament_id)
+                .execute()
+            )
+            return _normalize_participant_rows(res.data or [])
+        logger.error("list_participants failed: %s", e)
+        return []
 
 
 def create_matches(tournament_id: int, round_number: int, matches: List) -> None:
@@ -388,27 +446,39 @@ def list_participants_full(tournament_id: int) -> List[dict]:
     Возвращает список записей участников турнира:
     [{"discord_user_id": int|None, "player_id": int|None}, ...]
     """
-    res = (
-        supabase.table("tournament_participants")
-        .select("discord_user_id, player_id, confirmed, team_id, team_name")
-        .eq("tournament_id", tournament_id)
-        .execute()
-    )
-    return res.data or []
+    return list_participants(tournament_id)
 
 
 def get_team_info(tournament_id: int) -> tuple[Dict[int, List[int]], Dict[int, str]]:
     """Возвращает отображение team_id->участники и их названия."""
-    res = (
-        supabase.table("tournament_participants")
-        .select("discord_user_id, player_id, team_id, team_name")
-        .eq("tournament_id", tournament_id)
-        .not_.is_("team_id", "null")
-        .execute()
-    )
+    global _has_tp_player_id
+    try:
+        res = (
+            supabase.table("tournament_participants")
+            .select(_participants_team_select_fields())
+            .eq("tournament_id", tournament_id)
+            .not_.is_("team_id", "null")
+            .execute()
+        )
+        rows = _normalize_participant_rows(res.data or [])
+    except APIError as e:
+        if _has_tp_player_id and "player_id" in str(e) and getattr(e, "code", "") == "PGRST204":
+            logger.warning("'player_id' column missing in tournament_participants table")
+            _has_tp_player_id = False
+            res = (
+                supabase.table("tournament_participants")
+                .select(_participants_team_select_fields())
+                .eq("tournament_id", tournament_id)
+                .not_.is_("team_id", "null")
+                .execute()
+            )
+            rows = _normalize_participant_rows(res.data or [])
+        else:
+            logger.error("get_team_info failed: %s", e)
+            return {}, {}
     mapping: Dict[int, List[int]] = {}
     names: Dict[int, str] = {}
-    for row in res.data or []:
+    for row in rows:
         tid = row.get("team_id")
         if tid is None:
             continue
@@ -469,14 +539,28 @@ def remove_player_from_tournament(player_id: int, tournament_id: int) -> bool:
     """
     Удаляет связь игрока (по player_id) с турниром.
     """
-    res = (
-        supabase.table("tournament_participants")
-        .delete()
-        .eq("player_id", player_id)
-        .eq("tournament_id", tournament_id)
-        .execute()
-    )
-    return bool(res.data)
+    global _has_tp_player_id
+    if not _has_tp_player_id:
+        return remove_discord_participant(tournament_id, player_id)
+    try:
+        res = (
+            supabase.table("tournament_participants")
+            .delete()
+            .eq("player_id", player_id)
+            .eq("tournament_id", tournament_id)
+            .execute()
+        )
+        return bool(res.data)
+    except APIError as e:
+        if _has_tp_player_id and "player_id" in str(e) and getattr(e, "code", "") == "PGRST204":
+            logger.warning("'player_id' column missing in tournament_participants table")
+            _has_tp_player_id = False
+            return remove_discord_participant(tournament_id, player_id)
+        logger.error("remove_player_from_tournament failed: %s", e)
+        return False
+    except Exception as e:
+        logger.error("Unexpected error in remove_player_from_tournament: %s", e)
+        return False
 
 
 def remove_discord_participant(tournament_id: int, discord_user_id: int) -> bool:
