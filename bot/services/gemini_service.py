@@ -21,6 +21,12 @@ FREE_TIER_GEMINI_MODELS = (
     "gemini-1.5-flash",
 )
 
+# Conservative default chain for projects that only use Gemini free tier.
+FREE_TIER_GEMINI_MODELS = (
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-8b",
+)
+
 # Global backoff guard for quota/rate-limit errors.
 _GEMINI_COOLDOWN_UNTIL = 0.0
 _GEMINI_HARD_QUOTA_UNTIL = 0.0
