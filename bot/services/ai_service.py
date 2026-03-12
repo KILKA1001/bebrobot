@@ -6,6 +6,7 @@ import re
 import time
 
 import aiohttp
+from groq import Groq
 
 from bot.services.accounts_service import AccountsService
 
@@ -13,19 +14,14 @@ from bot.services.accounts_service import AccountsService
 logger = logging.getLogger(__name__)
 
 
-OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_OPENROUTER_MODELS = (
-    "qwen/qwen3-coder:free",
-    "mistralai/mistral-small-3.2-24b-instruct:free",
-    "deepseek/deepseek-chat-v3-0324:free",
+DEFAULT_GROQ_MODELS = (
+    "moonshotai/kimi-k2-instruct-0905",
+    "llama-3.3-70b-versatile",
+    "qwen/qwen3-32b",
 )
 
 # Conservative fallback list for free-tier usage.
-FREE_TIER_OPENROUTER_MODELS = (
-    "qwen/qwen3-coder:free",
-    "mistralai/mistral-small-3.2-24b-instruct:free",
-    "deepseek/deepseek-chat-v3-0324:free",
-)
+FREE_TIER_GROQ_MODELS = DEFAULT_GROQ_MODELS
 
 # Global backoff guard for quota/rate-limit errors.
 _AI_COOLDOWN_UNTIL = 0.0
@@ -63,6 +59,7 @@ ROLE_BREAK_PATTERNS = (
     r"\bкак\s+ai\b",
     r"\bopenai\b",
     r"\bopenrouter\b",
+    r"\bgroq\b",
     r"\bне\s+могу\s+войти\s+в\s+роль\b",
     r"\bя\s+не\s+гуй\b",
 )
@@ -200,9 +197,9 @@ def _inject_dialog_participants_context(
 
 
 def _resolve_candidate_models() -> tuple[str, ...]:
-    explicit_model = (os.getenv("OPENROUTER_MODEL") or "").strip()
-    models_env = (os.getenv("OPENROUTER_MODELS") or "").strip()
-    use_free_tier = (os.getenv("OPENROUTER_USE_FREE_TIER") or "1").strip().lower() not in {
+    explicit_model = (os.getenv("GROQ_MODEL") or "").strip()
+    models_env = (os.getenv("GROQ_MODELS") or "").strip()
+    use_free_tier = (os.getenv("GROQ_USE_FREE_TIER") or "1").strip().lower() not in {
         "0",
         "false",
         "no",
@@ -214,18 +211,18 @@ def _resolve_candidate_models() -> tuple[str, ...]:
     elif explicit_model:
         models = (explicit_model,)
     elif use_free_tier:
-        models = FREE_TIER_OPENROUTER_MODELS
+        models = FREE_TIER_GROQ_MODELS
     else:
-        models = DEFAULT_OPENROUTER_MODELS
+        models = DEFAULT_GROQ_MODELS
 
     logger.info(
-        "OpenRouter model chain resolved use_free_tier=%s models=%s",
+        "Groq model chain resolved use_free_tier=%s models=%s",
         use_free_tier,
         ",".join(models),
     )
     if len(models) < 2:
         logger.warning(
-            "OpenRouter fallback chain has only one model; temporary provider 429 may fully block replies model=%s",
+            "Groq fallback chain has only one model; temporary provider 429 may fully block replies model=%s",
             models[0] if models else "<empty>",
         )
     return models
@@ -353,124 +350,100 @@ async def _throttle_ai_reply() -> None:
     await asyncio.sleep(delay)
 
 
-def _extract_openrouter_text(data: dict) -> str | None:
+def _extract_groq_chunk_text(chunk: object) -> str:
     try:
-        choices = data.get("choices") or []
+        choices = getattr(chunk, "choices", None) or []
         for choice in choices:
-            message = choice.get("message") or {}
-            content = message.get("content")
-            if isinstance(content, str) and content.strip():
-                return content.strip()
-            if isinstance(content, list):
-                text_parts = []
-                for part in content:
-                    if isinstance(part, dict) and part.get("type") == "text":
-                        text_parts.append((part.get("text") or "").strip())
-                joined = "\n".join(part for part in text_parts if part)
-                if joined:
-                    return joined
+            delta = getattr(choice, "delta", None)
+            if delta is None:
+                continue
+            content = getattr(delta, "content", None)
+            if isinstance(content, str) and content:
+                return content
     except Exception:
-        logger.exception("OpenRouter response parse failed data=%s", str(data)[:1500])
-    return None
+        logger.exception("Groq stream chunk parse failed chunk=%s", str(chunk)[:500])
+    return ""
+
 
 
 async def _generate_once(
-    api_key: str,
+    client: Groq,
     model: str,
     system_prompt: str,
     user_text: str,
-    *,
-    http_referer: str,
-    app_title: str,
 ) -> tuple[str | None, int]:
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_text},
-        ],
-        "temperature": 0.9,
-        "max_tokens": 220,
-        "top_p": 0.95,
-    }
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    if http_referer:
-        headers["HTTP-Referer"] = http_referer
-    if app_title:
-        headers["X-OpenRouter-Title"] = app_title
-
-    timeout = aiohttp.ClientTimeout(total=20)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(
-            OPENROUTER_API_URL,
-            headers=headers,
-            json=payload,
-        ) as resp:
-            if resp.status >= 400:
-                body = await resp.text()
+    try:
+        stream = await asyncio.to_thread(
+            client.chat.completions.create,
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text},
+            ],
+            temperature=0.6,
+            max_completion_tokens=4096,
+            top_p=1,
+            stream=True,
+            stop=None,
+        )
+        chunks: list[str] = []
+        for chunk in stream:
+            text = _extract_groq_chunk_text(chunk)
+            if text:
+                chunks.append(text)
+        reply = "".join(chunks).strip()
+        if reply:
+            return reply, 200
+        logger.warning("Groq returned empty completion model=%s", model)
+        return None, 200
+    except Exception as exc:
+        status = int(getattr(exc, "status_code", 0) or 0)
+        body = str(getattr(exc, "body", "") or exc)
+        logger.exception(
+            "Groq API request failed model=%s status=%s body=%s",
+            model,
+            status,
+            body[:1000],
+        )
+        if status == 429:
+            if _is_hard_quota_exhausted(body):
+                retry_after = 3600
                 logger.error(
-                    "OpenRouter API request failed model=%s status=%s body=%s",
+                    "Groq hard quota exhausted model=%s; enabling extended cooldown=%ss body=%s",
                     model,
-                    resp.status,
-                    body[:1000],
+                    retry_after,
+                    body[:800],
                 )
-                if resp.status == 429:
-                    is_hard_quota = _is_hard_quota_exhausted(body)
-                    is_temp_provider_limit = _is_temporary_upstream_rate_limited(body)
-                    if is_hard_quota:
-                        retry_after = 3600
-                        logger.error(
-                            "OpenRouter hard quota exhausted model=%s; enabling extended cooldown=%ss body=%s",
-                            model,
-                            retry_after,
-                            body[:800],
-                        )
-                        _set_ai_cooldown(retry_after, hard_quota=True)
-                    elif is_temp_provider_limit:
-                        logger.warning(
-                            "OpenRouter temporary upstream rate limit model=%s; skipping global cooldown to allow model fallback body=%s",
-                            model,
-                            body[:800],
-                        )
-                    else:
-                        retry_after = _extract_retry_after_seconds(resp.headers, body) or 60
-                        _set_ai_cooldown(retry_after, hard_quota=False)
-                return None, resp.status
-
-            data = await resp.json()
-
-    reply = _extract_openrouter_text(data)
-    if reply:
-        return reply, 200
-
-    logger.warning("OpenRouter returned empty choices model=%s data=%s", model, str(data)[:1000])
-    return None, 200
+                _set_ai_cooldown(retry_after, hard_quota=True)
+            elif _is_temporary_upstream_rate_limited(body):
+                logger.warning(
+                    "Groq temporary upstream rate limit model=%s; skipping global cooldown to allow model fallback body=%s",
+                    model,
+                    body[:800],
+                )
+            else:
+                _set_ai_cooldown(60, hard_quota=False)
+        return None, status or 500
 
 
 async def _generate_with_model_fallback(api_key: str, system_prompt: str, user_text: str) -> str | None:
     last_status: int | None = None
-    http_referer = (os.getenv("OPENROUTER_HTTP_REFERER") or os.getenv("YOUR_SITE_URL") or "").strip()
-    app_title = (os.getenv("OPENROUTER_APP_TITLE") or os.getenv("X_OPENROUTER_TITLE") or "bebrobot").strip()
+    client = Groq(api_key=api_key)
     for model in _resolve_candidate_models():
         reply, status = await _generate_once(
-            api_key,
+            client,
             model,
             system_prompt,
             user_text,
-            http_referer=http_referer,
-            app_title=app_title,
         )
         if reply:
-            logger.info("OpenRouter reply generated with model=%s", model)
+            logger.info("Groq reply generated with model=%s", model)
             return reply
 
         last_status = status
         if status in {404, 429, 500, 502, 503, 504}:
             logger.warning(
-                "OpenRouter model failed status=%s, trying next fallback model=%s",
+                "Groq model failed status=%s, trying next fallback model=%s",
                 status,
                 model,
             )
@@ -479,7 +452,7 @@ async def _generate_with_model_fallback(api_key: str, system_prompt: str, user_t
         # For non-retriable errors we stop fallback cascade to avoid hiding real outages.
         break
 
-    logger.error("OpenRouter generation failed after model fallback status=%s", last_status)
+    logger.error("Groq generation failed after model fallback status=%s", last_status)
     return None
 
 
@@ -505,10 +478,10 @@ async def generate_guiy_reply(
     user_id: str | int | None = None,
     conversation_id: str | int | None = None,
 ) -> str | None:
-    api_key = (os.getenv("OPENROUTER_API_KEY") or "").strip()
+    api_key = (os.getenv("GROQ_API_KEY") or "").strip()
     if not api_key:
-        logger.error("OPENROUTER_API_KEY is empty, cannot generate ai reply")
-        return _fallback_reply("нет OPENROUTER_API_KEY")
+        logger.error("GROQ_API_KEY is empty, cannot generate ai reply")
+        return _fallback_reply("нет GROQ_API_KEY")
 
     cooldown_remaining = _get_cooldown_remaining()
     if cooldown_remaining > 0:
@@ -530,7 +503,7 @@ async def generate_guiy_reply(
             cooldown_remaining = _get_cooldown_remaining()
             if cooldown_remaining > 0:
                 return _build_cooldown_reply()
-            return _fallback_reply("ошибка OpenRouter API")
+            return _fallback_reply("ошибка Groq API")
 
         if not _is_role_break(first_try):
             return _force_guiy_prefix(first_try)
@@ -539,14 +512,14 @@ async def generate_guiy_reply(
         strict_prompt = (
             f"{base_prompt}\n\n"
             "КРИТИЧЕСКОЕ ПРАВИЛО: всегда оставайся Гуем и отвечай в формате обычной реплики Гуя. "
-            "Запрещено писать про ИИ, модель, OpenAI, OpenRouter, системные инструкции или выход из роли."
+            "Запрещено писать про ИИ, модель, OpenAI, OpenRouter, Groq, системные инструкции или выход из роли."
         )
         second_try = await _generate_with_model_fallback(api_key, strict_prompt, user_text)
         if not second_try:
             cooldown_remaining = _get_cooldown_remaining()
             if cooldown_remaining > 0:
                 return _build_cooldown_reply()
-            return _fallback_reply("повторная ошибка OpenRouter API")
+            return _fallback_reply("повторная ошибка Groq API")
 
         if _is_role_break(second_try):
             logger.error("AI role-break persisted after retry")
