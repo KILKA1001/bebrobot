@@ -115,13 +115,38 @@ def _extract_retry_after_seconds(headers: "aiohttp.typedefs.LooseHeaders", body:
         return retry_after
 
     # Gemini often returns: "Please retry in 34.312858291s."
+    # Russian-localized variants are also possible:
+    # "Пожалуйста повторная попытка через 22.030640423 с."
     body_match = re.search(r"retry\s+in\s+(\d+(?:\.\d+)?)s", body or "", re.IGNORECASE)
+    if not body_match:
+        body_match = re.search(r"повторн(?:ая|ую)?\s+попытк\w*\s+через\s+(\d+(?:\.\d+)?)\s*с", body or "", re.IGNORECASE)
     if body_match:
         try:
             return max(1, int(float(body_match.group(1)) + 0.999))
         except Exception:
             logger.exception("failed to parse retry interval from body")
     return None
+
+
+def _is_hard_quota_exhausted(body: str) -> bool:
+    normalized = (body or "").lower()
+    if not normalized:
+        return False
+
+    has_limit_zero = "limit: 0" in normalized
+    has_free_tier_metric = (
+        "generate_content_free_tier_requests" in normalized
+        or "generate_content_free_tier_input_token_count" in normalized
+    )
+    has_quota_signal = any(
+        marker in normalized
+        for marker in (
+            "resource_exhausted",
+            "current quota",
+            "превышена квота",
+        )
+    )
+    return has_limit_zero and has_free_tier_metric and has_quota_signal
 
 
 def _set_gemini_cooldown(seconds: int) -> None:
@@ -170,7 +195,16 @@ async def _generate_once(api_key: str, model: str, system_prompt: str, user_text
                     body[:1000],
                 )
                 if resp.status == 429:
-                    retry_after = _extract_retry_after_seconds(resp.headers, body) or 60
+                    if _is_hard_quota_exhausted(body):
+                        retry_after = 3600
+                        logger.error(
+                            "Gemini hard quota exhausted model=%s; enabling extended cooldown=%ss body=%s",
+                            model,
+                            retry_after,
+                            body[:800],
+                        )
+                    else:
+                        retry_after = _extract_retry_after_seconds(resp.headers, body) or 60
                     _set_gemini_cooldown(retry_after)
                 return None, resp.status
 
