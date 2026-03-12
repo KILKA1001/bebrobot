@@ -9,6 +9,7 @@ from postgrest.exceptions import APIError
 from dotenv import load_dotenv
 import traceback
 import asyncio
+import uuid
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -455,49 +456,97 @@ class Database:
         self.ensure_core_data_loaded()
 
         try:
-            # 1. Обновляем баллы
-            if not self.update_scores(user_id, points):
-                raise RuntimeError("Не удалось обновить баллы")
-
-            # 2. Создаем запись действия
-            action = {
-                "user_id": user_id,
-                "points": points,
-                "reason": reason,
-                "author_id": author_id,
-                "action_type": "remove" if points < 0 else "add"
-            }
             account_id = self._get_account_id_for_discord_user(user_id)
-            if account_id:
-                action["account_id"] = account_id
-            # Добавляем is_undo только если True
-            if is_undo:
-                action["is_undo"] = True
-                
-            # 3. Сохраняем действие
             if not self.supabase:
                 logger.warning("Supabase client is not initialized.")
                 return False
-            response = self.supabase.table("actions")\
-                .insert(action)\
-                .execute()
 
-            if not response.data:
-                raise ValueError("Пустой ответ от Supabase")
+            op_key = str(uuid.uuid4())
+
+            # 1) Предпочитаем атомарную БД-функцию (идемпотентность + блокировка строки)
+            rpc_applied = False
+            try:
+                rpc_response = self.supabase.rpc("apply_points_action", {
+                    "p_account_id": account_id,
+                    "p_user_id": user_id,
+                    "p_delta": points,
+                    "p_reason": reason,
+                    "p_author_id": author_id,
+                    "p_op_key": op_key,
+                }).execute()
+                rpc_data = getattr(rpc_response, "data", None) or []
+                if rpc_data:
+                    row = rpc_data[0]
+                    rpc_applied = bool(row.get("applied", False))
+                    current_points = float(row.get("new_points", self.scores.get(user_id, 0)))
+                    self.scores[user_id] = current_points
+                    if not rpc_applied:
+                        logger.warning("⚠️ add_action op_key=%s уже применён, пропуск дубликата", op_key)
+                        return True
+            except Exception as rpc_error:
+                logger.error(
+                    "❌ RPC apply_points_action недоступен, fallback на legacy-путь. user_id=%s error=%s",
+                    user_id,
+                    rpc_error,
+                )
+
+            # 2) Fallback: старый путь (на случай если функция ещё не раскатана)
+            if not rpc_applied:
+                if not self.update_scores(user_id, points):
+                    raise RuntimeError("Не удалось обновить баллы")
+                action = {
+                    "user_id": user_id,
+                    "points": points,
+                    "reason": reason,
+                    "author_id": author_id,
+                    "action_type": "remove" if points < 0 else "add",
+                    "op_key": op_key,
+                }
+                if account_id:
+                    action["account_id"] = account_id
+                response = self.supabase.table("actions").insert(action).execute()
+                if not response.data:
+                    raise ValueError("Пустой ответ от Supabase")
+                action_row = response.data[0]
+            else:
+                # 3) Подтягиваем реальную строку действия, созданную функцией
+                action_resp = (
+                    self.supabase.table("actions")
+                    .select("*")
+                    .eq("op_key", op_key)
+                    .limit(1)
+                    .execute()
+                )
+                action_row = action_resp.data[0] if action_resp.data else {
+                    "user_id": user_id,
+                    "points": points,
+                    "reason": reason,
+                    "author_id": author_id,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "action_type": "remove" if points < 0 else "add",
+                    "op_key": op_key,
+                }
+
+            if is_undo:
+                try:
+                    self.supabase.table("actions").update({"is_undo": True}).eq("op_key", op_key).execute()
+                    action_row["is_undo"] = True
+                except Exception as undo_error:
+                    logger.error("❌ Не удалось выставить is_undo для op_key=%s: %s", op_key, undo_error)
 
             # 4. Обновляем локальный кеш
-            self.actions.insert(0, response.data[0])  # Добавляем в начало
+            self.actions.insert(0, action_row)  # Добавляем в начало
             if user_id not in self.history:
                 self.history[user_id] = []
             self.history[user_id].insert(0, {
                 'points': points,
                 'reason': reason,
                 'author_id': author_id,
-                'timestamp': response.data[0]['timestamp'],
+                'timestamp': action_row['timestamp'],
                 'is_undo': is_undo
             })
 
-            logger.info(f"✅ Действие сохранено (ID: {response.data[0]['id']})")
+            logger.info("✅ Действие сохранено user_id=%s op_key=%s", user_id, op_key)
             return True
 
         except Exception as e:
@@ -679,8 +728,8 @@ class Database:
                 reason = str(fine.get("reason", ""))
                 is_test = "test" in reason.lower()
 
-            # 1. Обновляем баллы пользователя
-            if not self.update_scores(user_id, -amount):
+            # 1. Обновляем баллы и лог одним вызовом (без двойного списания)
+            if not self.add_action(user_id, -amount, f"Оплата штрафа ID #{fine_id}", author_id):
                 return False
 
             # 2. Добавляем запись в fine_payments
@@ -694,9 +743,6 @@ class Database:
             if account_id:
                 payment_payload["account_id"] = account_id
             self.supabase.table("fine_payments").insert(payment_payload).execute()
-
-            # 3. Лог действия
-            self.add_action(user_id, -amount, f"Оплата штрафа ID #{fine_id}", author_id)
 
             # 4. Обновление баланса банка (если штраф не тестовый)
             if not is_test:
