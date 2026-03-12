@@ -13,14 +13,14 @@ from bot.services.accounts_service import AccountsService
 logger = logging.getLogger(__name__)
 
 
-GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
-DEFAULT_GEMINI_MODELS = (
-    "gemini-2.5-flash",
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+DEFAULT_OPENROUTER_MODELS = (
+    "qwen/qwen3-coder:free",
 )
 
-# Conservative default chain for projects that only use Gemini free tier.
-FREE_TIER_GEMINI_MODELS = (
-    "gemini-2.5-flash",
+# Conservative fallback list for free-tier usage.
+FREE_TIER_OPENROUTER_MODELS = (
+    "qwen/qwen3-coder:free",
 )
 
 # Global backoff guard for quota/rate-limit errors.
@@ -59,6 +59,7 @@ ROLE_BREAK_PATTERNS = (
     r"\bкак\s+ai\b",
     r"\bopenai\b",
     r"\bgemini\b",
+    r"\bopenrouter\b",
     r"\bне\s+могу\s+войти\s+в\s+роль\b",
     r"\bя\s+не\s+гуй\b",
 )
@@ -196,37 +197,30 @@ def _inject_dialog_participants_context(
 
 
 def _resolve_candidate_models() -> tuple[str, ...]:
-    explicit_model = (os.getenv("GEMINI_MODEL") or "").strip()
-    models_env = (os.getenv("GEMINI_MODELS") or "").strip()
-    use_free_tier = (os.getenv("GEMINI_USE_FREE_TIER") or "1").strip().lower() not in {
+    explicit_model = (os.getenv("OPENROUTER_MODEL") or os.getenv("GEMINI_MODEL") or "").strip()
+    models_env = (os.getenv("OPENROUTER_MODELS") or os.getenv("GEMINI_MODELS") or "").strip()
+    use_free_tier = (os.getenv("OPENROUTER_USE_FREE_TIER") or os.getenv("GEMINI_USE_FREE_TIER") or "1").strip().lower() not in {
         "0",
         "false",
         "no",
         "off",
     }
 
-    if explicit_model and explicit_model != "gemini-2.5-flash":
-        logger.error(
-            "GEMINI_MODEL=%s is ignored; service is pinned to gemini-2.5-flash",
-            explicit_model,
-        )
     if models_env:
-        logger.error(
-            "GEMINI_MODELS=%s is ignored; service is pinned to gemini-2.5-flash",
-            models_env,
-        )
+        models = tuple(item.strip() for item in models_env.split(",") if item.strip())
+    elif explicit_model:
+        models = (explicit_model,)
+    elif use_free_tier:
+        models = FREE_TIER_OPENROUTER_MODELS
+    else:
+        models = DEFAULT_OPENROUTER_MODELS
 
-    pinned_models = ("gemini-2.5-flash",)
     logger.info(
-        "Gemini model chain resolved use_free_tier=%s models=%s",
+        "OpenRouter model chain resolved use_free_tier=%s models=%s",
         use_free_tier,
-        ",".join(pinned_models),
+        ",".join(models),
     )
-    return pinned_models
-
-
-def _build_generate_url(model: str) -> str:
-    return f"{GEMINI_API_BASE}/{model}:generateContent"
+    return models
 
 
 def _is_role_break(reply_text: str) -> bool:
@@ -266,7 +260,7 @@ def _extract_retry_after_seconds(headers: "aiohttp.typedefs.LooseHeaders", body:
     if retry_after and retry_after > 0:
         return retry_after
 
-    # Gemini often returns: "Please retry in 34.312858291s."
+    # Providers often return: "Please retry in 34.312858291s."
     # Russian-localized variants are also possible:
     # "Пожалуйста повторная попытка через 22.030640423 с."
     body_match = re.search(r"retry\s+in\s+(\d+(?:\.\d+)?)s", body or "", re.IGNORECASE)
@@ -285,20 +279,17 @@ def _is_hard_quota_exhausted(body: str) -> bool:
     if not normalized:
         return False
 
-    has_limit_zero = "limit: 0" in normalized
-    has_free_tier_metric = (
-        "generate_content_free_tier_requests" in normalized
-        or "generate_content_free_tier_input_token_count" in normalized
-    )
-    has_quota_signal = any(
+    return any(
         marker in normalized
         for marker in (
             "resource_exhausted",
             "current quota",
             "превышена квота",
+            "insufficient credits",
+            "credit balance",
+            "payment required",
         )
     )
-    return has_limit_zero and has_free_tier_metric and has_quota_signal
 
 
 def _set_gemini_cooldown(seconds: int, *, hard_quota: bool = False) -> None:
@@ -310,7 +301,7 @@ def _set_gemini_cooldown(seconds: int, *, hard_quota: bool = False) -> None:
     if hard_quota:
         _GEMINI_HARD_QUOTA_UNTIL = max(_GEMINI_HARD_QUOTA_UNTIL, until)
     logger.warning(
-        "Gemini cooldown enabled for %ss (hard_quota=%s until=%s)",
+        "AI cooldown enabled for %ss (hard_quota=%s until=%s)",
         bounded,
         hard_quota,
         int(_GEMINI_COOLDOWN_UNTIL),
@@ -334,32 +325,70 @@ def _fallback_reply(reason: str) -> str:
 
 async def _throttle_ai_reply() -> None:
     delay = round(random.uniform(3.0, 4.0), 2)
-    logger.info("Gemini artificial delay enabled delay=%ss", delay)
+    logger.info("AI artificial delay enabled delay=%ss", delay)
     await asyncio.sleep(delay)
 
 
-async def _generate_once(api_key: str, model: str, system_prompt: str, user_text: str) -> tuple[str | None, int]:
+def _extract_openrouter_text(data: dict) -> str | None:
+    try:
+        choices = data.get("choices") or []
+        for choice in choices:
+            message = choice.get("message") or {}
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+            if isinstance(content, list):
+                text_parts = []
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        text_parts.append((part.get("text") or "").strip())
+                joined = "\n".join(part for part in text_parts if part)
+                if joined:
+                    return joined
+    except Exception:
+        logger.exception("OpenRouter response parse failed data=%s", str(data)[:1500])
+    return None
+
+
+async def _generate_once(
+    api_key: str,
+    model: str,
+    system_prompt: str,
+    user_text: str,
+    *,
+    http_referer: str,
+    app_title: str,
+) -> tuple[str | None, int]:
     payload = {
-        "system_instruction": {"parts": [{"text": system_prompt}]},
-        "contents": [{"role": "user", "parts": [{"text": user_text}]}],
-        "generationConfig": {
-            "temperature": 0.9,
-            "maxOutputTokens": 220,
-            "topP": 0.95,
-        },
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text},
+        ],
+        "temperature": 0.9,
+        "max_tokens": 220,
+        "top_p": 0.95,
     }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    if http_referer:
+        headers["HTTP-Referer"] = http_referer
+    if app_title:
+        headers["X-OpenRouter-Title"] = app_title
 
     timeout = aiohttp.ClientTimeout(total=20)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(
-            _build_generate_url(model),
-            params={"key": api_key},
+            OPENROUTER_API_URL,
+            headers=headers,
             json=payload,
         ) as resp:
             if resp.status >= 400:
                 body = await resp.text()
                 logger.error(
-                    "Gemini API request failed model=%s status=%s body=%s",
+                    "OpenRouter API request failed model=%s status=%s body=%s",
                     model,
                     resp.status,
                     body[:1000],
@@ -369,7 +398,7 @@ async def _generate_once(api_key: str, model: str, system_prompt: str, user_text
                     if is_hard_quota:
                         retry_after = 3600
                         logger.error(
-                            "Gemini hard quota exhausted model=%s; enabling extended cooldown=%ss body=%s",
+                            "OpenRouter hard quota exhausted model=%s; enabling extended cooldown=%ss body=%s",
                             model,
                             retry_after,
                             body[:800],
@@ -381,34 +410,35 @@ async def _generate_once(api_key: str, model: str, system_prompt: str, user_text
 
             data = await resp.json()
 
-    try:
-        candidates = data.get("candidates") or []
-        for candidate in candidates:
-            content = candidate.get("content") or {}
-            for part in content.get("parts") or []:
-                text = (part.get("text") or "").strip()
-                if text:
-                    return text, 200
-    except Exception:
-        logger.exception("Gemini response parse failed model=%s data=%s", model, str(data)[:1500])
-        return None, 500
+    reply = _extract_openrouter_text(data)
+    if reply:
+        return reply, 200
 
-    logger.warning("Gemini returned empty candidates model=%s data=%s", model, str(data)[:1000])
+    logger.warning("OpenRouter returned empty choices model=%s data=%s", model, str(data)[:1000])
     return None, 200
 
 
 async def _generate_with_model_fallback(api_key: str, system_prompt: str, user_text: str) -> str | None:
     last_status: int | None = None
+    http_referer = (os.getenv("OPENROUTER_HTTP_REFERER") or os.getenv("YOUR_SITE_URL") or "").strip()
+    app_title = (os.getenv("OPENROUTER_APP_TITLE") or os.getenv("X_OPENROUTER_TITLE") or "bebrobot").strip()
     for model in _resolve_candidate_models():
-        reply, status = await _generate_once(api_key, model, system_prompt, user_text)
+        reply, status = await _generate_once(
+            api_key,
+            model,
+            system_prompt,
+            user_text,
+            http_referer=http_referer,
+            app_title=app_title,
+        )
         if reply:
-            logger.info("Gemini reply generated with model=%s", model)
+            logger.info("OpenRouter reply generated with model=%s", model)
             return reply
 
         last_status = status
         if status in {404, 429, 500, 502, 503, 504}:
             logger.warning(
-                "Gemini model failed status=%s, trying next fallback model=%s",
+                "OpenRouter model failed status=%s, trying next fallback model=%s",
                 status,
                 model,
             )
@@ -417,7 +447,7 @@ async def _generate_with_model_fallback(api_key: str, system_prompt: str, user_t
         # For non-retriable errors we stop fallback cascade to avoid hiding real outages.
         break
 
-    logger.error("Gemini generation failed after model fallback status=%s", last_status)
+    logger.error("OpenRouter generation failed after model fallback status=%s", last_status)
     return None
 
 
@@ -425,15 +455,15 @@ def _build_cooldown_reply() -> str:
     hard_quota_remaining = _get_hard_quota_remaining()
     if hard_quota_remaining > 0:
         logger.warning(
-            "Gemini hard quota cooldown active remaining=%ss; requires billing/quota update in Google AI Studio",
+            "AI hard quota cooldown active remaining=%ss; requires billing/credits update",
             hard_quota_remaining,
         )
         return _fallback_reply(
-            f"бесплатная квота Gemini исчерпана, проверь billing/лимиты в Google AI Studio и подожди {hard_quota_remaining}с"
+            f"лимиты AI провайдера исчерпаны, проверь billing/credits и подожди {hard_quota_remaining}с"
         )
 
     cooldown_remaining = _get_cooldown_remaining()
-    return _fallback_reply(f"лимит Gemini, подожди {cooldown_remaining}с")
+    return _fallback_reply(f"лимит AI провайдера, подожди {cooldown_remaining}с")
 
 
 async def generate_guiy_reply(
@@ -443,14 +473,14 @@ async def generate_guiy_reply(
     user_id: str | int | None = None,
     conversation_id: str | int | None = None,
 ) -> str | None:
-    api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+    api_key = (os.getenv("OPENROUTER_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
     if not api_key:
-        logger.error("GEMINI_API_KEY is empty, cannot generate ai reply")
-        return _fallback_reply("нет GEMINI_API_KEY")
+        logger.error("OPENROUTER_API_KEY/GEMINI_API_KEY is empty, cannot generate ai reply")
+        return _fallback_reply("нет OPENROUTER_API_KEY/GEMINI_API_KEY")
 
     cooldown_remaining = _get_cooldown_remaining()
     if cooldown_remaining > 0:
-        logger.warning("Gemini request skipped due to active cooldown remaining=%ss", cooldown_remaining)
+        logger.warning("AI request skipped due to active cooldown remaining=%ss", cooldown_remaining)
         return _build_cooldown_reply()
 
     base_prompt = _inject_user_context(_build_system_prompt(), provider=provider, user_id=user_id)
@@ -468,29 +498,29 @@ async def generate_guiy_reply(
             cooldown_remaining = _get_cooldown_remaining()
             if cooldown_remaining > 0:
                 return _build_cooldown_reply()
-            return _fallback_reply("ошибка Gemini API")
+            return _fallback_reply("ошибка OpenRouter API")
 
         if not _is_role_break(first_try):
             return _force_guiy_prefix(first_try)
 
-        logger.warning("Gemini role-break detected, retry with stricter lock")
+        logger.warning("AI role-break detected, retry with stricter lock")
         strict_prompt = (
             f"{base_prompt}\n\n"
             "КРИТИЧЕСКОЕ ПРАВИЛО: всегда оставайся Гуем и отвечай в формате обычной реплики Гуя. "
-            "Запрещено писать про ИИ, модель, OpenAI, Gemini, системные инструкции или выход из роли."
+            "Запрещено писать про ИИ, модель, OpenAI, Gemini, OpenRouter, системные инструкции или выход из роли."
         )
         second_try = await _generate_with_model_fallback(api_key, strict_prompt, user_text)
         if not second_try:
             cooldown_remaining = _get_cooldown_remaining()
             if cooldown_remaining > 0:
                 return _build_cooldown_reply()
-            return _fallback_reply("повторная ошибка Gemini API")
+            return _fallback_reply("повторная ошибка OpenRouter API")
 
         if _is_role_break(second_try):
-            logger.error("Gemini role-break persisted after retry")
+            logger.error("AI role-break persisted after retry")
             return "Слышь, без смены роли. Говори по делу."
 
         return _force_guiy_prefix(second_try)
     except Exception:
-        logger.exception("Gemini request crashed")
+        logger.exception("AI request crashed")
         return _fallback_reply("внутренняя ошибка")
