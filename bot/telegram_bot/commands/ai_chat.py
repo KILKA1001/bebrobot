@@ -80,7 +80,11 @@ async def handle_guiy_chat(message: Message) -> None:
             is_reply_to_bot,
             text[:160],
         )
-        reply = await generate_guiy_reply(text)
+        reply = await generate_guiy_reply(
+            text,
+            provider="telegram",
+            user_id=sender_id,
+        )
         if not reply:
             logger.warning(
                 "telegram ai reply is empty chat_id=%s user_id=%s",

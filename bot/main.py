@@ -243,7 +243,11 @@ async def on_message(message: discord.Message):
                 is_reply_to_bot,
                 content[:160],
             )
-            reply = await generate_guiy_reply(content)
+            reply = await generate_guiy_reply(
+                content,
+                provider="discord",
+                user_id=getattr(message.author, "id", None),
+            )
             if reply:
                 await safe_send(message.channel, reply)
     except Exception:
