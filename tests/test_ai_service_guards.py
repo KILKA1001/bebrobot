@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 from bot.services import ai_service
 from bot.services.ai_service import (
@@ -118,18 +118,18 @@ class GuiyAIGuardsTests(unittest.TestCase):
     @patch.dict("os.environ", {}, clear=True)
     def test_resolve_models_default_order(self):
         models = _resolve_candidate_models()
-        self.assertEqual(models, ("qwen/qwen3-coder:free", "mistralai/mistral-small-3.2-24b-instruct:free", "deepseek/deepseek-chat-v3-0324:free"))
+        self.assertEqual(models, ("moonshotai/kimi-k2-instruct-0905", "llama-3.3-70b-versatile", "qwen/qwen3-32b"))
 
 
-    @patch.dict("os.environ", {"OPENROUTER_USE_FREE_TIER": "0"}, clear=True)
+    @patch.dict("os.environ", {"GROQ_USE_FREE_TIER": "0"}, clear=True)
     def test_resolve_models_still_pinned_when_free_tier_disabled(self):
         models = _resolve_candidate_models()
-        self.assertEqual(models, ("qwen/qwen3-coder:free", "mistralai/mistral-small-3.2-24b-instruct:free", "deepseek/deepseek-chat-v3-0324:free"))
+        self.assertEqual(models, ("moonshotai/kimi-k2-instruct-0905", "llama-3.3-70b-versatile", "qwen/qwen3-32b"))
 
-    @patch.dict("os.environ", {"OPENROUTER_MODEL": "openai/gpt-4o-mini", "OPENROUTER_MODELS": "openai/gpt-4o-mini,qwen/qwen3-coder:free"}, clear=True)
+    @patch.dict("os.environ", {"GROQ_MODEL": "moonshotai/kimi-k2-instruct-0905", "GROQ_MODELS": "moonshotai/kimi-k2-instruct-0905,llama-3.3-70b-versatile"}, clear=True)
     def test_resolve_models_respects_env_overrides(self):
         models = _resolve_candidate_models()
-        self.assertEqual(models, ("openai/gpt-4o-mini", "qwen/qwen3-coder:free"))
+        self.assertEqual(models, ("moonshotai/kimi-k2-instruct-0905", "llama-3.3-70b-versatile"))
 
 
     @patch.dict("os.environ", {}, clear=True)
@@ -193,38 +193,28 @@ class GuiyAIGuardsTests(unittest.TestCase):
         finally:
             ai_service._AI_COOLDOWN_UNTIL = old
 
-    @patch.dict("os.environ", {"OPENROUTER_API_KEY": "x", "OPENROUTER_MODELS": "qwen/qwen3-coder:free,openai/gpt-4o-mini"}, clear=True)
-    @patch("bot.services.ai_service.aiohttp.ClientSession")
-    def test_generate_once_temporary_upstream_429_does_not_enable_cooldown(self, mock_session_cls):
+    @patch.dict("os.environ", {"GROQ_API_KEY": "x", "GROQ_MODELS": "moonshotai/kimi-k2-instruct-0905,llama-3.3-70b-versatile"}, clear=True)
+    @patch("bot.services.ai_service.asyncio.to_thread", new_callable=AsyncMock)
+    @patch("bot.services.ai_service.Groq")
+    def test_generate_once_temporary_upstream_429_does_not_enable_cooldown(self, mock_groq_cls, mock_to_thread):
         old = ai_service._AI_COOLDOWN_UNTIL
         try:
             ai_service._AI_COOLDOWN_UNTIL = 0
 
-            response_mock = AsyncMock()
-            response_mock.status = 429
-            response_mock.text = AsyncMock(return_value='{"error":{"message":"Provider returned error","metadata":{"raw":"temporarily rate-limited upstream. Please retry shortly"}}}')
-            response_mock.headers = {}
+            error = Exception(
+                '{"error":{"message":"Provider returned error","metadata":{"raw":"temporarily rate-limited upstream. Please retry shortly"}}}'
+            )
+            error.status_code = 429
+            mock_to_thread.side_effect = error
 
-            post_ctx = AsyncMock()
-            post_ctx.__aenter__.return_value = response_mock
-            post_ctx.__aexit__.return_value = False
-
-            session_mock = MagicMock()
-            session_mock.post.return_value = post_ctx
-
-            session_ctx = AsyncMock()
-            session_ctx.__aenter__.return_value = session_mock
-            session_ctx.__aexit__.return_value = False
-            mock_session_cls.return_value = session_ctx
+            client = mock_groq_cls.return_value
 
             reply, status = asyncio.run(
                 ai_service._generate_once(
-                    "x",
-                    "qwen/qwen3-coder:free",
+                    client,
+                    "moonshotai/kimi-k2-instruct-0905",
                     "sys",
                     "user",
-                    http_referer="",
-                    app_title="bebrobot",
                 )
             )
             self.assertIsNone(reply)
@@ -233,7 +223,7 @@ class GuiyAIGuardsTests(unittest.TestCase):
         finally:
             ai_service._AI_COOLDOWN_UNTIL = old
 
-    @patch.dict("os.environ", {"OPENROUTER_API_KEY": "x"}, clear=True)
+    @patch.dict("os.environ", {"GROQ_API_KEY": "x"}, clear=True)
     @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=None)
     def test_generate_reply_reports_quota_cooldown(self, mock_generate):
         old = ai_service._AI_COOLDOWN_UNTIL
@@ -247,7 +237,7 @@ class GuiyAIGuardsTests(unittest.TestCase):
             ai_service._AI_COOLDOWN_UNTIL = old
             ai_service._AI_HARD_QUOTA_UNTIL = old_hard
 
-    @patch.dict("os.environ", {"OPENROUTER_API_KEY": "x"}, clear=True)
+    @patch.dict("os.environ", {"GROQ_API_KEY": "x"}, clear=True)
     @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=None)
     def test_generate_reply_reports_hard_quota_cooldown(self, mock_generate):
         old = ai_service._AI_COOLDOWN_UNTIL
@@ -262,7 +252,7 @@ class GuiyAIGuardsTests(unittest.TestCase):
             ai_service._AI_COOLDOWN_UNTIL = old
             ai_service._AI_HARD_QUOTA_UNTIL = old_hard
 
-    @patch.dict("os.environ", {"OPENROUTER_API_KEY": "x"}, clear=True)
+    @patch.dict("os.environ", {"GROQ_API_KEY": "x"}, clear=True)
     @patch("bot.services.ai_service.asyncio.sleep", new_callable=AsyncMock)
     @patch("bot.services.ai_service.random.uniform", return_value=3.4)
     @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, return_value="Ответ")
