@@ -14,7 +14,7 @@ import json
 from dotenv import load_dotenv
 
 from bot.telegram_bot.config import get_telegram_bot_token
-from bot.services.gemini_service import generate_guiy_reply
+from bot.services.ai_service import generate_guiy_reply
 
 
 def _resolve_runtime() -> str:

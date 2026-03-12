@@ -5,7 +5,7 @@ import re
 from aiogram import F, Router
 from aiogram.types import Message
 
-from bot.services.gemini_service import generate_guiy_reply
+from bot.services.ai_service import generate_guiy_reply
 from bot.telegram_bot.commands.engagement import has_pending_action
 from bot.telegram_bot.commands.linking import has_pending_profile_edit
 from bot.utils.guiy_typing import calculate_typing_delay_seconds
