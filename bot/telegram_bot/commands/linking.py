@@ -26,6 +26,12 @@ _EDIT_FIELD_LABELS = {
 _PENDING_EDIT_FIELD: dict[int, str] = {}
 
 
+def has_pending_profile_edit(telegram_user_id: int | None) -> bool:
+    if telegram_user_id is None:
+        return False
+    return telegram_user_id in _PENDING_EDIT_FIELD
+
+
 def _is_chat_send_permissions_error(error: TelegramBadRequest) -> bool:
     return "not enough rights to send" in str(error).lower()
 

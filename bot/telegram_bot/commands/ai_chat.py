@@ -1,0 +1,89 @@
+import logging
+import re
+
+from aiogram import F, Router
+from aiogram.types import Message
+
+from bot.services.gemini_service import generate_guiy_reply
+from bot.telegram_bot.commands.engagement import has_pending_action
+from bot.telegram_bot.commands.linking import has_pending_profile_edit
+
+
+logger = logging.getLogger(__name__)
+router = Router()
+
+KNOWN_COMMAND_PREFIXES = (
+    "/start",
+    "/register",
+    "/profile",
+    "/profile_edit",
+    "/link",
+    "/link_discord",
+    "/points",
+    "/tickets",
+    "/helpy",
+)
+
+
+def _is_command_text(text: str) -> bool:
+    lowered = text.strip().lower()
+    if not lowered:
+        return False
+    if not lowered.startswith("/"):
+        return False
+    return any(lowered == cmd or lowered.startswith(f"{cmd} ") for cmd in KNOWN_COMMAND_PREFIXES)
+
+
+@router.message(F.text)
+async def handle_guiy_chat(message: Message) -> None:
+    text = (message.text or "").strip()
+    if not text:
+        return
+
+    if _is_command_text(text):
+        logger.info(
+            "telegram ai skipped because message is command chat_id=%s user_id=%s text=%s",
+            message.chat.id,
+            message.from_user.id if message.from_user else None,
+            text[:120],
+        )
+        return
+
+    sender_id = message.from_user.id if message.from_user else None
+    if has_pending_action(sender_id) or has_pending_profile_edit(sender_id):
+        logger.info(
+            "telegram ai skipped due to active command flow chat_id=%s user_id=%s",
+            message.chat.id,
+            sender_id,
+        )
+        return
+
+    lowered = text.lower()
+    is_named = re.search(r"\bгуй\b", lowered) is not None
+
+    bot_user = await message.bot.get_me()
+    is_reply_to_bot = bool(
+        message.reply_to_message
+        and message.reply_to_message.from_user
+        and message.reply_to_message.from_user.id == bot_user.id
+    )
+
+    if not (is_named or is_reply_to_bot):
+        return
+
+    try:
+        reply = await generate_guiy_reply(text)
+        if not reply:
+            logger.warning(
+                "telegram ai reply is empty chat_id=%s user_id=%s",
+                message.chat.id,
+                sender_id,
+            )
+            return
+        await message.answer(reply)
+    except Exception:
+        logger.exception(
+            "telegram ai reply failed chat_id=%s user_id=%s",
+            message.chat.id,
+            sender_id,
+        )

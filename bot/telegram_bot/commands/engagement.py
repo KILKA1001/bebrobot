@@ -24,6 +24,13 @@ class PendingAction:
 _PENDING_ACTIONS: dict[int, PendingAction] = {}
 
 
+
+def has_pending_action(telegram_user_id: int | None) -> bool:
+    if telegram_user_id is None:
+        return False
+    return telegram_user_id in _PENDING_ACTIONS
+
+
 def _can_manage_tickets(actor_titles: tuple[str, ...], actor_level: int) -> bool:
     normalized = {str(title).strip().lower() for title in actor_titles}
     if "глава клуба" in normalized or "главный вице" in normalized:
