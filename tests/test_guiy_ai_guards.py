@@ -75,6 +75,31 @@ class GuiyAIGuardsTests(unittest.TestCase):
         )
         self.assertTrue(_is_hard_quota_exhausted(body))
 
+
+
+    def test_set_gemini_cooldown_caps_soft_quota(self):
+        old = gemini_service._GEMINI_COOLDOWN_UNTIL
+        now = gemini_service.time.time()
+        try:
+            gemini_service._GEMINI_COOLDOWN_UNTIL = 0
+            gemini_service._set_gemini_cooldown(3600, hard_quota=False)
+            delta = int(gemini_service._GEMINI_COOLDOWN_UNTIL - now)
+            self.assertLessEqual(delta, 91)
+        finally:
+            gemini_service._GEMINI_COOLDOWN_UNTIL = old
+
+    def test_set_gemini_cooldown_caps_hard_quota(self):
+        old = gemini_service._GEMINI_COOLDOWN_UNTIL
+        now = gemini_service.time.time()
+        try:
+            gemini_service._GEMINI_COOLDOWN_UNTIL = 0
+            gemini_service._set_gemini_cooldown(7200, hard_quota=True)
+            delta = int(gemini_service._GEMINI_COOLDOWN_UNTIL - now)
+            self.assertLessEqual(delta, 901)
+            self.assertGreaterEqual(delta, 10)
+        finally:
+            gemini_service._GEMINI_COOLDOWN_UNTIL = old
+
     @patch.dict("os.environ", {"GEMINI_API_KEY": "x"}, clear=True)
     @patch("bot.services.gemini_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=None)
     def test_generate_reply_reports_quota_cooldown(self, mock_generate):
