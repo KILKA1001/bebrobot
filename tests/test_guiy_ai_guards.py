@@ -1,8 +1,9 @@
+import asyncio
 import unittest
 
 from unittest.mock import patch
 
-from bot.services.gemini_service import _force_guiy_prefix, _is_role_break, _resolve_candidate_models
+from bot.services.gemini_service import _force_guiy_prefix, _is_role_break, _resolve_candidate_models, generate_guiy_reply
 from bot.telegram_bot.commands.ai_chat import _is_command_text
 
 
@@ -39,6 +40,13 @@ class GuiyAIGuardsTests(unittest.TestCase):
         models = _resolve_candidate_models()
         self.assertEqual(models[0], "gemini-2.5-flash")
         self.assertIn("gemini-2.0-flash-lite", models)
+
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_generate_reply_returns_fallback_when_api_key_missing(self):
+        reply = asyncio.run(generate_guiy_reply("Гуй, ты тут?"))
+        self.assertIn("Гуй:", reply)
+        self.assertIn("GEMINI_API_KEY", reply)
 
 if __name__ == "__main__":
     unittest.main()

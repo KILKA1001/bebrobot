@@ -98,6 +98,13 @@ def _force_guiy_prefix(reply_text: str) -> str:
     return f"Гуй: {cleaned}"
 
 
+def _fallback_reply(reason: str) -> str:
+    return (
+        "Гуй: Эй, я на месте, но огуречный канал к ИИ сейчас барахлит "
+        f"({reason}). Напиши ещё раз через минутку."
+    )
+
+
 async def _generate_once(api_key: str, model: str, system_prompt: str, user_text: str) -> tuple[str | None, int]:
     payload = {
         "system_instruction": {"parts": [{"text": system_prompt}]},
@@ -167,15 +174,15 @@ async def _generate_with_model_fallback(api_key: str, system_prompt: str, user_t
 async def generate_guiy_reply(user_text: str) -> str | None:
     api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
     if not api_key:
-        logger.warning("GEMINI_API_KEY is empty, skip ai reply")
-        return None
+        logger.error("GEMINI_API_KEY is empty, cannot generate ai reply")
+        return _fallback_reply("нет GEMINI_API_KEY")
 
     base_prompt = _build_system_prompt()
 
     try:
         first_try = await _generate_with_model_fallback(api_key, base_prompt, user_text)
         if not first_try:
-            return None
+            return _fallback_reply("ошибка Gemini API")
 
         if not _is_role_break(first_try):
             return _force_guiy_prefix(first_try)
@@ -188,7 +195,7 @@ async def generate_guiy_reply(user_text: str) -> str | None:
         )
         second_try = await _generate_with_model_fallback(api_key, strict_prompt, user_text)
         if not second_try:
-            return None
+            return _fallback_reply("повторная ошибка Gemini API")
 
         if _is_role_break(second_try):
             logger.error("Gemini role-break persisted after retry")
@@ -197,4 +204,4 @@ async def generate_guiy_reply(user_text: str) -> str | None:
         return _force_guiy_prefix(second_try)
     except Exception:
         logger.exception("Gemini request crashed")
-        return None
+        return _fallback_reply("внутренняя ошибка")
