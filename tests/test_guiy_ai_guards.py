@@ -1,9 +1,10 @@
 import asyncio
 import unittest
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
-from bot.services.gemini_service import _force_guiy_prefix, _is_role_break, _resolve_candidate_models, generate_guiy_reply
+from bot.services import gemini_service
+from bot.services.gemini_service import _extract_retry_after_seconds, _force_guiy_prefix, _is_role_break, _resolve_candidate_models, generate_guiy_reply
 from bot.telegram_bot.commands.ai_chat import _is_command_text
 
 
@@ -47,6 +48,23 @@ class GuiyAIGuardsTests(unittest.TestCase):
         reply = asyncio.run(generate_guiy_reply("Гуй, ты тут?"))
         self.assertIn("Гуй:", reply)
         self.assertIn("GEMINI_API_KEY", reply)
+
+
+    def test_extract_retry_after_from_body(self):
+        seconds = _extract_retry_after_seconds({}, "Please retry in 34.312858291s.")
+        self.assertEqual(seconds, 35)
+
+    @patch.dict("os.environ", {"GEMINI_API_KEY": "x"}, clear=True)
+    @patch("bot.services.gemini_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=None)
+    def test_generate_reply_reports_quota_cooldown(self, mock_generate):
+        old = gemini_service._GEMINI_COOLDOWN_UNTIL
+        try:
+            gemini_service._GEMINI_COOLDOWN_UNTIL = 9999999999
+            reply = asyncio.run(generate_guiy_reply("Гуй, ты тут?"))
+            self.assertIn("лимит Gemini", reply)
+            mock_generate.assert_not_called()
+        finally:
+            gemini_service._GEMINI_COOLDOWN_UNTIL = old
 
 if __name__ == "__main__":
     unittest.main()

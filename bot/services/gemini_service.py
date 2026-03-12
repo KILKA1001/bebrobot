@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import time
 
 import aiohttp
 
@@ -14,6 +15,9 @@ DEFAULT_GEMINI_MODELS = (
     "gemini-2.0-flash-lite",
     "gemini-1.5-flash",
 )
+
+# Global backoff guard for quota/rate-limit errors.
+_GEMINI_COOLDOWN_UNTIL = 0.0
 
 DEFAULT_GUIY_SYSTEM_PROMPT = (
     "Ты персонаж по имени Гуй. "
@@ -98,6 +102,40 @@ def _force_guiy_prefix(reply_text: str) -> str:
     return f"Гуй: {cleaned}"
 
 
+def _extract_retry_after_seconds(headers: "aiohttp.typedefs.LooseHeaders", body: str) -> int | None:
+    retry_after = None
+    try:
+        header_value = headers.get("Retry-After") if headers else None
+        if header_value:
+            retry_after = int(float(str(header_value).strip()))
+    except Exception:
+        logger.exception("failed to parse Retry-After header value=%s", header_value)
+
+    if retry_after and retry_after > 0:
+        return retry_after
+
+    # Gemini often returns: "Please retry in 34.312858291s."
+    body_match = re.search(r"retry\s+in\s+(\d+(?:\.\d+)?)s", body or "", re.IGNORECASE)
+    if body_match:
+        try:
+            return max(1, int(float(body_match.group(1)) + 0.999))
+        except Exception:
+            logger.exception("failed to parse retry interval from body")
+    return None
+
+
+def _set_gemini_cooldown(seconds: int) -> None:
+    global _GEMINI_COOLDOWN_UNTIL
+    bounded = max(10, min(seconds, 900))
+    _GEMINI_COOLDOWN_UNTIL = max(_GEMINI_COOLDOWN_UNTIL, time.time() + bounded)
+    logger.warning("Gemini cooldown enabled for %ss (until=%s)", bounded, int(_GEMINI_COOLDOWN_UNTIL))
+
+
+def _get_cooldown_remaining() -> int:
+    remaining = int(_GEMINI_COOLDOWN_UNTIL - time.time())
+    return max(0, remaining)
+
+
 def _fallback_reply(reason: str) -> str:
     return (
         "Гуй: Эй, я на месте, но огуречный канал к ИИ сейчас барахлит "
@@ -131,6 +169,9 @@ async def _generate_once(api_key: str, model: str, system_prompt: str, user_text
                     resp.status,
                     body[:1000],
                 )
+                if resp.status == 429:
+                    retry_after = _extract_retry_after_seconds(resp.headers, body) or 60
+                    _set_gemini_cooldown(retry_after)
                 return None, resp.status
 
             data = await resp.json()
@@ -177,11 +218,19 @@ async def generate_guiy_reply(user_text: str) -> str | None:
         logger.error("GEMINI_API_KEY is empty, cannot generate ai reply")
         return _fallback_reply("нет GEMINI_API_KEY")
 
+    cooldown_remaining = _get_cooldown_remaining()
+    if cooldown_remaining > 0:
+        logger.warning("Gemini request skipped due to active cooldown remaining=%ss", cooldown_remaining)
+        return _fallback_reply(f"лимит Gemini, подожди {cooldown_remaining}с")
+
     base_prompt = _build_system_prompt()
 
     try:
         first_try = await _generate_with_model_fallback(api_key, base_prompt, user_text)
         if not first_try:
+            cooldown_remaining = _get_cooldown_remaining()
+            if cooldown_remaining > 0:
+                return _fallback_reply(f"лимит Gemini, подожди {cooldown_remaining}с")
             return _fallback_reply("ошибка Gemini API")
 
         if not _is_role_break(first_try):
@@ -195,6 +244,9 @@ async def generate_guiy_reply(user_text: str) -> str | None:
         )
         second_try = await _generate_with_model_fallback(api_key, strict_prompt, user_text)
         if not second_try:
+            cooldown_remaining = _get_cooldown_remaining()
+            if cooldown_remaining > 0:
+                return _fallback_reply(f"лимит Gemini, подожди {cooldown_remaining}с")
             return _fallback_reply("повторная ошибка Gemini API")
 
         if _is_role_break(second_try):
