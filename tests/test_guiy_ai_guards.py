@@ -4,7 +4,14 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from bot.services import gemini_service
-from bot.services.gemini_service import _extract_retry_after_seconds, _force_guiy_prefix, _is_role_break, _resolve_candidate_models, generate_guiy_reply
+from bot.services.gemini_service import (
+    _extract_retry_after_seconds,
+    _force_guiy_prefix,
+    _is_hard_quota_exhausted,
+    _is_role_break,
+    _resolve_candidate_models,
+    generate_guiy_reply,
+)
 from bot.telegram_bot.commands.ai_chat import _is_command_text
 
 
@@ -53,6 +60,20 @@ class GuiyAIGuardsTests(unittest.TestCase):
     def test_extract_retry_after_from_body(self):
         seconds = _extract_retry_after_seconds({}, "Please retry in 34.312858291s.")
         self.assertEqual(seconds, 35)
+
+
+    def test_extract_retry_after_from_russian_body(self):
+        seconds = _extract_retry_after_seconds({}, "Пожалуйста Повторная попытка через 22.030640423 с.")
+        self.assertEqual(seconds, 23)
+
+    def test_is_hard_quota_exhausted_detects_zero_limit_payload(self):
+        body = (
+            'status: "RESOURCE_EXHAUSTED" '
+            'message: "You exceeded your current quota" '
+            '* Превышена квота для метрики: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0 '
+            '* Превышена квота для метрики: generativelanguage.googleapis.com/generate_content_free_tier_input_token_count, limit: 0'
+        )
+        self.assertTrue(_is_hard_quota_exhausted(body))
 
     @patch.dict("os.environ", {"GEMINI_API_KEY": "x"}, clear=True)
     @patch("bot.services.gemini_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=None)
