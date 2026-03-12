@@ -7,6 +7,8 @@ from bot.services import gemini_service
 from bot.services.gemini_service import (
     _extract_retry_after_seconds,
     _force_guiy_prefix,
+    _inject_user_context,
+    _is_father_user,
     _is_hard_quota_exhausted,
     _is_role_break,
     _resolve_candidate_models,
@@ -37,6 +39,22 @@ class GuiyAIGuardsTests(unittest.TestCase):
 
 
 
+
+    @patch.dict("os.environ", {"GUIY_FATHER_TELEGRAM_IDS": "100,200"}, clear=True)
+    def test_is_father_user_by_provider_id(self):
+        self.assertTrue(_is_father_user("telegram", "100"))
+
+    @patch.dict("os.environ", {"GUIY_FATHER_ACCOUNT_IDS": "acc-1"}, clear=True)
+    @patch("bot.services.gemini_service.AccountsService.resolve_account_id", return_value="acc-1")
+    def test_is_father_user_by_shared_account(self, mock_resolve):
+        self.assertTrue(_is_father_user("telegram", "321"))
+        mock_resolve.assert_called_once_with("telegram", "321")
+
+    @patch.dict("os.environ", {"GUIY_FATHER_TELEGRAM_IDS": "100"}, clear=True)
+    def test_inject_user_context_for_father(self):
+        prompt = _inject_user_context("base", provider="telegram", user_id="100")
+        self.assertIn("это твой отец Эмочка", prompt)
+
     @patch.dict("os.environ", {}, clear=True)
     def test_resolve_models_default_order(self):
         models = _resolve_candidate_models()
@@ -58,7 +76,7 @@ class GuiyAIGuardsTests(unittest.TestCase):
     def test_generate_reply_returns_fallback_when_api_key_missing(self):
         reply = asyncio.run(generate_guiy_reply("Гуй, ты тут?"))
         self.assertNotIn("Гуй:", reply)
-        self.assertIn("GEMINI_API_KEY", reply)
+        self.assertEqual(reply, "Я очень устал, не мешай мне спать.")
 
 
     def test_extract_retry_after_from_body(self):
@@ -112,7 +130,7 @@ class GuiyAIGuardsTests(unittest.TestCase):
         try:
             gemini_service._GEMINI_COOLDOWN_UNTIL = 9999999999
             reply = asyncio.run(generate_guiy_reply("Гуй, ты тут?"))
-            self.assertIn("лимит Gemini", reply)
+            self.assertEqual(reply, "Я очень устал, не мешай мне спать.")
             mock_generate.assert_not_called()
         finally:
             gemini_service._GEMINI_COOLDOWN_UNTIL = old
@@ -127,7 +145,7 @@ class GuiyAIGuardsTests(unittest.TestCase):
             gemini_service._GEMINI_COOLDOWN_UNTIL = 9999999999
             gemini_service._GEMINI_HARD_QUOTA_UNTIL = 9999999999
             reply = asyncio.run(generate_guiy_reply("Гуй, ты тут?"))
-            self.assertIn("бесплатная квота Gemini исчерпана", reply)
+            self.assertEqual(reply, "Я очень устал, не мешай мне спать.")
             mock_generate.assert_not_called()
         finally:
             gemini_service._GEMINI_COOLDOWN_UNTIL = old
