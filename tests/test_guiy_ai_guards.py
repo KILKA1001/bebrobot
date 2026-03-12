@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from bot.services import gemini_service
 from bot.services.gemini_service import (
@@ -12,6 +12,7 @@ from bot.services.gemini_service import (
     _is_father_user,
     _is_hard_quota_exhausted,
     _is_role_break,
+    _is_temporary_upstream_rate_limited,
     _resolve_candidate_models,
     generate_guiy_reply,
 )
@@ -156,6 +157,17 @@ class GuiyAIGuardsTests(unittest.TestCase):
         )
         self.assertTrue(_is_hard_quota_exhausted(body))
 
+    def test_is_temporary_upstream_rate_limited_detects_openrouter_hint(self):
+        body = (
+            '{"error":{"message":"Provider returned error","code":429,'
+            '"metadata":{"raw":"qwen/qwen3-coder:free is temporarily rate-limited upstream. '
+            'Please retry shortly"}}}'
+        )
+        self.assertTrue(_is_temporary_upstream_rate_limited(body))
+
+    def test_is_temporary_upstream_rate_limited_ignores_hard_quota_message(self):
+        body = 'You exceeded your current quota and have insufficient credits'
+        self.assertFalse(_is_temporary_upstream_rate_limited(body))
 
 
     def test_set_gemini_cooldown_caps_soft_quota(self):
@@ -178,6 +190,46 @@ class GuiyAIGuardsTests(unittest.TestCase):
             delta = int(gemini_service._GEMINI_COOLDOWN_UNTIL - now)
             self.assertLessEqual(delta, 901)
             self.assertGreaterEqual(delta, 10)
+        finally:
+            gemini_service._GEMINI_COOLDOWN_UNTIL = old
+
+    @patch.dict("os.environ", {"OPENROUTER_API_KEY": "x", "OPENROUTER_MODELS": "qwen/qwen3-coder:free,openai/gpt-4o-mini"}, clear=True)
+    @patch("bot.services.gemini_service.aiohttp.ClientSession")
+    def test_generate_once_temporary_upstream_429_does_not_enable_cooldown(self, mock_session_cls):
+        old = gemini_service._GEMINI_COOLDOWN_UNTIL
+        try:
+            gemini_service._GEMINI_COOLDOWN_UNTIL = 0
+
+            response_mock = AsyncMock()
+            response_mock.status = 429
+            response_mock.text = AsyncMock(return_value='{"error":{"message":"Provider returned error","metadata":{"raw":"temporarily rate-limited upstream. Please retry shortly"}}}')
+            response_mock.headers = {}
+
+            post_ctx = AsyncMock()
+            post_ctx.__aenter__.return_value = response_mock
+            post_ctx.__aexit__.return_value = False
+
+            session_mock = MagicMock()
+            session_mock.post.return_value = post_ctx
+
+            session_ctx = AsyncMock()
+            session_ctx.__aenter__.return_value = session_mock
+            session_ctx.__aexit__.return_value = False
+            mock_session_cls.return_value = session_ctx
+
+            reply, status = asyncio.run(
+                gemini_service._generate_once(
+                    "x",
+                    "qwen/qwen3-coder:free",
+                    "sys",
+                    "user",
+                    http_referer="",
+                    app_title="bebrobot",
+                )
+            )
+            self.assertIsNone(reply)
+            self.assertEqual(status, 429)
+            self.assertEqual(gemini_service._GEMINI_COOLDOWN_UNTIL, 0)
         finally:
             gemini_service._GEMINI_COOLDOWN_UNTIL = old
 

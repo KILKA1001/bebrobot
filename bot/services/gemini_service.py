@@ -292,6 +292,22 @@ def _is_hard_quota_exhausted(body: str) -> bool:
     )
 
 
+def _is_temporary_upstream_rate_limited(body: str) -> bool:
+    normalized = (body or "").lower()
+    if not normalized:
+        return False
+    return any(
+        marker in normalized
+        for marker in (
+            "temporarily rate-limited upstream",
+            "retry shortly",
+            "provider returned error",
+            "rate limit at provider",
+            "upstream rate limit",
+        )
+    )
+
+
 def _set_gemini_cooldown(seconds: int, *, hard_quota: bool = False) -> None:
     global _GEMINI_COOLDOWN_UNTIL, _GEMINI_HARD_QUOTA_UNTIL
     max_window = 900 if hard_quota else 90
@@ -395,6 +411,7 @@ async def _generate_once(
                 )
                 if resp.status == 429:
                     is_hard_quota = _is_hard_quota_exhausted(body)
+                    is_temp_provider_limit = _is_temporary_upstream_rate_limited(body)
                     if is_hard_quota:
                         retry_after = 3600
                         logger.error(
@@ -403,9 +420,16 @@ async def _generate_once(
                             retry_after,
                             body[:800],
                         )
+                        _set_gemini_cooldown(retry_after, hard_quota=True)
+                    elif is_temp_provider_limit:
+                        logger.warning(
+                            "OpenRouter temporary upstream rate limit model=%s; skipping global cooldown to allow model fallback body=%s",
+                            model,
+                            body[:800],
+                        )
                     else:
                         retry_after = _extract_retry_after_seconds(resp.headers, body) or 60
-                    _set_gemini_cooldown(retry_after, hard_quota=is_hard_quota)
+                        _set_gemini_cooldown(retry_after, hard_quota=False)
                 return None, resp.status
 
             data = await resp.json()
