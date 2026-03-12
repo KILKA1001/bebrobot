@@ -7,6 +7,8 @@ import time
 
 import aiohttp
 
+from bot.services.accounts_service import AccountsService
+
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,10 @@ FREE_TIER_GEMINI_MODELS = (
 # Global backoff guard for quota/rate-limit errors.
 _GEMINI_COOLDOWN_UNTIL = 0.0
 _GEMINI_HARD_QUOTA_UNTIL = 0.0
+
+USER_DIALOG_TTL_SECONDS = 300
+MAX_TRACKED_USERS_PER_DIALOG = 8
+_DIALOG_ACTIVE_USERS: dict[str, dict[str, float]] = {}
 
 DEFAULT_GUIY_SYSTEM_PROMPT = (
     "Ты персонаж по имени Гуй. "
@@ -68,6 +74,125 @@ def _build_system_prompt() -> str:
         return f"{base_prompt}\n\nДополнительный лор:\n{extra_lore}"
 
     return base_prompt
+
+
+def _parse_env_id_set(var_name: str) -> set[str]:
+    raw = (os.getenv(var_name) or "").strip()
+    if not raw:
+        return set()
+    return {item.strip() for item in raw.split(",") if item.strip()}
+
+
+def _is_father_user(provider: str | None, user_id: str | int | None) -> bool:
+    normalized_provider = (provider or "").strip().lower()
+    normalized_user_id = str(user_id).strip() if user_id is not None else ""
+    if normalized_provider not in {"telegram", "discord"} or not normalized_user_id:
+        return False
+
+    direct_id_env = f"GUIY_FATHER_{normalized_provider.upper()}_IDS"
+    if normalized_user_id in _parse_env_id_set(direct_id_env):
+        logger.info(
+            "guiy father recognized by provider id provider=%s user_id=%s",
+            normalized_provider,
+            normalized_user_id,
+        )
+        return True
+
+    father_account_ids = _parse_env_id_set("GUIY_FATHER_ACCOUNT_IDS")
+    if not father_account_ids:
+        return False
+
+    try:
+        account_id = AccountsService.resolve_account_id(normalized_provider, normalized_user_id)
+    except Exception:
+        logger.exception(
+            "guiy father account resolve failed provider=%s user_id=%s",
+            normalized_provider,
+            normalized_user_id,
+        )
+        return False
+
+    if account_id and str(account_id) in father_account_ids:
+        logger.info(
+            "guiy father recognized by shared account provider=%s user_id=%s account_id=%s",
+            normalized_provider,
+            normalized_user_id,
+            account_id,
+        )
+        return True
+    return False
+
+
+def _inject_user_context(base_prompt: str, *, provider: str | None, user_id: str | int | None) -> str:
+    if not _is_father_user(provider, user_id):
+        return base_prompt
+
+    return (
+        f"{base_prompt}\n\n"
+        "Контекст собеседника: это твой отец Эмочка. "
+        "Обращайся к нему как к отцу и учитывай это в ответе."
+    )
+
+
+def _build_dialog_key(provider: str | None, conversation_id: str | int | None) -> str | None:
+    normalized_provider = (provider or "").strip().lower()
+    normalized_conversation_id = str(conversation_id).strip() if conversation_id is not None else ""
+    if normalized_provider not in {"telegram", "discord"} or not normalized_conversation_id:
+        return None
+    return f"{normalized_provider}:{normalized_conversation_id}"
+
+
+def _register_recent_dialog_user(*, provider: str | None, conversation_id: str | int | None, user_id: str | int | None) -> list[str]:
+    dialog_key = _build_dialog_key(provider, conversation_id)
+    normalized_user_id = str(user_id).strip() if user_id is not None else ""
+    now = time.time()
+    if not dialog_key or not normalized_user_id:
+        return []
+
+    active_users = _DIALOG_ACTIVE_USERS.get(dialog_key, {})
+    ttl_threshold = now - USER_DIALOG_TTL_SECONDS
+    active_users = {uid: ts for uid, ts in active_users.items() if ts >= ttl_threshold}
+    active_users[normalized_user_id] = now
+
+    sorted_by_recency = sorted(active_users.items(), key=lambda item: item[1], reverse=True)
+    if len(sorted_by_recency) > MAX_TRACKED_USERS_PER_DIALOG:
+        sorted_by_recency = sorted_by_recency[:MAX_TRACKED_USERS_PER_DIALOG]
+
+    compact_users = {uid: ts for uid, ts in sorted_by_recency}
+    _DIALOG_ACTIVE_USERS[dialog_key] = compact_users
+
+    ordered_user_ids = list(compact_users.keys())
+    logger.info(
+        "guiy dialog participants updated dialog_key=%s current_user_id=%s active_user_count=%s",
+        dialog_key,
+        normalized_user_id,
+        len(ordered_user_ids),
+    )
+    return ordered_user_ids
+
+
+def _inject_dialog_participants_context(
+    base_prompt: str,
+    *,
+    provider: str | None,
+    conversation_id: str | int | None,
+    user_id: str | int | None,
+) -> str:
+    active_user_ids = _register_recent_dialog_user(
+        provider=provider,
+        conversation_id=conversation_id,
+        user_id=user_id,
+    )
+    normalized_user_id = str(user_id).strip() if user_id is not None else ""
+    if not active_user_ids or not normalized_user_id:
+        return base_prompt
+
+    return (
+        f"{base_prompt}\n\n"
+        f"Контекст чата: в последние {USER_DIALOG_TTL_SECONDS} секунд(ы) активны пользователи с ID: {', '.join(active_user_ids)}. "
+        f"Сейчас отвечает пользователю с ID {normalized_user_id}. "
+        "Не путай собеседников между собой и отвечай только текущему пользователю."
+    )
 
 
 def _resolve_candidate_models() -> tuple[str, ...]:
@@ -194,10 +319,8 @@ def _get_hard_quota_remaining() -> int:
 
 
 def _fallback_reply(reason: str) -> str:
-    return (
-        "Эй, я на месте, но огуречный канал к ИИ сейчас барахлит "
-        f"({reason}). Напиши ещё раз через минутку."
-    )
+    logger.warning("guiy fallback reply used reason=%s", reason)
+    return "Я очень устал, не мешай мне спать."
 
 
 async def _throttle_ai_reply() -> None:
@@ -304,7 +427,13 @@ def _build_cooldown_reply() -> str:
     return _fallback_reply(f"лимит Gemini, подожди {cooldown_remaining}с")
 
 
-async def generate_guiy_reply(user_text: str) -> str | None:
+async def generate_guiy_reply(
+    user_text: str,
+    *,
+    provider: str | None = None,
+    user_id: str | int | None = None,
+    conversation_id: str | int | None = None,
+) -> str | None:
     api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
     if not api_key:
         logger.error("GEMINI_API_KEY is empty, cannot generate ai reply")
@@ -315,7 +444,13 @@ async def generate_guiy_reply(user_text: str) -> str | None:
         logger.warning("Gemini request skipped due to active cooldown remaining=%ss", cooldown_remaining)
         return _build_cooldown_reply()
 
-    base_prompt = _build_system_prompt()
+    base_prompt = _inject_user_context(_build_system_prompt(), provider=provider, user_id=user_id)
+    base_prompt = _inject_dialog_participants_context(
+        base_prompt,
+        provider=provider,
+        conversation_id=conversation_id,
+        user_id=user_id,
+    )
 
     try:
         await _throttle_ai_reply()
