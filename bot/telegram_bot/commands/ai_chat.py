@@ -61,7 +61,16 @@ async def handle_guiy_chat(message: Message) -> None:
     lowered = text.lower()
     is_named = re.search(r"\bгуй\b", lowered) is not None
 
-    bot_user = await message.bot.get_me()
+    try:
+        bot_user = await message.bot.get_me()
+    except Exception:
+        logger.exception(
+            "telegram ai failed to fetch bot identity chat_id=%s user_id=%s",
+            message.chat.id,
+            sender_id,
+        )
+        return
+
     is_reply_to_bot = bool(
         message.reply_to_message
         and message.reply_to_message.from_user
@@ -69,6 +78,12 @@ async def handle_guiy_chat(message: Message) -> None:
     )
 
     if not (is_named or is_reply_to_bot):
+        logger.debug(
+            "telegram ai skipped because trigger not matched chat_id=%s user_id=%s text=%s",
+            message.chat.id,
+            sender_id,
+            text[:120],
+        )
         return
 
     try:

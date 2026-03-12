@@ -35,6 +35,12 @@ class GuiyAIGuardsTests(unittest.TestCase):
     def test_force_guiy_prefix_removes_existing_prefix(self):
         self.assertEqual(_force_guiy_prefix("Гуй: уже тут"), "уже тут")
 
+    def test_force_guiy_prefix_trims_followup_speaker_blocks(self):
+        self.assertEqual(
+            _force_guiy_prefix("Гуй: Привет, папочка!\nПользователь: Что делаешь?"),
+            "Привет, папочка!",
+        )
+
     def test_is_command_text_for_known_command(self):
         self.assertTrue(_is_command_text("/points 123"))
         self.assertTrue(_is_command_text("/PROFILE"))
