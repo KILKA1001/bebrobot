@@ -288,12 +288,15 @@ async def tickets_callback(callback: CallbackQuery) -> None:
         await callback.answer("Ошибка меню билетов", show_alert=True)
 
 
-@router.message()
+@router.message(F.from_user, F.from_user.id.func(has_pending_action))
 async def pending_action_handler(message: Message) -> None:
-    if not message.from_user:
-        return
     pending = _PENDING_ACTIONS.get(message.from_user.id)
     if not pending:
+        logger.warning(
+            "pending action handler invoked without pending state user_id=%s chat_id=%s",
+            message.from_user.id,
+            message.chat.id if message.chat else None,
+        )
         return
 
     try:
