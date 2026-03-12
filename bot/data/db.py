@@ -572,12 +572,43 @@ class Database:
                 return
                 
             if self.scores:
-                scores_data = [{"user_id": k, "points": v} for k, v in self.scores.items()]
-                response = self._handle_response(
-                    self.supabase.table("scores").upsert(scores_data).execute()
+                # Не восстанавливаем удалённые вручную строки из устаревшего in-memory кеша.
+                # Иначе после DELETE в БД старые значения могут "возвращаться" при очередном save_all.
+                existing_rows_response = (
+                    self.supabase.table("scores")
+                    .select("user_id")
+                    .not_.is_("user_id", "null")
+                    .execute()
                 )
-                if response:
-                    logger.info(f"💾 Данные сохранены: {len(response.data if response.data else [])} записей")
+                existing_user_ids = {
+                    int(row.get("user_id"))
+                    for row in (existing_rows_response.data or [])
+                    if row.get("user_id") is not None
+                }
+
+                scores_data = []
+                skipped_user_ids = []
+                for user_id, points in self.scores.items():
+                    if int(user_id) in existing_user_ids:
+                        scores_data.append({"user_id": user_id, "points": points})
+                    else:
+                        skipped_user_ids.append(int(user_id))
+
+                if skipped_user_ids:
+                    logger.warning(
+                        "⚠️ save_all пропустил %s удалённых/отсутствующих строк scores (пример user_id=%s)",
+                        len(skipped_user_ids),
+                        skipped_user_ids[:5],
+                    )
+
+                if scores_data:
+                    response = self._handle_response(
+                        self.supabase.table("scores").upsert(scores_data).execute()
+                    )
+                    if response:
+                        logger.info(f"💾 Данные сохранены: {len(response.data if response.data else [])} записей")
+                else:
+                    logger.info("ℹ️ save_all: нет строк scores для сохранения после сверки с БД")
         except Exception as e:
             logger.error(f"🔥 Ошибка сохранения: {str(e)}")
             traceback.print_exc()
