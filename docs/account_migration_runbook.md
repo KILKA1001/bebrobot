@@ -17,6 +17,40 @@ Remove legacy `user_id` fallback paths only when:
 - monitoring shows no unresolved identity spikes,
 - operational rollback is tested.
 
+
+### Drop legacy players tables (safe order)
+If you are decommissioning manual player registry, drop dependent FKs first, then legacy tables:
+
+```sql
+BEGIN;
+
+-- 0) Optional guardrails
+-- SELECT COUNT(*) FROM tournament_participants WHERE player_id IS NOT NULL;
+-- SELECT COUNT(*) FROM tournament_players WHERE player_id IS NOT NULL;
+
+-- 1) Remove FK dependencies on players(id)
+ALTER TABLE IF EXISTS tournament_players
+  DROP CONSTRAINT IF EXISTS tournament_players_player_id_fkey;
+
+ALTER TABLE IF EXISTS tournament_participants
+  DROP CONSTRAINT IF EXISTS tournament_participants_player_id_fkey;
+
+-- 2) Remove obsolete legacy columns
+ALTER TABLE IF EXISTS tournament_players
+  DROP COLUMN IF EXISTS player_id;
+
+ALTER TABLE IF EXISTS tournament_participants
+  DROP COLUMN IF EXISTS player_id;
+
+-- 3) Remove legacy tables
+DROP TABLE IF EXISTS player_logs;
+DROP TABLE IF EXISTS players;
+
+COMMIT;
+```
+
+If historical compatibility is still required, skip step (2) and keep legacy columns until all code paths are migrated to `discord_user_id`/`account_id`.
+
 ## 4) Operations
 ### Merge duplicate accounts
 1. Select canonical `account_id` (target) and deprecated `account_id` (source).

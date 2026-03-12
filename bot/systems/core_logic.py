@@ -381,15 +381,6 @@ def get_help_embed(category: str) -> discord.Embed:
             "`/bankspend сумма причина` — потратить баллы из банка\n"
             "`/bankhistory` — история операций"
         )
-    elif category == "admin_players":
-        embed.title = "👥 Админ: Игроки"
-        embed.description = (
-            "`/register <nick>` — добавить игрока\n"
-            "`/listplayers [страница]` — список игроков\n"
-            "`/editplayer id поле значение` — изменить данные игрока\n"
-            "`/deleteplayer id` — удалить игрока\n"
-            "`/playerlogs id [страница]` — история правок"
-        )
     elif category == "admin_tournaments":
         embed.title = "🏟 Админ: Турниры"
         embed.description = (
@@ -421,10 +412,6 @@ class AdminCategoryView(SafeView):
     @discord.ui.button(label="🏦 Банк", style=discord.ButtonStyle.green, row=0)
     async def bank_admin(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.send_category(interaction, "admin_bank")
-
-    @discord.ui.button(label="👥 Игроки", style=discord.ButtonStyle.blurple, row=0)
-    async def players_admin(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.send_category(interaction, "admin_players")
 
     @discord.ui.button(label="🏟 Турниры", style=discord.ButtonStyle.green, row=0)
     async def tournaments_admin(self, interaction: discord.Interaction, button: discord.ui.Button):
