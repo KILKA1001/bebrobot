@@ -41,6 +41,12 @@ class GuiyAIGuardsTests(unittest.TestCase):
     def test_resolve_models_default_order(self):
         models = _resolve_candidate_models()
         self.assertGreaterEqual(len(models), 2)
+        self.assertEqual(models[0], "gemini-1.5-flash")
+
+
+    @patch.dict("os.environ", {"GEMINI_USE_FREE_TIER": "0"}, clear=True)
+    def test_resolve_models_can_disable_free_tier_defaults(self):
+        models = _resolve_candidate_models()
         self.assertEqual(models[0], "gemini-2.0-flash")
 
     @patch.dict("os.environ", {"GEMINI_MODEL": "gemini-2.5-flash", "GEMINI_MODELS": "gemini-2.0-flash-lite, gemini-1.5-flash"}, clear=True)
