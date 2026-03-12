@@ -84,6 +84,7 @@ async def handle_guiy_chat(message: Message) -> None:
             text,
             provider="telegram",
             user_id=sender_id,
+            conversation_id=message.chat.id,
         )
         if not reply:
             logger.warning(

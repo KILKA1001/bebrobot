@@ -247,6 +247,7 @@ async def on_message(message: discord.Message):
                 content,
                 provider="discord",
                 user_id=getattr(message.author, "id", None),
+                conversation_id=getattr(message.channel, "id", None),
             )
             if reply:
                 await safe_send(message.channel, reply)
