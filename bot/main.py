@@ -231,9 +231,18 @@ async def on_message(message: discord.Message):
             if isinstance(ref_msg, discord.Message) and ref_msg.author and ref_msg.author.id == bot.user.id:
                 is_reply_to_bot = True
 
-        is_named = "гуй" in lowered
+        is_named = re.search(r"\bгуй\b", lowered) is not None
 
         if is_named or is_reply_to_bot:
+            logging.info(
+                "discord ai trigger matched guild_id=%s channel_id=%s author_id=%s is_named=%s is_reply_to_bot=%s text=%s",
+                getattr(message.guild, "id", None),
+                getattr(message.channel, "id", None),
+                getattr(message.author, "id", None),
+                is_named,
+                is_reply_to_bot,
+                content[:160],
+            )
             reply = await generate_guiy_reply(content)
             if reply:
                 await safe_send(message.channel, reply)

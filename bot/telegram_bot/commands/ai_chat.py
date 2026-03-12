@@ -72,6 +72,14 @@ async def handle_guiy_chat(message: Message) -> None:
         return
 
     try:
+        logger.info(
+            "telegram ai trigger matched chat_id=%s user_id=%s is_named=%s is_reply_to_bot=%s text=%s",
+            message.chat.id,
+            sender_id,
+            is_named,
+            is_reply_to_bot,
+            text[:160],
+        )
         reply = await generate_guiy_reply(text)
         if not reply:
             logger.warning(
