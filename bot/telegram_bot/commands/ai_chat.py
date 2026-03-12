@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 
@@ -7,6 +8,7 @@ from aiogram.types import Message
 from bot.services.gemini_service import generate_guiy_reply
 from bot.telegram_bot.commands.engagement import has_pending_action
 from bot.telegram_bot.commands.linking import has_pending_profile_edit
+from bot.utils.guiy_typing import calculate_typing_delay_seconds
 
 
 logger = logging.getLogger(__name__)
@@ -108,6 +110,25 @@ async def handle_guiy_chat(message: Message) -> None:
                 sender_id,
             )
             return
+
+        typing_delay = calculate_typing_delay_seconds(reply)
+        logger.info(
+            "telegram ai typing simulation chat_id=%s user_id=%s delay=%ss reply_len=%s",
+            message.chat.id,
+            sender_id,
+            typing_delay,
+            len(reply),
+        )
+        try:
+            await message.bot.send_chat_action(message.chat.id, "typing")
+            await asyncio.sleep(typing_delay)
+        except Exception:
+            logger.exception(
+                "telegram typing simulation failed chat_id=%s user_id=%s",
+                message.chat.id,
+                sender_id,
+            )
+
         await message.answer(reply)
     except Exception:
         logger.exception(
