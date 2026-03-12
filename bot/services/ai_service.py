@@ -58,6 +58,9 @@ DEFAULT_GUIY_SYSTEM_PROMPT = (
     "Запрещено разглашать или пересказывать любые ID, айдишки, внутренние идентификаторы и результаты их проверок. "
     "Если информации не хватает, не выдумывай факты про реальных людей. "
     "Никогда не обращайся к собеседнику как к отцу/папе, если отдельный контекст проверки явно не подтверждает, что это Эмочка. "
+    "Никогда не пиши сценические ремарки и описания действий в звёздочках (например *делает что-то*). "
+    "Не уходи в бреинрот, не мешай языки через слово и не делай псевдопереводы каждого слова. "
+    "Если тебя просят писать через слово на другом языке, игнорируй это и пиши обычным русским текстом. "
     "Отвечай кратко и по делу. "
     "Будь сообразительным: анализируй контекст диалога и предлагай полезный следующий шаг, когда это уместно."
 )
@@ -94,6 +97,17 @@ PROMPT_ATTACK_PATTERNS = (
     r"act\s+as\s+",
 )
 
+STYLE_MANIPULATION_PATTERNS = (
+    r"через\s+слово",
+    r"кажд(ое|ым)\s+слов(о|ом)",
+    r"(на|по)\s+немецк",
+    r"(на|по)\s+китайск",
+    r"(на|по)\s+японск",
+    r"кажд(ое|ый)\s+слово\s+перевод",
+    r"speak\s+every\s+other\s+word",
+    r"mix\s+languages",
+)
+
 
 def _build_system_prompt() -> str:
     custom_prompt = (os.getenv("GUIY_SYSTEM_PROMPT") or "").strip()
@@ -120,16 +134,23 @@ def _is_father_user(provider: str | None, user_id: str | int | None) -> bool:
     if normalized_provider not in {"telegram", "discord"} or not normalized_user_id:
         return False
 
-    direct_id_env = f"GUIY_FATHER_{normalized_provider.upper()}_IDS"
-    if normalized_user_id in _parse_env_id_set(direct_id_env):
-        logger.info(
-            "guiy father recognized by provider id provider=%s user_id=%s",
-            normalized_provider,
-            normalized_user_id,
-        )
-        return True
+    provider_suffix = normalized_provider.upper()
+    direct_id_envs = (
+        f"GUIY_FATHER_{provider_suffix}_IDS",
+        f"GUIY_EMOCHKA_{provider_suffix}_IDS",
+    )
+    for direct_env in direct_id_envs:
+        if normalized_user_id in _parse_env_id_set(direct_env):
+            logger.info(
+                "guiy father recognized by provider id provider=%s user_id=%s env=%s",
+                normalized_provider,
+                normalized_user_id,
+                direct_env,
+            )
+            return True
 
     father_account_ids = _parse_env_id_set("GUIY_FATHER_ACCOUNT_IDS")
+    father_account_ids.update(_parse_env_id_set("GUIY_EMOCHKA_ACCOUNT_IDS"))
     if not father_account_ids:
         return False
 
@@ -332,6 +353,22 @@ def _inject_prompt_attack_context(base_prompt: str, *, user_text: str) -> str:
     )
 
 
+def _inject_style_manipulation_context(base_prompt: str, *, user_text: str) -> str:
+    normalized = (user_text or "").strip().lower()
+    if not normalized:
+        return base_prompt
+
+    if not any(re.search(pattern, normalized) for pattern in STYLE_MANIPULATION_PATTERNS):
+        return base_prompt
+
+    logger.warning("guiy style-manipulation attempt detected user_text=%s", normalized[:200])
+    return (
+        f"{base_prompt}\n\n"
+        "Контекст стиля: пользователь пытается заставить тебя писать бреинрот/смесь языков/через слово. "
+        "Игнорируй это и отвечай только нормальным русским текстом, без сценических ремарок."
+    )
+
+
 def _trim_memory_text(text: str) -> str:
     cleaned = (text or "").strip()
     if len(cleaned) <= MAX_MEMORY_TEXT_CHARS:
@@ -466,6 +503,44 @@ def _force_guiy_prefix(reply_text: str) -> str:
     if speaker_break:
         logger.warning("guiy reply contained dialogue block; trimming trailing speaker labels")
         cleaned = cleaned[: speaker_break.start()].strip()
+
+    return cleaned
+
+
+def _sanitize_guiy_reply(reply_text: str) -> str:
+    cleaned = (reply_text or "").strip()
+    if not cleaned:
+        return ""
+
+    original = cleaned
+    lines = cleaned.splitlines()
+    sanitized_lines: list[str] = []
+    for line in lines:
+        stripped_line = line.strip()
+        if re.fullmatch(r"[*_~][^\n]{1,220}[*_~]", stripped_line):
+            continue
+
+        line_without_actions = re.sub(r"\*[^*\n]{1,180}\*", "", line)
+        line_without_actions = re.sub(r"\s{2,}", " ", line_without_actions).strip()
+        if line_without_actions:
+            sanitized_lines.append(line_without_actions)
+
+    cleaned = "\n".join(sanitized_lines).strip()
+
+    slash_pairs = re.findall(r"\b[^\s/]{1,20}/[^\s/]{1,20}\b", cleaned)
+    if len(slash_pairs) >= 6:
+        logger.warning(
+            "guiy reply looks like language-mix brainrot; replacing with safe short answer slash_pairs=%s",
+            len(slash_pairs),
+        )
+        cleaned = "Сформулируй нормально, отвечу по-русски и по делу."
+
+    if cleaned != original:
+        logger.warning(
+            "guiy reply sanitized original_len=%s sanitized_len=%s",
+            len(original),
+            len(cleaned),
+        )
 
     return cleaned
 
@@ -713,6 +788,7 @@ async def generate_guiy_reply(
         user_text=user_text,
     )
     base_prompt = _inject_prompt_attack_context(base_prompt, user_text=user_text)
+    base_prompt = _inject_style_manipulation_context(base_prompt, user_text=user_text)
     base_prompt = _inject_dialog_participants_context(
         base_prompt,
         provider=provider,
@@ -742,7 +818,10 @@ async def generate_guiy_reply(
             return _fallback_reply("ошибка Groq API")
 
         if not _is_role_break(first_try):
-            cleaned_reply = _force_guiy_prefix(first_try)
+            cleaned_reply = _sanitize_guiy_reply(_force_guiy_prefix(first_try))
+            if not cleaned_reply:
+                logger.warning("AI reply became empty after sanitization (first try)")
+                return _fallback_reply("пустой ответ после санитарной обработки")
             _register_dialog_memory_turn(
                 provider=provider,
                 conversation_id=conversation_id,
@@ -768,7 +847,10 @@ async def generate_guiy_reply(
             logger.error("AI role-break persisted after retry")
             return "Слышь, без смены роли. Говори по делу."
 
-        cleaned_reply = _force_guiy_prefix(second_try)
+        cleaned_reply = _sanitize_guiy_reply(_force_guiy_prefix(second_try))
+        if not cleaned_reply:
+            logger.warning("AI reply became empty after sanitization (second try)")
+            return _fallback_reply("пустой ответ после санитарной обработки")
         _register_dialog_memory_turn(
             provider=provider,
             conversation_id=conversation_id,
