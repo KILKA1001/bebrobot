@@ -8,7 +8,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import asyncio
 import logging
 import time
-import re
 import random
 import json
 from dotenv import load_dotenv
@@ -63,6 +62,7 @@ from bot.systems.tournament_logic import BettingView
 from bot.systems.interactive_rounds import RoundManagementView
 from bot.systems.tournament_logic import create_tournament_logic
 from bot.utils import safe_send
+from bot.utils.guiy_trigger import is_guiy_name_trigger
 from bot.utils.guiy_typing import calculate_typing_delay_seconds
 from bot.telegram_bot.main import run_polling as run_telegram_polling
 
@@ -215,7 +215,6 @@ async def on_message(message: discord.Message):
             return
 
         content = (message.content or "").strip()
-        lowered = content.lower()
 
         is_reply_to_bot = False
         if message.reference and message.reference.message_id:
@@ -232,7 +231,7 @@ async def on_message(message: discord.Message):
             if isinstance(ref_msg, discord.Message) and ref_msg.author and ref_msg.author.id == bot.user.id:
                 is_reply_to_bot = True
 
-        is_named = re.search(r"\bгуй\b", lowered) is not None
+        is_named = is_guiy_name_trigger(content)
 
         if is_named or is_reply_to_bot:
             logging.info(
