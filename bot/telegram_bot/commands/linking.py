@@ -209,13 +209,15 @@ async def profile_edit_field_callback(callback: CallbackQuery) -> None:
         await callback.answer("Ошибка выбора поля", show_alert=True)
 
 
-@router.message(F.chat.type == "private")
+@router.message(F.chat.type == "private", F.from_user, F.from_user.id.func(has_pending_profile_edit))
 async def profile_edit_value_handler(message: Message) -> None:
-    if message.from_user is None:
-        return
-
     pending_field = _PENDING_EDIT_FIELD.get(message.from_user.id)
     if not pending_field:
+        logger.warning(
+            "profile_edit handler invoked without pending field user_id=%s chat_id=%s",
+            message.from_user.id,
+            message.chat.id if message.chat else None,
+        )
         return
 
     try:
