@@ -1,7 +1,5 @@
 import asyncio
 import logging
-import re
-
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
@@ -9,6 +7,7 @@ from aiogram.types import Message
 from bot.services.ai_service import generate_guiy_reply
 from bot.telegram_bot.commands.engagement import has_pending_action
 from bot.telegram_bot.commands.linking import has_pending_profile_edit
+from bot.utils.guiy_trigger import is_guiy_name_trigger
 from bot.utils.guiy_typing import calculate_typing_delay_seconds
 
 
@@ -41,8 +40,7 @@ def _is_command_text(text: str) -> bool:
 
 
 def _is_name_trigger(text: str) -> bool:
-    lowered = text.lower()
-    return bool(re.search(r"\bгуй\b", lowered) or re.search(r"\bguiy\b", lowered))
+    return is_guiy_name_trigger(text)
 
 
 async def _generate_and_send_reply(message: Message, text: str) -> None:
