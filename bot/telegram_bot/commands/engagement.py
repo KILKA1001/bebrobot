@@ -62,6 +62,43 @@ def _can_manage_tickets(actor_titles: tuple[str, ...], actor_level: int) -> bool
     return actor_level >= 100
 
 
+def _can_manage_points(actor_level: int) -> bool:
+    return actor_level >= 80
+
+
+def _can_manage_own_engagement(actor_titles: tuple[str, ...]) -> bool:
+    normalized = {str(title).strip().lower() for title in actor_titles}
+    return bool(normalized & {"глава клуба", "главный вице"})
+
+
+def _parse_callback_payload(raw_data: str) -> tuple[str, str, str | None] | None:
+    parts = str(raw_data or "").split(":")
+    if len(parts) == 4:
+        _, action, target_id, owner_id = parts
+        return action, target_id, owner_id
+    if len(parts) == 3:
+        _, action, target_id = parts
+        return action, target_id, None
+    return None
+
+
+async def _guard_callback_actor(callback: CallbackQuery, owner_id: str | None) -> bool:
+    if callback.from_user is None:
+        await callback.answer("Ошибка пользователя", show_alert=True)
+        return False
+
+    if owner_id and str(callback.from_user.id) != str(owner_id):
+        logger.warning(
+            "engagement callback denied foreign actor callback_data=%s actor_id=%s owner_id=%s",
+            callback.data,
+            callback.from_user.id,
+            owner_id,
+        )
+        await callback.answer("Чушка, не суй свой пятак в чужой пердак")
+        return False
+    return True
+
+
 def _parse_target_arg(message: Message) -> int | None:
     def _extract_user_id_from_entities(source_message: Message | None) -> int | None:
         if source_message is None:
@@ -110,24 +147,24 @@ def _parse_target_arg(message: Message) -> int | None:
     return None
 
 
-def _build_points_keyboard(target_id: int) -> InlineKeyboardMarkup:
+def _build_points_keyboard(target_id: int, actor_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="ℹ️ Что делает команда", callback_data=f"points:help:{target_id}")],
-            [InlineKeyboardButton(text="➕ Начислить баллы", callback_data=f"points:add:{target_id}")],
-            [InlineKeyboardButton(text="➖ Снять баллы", callback_data=f"points:remove:{target_id}")],
+            [InlineKeyboardButton(text="ℹ️ Что делает команда", callback_data=f"points:help:{target_id}:{actor_id}")],
+            [InlineKeyboardButton(text="➕ Начислить баллы", callback_data=f"points:add:{target_id}:{actor_id}")],
+            [InlineKeyboardButton(text="➖ Снять баллы", callback_data=f"points:remove:{target_id}:{actor_id}")],
         ]
     )
 
 
-def _build_tickets_keyboard(target_id: int) -> InlineKeyboardMarkup:
+def _build_tickets_keyboard(target_id: int, actor_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="ℹ️ Что делает команда", callback_data=f"tickets:help:{target_id}")],
-            [InlineKeyboardButton(text="🎟️ + Обычные", callback_data=f"tickets:add_normal:{target_id}")],
-            [InlineKeyboardButton(text="🎟️ - Обычные", callback_data=f"tickets:remove_normal:{target_id}")],
-            [InlineKeyboardButton(text="🪙 + Золотые", callback_data=f"tickets:add_gold:{target_id}")],
-            [InlineKeyboardButton(text="🪙 - Золотые", callback_data=f"tickets:remove_gold:{target_id}")],
+            [InlineKeyboardButton(text="ℹ️ Что делает команда", callback_data=f"tickets:help:{target_id}:{actor_id}")],
+            [InlineKeyboardButton(text="🎟️ + Обычные", callback_data=f"tickets:add_normal:{target_id}:{actor_id}")],
+            [InlineKeyboardButton(text="🎟️ - Обычные", callback_data=f"tickets:remove_normal:{target_id}:{actor_id}")],
+            [InlineKeyboardButton(text="🪙 + Золотые", callback_data=f"tickets:add_gold:{target_id}:{actor_id}")],
+            [InlineKeyboardButton(text="🪙 - Золотые", callback_data=f"tickets:remove_gold:{target_id}:{actor_id}")],
         ]
     )
 
@@ -164,11 +201,16 @@ async def points_menu_command(message: Message) -> None:
             return
 
         authority = AuthorityService.resolve_authority("telegram", actor_id)
-        if authority.level < 30:
+        if not _can_manage_points(authority.level):
             await message.answer("Недоступно по вашему званию.")
             return
 
-        if str(target_id) != actor_id and not AuthorityService.can_manage_target("telegram", actor_id, "telegram", str(target_id)):
+        if str(target_id) == actor_id:
+            if not _can_manage_own_engagement(authority.titles):
+                logger.warning("tickets menu self-edit denied actor_id=%s", actor_id)
+                await message.answer("❌ Нельзя редактировать себя. Доступно только Главе клуба и Главному вице.")
+                return
+        elif not AuthorityService.can_manage_target("telegram", actor_id, "telegram", str(target_id)):
             await message.answer("❌ Нельзя взаимодействовать с пользователем с равным/более высоким званием.")
             return
 
@@ -185,7 +227,7 @@ async def points_menu_command(message: Message) -> None:
             f"Билеты: 🎟️ {tickets_normal} / 🪙 {tickets_gold}\n\n"
             "Выберите действие. Для любого изменения причина обязательна.",
             parse_mode=ParseMode.HTML,
-            reply_markup=_build_points_keyboard(target_id),
+            reply_markup=_build_points_keyboard(target_id, int(actor_id)),
         )
     except Exception:
         logger.exception("points menu command failed")
@@ -209,7 +251,12 @@ async def tickets_menu_command(message: Message) -> None:
             await message.answer("Недоступно по вашему званию.")
             return
 
-        if str(target_id) != actor_id and not AuthorityService.can_manage_target("telegram", actor_id, "telegram", str(target_id)):
+        if str(target_id) == actor_id:
+            if not _can_manage_own_engagement(authority.titles):
+                logger.warning("points menu self-edit denied actor_id=%s", actor_id)
+                await message.answer("❌ Нельзя редактировать себя. Доступно только Главе клуба и Главному вице.")
+                return
+        elif not AuthorityService.can_manage_target("telegram", actor_id, "telegram", str(target_id)):
             await message.answer("❌ Нельзя взаимодействовать с пользователем с равным/более высоким званием.")
             return
 
@@ -226,7 +273,7 @@ async def tickets_menu_command(message: Message) -> None:
             f"Текущие билеты: 🎟️ <b>{tickets_normal}</b> / 🪙 <b>{tickets_gold}</b>\n\n"
             "Выберите действие. Для любого изменения причина обязательна.",
             parse_mode=ParseMode.HTML,
-            reply_markup=_build_tickets_keyboard(target_id),
+            reply_markup=_build_tickets_keyboard(target_id, int(actor_id)),
         )
     except Exception:
         logger.exception("tickets menu command failed")
@@ -240,9 +287,31 @@ async def points_callback(callback: CallbackQuery) -> None:
             await callback.answer("Ошибка пользователя", show_alert=True)
             return
 
-        _, action, target_raw = str(callback.data).split(":", 2)
-        target_id = str(target_raw)
+        payload = _parse_callback_payload(str(callback.data))
+        if payload is None:
+            logger.error("points callback got malformed payload=%s", callback.data)
+            await callback.answer("Ошибка меню баллов", show_alert=True)
+            return
+        action, target_id, owner_id = payload
+        if not await _guard_callback_actor(callback, owner_id):
+            return
         actor_id = str(callback.from_user.id)
+
+        authority = AuthorityService.resolve_authority("telegram", actor_id)
+        if not _can_manage_points(authority.level):
+            logger.warning("points callback denied by authority actor_id=%s action=%s", actor_id, action)
+            await callback.answer("Недоступно по вашему званию.", show_alert=True)
+            return
+
+        if target_id == actor_id:
+            if not _can_manage_own_engagement(authority.titles):
+                logger.warning("points callback self-edit denied actor_id=%s", actor_id)
+                await callback.answer("Нельзя редактировать себя.", show_alert=True)
+                return
+        elif not AuthorityService.can_manage_target("telegram", actor_id, "telegram", str(target_id)):
+            logger.warning("points callback denied by hierarchy actor_id=%s target_id=%s", actor_id, target_id)
+            await callback.answer("Нельзя взаимодействовать с равным/старшим званием.", show_alert=True)
+            return
 
         if action == "help":
             await callback.message.answer(
@@ -280,9 +349,31 @@ async def tickets_callback(callback: CallbackQuery) -> None:
             await callback.answer("Ошибка пользователя", show_alert=True)
             return
 
-        _, action, target_raw = str(callback.data).split(":", 2)
-        target_id = str(target_raw)
+        payload = _parse_callback_payload(str(callback.data))
+        if payload is None:
+            logger.error("tickets callback got malformed payload=%s", callback.data)
+            await callback.answer("Ошибка меню билетов", show_alert=True)
+            return
+        action, target_id, owner_id = payload
+        if not await _guard_callback_actor(callback, owner_id):
+            return
         actor_id = str(callback.from_user.id)
+
+        authority = AuthorityService.resolve_authority("telegram", actor_id)
+        if not _can_manage_tickets(authority.titles, authority.level):
+            logger.warning("tickets callback denied by authority actor_id=%s action=%s", actor_id, action)
+            await callback.answer("Недоступно по вашему званию.", show_alert=True)
+            return
+
+        if target_id == actor_id:
+            if not _can_manage_own_engagement(authority.titles):
+                logger.warning("tickets callback self-edit denied actor_id=%s", actor_id)
+                await callback.answer("Нельзя редактировать себя.", show_alert=True)
+                return
+        elif not AuthorityService.can_manage_target("telegram", actor_id, "telegram", str(target_id)):
+            logger.warning("tickets callback denied by hierarchy actor_id=%s target_id=%s", actor_id, target_id)
+            await callback.answer("Нельзя взаимодействовать с равным/старшим званием.", show_alert=True)
+            return
 
         if action == "help":
             await callback.message.answer(
@@ -324,6 +415,43 @@ async def pending_action_handler(message: Message) -> None:
 
     pending = _PENDING_ACTIONS.get(message.from_user.id)
     try:
+        authority = AuthorityService.resolve_authority("telegram", str(message.from_user.id))
+        if pending.domain == "points" and not _can_manage_points(authority.level):
+            logger.warning("pending points action denied by authority actor_id=%s", message.from_user.id)
+            await message.answer("❌ Недостаточно полномочий для редактирования баллов.")
+            _PENDING_ACTIONS.pop(message.from_user.id, None)
+            return
+        if pending.domain == "tickets" and not _can_manage_tickets(authority.titles, authority.level):
+            logger.warning("pending tickets action denied by authority actor_id=%s", message.from_user.id)
+            await message.answer("❌ Недостаточно полномочий для редактирования билетов.")
+            _PENDING_ACTIONS.pop(message.from_user.id, None)
+            return
+        if str(pending.target_provider_user_id) == str(message.from_user.id):
+            if not _can_manage_own_engagement(authority.titles):
+                logger.warning(
+                    "pending action self-edit denied actor_id=%s domain=%s",
+                    message.from_user.id,
+                    pending.domain,
+                )
+                await message.answer("❌ Нельзя редактировать себя. Доступно только Главе клуба и Главному вице.")
+                _PENDING_ACTIONS.pop(message.from_user.id, None)
+                return
+        elif not AuthorityService.can_manage_target(
+            "telegram",
+            str(message.from_user.id),
+            "telegram",
+            str(pending.target_provider_user_id),
+        ):
+            logger.warning(
+                "pending action denied by hierarchy actor_id=%s target_id=%s domain=%s",
+                message.from_user.id,
+                pending.target_provider_user_id,
+                pending.domain,
+            )
+            await message.answer("❌ Нельзя выполнять действие для пользователя с равным/более высоким званием.")
+            _PENDING_ACTIONS.pop(message.from_user.id, None)
+            return
+
         raw = (message.text or "").strip()
         if "|" not in raw:
             await message.answer("❌ Неверный формат. Используйте: число | причина")
