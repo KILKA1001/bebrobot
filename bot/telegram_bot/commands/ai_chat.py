@@ -9,6 +9,7 @@ from bot.telegram_bot.commands.engagement import has_pending_action
 from bot.telegram_bot.commands.linking import has_pending_profile_edit
 from bot.utils.guiy_trigger import is_guiy_name_trigger
 from bot.utils.guiy_typing import calculate_typing_delay_seconds
+from bot.utils.conversation_activity import should_thread_reply
 
 
 logger = logging.getLogger(__name__)
@@ -77,7 +78,32 @@ async def _generate_and_send_reply(message: Message, text: str) -> None:
             sender_id,
         )
 
-    await message.answer(reply)
+    use_reply_mark = should_thread_reply(
+        f"telegram:{message.chat.id}",
+        sender_id,
+    )
+    logger.info(
+        "telegram ai reply mode resolved chat_id=%s user_id=%s message_id=%s use_reply_mark=%s",
+        message.chat.id,
+        sender_id,
+        message.message_id,
+        use_reply_mark,
+    )
+
+    try:
+        if use_reply_mark:
+            await message.answer(reply, reply_to_message_id=message.message_id)
+        else:
+            await message.answer(reply)
+    except Exception:
+        logger.exception(
+            "telegram ai failed to send response chat_id=%s user_id=%s message_id=%s use_reply_mark=%s",
+            message.chat.id,
+            sender_id,
+            message.message_id,
+            use_reply_mark,
+        )
+        await message.answer(reply)
 
 
 @router.message(Command("guiy"))

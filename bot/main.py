@@ -66,6 +66,7 @@ from bot.systems.tournament_logic import create_tournament_logic
 from bot.utils import safe_send
 from bot.utils.guiy_trigger import is_guiy_name_trigger
 from bot.utils.guiy_typing import calculate_typing_delay_seconds
+from bot.utils.conversation_activity import should_thread_reply
 from bot.telegram_bot.main import run_polling as run_telegram_polling
 
 
@@ -269,7 +270,31 @@ async def on_message(message: discord.Message):
                         getattr(message.channel, "id", None),
                         getattr(message.author, "id", None),
                     )
-                await safe_send(message.channel, reply)
+                use_reply_mark = should_thread_reply(
+                    f"discord:{getattr(message.channel, 'id', None)}",
+                    getattr(message.author, "id", None),
+                )
+                logging.info(
+                    "discord ai reply mode resolved channel_id=%s author_id=%s message_id=%s use_reply_mark=%s",
+                    getattr(message.channel, "id", None),
+                    getattr(message.author, "id", None),
+                    getattr(message, "id", None),
+                    use_reply_mark,
+                )
+                try:
+                    if use_reply_mark:
+                        await message.reply(reply, mention_author=False)
+                    else:
+                        await safe_send(message.channel, reply)
+                except Exception:
+                    logging.exception(
+                        "discord ai failed to send response channel_id=%s author_id=%s message_id=%s use_reply_mark=%s",
+                        getattr(message.channel, "id", None),
+                        getattr(message.author, "id", None),
+                        getattr(message, "id", None),
+                        use_reply_mark,
+                    )
+                    await safe_send(message.channel, reply)
     except Exception:
         logging.exception(
             "discord ai reply failed guild_id=%s channel_id=%s author_id=%s",
