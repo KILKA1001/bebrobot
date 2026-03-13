@@ -2,14 +2,25 @@ import re
 
 
 _GUIY_ALIASES = ("гуй", "guiy")
-_NON_LETTER_PATTERN = re.compile(r"[^\w]+", re.UNICODE)
+_GUIY_VARIANTS = _GUIY_ALIASES + ("гуя", "гую", "гуем", "гуе")
+_LETTER_OR_DIGIT_PATTERN = re.compile(r"[\w\d]", re.UNICODE)
 
 
 def is_guiy_name_trigger(text: str) -> bool:
-    """Return True when text explicitly calls Guiy by name."""
-    normalized = _NON_LETTER_PATTERN.sub(" ", (text or "").lower()).strip()
+    """Return True when text explicitly calls Guiy by name in any message position."""
+    normalized = (text or "").casefold().strip()
     if not normalized:
         return False
-    words = normalized.split()
-    return any(word in _GUIY_ALIASES for word in words)
 
+    for variant in _GUIY_VARIANTS:
+        for match in re.finditer(re.escape(variant), normalized):
+            start, end = match.span()
+            left_char = normalized[start - 1] if start > 0 else ""
+            right_char = normalized[end] if end < len(normalized) else ""
+
+            left_ok = not left_char or not _LETTER_OR_DIGIT_PATTERN.match(left_char)
+            right_ok = not right_char or not _LETTER_OR_DIGIT_PATTERN.match(right_char)
+            if left_ok and right_ok:
+                return True
+
+    return False
