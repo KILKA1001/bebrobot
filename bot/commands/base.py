@@ -86,8 +86,12 @@ async def _check_command_authority(ctx: commands.Context, command_key: str, targ
     if not AuthorityService.has_command_permission("discord", str(ctx.author.id), command_key):
         await send_temp(ctx, "❌ Недостаточно полномочий для этой команды.")
         return False
-    if target and target.id != ctx.author.id:
-        if not AuthorityService.can_manage_target("discord", str(ctx.author.id), "discord", str(target.id)):
+    if target:
+        if target.id == ctx.author.id:
+            if not AuthorityService.can_manage_self("discord", str(ctx.author.id)):
+                await send_temp(ctx, "❌ Нельзя редактировать себя. Доступно только Главе клуба и Главному вице.")
+                return False
+        elif not AuthorityService.can_manage_target("discord", str(ctx.author.id), "discord", str(target.id)):
             await send_temp(ctx, "❌ Нельзя выполнять действия над пользователем с равным/более высоким званием.")
             return False
     return True

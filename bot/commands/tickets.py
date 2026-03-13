@@ -19,7 +19,11 @@ async def add_ticket(
     if not AuthorityService.has_command_permission("discord", str(ctx.author.id), "tickets_manage") and not ctx.author.guild_permissions.administrator:
         await send_temp(ctx, "❌ Недостаточно полномочий для выдачи билетов.")
         return
-    if member.id != ctx.author.id and not AuthorityService.can_manage_target("discord", str(ctx.author.id), "discord", str(member.id)):
+    if member.id == ctx.author.id:
+        if not AuthorityService.can_manage_self("discord", str(ctx.author.id)):
+            await send_temp(ctx, "❌ Нельзя редактировать себе билеты. Доступно только Главе клуба и Главному вице.")
+            return
+    elif not AuthorityService.can_manage_target("discord", str(ctx.author.id), "discord", str(member.id)):
         await send_temp(ctx, "❌ Нельзя выдавать билеты пользователю с равным/более высоким званием.")
         return
     embed = await tickets_logic.give_ticket_logic(
@@ -50,7 +54,11 @@ async def remove_ticket(
     if not AuthorityService.has_command_permission("discord", str(ctx.author.id), "tickets_manage") and not ctx.author.guild_permissions.administrator:
         await send_temp(ctx, "❌ Недостаточно полномочий для списания билетов.")
         return
-    if member.id != ctx.author.id and not AuthorityService.can_manage_target("discord", str(ctx.author.id), "discord", str(member.id)):
+    if member.id == ctx.author.id:
+        if not AuthorityService.can_manage_self("discord", str(ctx.author.id)):
+            await send_temp(ctx, "❌ Нельзя редактировать себе билеты. Доступно только Главе клуба и Главному вице.")
+            return
+    elif not AuthorityService.can_manage_target("discord", str(ctx.author.id), "discord", str(member.id)):
         await send_temp(ctx, "❌ Нельзя списывать билеты у пользователя с равным/более высоким званием.")
         return
     embed = await tickets_logic.remove_ticket_logic(

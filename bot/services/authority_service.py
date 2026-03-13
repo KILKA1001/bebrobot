@@ -22,11 +22,11 @@ TITLE_WEIGHTS: dict[str, int] = {
 }
 
 COMMAND_LEVELS: dict[str, int] = {
-    "points_manage": 30,
+    "points_manage": 80,
     "fine_create": 30,
     "fine_manage": 80,
     "tournament_manage": 80,
-    "tickets_manage": 80,
+    "tickets_manage": 100,
     "players_manage": 80,
     "bank_manage": 100,
     "monthtop_manage": 100,
@@ -35,6 +35,10 @@ COMMAND_LEVELS: dict[str, int] = {
 
 
 class AuthorityService:
+    @staticmethod
+    def _normalized_titles(titles: tuple[str, ...]) -> set[str]:
+        return {str(title).strip().lower() for title in titles}
+
     @staticmethod
     def resolve_authority(provider: str, provider_user_id: str) -> AuthorityResult:
         try:
@@ -73,6 +77,20 @@ class AuthorityService:
         return allowed
 
     @staticmethod
+    def can_manage_self(provider: str, provider_user_id: str) -> bool:
+        actor = AuthorityService.resolve_authority(provider, provider_user_id)
+        actor_titles = AuthorityService._normalized_titles(actor.titles)
+        allowed = bool(actor_titles & {"глава клуба", "главный вице"})
+        logger.info(
+            "authority self-manage check provider=%s user_id=%s titles=%s allowed=%s",
+            provider,
+            provider_user_id,
+            sorted(actor_titles),
+            allowed,
+        )
+        return allowed
+
+    @staticmethod
     def can_manage_target(
         actor_provider: str,
         actor_user_id: str,
@@ -82,15 +100,26 @@ class AuthorityService:
         actor = AuthorityService.resolve_authority(actor_provider, actor_user_id)
         target = AuthorityService.resolve_authority(target_provider, target_user_id)
 
+        actor_titles = AuthorityService._normalized_titles(actor.titles)
+        target_titles = AuthorityService._normalized_titles(target.titles)
+
+        peer_titles = {"глава клуба", "главный вице"}
+        actor_is_peer = bool(actor_titles & peer_titles)
+        target_is_peer = bool(target_titles & peer_titles)
+
         allowed = actor.rank_weight > target.rank_weight
+        if not allowed and actor.rank_weight == target.rank_weight == 100 and actor_is_peer and target_is_peer:
+            allowed = True
         logger.info(
-            "authority hierarchy check actor=%s:%s (%s) target=%s:%s (%s) allowed=%s",
+            "authority hierarchy check actor=%s:%s (%s:%s) target=%s:%s (%s:%s) allowed=%s",
             actor_provider,
             actor_user_id,
             actor.rank_weight,
+            sorted(actor_titles),
             target_provider,
             target_user_id,
             target.rank_weight,
+            sorted(target_titles),
             allowed,
         )
         return allowed
