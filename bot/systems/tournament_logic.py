@@ -3191,5 +3191,9 @@ async def registration_deadline_loop(bot: commands.Bot) -> None:
                     await send_participation_confirmations(bot, tid, admin_id)
                     expired_notified.add(tid)
                 except Exception:
-                    pass
+                    logger.exception(
+                        "Failed to notify admin about expired registration tournament_id=%s admin_id=%s",
+                        tid,
+                        admin_id,
+                    )
         await asyncio.sleep(3600)

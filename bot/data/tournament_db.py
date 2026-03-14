@@ -975,14 +975,37 @@ def get_expired_registrations() -> List[dict]:
     from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc)
-    res = (
-        supabase.table("tournaments")
-        .select("id, author_id, start_time")
-        .eq("status", "registration")
-        .lte("start_time", now.isoformat())
-        .execute()
-    )
-    return res.data or []
+    try:
+        res = (
+            supabase.table("tournaments")
+            .select("id, author_id, start_time")
+            .eq("status", "registration")
+            .lte("start_time", now.isoformat())
+            .execute()
+        )
+        return res.data or []
+    except APIError as e:
+        if getattr(e, "code", None) == "42703" and "author_id" in str(e):
+            logger.warning(
+                "author_id column missing in tournaments table; fallback to id,start_time only"
+            )
+            try:
+                res = (
+                    supabase.table("tournaments")
+                    .select("id, start_time")
+                    .eq("status", "registration")
+                    .lte("start_time", now.isoformat())
+                    .execute()
+                )
+                return res.data or []
+            except Exception:
+                logger.exception("Failed to fetch expired registrations in fallback mode")
+                return []
+        logger.exception("Failed to fetch expired registrations")
+        return []
+    except Exception:
+        logger.exception("Unexpected error while fetching expired registrations")
+        return []
 
 
 def update_start_time(tournament_id: int, new_iso: str) -> bool:
