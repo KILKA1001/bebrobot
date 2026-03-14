@@ -316,8 +316,15 @@ class Database:
         return payload
 
     def _prefer_account_id_payload(self, table_name: str, user_id: int, payload: dict) -> dict:
-        """Для account-first таблиц убирает user_id из payload, если есть account_id."""
+        """Для account-first таблиц убирает user_id из payload, если есть account_id.
+
+        Важно: `scores.user_id` во многих окружениях имеет NOT NULL, поэтому для
+        таблицы `scores` сохраняем user_id даже при наличии account_id.
+        """
         normalized = self._with_optional_account_id(table_name, user_id, dict(payload))
+        if table_name == "scores":
+            normalized.setdefault("user_id", user_id)
+            return normalized
         if normalized.get("account_id") and "user_id" in normalized:
             normalized.pop("user_id", None)
         return normalized
@@ -437,12 +444,10 @@ class Database:
             new_points = max(current_points + points_change, 0)  # Не уходим в минус
 
             # 2. Обновляем баллы через upsert
-            account_id = self._get_account_id_for_discord_user(user_id)
-            upsert_payload = {"points": new_points}
-            if account_id:
-                upsert_payload["account_id"] = account_id
-            else:
-                upsert_payload["user_id"] = user_id
+            upsert_payload = self._prefer_account_id_payload("scores", user_id, {
+                "user_id": user_id,
+                "points": new_points,
+            })
 
             result = self.supabase.table("scores")\
                 .upsert(upsert_payload)\
@@ -1036,14 +1041,14 @@ class Database:
             if account_id and scores_has_account:
                 updated = (
                     self.supabase.table("scores")
-                    .update({field: new_value, "account_id": account_id})
+                    .update({field: new_value, "user_id": user_id, "account_id": account_id})
                     .eq("account_id", account_id)
                     .execute()
                 )
                 if not updated.data:
                     legacy_updated = (
                         self.supabase.table("scores")
-                        .update({field: new_value, "account_id": account_id})
+                         .update({field: new_value, "user_id": user_id, "account_id": account_id})
                         .eq("user_id", user_id)
                         .is_("account_id", "null")
                         .execute()

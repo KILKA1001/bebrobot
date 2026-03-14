@@ -239,6 +239,7 @@ class AccountsService:
 
             merged_payload = {
                 "account_id": str(to_account_id),
+                "user_id": (target_row or {}).get("user_id") or source_row.get("user_id"),
                 "points": float((target_row or {}).get("points") or 0) + float(source_row.get("points") or 0),
                 "tickets_normal": int((target_row or {}).get("tickets_normal") or 0) + int(source_row.get("tickets_normal") or 0),
                 "tickets_gold": int((target_row or {}).get("tickets_gold") or 0) + int(source_row.get("tickets_gold") or 0),
