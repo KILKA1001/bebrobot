@@ -586,17 +586,37 @@ class AccountsService:
 
             existing_account_id = AccountsService.resolve_account_id(target_provider, target_provider_user_id)
             if existing_account_id and str(existing_account_id) != str(account_id):
-                if hasattr(db, "_inc_metric"):
-                    db._inc_metric("link_consume_fail")
-                logger.error(
-                    "consume_link_code refused cross-account merge target_provider=%s target_provider_user_id=%s code=%s existing_account_id=%s requested_account_id=%s",
+                logger.warning(
+                    "consume_link_code detected cross-account identity, attempting merge target_provider=%s target_provider_user_id=%s code=%s existing_account_id=%s requested_account_id=%s",
                     target_provider,
                     target_provider_user_id,
                     code,
                     existing_account_id,
                     account_id,
                 )
-                return False, "Этот профиль уже привязан к другому общему аккаунту. Сначала отвяжите его через администратора"
+                try:
+                    AccountsService._rebind_account_id(str(existing_account_id), str(account_id))
+                    logger.info(
+                        "consume_link_code merged cross-account identity target_provider=%s target_provider_user_id=%s code=%s from_account_id=%s to_account_id=%s",
+                        target_provider,
+                        target_provider_user_id,
+                        code,
+                        existing_account_id,
+                        account_id,
+                    )
+                except Exception as merge_error:
+                    if hasattr(db, "_inc_metric"):
+                        db._inc_metric("link_consume_fail")
+                    logger.exception(
+                        "consume_link_code failed cross-account merge target_provider=%s target_provider_user_id=%s code=%s existing_account_id=%s requested_account_id=%s error=%s",
+                        target_provider,
+                        target_provider_user_id,
+                        code,
+                        existing_account_id,
+                        account_id,
+                        AccountsService._format_db_error(merge_error),
+                    )
+                    return False, "Не удалось объединить аккаунты. Обратитесь к администратору"
 
             if not existing_account_id:
                 identity_payload = {
