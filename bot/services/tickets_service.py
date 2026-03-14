@@ -1,5 +1,10 @@
+import logging
+
 from bot.data import db
 from .accounts_service import AccountsService
+
+
+logger = logging.getLogger(__name__)
 
 
 class TicketsService:
@@ -42,7 +47,13 @@ class TicketsService:
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("identity_resolve_errors")
             return False
-        return TicketsService.give_ticket_by_account(account_id, ticket_type, amount, reason, author_id)
+        author_account_id = AccountsService.resolve_account_id(provider, str(author_id))
+        if not author_account_id:
+            if hasattr(db, "_inc_metric"):
+                db._inc_metric("identity_resolve_errors")
+            logger.error("give_ticket_by_identity: unresolved author account provider=%s author_id=%s", provider, author_id)
+            return False
+        return TicketsService.give_ticket_by_account(account_id, ticket_type, amount, reason, author_account_id)
 
     @staticmethod
     def remove_ticket_by_identity(
@@ -58,7 +69,13 @@ class TicketsService:
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("identity_resolve_errors")
             return False
-        return TicketsService.remove_ticket_by_account(account_id, ticket_type, amount, reason, author_id)
+        author_account_id = AccountsService.resolve_account_id(provider, str(author_id))
+        if not author_account_id:
+            if hasattr(db, "_inc_metric"):
+                db._inc_metric("identity_resolve_errors")
+            logger.error("remove_ticket_by_identity: unresolved author account provider=%s author_id=%s", provider, author_id)
+            return False
+        return TicketsService.remove_ticket_by_account(account_id, ticket_type, amount, reason, author_account_id)
 
     @staticmethod
     def give_ticket(discord_user_id: int, ticket_type: str, amount: int, reason: str, author_id: int) -> bool:
@@ -73,19 +90,9 @@ class TicketsService:
         )
 
     @staticmethod
-    def give_ticket_by_account(account_id: str, ticket_type: str, amount: int, reason: str, author_id: int) -> bool:
-        anchor_user_id = TicketsService._resolve_anchor_user_id(account_id)
-        if anchor_user_id is None:
-            if hasattr(db, "_inc_metric"):
-                db._inc_metric("identity_resolve_errors")
-            return False
-        return db.give_ticket(anchor_user_id, ticket_type, amount, reason, author_id)
+    def give_ticket_by_account(account_id: str, ticket_type: str, amount: int, reason: str, author_account_id: str) -> bool:
+        return db.give_ticket_by_account(account_id, ticket_type, amount, reason, author_account_id)
 
     @staticmethod
-    def remove_ticket_by_account(account_id: str, ticket_type: str, amount: int, reason: str, author_id: int) -> bool:
-        anchor_user_id = TicketsService._resolve_anchor_user_id(account_id)
-        if anchor_user_id is None:
-            if hasattr(db, "_inc_metric"):
-                db._inc_metric("identity_resolve_errors")
-            return False
-        return db.remove_ticket(anchor_user_id, ticket_type, amount, reason, author_id)
+    def remove_ticket_by_account(account_id: str, ticket_type: str, amount: int, reason: str, author_account_id: str) -> bool:
+        return db.remove_ticket_by_account(account_id, ticket_type, amount, reason, author_account_id)

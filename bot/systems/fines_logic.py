@@ -14,8 +14,10 @@ from bot.data import db
 from collections import defaultdict
 import asyncio
 import os
+import logging
 
 latest_report_message_id = None
+logger = logging.getLogger(__name__)
 
 # Статус штрафа
 def get_fine_status(fine: dict) -> str:
@@ -53,7 +55,10 @@ def build_fine_embed(fine: dict) -> discord.Embed:
 def build_fine_detail_embed(fine: dict) -> discord.Embed:
     embed = build_fine_embed(fine)
     embed.title = f"ℹ️ Подробности штрафа #{fine['id']}"
-    embed.set_footer(text=f"Назначен: {fine['created_at'][:10]} | Автор: <@{fine['author_id']}>")
+    author_account_id = fine.get('author_account_id')
+    author_id = db._get_discord_user_for_account_id(author_account_id) if author_account_id else None
+    author_display = f'<@{author_id}>' if author_id else (author_account_id or 'unknown')
+    embed.set_footer(text=f"Назначен: {fine['created_at'][:10]} | Автор: {author_display}")
     return embed
 
 
@@ -95,6 +100,11 @@ class FineView(SafeView):
 
 async def process_payment(interaction: discord.Interaction, fine: dict, percent: float):
     user_id = interaction.user.id
+    account_id = db._get_account_id_for_discord_user(user_id)
+    if not account_id:
+        logger.error("process_payment: unresolved account_id for user_id=%s", user_id)
+        await safe_followup_send(interaction, "❌ Не удалось определить ваш аккаунт.", ephemeral=True)
+        return
     user_points = db.scores.get(user_id, 0)
     amount_remaining = fine['amount'] - fine.get('paid_amount', 0)
     to_pay = round(amount_remaining * percent, 2)
@@ -107,7 +117,7 @@ async def process_payment(interaction: discord.Interaction, fine: dict, percent:
         await safe_followup_send(interaction, "❌ Supabase не инициализирован.", ephemeral=True)
         return
 
-    success = db.record_payment(user_id=user_id, fine_id=fine['id'], amount=to_pay, author_id=user_id)
+    success = db.record_payment_by_account(account_id=account_id, fine_id=fine['id'], amount=to_pay, author_account_id=account_id)
     if not success:
         await safe_followup_send(interaction, "❌ Ошибка при записи оплаты.", ephemeral=True)
         return
@@ -166,7 +176,12 @@ class PaymentMenuView(SafeView):
                 await safe_followup_send(interaction, "❌ Недостаточно баллов", ephemeral=True)
                 return
 
-            success = db.record_payment(interaction.user.id, self.fine["id"], amount, interaction.user.id)
+            caller_account_id = db._get_account_id_for_discord_user(interaction.user.id)
+            if not caller_account_id:
+                logger.error("custom payment: unresolved account_id user_id=%s", interaction.user.id)
+                await safe_followup_send(interaction, "❌ Не удалось определить ваш аккаунт.", ephemeral=True)
+                return
+            success = db.record_payment_by_account(caller_account_id, self.fine["id"], amount, caller_account_id)
             if success:
                 updated = db.get_fine_by_id(self.fine["id"])
                 if updated:
@@ -186,7 +201,11 @@ def get_fine_leaders():
     for fine in db.fines:
         if not fine.get("is_paid") and not fine.get("is_canceled"):
             rest = fine["amount"] - fine.get("paid_amount", 0)
-            user_totals[fine["user_id"]] += rest
+            account_id = fine.get("account_id")
+            if not account_id:
+                logger.warning("fine leader skip: fine_id=%s without account_id", fine.get("id"))
+                continue
+            user_totals[account_id] += rest
     return sorted(user_totals.items(), key=lambda x: x[1], reverse=True)[:3]
 
 
@@ -220,8 +239,10 @@ class AllFinesView(SafeView):
             color=discord.Color.orange()
         )
         for fine in page_fines:
-            user = self.ctx.guild.get_member(fine["user_id"])
-            name = user.display_name if user else f"<@{fine['user_id']}>"
+            account_id = fine.get("account_id")
+            uid = db._get_discord_user_for_account_id(account_id) if account_id else None
+            user = self.ctx.guild.get_member(uid) if uid else None
+            name = user.display_name if user else (f"<@{uid}>" if uid else f"account:{account_id}")
             rest = fine["amount"] - fine.get("paid_amount", 0)
             due_raw = fine.get("due_date")
             if isinstance(due_raw, str):
@@ -278,7 +299,7 @@ def calculate_penalty(fine: dict) -> float:
         return round(total_penalty, 2)
 
     except Exception as e:
-        print(f"Ошибка расчёта пени: {e}")
+        logger.exception("Ошибка расчёта пени")
         return 0.0
 
 # 💳 Задолженность из штрафа
@@ -290,7 +311,7 @@ def create_debt_from_fine(fine: dict) -> dict:
         total_debt = round(base_due + penalty, 2)
 
         return {
-            "user_id": fine['user_id'],
+            "account_id": fine.get("account_id"),
             "fine_id": fine['id'],
             "amount_due": base_due,
             "penalty": penalty,
@@ -300,7 +321,7 @@ def create_debt_from_fine(fine: dict) -> dict:
             "is_resolved": False
         }
     except Exception as e:
-        print(f"Ошибка при создании задолженности: {e}")
+        logger.exception("Ошибка при создании задолженности")
         return {}
 
 # ⏰ Проверка просроченных
@@ -338,13 +359,21 @@ async def debt_repayment_loop(bot):
                 continue
 
             debt = create_debt_from_fine(fine)
-            user_id = debt["user_id"]
+            account_id = debt.get("account_id")
+            if not account_id:
+                logger.warning("debt repayment skip: fine_id=%s without account_id", fine.get("id"))
+                continue
+            user_id = db._get_discord_user_for_account_id(account_id)
+            if user_id is None:
+                logger.warning("debt repayment skip: fine_id=%s unresolved discord user for account_id=%s", fine.get("id"), account_id)
+                continue
             available = db.scores.get(user_id, 0)
 
             if available > 0:
                 to_deduct = min(available, debt["total_due"])
                 db.update_scores(user_id, -to_deduct)
-                db.add_action(user_id, -to_deduct, f"Погашение долга по штрафу ID #{debt['fine_id']}", fine["author_id"])
+                author_user_id = db._get_discord_user_for_account_id(fine.get("author_account_id")) or 0
+                db.add_action(user_id, -to_deduct, f"Погашение долга по штрафу ID #{debt['fine_id']}", author_user_id)
                 reason = str(fine.get("reason", ""))
                 if "test" not in reason.lower():
                     db.add_to_bank(to_deduct)
@@ -374,7 +403,15 @@ async def remind_fines(bot):
             due_date = datetime.fromisoformat(due_raw)
             delta = (due_date - now).days
             if 0 < delta <= 3:
-                user = discord.utils.get(bot.get_all_members(), id=fine["user_id"])
+                account_id = fine.get("account_id")
+                if not account_id:
+                    logger.warning("remind_fines skip: fine_id=%s without account_id", fine.get("id"))
+                    continue
+                target_user_id = db._get_discord_user_for_account_id(account_id)
+                if target_user_id is None:
+                    logger.warning("remind_fines skip: unresolved discord user for account_id=%s fine_id=%s", account_id, fine.get("id"))
+                    continue
+                user = discord.utils.get(bot.get_all_members(), id=target_user_id)
                 if user:
                     try:
                         await safe_send(
@@ -399,12 +436,12 @@ async def fines_summary_report(bot):
     await bot.wait_until_ready()
     channel_id = int(os.getenv("FINE_REPORT_CHANNEL_ID", 0))
     if not channel_id:
-        print("❌ FINE_REPORT_CHANNEL_ID не задан")
+        logger.error("❌ FINE_REPORT_CHANNEL_ID не задан")
         return
 
     channel = bot.get_channel(channel_id)
     if not channel or not isinstance(channel, discord.TextChannel):
-        print("❌ Указанный канал не найден или не текстовый")
+        logger.error("❌ Указанный канал не найден или не текстовый")
         return
 
     if latest_report_message_id:
