@@ -315,6 +315,13 @@ class Database:
             return self._with_account_id(user_id, payload)
         return payload
 
+    def _prefer_account_id_payload(self, table_name: str, user_id: int, payload: dict) -> dict:
+        """Для account-first таблиц убирает user_id из payload, если есть account_id."""
+        normalized = self._with_optional_account_id(table_name, user_id, dict(payload))
+        if normalized.get("account_id") and "user_id" in normalized:
+            normalized.pop("user_id", None)
+        return normalized
+
     def _inc_metric(self, name: str, value: int = 1) -> None:
         self._account_metrics[name] = self._account_metrics.get(name, 0) + value
 
@@ -431,12 +438,11 @@ class Database:
 
             # 2. Обновляем баллы через upsert
             account_id = self._get_account_id_for_discord_user(user_id)
-            upsert_payload = {
-                "user_id": user_id,
-                "points": new_points,
-            }
+            upsert_payload = {"points": new_points}
             if account_id:
                 upsert_payload["account_id"] = account_id
+            else:
+                upsert_payload["user_id"] = user_id
 
             result = self.supabase.table("scores")\
                 .upsert(upsert_payload)\
@@ -494,16 +500,14 @@ class Database:
             if not rpc_applied:
                 if not self.update_scores(user_id, points):
                     raise RuntimeError("Не удалось обновить баллы")
-                action = {
+                action = self._prefer_account_id_payload("actions", user_id, {
                     "user_id": user_id,
                     "points": points,
                     "reason": reason,
                     "author_id": author_id,
                     "action_type": "remove" if points < 0 else "add",
                     "op_key": op_key,
-                }
-                if account_id:
-                    action["account_id"] = account_id
+                })
                 response = self.supabase.table("actions").insert(action).execute()
                 if not response.data:
                     raise ValueError("Пустой ответ от Supabase")
@@ -674,17 +678,14 @@ class Database:
             return None
 
         try:
-            payload = {
+            payload = self._prefer_account_id_payload("fines", user_id, {
                 "user_id": user_id,
                 "author_id": author_id,
                 "amount": amount,
                 "type": fine_type,
                 "reason": reason,
                 "due_date": due_date.isoformat()
-            }
-            account_id = self._get_account_id_for_discord_user(user_id)
-            if account_id:
-                payload["account_id"] = account_id
+            })
 
             result = self.supabase.table("fines").insert(payload).execute()
 
@@ -764,15 +765,12 @@ class Database:
                 return False
 
             # 2. Добавляем запись в fine_payments
-            payment_payload = {
+            payment_payload = self._prefer_account_id_payload("fine_payments", user_id, {
                 "fine_id": fine_id,
                 "user_id": user_id,
                 "amount": amount,
                 "author_id": author_id
-            }
-            account_id = self._get_account_id_for_discord_user(user_id)
-            if account_id:
-                payment_payload["account_id"] = account_id
+            })
             self.supabase.table("fine_payments").insert(payment_payload).execute()
 
             # 4. Обновление баланса банка (если штраф не тестовый)
@@ -986,13 +984,12 @@ class Database:
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }).execute()
 
-            history_payload = {
+            history_payload = self._prefer_account_id_payload("bank_history", user_id, {
                 "user_id": user_id,
                 "amount": -amount,
                 "reason": reason,
                 "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-            history_payload = self._with_optional_account_id("bank_history", user_id, history_payload)
+            })
 
             self.supabase.table("bank_history").insert(history_payload).execute()
 
@@ -1005,13 +1002,12 @@ class Database:
         try:
             if not self.supabase:
                 return False
-            history_payload = {
+            history_payload = self._prefer_account_id_payload("bank_history", user_id, {
                 "user_id": user_id,
                 "amount": amount,
                 "reason": reason,
                 "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-            history_payload = self._with_optional_account_id("bank_history", user_id, history_payload)
+            })
 
             self.supabase.table("bank_history").insert(history_payload).execute()
             return True
@@ -1040,7 +1036,7 @@ class Database:
             if account_id and scores_has_account:
                 updated = (
                     self.supabase.table("scores")
-                    .update({field: new_value, "user_id": user_id, "account_id": account_id})
+                    .update({field: new_value, "account_id": account_id})
                     .eq("account_id", account_id)
                     .execute()
                 )
@@ -1053,7 +1049,7 @@ class Database:
                         .execute()
                     )
                     if not legacy_updated.data:
-                        insert_payload = self._with_optional_account_id("scores", user_id, {
+                        insert_payload = self._prefer_account_id_payload("scores", user_id, {
                             "user_id": user_id,
                             field: new_value,
                         })
@@ -1066,7 +1062,7 @@ class Database:
                     .execute()
                 )
                 if not legacy_updated.data:
-                    insert_payload = self._with_optional_account_id("scores", user_id, {
+                    insert_payload = self._prefer_account_id_payload("scores", user_id, {
                         "user_id": user_id,
                         field: new_value,
                     })
@@ -1080,14 +1076,13 @@ class Database:
     def log_ticket_action(self, user_id: int, ticket_type: str, amount: int, reason: str, author_id: int):
         """Логирует изменение билетов в ticket_actions"""
         try:
-            payload = {
+            payload = self._prefer_account_id_payload("ticket_actions", user_id, {
                 "user_id": user_id,
                 "ticket_type": ticket_type,
                 "amount": amount,
                 "reason": reason,
                 "author_id": author_id,
-            }
-            payload = self._with_optional_account_id("ticket_actions", user_id, payload)
+            })
 
             self.supabase.table("ticket_actions").insert(payload).execute()
         except Exception as e:

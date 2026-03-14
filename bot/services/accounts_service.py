@@ -211,6 +211,80 @@ class AccountsService:
             )
 
     @staticmethod
+    def _merge_scores_between_accounts(from_account_id: str, to_account_id: str) -> None:
+        """Складывает points/tickets из двух score-строк и удаляет исходную account-строку."""
+        if not db.supabase or not from_account_id or not to_account_id or str(from_account_id) == str(to_account_id):
+            return
+
+        try:
+            source_resp = (
+                db.supabase.table("scores")
+                .select("account_id,user_id,points,tickets_normal,tickets_gold")
+                .eq("account_id", str(from_account_id))
+                .limit(1)
+                .execute()
+            )
+            target_resp = (
+                db.supabase.table("scores")
+                .select("account_id,user_id,points,tickets_normal,tickets_gold")
+                .eq("account_id", str(to_account_id))
+                .limit(1)
+                .execute()
+            )
+            source_row = (source_resp.data or [None])[0]
+            target_row = (target_resp.data or [None])[0]
+
+            if not source_row:
+                return
+
+            merged_payload = {
+                "account_id": str(to_account_id),
+                "points": float((target_row or {}).get("points") or 0) + float(source_row.get("points") or 0),
+                "tickets_normal": int((target_row or {}).get("tickets_normal") or 0) + int(source_row.get("tickets_normal") or 0),
+                "tickets_gold": int((target_row or {}).get("tickets_gold") or 0) + int(source_row.get("tickets_gold") or 0),
+            }
+            db.supabase.table("scores").upsert(merged_payload, on_conflict="account_id").execute()
+            db.supabase.table("scores").delete().eq("account_id", str(from_account_id)).execute()
+            logger.info(
+                "merge_scores_between_accounts success from_account_id=%s to_account_id=%s",
+                from_account_id,
+                to_account_id,
+            )
+        except TypeError:
+            # Legacy Supabase SDK without on_conflict support.
+            try:
+                db.supabase.table("scores").upsert(merged_payload).execute()  # type: ignore[name-defined]
+                db.supabase.table("scores").delete().eq("account_id", str(from_account_id)).execute()
+            except Exception as e:
+                logger.exception(
+                    "merge_scores_between_accounts fallback failed from_account_id=%s to_account_id=%s error=%s",
+                    from_account_id,
+                    to_account_id,
+                    AccountsService._format_db_error(e),
+                )
+        except Exception as e:
+            logger.exception(
+                "merge_scores_between_accounts failed from_account_id=%s to_account_id=%s error=%s",
+                from_account_id,
+                to_account_id,
+                AccountsService._format_db_error(e),
+            )
+
+    @staticmethod
+    def _merge_accounts(from_account_id: str, to_account_id: str) -> None:
+        """Объединяет два общих аккаунта в один с переносом всех ссылок и накоплений."""
+        if not from_account_id or not to_account_id or str(from_account_id) == str(to_account_id):
+            return
+
+        AccountsService._merge_scores_between_accounts(from_account_id, to_account_id)
+        AccountsService._rebind_account_id(from_account_id, to_account_id)
+        logger.info(
+            "merge_accounts success from_account_id=%s to_account_id=%s",
+            from_account_id,
+            to_account_id,
+        )
+
+    @staticmethod
     def _create_account() -> Optional[str]:
         if not db.supabase:
             return None
@@ -586,17 +660,16 @@ class AccountsService:
 
             existing_account_id = AccountsService.resolve_account_id(target_provider, target_provider_user_id)
             if existing_account_id and str(existing_account_id) != str(account_id):
-                if hasattr(db, "_inc_metric"):
-                    db._inc_metric("link_consume_fail")
-                logger.error(
-                    "consume_link_code refused cross-account merge target_provider=%s target_provider_user_id=%s code=%s existing_account_id=%s requested_account_id=%s",
+                logger.warning(
+                    "consume_link_code detected cross-account identity; merging accounts target_provider=%s target_provider_user_id=%s code=%s from_account_id=%s to_account_id=%s",
                     target_provider,
                     target_provider_user_id,
                     code,
                     existing_account_id,
                     account_id,
                 )
-                return False, "Этот профиль уже привязан к другому общему аккаунту. Сначала отвяжите его через администратора"
+                AccountsService._merge_accounts(str(existing_account_id), str(account_id))
+                existing_account_id = str(account_id)
 
             if not existing_account_id:
                 identity_payload = {
@@ -615,16 +688,15 @@ class AccountsService:
                     if AccountsService._is_unique_violation(e):
                         existing_account_id = AccountsService.resolve_account_id(target_provider, target_provider_user_id)
                         if existing_account_id and str(existing_account_id) != str(account_id):
-                            logger.error(
-                                "consume_link_code unique violation with cross-account binding target_provider=%s target_provider_user_id=%s code=%s existing_account_id=%s requested_account_id=%s",
+                            logger.warning(
+                                "consume_link_code unique violation with cross-account binding; merging accounts target_provider=%s target_provider_user_id=%s code=%s from_account_id=%s to_account_id=%s",
                                 target_provider,
                                 target_provider_user_id,
+                                code,
                                 existing_account_id,
                                 account_id,
                             )
-                            if hasattr(db, "_inc_metric"):
-                                db._inc_metric("link_consume_fail")
-                            return False, "Этот профиль уже привязан к другому общему аккаунту. Сначала отвяжите его через администратора"
+                            AccountsService._merge_accounts(str(existing_account_id), str(account_id))
                     else:
                         raise
 
