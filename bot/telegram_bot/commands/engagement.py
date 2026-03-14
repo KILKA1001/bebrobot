@@ -1,6 +1,7 @@
 import logging
 import time
 from dataclasses import dataclass, field
+from typing import Optional
 
 from aiogram import F, Router
 from aiogram.enums import ParseMode
@@ -21,6 +22,8 @@ class PendingAction:
     target_provider_user_id: str
     actor_provider_user_id: str
     created_at: float = field(default_factory=time.time)
+    chat_id: Optional[int] = None
+    flow_message_id: Optional[int] = None
 
 
 _PENDING_ACTIONS: dict[int, PendingAction] = {}
@@ -80,6 +83,33 @@ def _parse_callback_payload(raw_data: str) -> tuple[str, str, str | None] | None
         _, action, target_id = parts
         return action, target_id, None
     return None
+
+
+async def _respond_in_flow(
+    message: Message,
+    pending: PendingAction | None,
+    text: str,
+    *,
+    parse_mode: ParseMode | None = None,
+) -> None:
+    if pending and pending.chat_id and pending.flow_message_id:
+        try:
+            await message.bot.edit_message_text(
+                text=text,
+                chat_id=pending.chat_id,
+                message_id=pending.flow_message_id,
+                parse_mode=parse_mode,
+            )
+            return
+        except Exception:
+            logger.exception(
+                "failed to edit engagement flow message chat_id=%s message_id=%s actor_id=%s",
+                pending.chat_id,
+                pending.flow_message_id,
+                message.from_user.id if message.from_user else None,
+            )
+    await message.answer(text, parse_mode=parse_mode)
+
 
 
 async def _guard_callback_actor(callback: CallbackQuery, owner_id: str | None) -> bool:
@@ -314,28 +344,36 @@ async def points_callback(callback: CallbackQuery) -> None:
             return
 
         if action == "help":
-            await callback.message.answer(
-                "ℹ️ <b>Подробно о меню баллов</b>\n"
-                "➕ Начислить — добавляет баллы в общий аккаунт пользователя.\n"
-                "➖ Снять — уменьшает баллы (если хватает).\n"
-                "Формат ответа после выбора действия: <code>число | причина</code>.\n"
-                "Пример: <code>25 | За победу в турнире</code>",
-                parse_mode=ParseMode.HTML,
+            await callback.answer(
+                "ℹ️ Формат: число | причина\nПример: 25 | За победу в турнире",
+                show_alert=True,
             )
-            await callback.answer()
             return
 
+        flow_message_id = callback.message.message_id if callback.message else None
+        flow_chat_id = callback.message.chat.id if callback.message and callback.message.chat else None
         _PENDING_ACTIONS[callback.from_user.id] = PendingAction(
             domain="points",
             operation=action,
             target_provider_user_id=target_id,
             actor_provider_user_id=actor_id,
+            chat_id=flow_chat_id,
+            flow_message_id=flow_message_id,
         )
-        await callback.message.answer(
-            "Введите данные в формате: <code>число | причина</code>.\n"
-            "Причина обязательна, без неё изменение не выполнится.",
-            parse_mode=ParseMode.HTML,
-        )
+        if callback.message is not None:
+            try:
+                await callback.message.edit_text(
+                    "Введите данные в формате: <code>число | причина</code>.\n"
+                    "Причина обязательна, без неё изменение не выполнится.",
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                logger.exception("points callback failed to edit flow prompt actor_id=%s", actor_id)
+                await callback.message.answer(
+                    "Введите данные в формате: <code>число | причина</code>.\n"
+                    "Причина обязательна, без неё изменение не выполнится.",
+                    parse_mode=ParseMode.HTML,
+                )
         await callback.answer()
     except Exception:
         logger.exception("points callback failed callback_data=%s", callback.data)
@@ -376,27 +414,36 @@ async def tickets_callback(callback: CallbackQuery) -> None:
             return
 
         if action == "help":
-            await callback.message.answer(
-                "ℹ️ <b>Подробно о меню билетов</b>\n"
-                "🎟️/🪙 кнопки позволяют начислять или списывать обычные и золотые билеты.\n"
-                "Формат ответа после выбора действия: <code>количество | причина</code>.\n"
-                "Пример: <code>2 | Награда за ивент</code>",
-                parse_mode=ParseMode.HTML,
+            await callback.answer(
+                "ℹ️ Формат: количество | причина\nПример: 2 | Награда за ивент",
+                show_alert=True,
             )
-            await callback.answer()
             return
 
+        flow_message_id = callback.message.message_id if callback.message else None
+        flow_chat_id = callback.message.chat.id if callback.message and callback.message.chat else None
         _PENDING_ACTIONS[callback.from_user.id] = PendingAction(
             domain="tickets",
             operation=action,
             target_provider_user_id=target_id,
             actor_provider_user_id=actor_id,
+            chat_id=flow_chat_id,
+            flow_message_id=flow_message_id,
         )
-        await callback.message.answer(
-            "Введите данные в формате: <code>количество | причина</code>.\n"
-            "Причина обязательна, без неё изменение не выполнится.",
-            parse_mode=ParseMode.HTML,
-        )
+        if callback.message is not None:
+            try:
+                await callback.message.edit_text(
+                    "Введите данные в формате: <code>количество | причина</code>.\n"
+                    "Причина обязательна, без неё изменение не выполнится.",
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                logger.exception("tickets callback failed to edit flow prompt actor_id=%s", actor_id)
+                await callback.message.answer(
+                    "Введите данные в формате: <code>количество | причина</code>.\n"
+                    "Причина обязательна, без неё изменение не выполнится.",
+                    parse_mode=ParseMode.HTML,
+                )
         await callback.answer()
     except Exception:
         logger.exception("tickets callback failed callback_data=%s", callback.data)
@@ -454,18 +501,18 @@ async def pending_action_handler(message: Message) -> None:
 
         raw = (message.text or "").strip()
         if "|" not in raw:
-            await message.answer("❌ Неверный формат. Используйте: число | причина")
+            await _respond_in_flow(message, pending, "❌ Неверный формат. Используйте: число | причина")
             return
         amount_raw, reason_raw = [part.strip() for part in raw.split("|", 1)]
         if not reason_raw:
-            await message.answer("❌ Причина обязательна. Изменение отменено.")
+            await _respond_in_flow(message, pending, "❌ Причина обязательна. Изменение отменено.")
             _PENDING_ACTIONS.pop(message.from_user.id, None)
             return
 
         if pending.domain == "points":
             amount = float(amount_raw.replace(",", "."))
             if amount <= 0:
-                await message.answer("❌ Количество баллов должно быть больше 0.")
+                await _respond_in_flow(message, pending, "❌ Количество баллов должно быть больше 0.")
                 return
             if pending.operation == "add":
                 ok = PointsService.add_points_by_identity(
@@ -478,14 +525,14 @@ async def pending_action_handler(message: Message) -> None:
                 )
                 action_text = "списаны"
             if not ok:
-                await message.answer("❌ Не удалось обновить баллы. Проверьте привязку аккаунта.")
+                await _respond_in_flow(message, pending, "❌ Не удалось обновить баллы. Проверьте привязку аккаунта.")
             else:
-                await message.answer(f"✅ Баллы успешно {action_text}: {amount:.2f}. Причина: {reason_raw}")
+                await _respond_in_flow(message, pending, f"✅ Баллы успешно {action_text}: {amount:.2f}. Причина: {reason_raw}")
 
         elif pending.domain == "tickets":
             amount = int(amount_raw)
             if amount <= 0:
-                await message.answer("❌ Количество билетов должно быть больше 0.")
+                await _respond_in_flow(message, pending, "❌ Количество билетов должно быть больше 0.")
                 return
             mapping = {
                 "add_normal": ("normal", True),
@@ -506,15 +553,15 @@ async def pending_action_handler(message: Message) -> None:
                 verb = "списаны"
 
             if not ok:
-                await message.answer("❌ Не удалось обновить билеты. Проверьте привязку аккаунта.")
+                await _respond_in_flow(message, pending, "❌ Не удалось обновить билеты. Проверьте привязку аккаунта.")
             else:
-                await message.answer(f"✅ Билеты успешно {verb}: {amount}. Причина: {reason_raw}")
+                await _respond_in_flow(message, pending, f"✅ Билеты успешно {verb}: {amount}. Причина: {reason_raw}")
 
         _PENDING_ACTIONS.pop(message.from_user.id, None)
     except ValueError:
         logger.exception("pending action parse failed user_id=%s text=%s", message.from_user.id, message.text)
-        await message.answer("❌ Ошибка формата количества. Проверьте число.")
+        await _respond_in_flow(message, pending, "❌ Ошибка формата количества. Проверьте число.")
     except Exception:
         logger.exception("pending action failed user_id=%s", message.from_user.id)
-        await message.answer("❌ Ошибка выполнения операции.")
+        await _respond_in_flow(message, pending, "❌ Ошибка выполнения операции.")
         _PENDING_ACTIONS.pop(message.from_user.id, None)
