@@ -334,11 +334,7 @@ class Database:
         has_account_id = bool(normalized.get("account_id"))
 
         if table_name == "scores":
-            if self._scores_has_user_id:
-                normalized.setdefault("user_id", user_id)
-            else:
-                normalized.pop("user_id", None)
-
+            normalized.setdefault("user_id", user_id)
             if not has_account_id:
                 logger.warning(
                     "⚠️ scores payload без account_id (legacy fallback) user_id=%s payload_keys=%s",
@@ -1083,33 +1079,27 @@ class Database:
                     .execute()
                 )
                 if not updated.data:
-                    legacy_updated_data = []
-                    if self._scores_has_user_id:
-                        legacy_updated = (
-                            self.supabase.table("scores")
-                            .update({field: new_value, "user_id": user_id, "account_id": account_id})
-                            .eq("user_id", user_id)
-                            .is_("account_id", "null")
-                            .execute()
-                        )
-                        legacy_updated_data = legacy_updated.data or []
-                    if not legacy_updated_data:
+                    legacy_updated = (
+                        self.supabase.table("scores")
+                         .update({field: new_value, "user_id": user_id, "account_id": account_id})
+                        .eq("user_id", user_id)
+                        .is_("account_id", "null")
+                        .execute()
+                    )
+                    if not legacy_updated.data:
                         insert_payload = self._prefer_account_id_payload("scores", user_id, {
                             "user_id": user_id,
                             field: new_value,
                         })
                         self.supabase.table("scores").insert(insert_payload).execute()
             else:
-                legacy_updated_data = []
-                if self._scores_has_user_id:
-                    legacy_updated = (
-                        self.supabase.table("scores")
-                        .update({field: new_value})
-                        .eq("user_id", user_id)
-                        .execute()
-                    )
-                    legacy_updated_data = legacy_updated.data or []
-                if not legacy_updated_data:
+                legacy_updated = (
+                    self.supabase.table("scores")
+                    .update({field: new_value})
+                    .eq("user_id", user_id)
+                    .execute()
+                )
+                if not legacy_updated.data:
                     insert_payload = self._prefer_account_id_payload("scores", user_id, {
                         "user_id": user_id,
                         field: new_value,
