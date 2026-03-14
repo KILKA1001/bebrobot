@@ -69,6 +69,12 @@ class _TableOp:
                     if (row["provider"], row["provider_user_id"]) == key:
                         row.update(self._payload)
                         return _Resp([dict(row)])
+            if self.table_name == "scores" and self._payload.get("account_id"):
+                key = str(self._payload.get("account_id"))
+                for row in rows:
+                    if str(row.get("account_id")) == key:
+                        row.update(self._payload)
+                        return _Resp([dict(row)])
             rows.append(dict(self._payload))
             return _Resp([dict(self._payload)])
 
@@ -252,7 +258,7 @@ class AccountsServiceTests(unittest.TestCase):
         self.assertEqual(message, "Срок действия кода истёк")
 
 
-    def test_consume_link_code_rejects_when_target_identity_belongs_to_another_account(self):
+    def test_consume_link_code_merges_when_target_identity_belongs_to_another_account(self):
         AccountsService.register_identity("discord", "111")
         AccountsService.register_identity("telegram", "222")
 
@@ -260,12 +266,73 @@ class AccountsServiceTests(unittest.TestCase):
         self.assertTrue(ok)
 
         ok, message = AccountsService.consume_telegram_link_code(222, code)
-        self.assertFalse(ok)
-        self.assertEqual(message, "Этот профиль уже привязан к другому общему аккаунту. Сначала отвяжите его через администратора")
+        self.assertTrue(ok)
+        self.assertEqual(message, "Аккаунт успешно привязан")
 
         discord_account = AccountsService.resolve_account_id("discord", "111")
         telegram_account = AccountsService.resolve_account_id("telegram", "222")
-        self.assertNotEqual(discord_account, telegram_account)
+        self.assertEqual(discord_account, telegram_account)
+
+    def test_merge_scores_between_accounts_resolves_user_id_from_identity_when_missing(self):
+        self.fake_db.tables["account_identities"].extend(
+            [
+                {"account_id": "acc-a", "provider": "discord", "provider_user_id": "111"},
+                {"account_id": "acc-b", "provider": "telegram", "provider_user_id": "222"},
+            ]
+        )
+        self.fake_db.tables["scores"].extend(
+            [
+                {"account_id": "acc-a", "user_id": None, "points": 7, "tickets_normal": 1, "tickets_gold": 2},
+                {"account_id": "acc-b", "user_id": None, "points": 3, "tickets_normal": 2, "tickets_gold": 1},
+            ]
+        )
+
+        AccountsService._merge_scores_between_accounts("acc-b", "acc-a")
+
+        merged_rows = [row for row in self.fake_db.tables["scores"] if row.get("account_id") == "acc-a"]
+        self.assertEqual(len(merged_rows), 1)
+        self.assertEqual(int(merged_rows[0].get("user_id")), 111)
+        self.assertEqual(float(merged_rows[0].get("points")), 10)
+        self.assertEqual(int(merged_rows[0].get("tickets_normal")), 3)
+        self.assertEqual(int(merged_rows[0].get("tickets_gold")), 3)
+
+    def test_consume_link_code_cross_account_merge_sums_scores_and_tickets(self):
+        AccountsService.register_identity("discord", "111")
+        AccountsService.register_identity("telegram", "222")
+
+        discord_account = AccountsService.resolve_account_id("discord", "111")
+        telegram_account = AccountsService.resolve_account_id("telegram", "222")
+        self.assertIsNotNone(discord_account)
+        self.assertIsNotNone(telegram_account)
+
+        self.fake_db.tables["scores"].append(
+            {"account_id": discord_account, "user_id": "111", "points": 10, "tickets_normal": 1, "tickets_gold": 2}
+        )
+        self.fake_db.tables["scores"].append(
+            {"account_id": telegram_account, "user_id": "222", "points": 5.5, "tickets_normal": 3, "tickets_gold": 4}
+        )
+
+        ok, code = AccountsService.issue_discord_telegram_link_code(111)
+        self.assertTrue(ok)
+
+        ok, message = AccountsService.consume_telegram_link_code(222, code)
+        self.assertTrue(ok)
+        self.assertEqual(message, "Аккаунт успешно привязан")
+
+        final_account = AccountsService.resolve_account_id("telegram", "222")
+        self.assertEqual(final_account, discord_account)
+
+        score_rows = [row for row in self.fake_db.tables["scores"] if row.get("account_id") == discord_account]
+        self.assertGreaterEqual(len(score_rows), 1)
+        merged_points = sum(float(row.get("points", 0) or 0) for row in score_rows)
+        merged_tickets_normal = sum(int(row.get("tickets_normal", 0) or 0) for row in score_rows)
+        merged_tickets_gold = sum(int(row.get("tickets_gold", 0) or 0) for row in score_rows)
+        self.assertEqual(merged_points, 15.5)
+        self.assertEqual(merged_tickets_normal, 4)
+        self.assertEqual(merged_tickets_gold, 6)
+
+        old_rows = [row for row in self.fake_db.tables["scores"] if row.get("account_id") == telegram_account]
+        self.assertEqual(len(old_rows), 0)
 
     def test_profile_contains_link_status(self):
         AccountsService.register_identity("discord", "111")
