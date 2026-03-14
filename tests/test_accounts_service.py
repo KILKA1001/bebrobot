@@ -273,6 +273,29 @@ class AccountsServiceTests(unittest.TestCase):
         telegram_account = AccountsService.resolve_account_id("telegram", "222")
         self.assertEqual(discord_account, telegram_account)
 
+    def test_merge_scores_between_accounts_resolves_user_id_from_identity_when_missing(self):
+        self.fake_db.tables["account_identities"].extend(
+            [
+                {"account_id": "acc-a", "provider": "discord", "provider_user_id": "111"},
+                {"account_id": "acc-b", "provider": "telegram", "provider_user_id": "222"},
+            ]
+        )
+        self.fake_db.tables["scores"].extend(
+            [
+                {"account_id": "acc-a", "user_id": None, "points": 7, "tickets_normal": 1, "tickets_gold": 2},
+                {"account_id": "acc-b", "user_id": None, "points": 3, "tickets_normal": 2, "tickets_gold": 1},
+            ]
+        )
+
+        AccountsService._merge_scores_between_accounts("acc-b", "acc-a")
+
+        merged_rows = [row for row in self.fake_db.tables["scores"] if row.get("account_id") == "acc-a"]
+        self.assertEqual(len(merged_rows), 1)
+        self.assertEqual(int(merged_rows[0].get("user_id")), 111)
+        self.assertEqual(float(merged_rows[0].get("points")), 10)
+        self.assertEqual(int(merged_rows[0].get("tickets_normal")), 3)
+        self.assertEqual(int(merged_rows[0].get("tickets_gold")), 3)
+
     def test_consume_link_code_cross_account_merge_sums_scores_and_tickets(self):
         AccountsService.register_identity("discord", "111")
         AccountsService.register_identity("telegram", "222")

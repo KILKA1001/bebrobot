@@ -211,6 +211,42 @@ class AccountsService:
             )
 
     @staticmethod
+    def _resolve_numeric_user_id_for_account(account_id: str) -> Optional[int]:
+        """Возвращает любой числовой provider_user_id для аккаунта (discord/telegram)."""
+        if not db.supabase or not account_id:
+            return None
+        try:
+            response = (
+                db.supabase.table("account_identities")
+                .select("provider,provider_user_id")
+                .eq("account_id", str(account_id))
+                .execute()
+            )
+            identities = response.data or []
+            for provider in ("discord", "telegram"):
+                for row in identities:
+                    if row.get("provider") != provider:
+                        continue
+                    raw_user_id = row.get("provider_user_id")
+                    try:
+                        return int(str(raw_user_id))
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            "resolve_numeric_user_id_for_account invalid provider_user_id account_id=%s provider=%s provider_user_id=%s",
+                            account_id,
+                            provider,
+                            raw_user_id,
+                        )
+            return None
+        except Exception as e:
+            logger.exception(
+                "resolve_numeric_user_id_for_account failed account_id=%s error=%s",
+                account_id,
+                AccountsService._format_db_error(e),
+            )
+            return None
+
+    @staticmethod
     def _merge_scores_between_accounts(from_account_id: str, to_account_id: str) -> None:
         """Складывает points/tickets из двух score-строк и удаляет исходную account-строку."""
         if not db.supabase or not from_account_id or not to_account_id or str(from_account_id) == str(to_account_id):
@@ -237,9 +273,23 @@ class AccountsService:
             if not source_row:
                 return
 
+            merged_user_id = (target_row or {}).get("user_id") or source_row.get("user_id")
+            if merged_user_id is None:
+                merged_user_id = AccountsService._resolve_numeric_user_id_for_account(str(to_account_id))
+            if merged_user_id is None:
+                merged_user_id = AccountsService._resolve_numeric_user_id_for_account(str(from_account_id))
+
+            if merged_user_id is None:
+                logger.error(
+                    "merge_scores_between_accounts skipped: cannot resolve non-null user_id from_account_id=%s to_account_id=%s",
+                    from_account_id,
+                    to_account_id,
+                )
+                return
+
             merged_payload = {
                 "account_id": str(to_account_id),
-                "user_id": (target_row or {}).get("user_id") or source_row.get("user_id"),
+                "user_id": int(merged_user_id),
                 "points": float((target_row or {}).get("points") or 0) + float(source_row.get("points") or 0),
                 "tickets_normal": int((target_row or {}).get("tickets_normal") or 0) + int(source_row.get("tickets_normal") or 0),
                 "tickets_gold": int((target_row or {}).get("tickets_gold") or 0) + int(source_row.get("tickets_gold") or 0),
