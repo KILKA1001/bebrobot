@@ -141,6 +141,7 @@ class Database:
         self._fines_data_loaded = False
         self._account_to_discord_cache = {}
         self._table_account_id_support = {}
+        self._scores_has_user_id = True
         self._account_metrics = {}
 
         self.scores = LazyDict(self.ensure_core_data_loaded)
@@ -160,8 +161,15 @@ class Database:
             return
 
         try:
-            # Проверка существования таблицы scores
-            self.supabase.table("scores").select("user_id").limit(1).execute()
+            # Проверка существования таблицы scores + совместимость схемы без user_id
+            try:
+                self.supabase.table("scores").select("user_id").limit(1).execute()
+                self._scores_has_user_id = True
+            except Exception as score_user_error:
+                self._scores_has_user_id = False
+                logger.warning("⚠️ В таблице scores отсутствует user_id, переключение в account_id-only режим: %s", score_user_error)
+                # Таблица всё равно должна существовать
+                self.supabase.table("scores").select("account_id").limit(1).execute()
         except Exception as e:
             raise RuntimeError(f"Таблица scores не существует или недоступна: {str(e)}")
         try:
@@ -270,15 +278,16 @@ class Database:
                 if by_account.data:
                     return by_account.data[0]
 
-            by_user = (
-                self.supabase.table("scores")
-                .select(fields)
-                .eq("user_id", user_id)
-                .limit(1)
-                .execute()
-            )
-            if by_user.data:
-                return by_user.data[0]
+            if self._scores_has_user_id:
+                by_user = (
+                    self.supabase.table("scores")
+                    .select(fields)
+                    .eq("user_id", user_id)
+                    .limit(1)
+                    .execute()
+                )
+                if by_user.data:
+                    return by_user.data[0]
         except Exception as e:
             logger.warning("Не удалось прочитать scores для user_id=%s: %s", user_id, e)
         return None
@@ -601,25 +610,30 @@ class Database:
             if self.scores:
                 # Не восстанавливаем удалённые вручную строки из устаревшего in-memory кеша.
                 # Иначе после DELETE в БД старые значения могут "возвращаться" при очередном save_all.
-                existing_rows_response = (
-                    self.supabase.table("scores")
-                    .select("user_id")
-                    .not_.is_("user_id", "null")
-                    .execute()
-                )
-                existing_user_ids = {
-                    int(row.get("user_id"))
-                    for row in (existing_rows_response.data or [])
-                    if row.get("user_id") is not None
-                }
+                existing_user_ids = set()
+                if self._scores_has_user_id:
+                    existing_rows_response = (
+                        self.supabase.table("scores")
+                        .select("user_id")
+                        .not_.is_("user_id", "null")
+                        .execute()
+                    )
+                    existing_user_ids = {
+                        int(row.get("user_id"))
+                        for row in (existing_rows_response.data or [])
+                        if row.get("user_id") is not None
+                    }
 
                 scores_data = []
                 skipped_user_ids = []
                 for user_id, points in self.scores.items():
-                    if int(user_id) in existing_user_ids:
-                        scores_data.append({"user_id": user_id, "points": points})
+                    if self._scores_has_user_id:
+                        if int(user_id) in existing_user_ids:
+                            scores_data.append({"user_id": user_id, "points": points})
+                        else:
+                            skipped_user_ids.append(int(user_id))
                     else:
-                        skipped_user_ids.append(int(user_id))
+                        scores_data.append(self._prefer_account_id_payload("scores", int(user_id), {"user_id": int(user_id), "points": points}))
 
                 if skipped_user_ids:
                     logger.warning(
@@ -1049,7 +1063,8 @@ class Database:
         field = f"tickets_{ticket_type}"
         try:
             # Получаем текущую запись c account-first приоритетом
-            score_row = self._get_scores_row_for_user(user_id, f"user_id,account_id,{field}")
+            score_fields = f"account_id,{field}" if not self._scores_has_user_id else f"user_id,account_id,{field}"
+            score_row = self._get_scores_row_for_user(user_id, score_fields)
             current = int(score_row[field]) if score_row and score_row.get(field) is not None else 0
             new_value = max(current + amount, 0)
             account_id = self._get_account_id_for_discord_user(user_id)
@@ -1059,7 +1074,7 @@ class Database:
             if account_id and scores_has_account:
                 updated = (
                     self.supabase.table("scores")
-                    .update({field: new_value, "user_id": user_id, "account_id": account_id})
+                    .update(({field: new_value, "account_id": account_id} if not self._scores_has_user_id else {field: new_value, "user_id": user_id, "account_id": account_id}))
                     .eq("account_id", account_id)
                     .execute()
                 )
