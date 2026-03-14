@@ -415,7 +415,7 @@ async def tickets_callback(callback: CallbackQuery) -> None:
 
         if action == "help":
             await callback.answer(
-                "ℹ️ Формат: количество | причина\nПример: 2 | Награда за ивент",
+                "ℹ️ Напишите только причину. Команда добавит или спишет ровно 1 билет.",
                 show_alert=True,
             )
             return
@@ -433,15 +433,15 @@ async def tickets_callback(callback: CallbackQuery) -> None:
         if callback.message is not None:
             try:
                 await callback.message.edit_text(
-                    "Введите данные в формате: <code>количество | причина</code>.\n"
-                    "Причина обязательна, без неё изменение не выполнится.",
+                    "Введите только причину изменения.\n"
+                    "Команда добавит или спишет ровно 1 билет.",
                     parse_mode=ParseMode.HTML,
                 )
             except Exception:
                 logger.exception("tickets callback failed to edit flow prompt actor_id=%s", actor_id)
                 await callback.message.answer(
-                    "Введите данные в формате: <code>количество | причина</code>.\n"
-                    "Причина обязательна, без неё изменение не выполнится.",
+                    "Введите только причину изменения.\n"
+                    "Команда добавит или спишет ровно 1 билет.",
                     parse_mode=ParseMode.HTML,
                 )
         await callback.answer()
@@ -500,16 +500,16 @@ async def pending_action_handler(message: Message) -> None:
             return
 
         raw = (message.text or "").strip()
-        if "|" not in raw:
-            await _respond_in_flow(message, pending, "❌ Неверный формат. Используйте: число | причина")
-            return
-        amount_raw, reason_raw = [part.strip() for part in raw.split("|", 1)]
-        if not reason_raw:
-            await _respond_in_flow(message, pending, "❌ Причина обязательна. Изменение отменено.")
-            _PENDING_ACTIONS.pop(message.from_user.id, None)
-            return
 
         if pending.domain == "points":
+            if "|" not in raw:
+                await _respond_in_flow(message, pending, "❌ Неверный формат. Используйте: число | причина")
+                return
+            amount_raw, reason_raw = [part.strip() for part in raw.split("|", 1)]
+            if not reason_raw:
+                await _respond_in_flow(message, pending, "❌ Причина обязательна. Изменение отменено.")
+                _PENDING_ACTIONS.pop(message.from_user.id, None)
+                return
             amount = float(amount_raw.replace(",", "."))
             if amount <= 0:
                 await _respond_in_flow(message, pending, "❌ Количество баллов должно быть больше 0.")
@@ -530,10 +530,12 @@ async def pending_action_handler(message: Message) -> None:
                 await _respond_in_flow(message, pending, f"✅ Баллы успешно {action_text}: {amount:.2f}. Причина: {reason_raw}")
 
         elif pending.domain == "tickets":
-            amount = int(amount_raw)
-            if amount <= 0:
-                await _respond_in_flow(message, pending, "❌ Количество билетов должно быть больше 0.")
+            reason_raw = raw
+            if not reason_raw:
+                await _respond_in_flow(message, pending, "❌ Причина обязательна. Изменение отменено.")
+                _PENDING_ACTIONS.pop(message.from_user.id, None)
                 return
+            amount = 1
             mapping = {
                 "add_normal": ("normal", True),
                 "remove_normal": ("normal", False),
