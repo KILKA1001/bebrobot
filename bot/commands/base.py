@@ -110,7 +110,11 @@ async def add_points(
     try:
         points_float = float(points.replace(",", "."))
         user_id = member.id
-        PointsService.add_points(user_id, points_float, reason, ctx.author.id)
+        ok = PointsService.add_points(user_id, points_float, reason, ctx.author.id)
+        if not ok:
+            logger.error("add_points failed author_id=%s target_id=%s", ctx.author.id, member.id)
+            await send_temp(ctx, "❌ Не удалось начислить баллы. Проверьте привязку аккаунтов.", delete_after=None)
+            return
         await update_roles(member)
         embed = discord.Embed(
             title="🎉 Баллы начислены!", color=discord.Color.green()
@@ -164,7 +168,11 @@ async def remove_points(
             )
             await send_temp(ctx, embed=embed, delete_after=None)
             return
-        PointsService.remove_points(user_id, points_float, reason, ctx.author.id)
+        ok = PointsService.remove_points(user_id, points_float, reason, ctx.author.id)
+        if not ok:
+            logger.error("remove_points failed author_id=%s target_id=%s", ctx.author.id, member.id)
+            await send_temp(ctx, "❌ Не удалось списать баллы. Проверьте привязку аккаунтов.", delete_after=None)
+            return
         await update_roles(member)
         embed = discord.Embed(
             title="⚠️ Баллы сняты!", color=discord.Color.red()

@@ -450,74 +450,89 @@ class Database:
         self.history.set_data(history)
 
     def update_scores(self, user_id: int, points_change: float):
-        """Атомарное обновление баллов с проверкой"""
+        """Совместимый wrapper: обновляет баллы по user_id через account_id."""
+        account_id = self._get_account_id_for_discord_user(user_id)
+        if not account_id:
+            logger.error("❌ update_scores aborted: нет account_id для user_id=%s", user_id)
+            return False
+        return self.update_scores_by_account(account_id, points_change, user_id=user_id)
+
+    def update_scores_by_account(self, account_id: str, points_change: float, user_id: Optional[int] = None):
+        """Атомарное обновление баллов строго по account_id."""
         if not self.supabase:
+            return False
+        if not account_id:
+            logger.error("❌ update_scores_by_account aborted: пустой account_id")
             return False
 
         self.ensure_core_data_loaded()
 
         try:
-            # 1. Получаем текущие баллы из локального кеша
-            # Это убирает лишний SELECT к Supabase на каждое изменение баллов.
-            cached_points = self.scores.get(user_id)
+            cache_user_id = user_id if user_id is not None else self._get_discord_user_for_account_id(account_id)
+            cached_points = self.scores.get(cache_user_id) if cache_user_id is not None else None
             if cached_points is not None:
                 current_points = float(cached_points)
             else:
-                # Fallback для пользователей, которых ещё нет в кеше
-                # (например, если запись была добавлена извне).
                 try:
-                    score_row = self._get_scores_row_for_user(user_id, "points")
-                    current_points = float(score_row["points"]) if score_row else 0
+                    score_row = (
+                        self.supabase.table("scores")
+                        .select("points")
+                        .eq("account_id", account_id)
+                        .limit(1)
+                        .execute()
+                    )
+                    data = score_row.data or []
+                    current_points = float(data[0].get("points") or 0) if data else 0
                 except Exception:
                     current_points = 0
 
-            new_points = max(current_points + points_change, 0)  # Не уходим в минус
-
-            # 2. Обновляем баллы через upsert
-            upsert_payload = self._prefer_account_id_payload("scores", user_id, {
-                "user_id": user_id,
-                "points": new_points,
-            })
-
-            if not upsert_payload.get("account_id"):
-                logger.error(
-                    "❌ update_scores aborted: нет account_id для user_id=%s",
-                    user_id,
-                )
-                return False
-
-            upsert_builder = self.supabase.table("scores").upsert(
-                upsert_payload,
-                on_conflict="account_id",
-            )
-            result = upsert_builder.execute()
-
+            new_points = max(current_points + points_change, 0)
+            upsert_payload = {"account_id": account_id, "points": new_points}
+            result = self.supabase.table("scores").upsert(upsert_payload, on_conflict="account_id").execute()
             if result:
-                # Обновляем локальный кеш
-                self.scores[user_id] = new_points
+                if cache_user_id is not None:
+                    self.scores[cache_user_id] = new_points
                 return True
         except Exception as e:
-            logger.error(f"🔥 Ошибка обновления баллов: {str(e)}")
+            logger.error("🔥 Ошибка обновления баллов account_id=%s: %s", account_id, str(e))
             traceback.print_exc()
             return False
 
-    def add_action(self, user_id: int, points: float, reason: str, author_id: int, is_undo: bool = False):
-        """Добавляет действие с гарантированной синхронизацией"""
+    def add_action(
+        self,
+        user_id: Optional[int],
+        points: float,
+        reason: str,
+        author_id: int,
+        is_undo: bool = False,
+        author_account_id: Optional[str] = None,
+        account_id: Optional[str] = None,
+    ):
+        """Добавляет действие с гарантированной синхронизацией."""
         self.ensure_core_data_loaded()
 
         try:
-            account_id = self._get_account_id_for_discord_user(user_id)
+            resolved_account_id = account_id or (self._get_account_id_for_discord_user(user_id) if user_id is not None else None)
+            if not resolved_account_id:
+                logger.error("❌ add_action aborted: не найден account_id user_id=%s reason=%s", user_id, reason)
+                return False
             if not self.supabase:
                 logger.warning("Supabase client is not initialized.")
                 return False
 
             op_key = str(uuid.uuid4())
+            if not author_account_id:
+                author_account_id = self._get_account_id_for_discord_user(author_id)
+            if not author_account_id:
+                logger.error("❌ add_action: не найден author_account_id author_id=%s account_id=%s reason=%s", author_id, resolved_account_id, reason)
+                return False
 
-            # 1) Предпочитаем атомарную БД-функцию (идемпотентность + блокировка строки)
+            cache_user_id = user_id if user_id is not None else self._get_discord_user_for_account_id(resolved_account_id)
+
             rpc_applied = False
             try:
                 rpc_response = self.supabase.rpc("apply_points_action", {
-                    "p_account_id": account_id,
+                    "p_account_id": resolved_account_id,
                     "p_user_id": None,
                     "p_delta": points,
                     "p_reason": reason,
@@ -528,36 +543,36 @@ class Database:
                 if rpc_data:
                     row = rpc_data[0]
                     rpc_applied = bool(row.get("applied", False))
-                    current_points = float(row.get("new_points", self.scores.get(user_id, 0)))
-                    self.scores[user_id] = current_points
+                    current_points = float(row.get("new_points", self.scores.get(cache_user_id, 0) if cache_user_id is not None else 0))
+                    if cache_user_id is not None:
+                        self.scores[cache_user_id] = current_points
                     if not rpc_applied:
                         logger.warning("⚠️ add_action op_key=%s уже применён, пропуск дубликата", op_key)
                         return True
             except Exception as rpc_error:
                 logger.error(
-                    "❌ RPC apply_points_action недоступен, fallback на legacy-путь. user_id=%s error=%s",
-                    user_id,
+                    "❌ RPC apply_points_action недоступен, fallback на legacy-путь. account_id=%s error=%s",
+                    resolved_account_id,
                     rpc_error,
                 )
 
-            # 2) Fallback: старый путь (на случай если функция ещё не раскатана)
             if not rpc_applied:
-                if not self.update_scores(user_id, points):
+                if not self.update_scores_by_account(resolved_account_id, points, user_id=cache_user_id):
                     raise RuntimeError("Не удалось обновить баллы")
-                action = self._prefer_account_id_payload("actions", user_id, {
-                    "user_id": user_id,
+                action = {
+                    "account_id": resolved_account_id,
                     "points": points,
                     "reason": reason,
                     "author_id": author_id,
+                    "author_account_id": author_account_id,
                     "action_type": "remove" if points < 0 else "add",
                     "op_key": op_key,
-                })
+                }
                 response = self.supabase.table("actions").insert(action).execute()
                 if not response.data:
                     raise ValueError("Пустой ответ от Supabase")
                 action_row = response.data[0]
             else:
-                # 3) Подтягиваем реальную строку действия, созданную функцией
                 action_resp = (
                     self.supabase.table("actions")
                     .select("*")
@@ -566,14 +581,21 @@ class Database:
                     .execute()
                 )
                 action_row = action_resp.data[0] if action_resp.data else {
-                    "user_id": user_id,
+                    "account_id": resolved_account_id,
                     "points": points,
                     "reason": reason,
                     "author_id": author_id,
+                    "author_account_id": author_account_id,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "action_type": "remove" if points < 0 else "add",
                     "op_key": op_key,
                 }
+                if not action_row.get("author_account_id"):
+                    action_row["author_account_id"] = author_account_id
+                    try:
+                        self.supabase.table("actions").update({"author_account_id": author_account_id}).eq("op_key", op_key).execute()
+                    except Exception as author_update_error:
+                        logger.error("❌ add_action: не удалось сохранить author_account_id op_key=%s error=%s", op_key, author_update_error)
 
             if is_undo:
                 try:
@@ -582,25 +604,41 @@ class Database:
                 except Exception as undo_error:
                     logger.error("❌ Не удалось выставить is_undo для op_key=%s: %s", op_key, undo_error)
 
-            # 4. Обновляем локальный кеш
-            self.actions.insert(0, action_row)  # Добавляем в начало
-            if user_id not in self.history:
-                self.history[user_id] = []
-            self.history[user_id].insert(0, {
-                'points': points,
-                'reason': reason,
-                'author_account_id': action_row.get('author_account_id'),
-                'timestamp': action_row['timestamp'],
-                'is_undo': is_undo
-            })
+            self.actions.insert(0, action_row)
+            if cache_user_id is not None:
+                if cache_user_id not in self.history:
+                    self.history[cache_user_id] = []
+                self.history[cache_user_id].insert(0, {
+                    'points': points,
+                    'reason': reason,
+                    'author_account_id': action_row.get('author_account_id') or author_account_id,
+                    'timestamp': action_row.get('timestamp') or datetime.now(timezone.utc).isoformat(),
+                    'is_undo': is_undo
+                })
 
-            logger.info("✅ Действие сохранено user_id=%s op_key=%s", user_id, op_key)
+            logger.info("✅ Действие сохранено account_id=%s op_key=%s", resolved_account_id, op_key)
             return True
 
         except Exception as e:
             logger.error(f"❌ Ошибка добавления действия: {str(e)}")
             traceback.print_exc()
             return False
+
+    def add_action_by_account(self, account_id: str, points: float, reason: str, author_account_id: str, is_undo: bool = False) -> bool:
+        """Строгий account-first метод для действий по баллам."""
+        if not author_account_id:
+            logger.error("❌ add_action_by_account aborted: empty author_account_id account_id=%s reason=%s", account_id, reason)
+            return False
+        author_user_id = self._get_discord_user_for_account_id(author_account_id) or 0
+        return self.add_action(
+            user_id=None,
+            points=points,
+            reason=reason,
+            author_id=author_user_id,
+            is_undo=is_undo,
+            author_account_id=author_account_id,
+            account_id=account_id,
+        )
 
     def _handle_response(self, response):
         """Обработка ответа от Supabase"""
@@ -720,21 +758,25 @@ class Database:
             self.fine_payments.set_data([])
             self._fines_data_loaded = True
 
-    def add_fine(self, user_id: int, author_id: int, amount: float, fine_type: int, reason: str, due_date: datetime):
-        """Создаёт штраф"""
+    def add_fine(self, account_id: str, author_account_id: Optional[str], amount: float, fine_type: int, reason: str, due_date: datetime):
+        """Создаёт штраф строго по account_id"""
         if not self.supabase:
             logger.warning("⚠️ Supabase не инициализирован")
             return None
 
+        if not account_id:
+            logger.error("❌ add_fine aborted: пустой account_id")
+            return None
+
         try:
-            payload = self._prefer_account_id_payload("fines", user_id, {
-                "user_id": user_id,
-                "author_id": author_id,
+            payload = {
+                "account_id": account_id,
+                "author_account_id": author_account_id,
                 "amount": amount,
                 "type": fine_type,
                 "reason": reason,
-                "due_date": due_date.isoformat()
-            })
+                "due_date": due_date.isoformat(),
+            }
 
             result = self.supabase.table("fines").insert(payload).execute()
 
@@ -746,19 +788,26 @@ class Database:
             return fine
 
         except Exception as e:
-            logger.error(f"❌ Ошибка добавления штрафа: {str(e)}")
+            logger.error("❌ Ошибка добавления штрафа account_id=%s author_account_id=%s: %s", account_id, author_account_id, str(e))
             traceback.print_exc()
             return None
 
     def get_user_fines(self, user_id: int, active_only: bool = True):
-        """Возвращает список штрафов пользователя"""
+        """Возвращает список штрафов пользователя (compat через account_id)."""
         account_id = self._get_account_id_for_discord_user(user_id)
+        if not account_id:
+            logger.warning("⚠️ get_user_fines: не найден account_id для user_id=%s", user_id)
+            return []
+        return self.get_user_fines_by_account(account_id, active_only=active_only)
+
+    def get_user_fines_by_account(self, account_id: str, active_only: bool = True):
+        """Возвращает список штрафов пользователя по account_id."""
+        if not account_id:
+            logger.warning("⚠️ get_user_fines_by_account вызван без account_id")
+            return []
         return [
             fine for fine in self.fines
-            if (
-                (account_id and fine.get("account_id") == account_id)
-                or (not account_id and fine.get("user_id") == user_id)
-            )
+            if fine.get("account_id") == account_id
             and (not active_only or (not fine["is_paid"] and not fine["is_canceled"]))
         ]
 
@@ -797,7 +846,16 @@ class Database:
             return False
 
     def record_payment(self, user_id: int, fine_id: int, amount: float, author_id: int) -> bool:
-        """Записывает оплату штрафа, обновляет банк, баллы, штраф"""
+        """Совместимый wrapper оплаты штрафа по user_id."""
+        account_id = self._get_account_id_for_discord_user(user_id)
+        author_account_id = self._get_account_id_for_discord_user(author_id)
+        if not account_id or not author_account_id:
+            logger.error("❌ record_payment aborted: unresolved account_id user_id=%s author_id=%s", user_id, author_id)
+            return False
+        return self.record_payment_by_account(account_id, fine_id, amount, author_account_id)
+
+    def record_payment_by_account(self, account_id: str, fine_id: int, amount: float, author_account_id: str) -> bool:
+        """Записывает оплату штрафа, обновляет банк, баллы, штраф (account-first)."""
         try:
             if not self.supabase:
                 logger.warning("❌ Supabase не инициализирован")
@@ -809,23 +867,23 @@ class Database:
                 reason = str(fine.get("reason", ""))
                 is_test = "test" in reason.lower()
 
-            # 1. Обновляем баллы и лог одним вызовом (без двойного списания)
-            if not self.add_action(user_id, -amount, f"Оплата штрафа ID #{fine_id}", author_id):
+            if not self.add_action_by_account(account_id, -amount, f"Оплата штрафа ID #{fine_id}", author_account_id):
                 return False
 
-            # 2. Добавляем запись в fine_payments
-            payment_payload = self._prefer_account_id_payload("fine_payments", user_id, {
+            payment_payload = {
                 "fine_id": fine_id,
-                "user_id": user_id,
+                "account_id": account_id,
                 "amount": amount,
-                "author_id": author_id
-            })
+                "author_id": 0,
+                "author_account_id": author_account_id,
+            }
             self.supabase.table("fine_payments").insert(payment_payload).execute()
 
-            # 4. Обновление баланса банка (если штраф не тестовый)
             if not is_test:
                 self.add_to_bank(amount)
-                self.log_bank_income(user_id, amount, f"Оплата штрафа ID #{fine_id}")
+                user_id = self._get_discord_user_for_account_id(account_id)
+                if user_id is not None:
+                    self.log_bank_income(user_id, amount, f"Оплата штрафа ID #{fine_id}")
 
             # 5. Обновляем данные по штрафу
             if fine:
@@ -880,14 +938,19 @@ class Database:
                         and isinstance(created_raw, str)
                     ):
                         created_dt = datetime.fromisoformat(created_raw)
-                        if (now - created_dt).days <= 5:
-                            self._track_quick_payment(user_id)
-                        else:
-                            self.quick_pay_streak[user_id] = 0
+                        streak_user_id = self._get_discord_user_for_account_id(account_id)
+                        if streak_user_id is not None and (now - created_dt).days <= 5:
+                            self._track_quick_payment(streak_user_id)
+                        elif streak_user_id is not None:
+                            self.quick_pay_streak[streak_user_id] = 0
                     else:
-                        self.quick_pay_streak[user_id] = 0
+                        streak_user_id = self._get_discord_user_for_account_id(account_id)
+                        if streak_user_id is not None:
+                            self.quick_pay_streak[streak_user_id] = 0
                 except Exception:
-                    self.quick_pay_streak[user_id] = 0
+                    streak_user_id = self._get_discord_user_for_account_id(account_id)
+                    if streak_user_id is not None:
+                        self.quick_pay_streak[streak_user_id] = 0
 
 
             return True
@@ -933,12 +996,17 @@ class Database:
             fine["due_date"] = new_due.isoformat()
             fine["postponed_until"] = datetime.now(timezone.utc).isoformat()
 
-            self.add_action(
-                user_id=fine["user_id"],
-                points=0,
-                reason=f"Отсрочка штрафа ID #{fine_id} на {days} дн.",
-                author_id=fine["author_id"]
-            )
+            target_account_id = fine.get("account_id")
+            author_account_id = fine.get("author_account_id")
+            if not target_account_id:
+                logger.error("❌ apply_postponement: missing target account fine_id=%s", fine_id)
+            else:
+                self.add_action_by_account(
+                    account_id=target_account_id,
+                    points=0,
+                    reason=f"Отсрочка штрафа ID #{fine_id} на {days} дн.",
+                    author_account_id=author_account_id or "",
+                )
             return True
 
         except Exception as e:
@@ -957,12 +1025,17 @@ class Database:
 
             fine["is_overdue"] = True
 
-            self.add_action(
-                user_id=fine["user_id"],
-                points=0,
-                reason=f"Просрочка штрафа ID #{fine['id']}",
-                author_id=fine["author_id"]
-            )
+            target_account_id = fine.get("account_id")
+            author_account_id = fine.get("author_account_id")
+            if not target_account_id:
+                logger.error("❌ mark_overdue: missing target account fine_id=%s", fine.get("id"))
+            else:
+                self.add_action_by_account(
+                    account_id=target_account_id,
+                    points=0,
+                    reason=f"Просрочка штрафа ID #{fine['id']}",
+                    author_account_id=author_account_id or "",
+                )
             return True
 
         except Exception as e:
@@ -1065,62 +1138,114 @@ class Database:
             return False
 
     def update_tickets(self, user_id: int, ticket_type: str, amount: int) -> bool:
-        """
-    Обновляет количество билетов у пользователя.
-    ticket_type: 'normal' | 'gold'
-        """
+        """Совместимый wrapper: обновление билетов по user_id через account_id."""
+        account_id = self._get_account_id_for_discord_user(user_id)
+        if not account_id:
+            logger.error("❌ update_tickets aborted: нет account_id для user_id=%s", user_id)
+            return False
+        return self.update_tickets_by_account(account_id, ticket_type, amount)
+
+    def update_tickets_by_account(self, account_id: str, ticket_type: str, amount: int) -> bool:
+        """Обновляет количество билетов пользователя строго по account_id."""
         if ticket_type not in ("normal", "gold") or not self.supabase:
+            return False
+        if not account_id:
+            logger.error("❌ update_tickets_by_account aborted: пустой account_id")
             return False
 
         field = f"tickets_{ticket_type}"
         try:
-            # Получаем текущую запись c account-first приоритетом
-            score_row = self._get_scores_row_for_user(user_id, f"account_id,{field}")
-            current = int(score_row[field]) if score_row and score_row.get(field) is not None else 0
+            score_resp = (
+                self.supabase.table("scores")
+                .select(field)
+                .eq("account_id", account_id)
+                .limit(1)
+                .execute()
+            )
+            data = score_resp.data or []
+            current = int(data[0].get(field) or 0) if data else 0
             new_value = max(current + amount, 0)
-            account_id = self._get_account_id_for_discord_user(user_id)
-            if not account_id:
-                logger.error("❌ update_tickets aborted: нет account_id для user_id=%s", user_id)
-                return False
-
-            upsert_payload = {"account_id": account_id, field: new_value}
-            self.supabase.table("scores").upsert(upsert_payload, on_conflict="account_id").execute()
-
+            self.supabase.table("scores").upsert({"account_id": account_id, field: new_value}, on_conflict="account_id").execute()
             return True
         except Exception as e:
-            logger.error(f"Ошибка обновления билетов: {e}")
+            logger.error("Ошибка обновления билетов account_id=%s: %s", account_id, e)
             return False
 
-    def log_ticket_action(self, user_id: int, ticket_type: str, amount: int, reason: str, author_id: int):
-        """Логирует изменение билетов в ticket_actions"""
+    def log_ticket_action(self, user_id: int, ticket_type: str, amount: int, reason: str, author_id: int, author_account_id: Optional[str] = None):
+        """Совместимый wrapper: лог ticket_actions по user_id."""
+        account_id = self._get_account_id_for_discord_user(user_id)
+        if not account_id:
+            logger.error("❌ log_ticket_action aborted: нет account_id для user_id=%s", user_id)
+            return
+        self.log_ticket_action_by_account(account_id, ticket_type, amount, reason, author_account_id, author_id=author_id)
+
+    def log_ticket_action_by_account(
+        self,
+        account_id: str,
+        ticket_type: str,
+        amount: int,
+        reason: str,
+        author_account_id: Optional[str],
+        author_id: int = 0,
+    ):
+        """Логирует изменение билетов в ticket_actions строго по account_id."""
         try:
-            payload = self._prefer_account_id_payload("ticket_actions", user_id, {
-                "user_id": user_id,
+            if not author_account_id:
+                author_account_id = self._get_account_id_for_discord_user(author_id)
+            if not author_account_id:
+                logger.error("❌ log_ticket_action_by_account: не найден author_account_id author_id=%s account_id=%s", author_id, account_id)
+                return
+            payload = {
+                "account_id": account_id,
                 "ticket_type": ticket_type,
                 "amount": amount,
                 "reason": reason,
                 "author_id": author_id,
-            })
-
+                "author_account_id": author_account_id,
+            }
             self.supabase.table("ticket_actions").insert(payload).execute()
         except Exception as e:
             logger.error(f"Ошибка логирования тикета: {e}")
 
-    def give_ticket(self, user_id: int, ticket_type: str, amount: int, reason: str, author_id: int) -> bool:
-        """
-        Начисляет билеты и логирует
-        """
-        if self.update_tickets(user_id, ticket_type, amount):
-            self.log_ticket_action(user_id, ticket_type, amount, reason, author_id)
+    def give_ticket(self, user_id: int, ticket_type: str, amount: int, reason: str, author_id: int, author_account_id: Optional[str] = None) -> bool:
+        account_id = self._get_account_id_for_discord_user(user_id)
+        if not account_id:
+            logger.error("❌ give_ticket aborted: нет account_id для user_id=%s", user_id)
+            return False
+        return self.give_ticket_by_account(account_id, ticket_type, amount, reason, author_account_id, author_id=author_id)
+
+    def remove_ticket(self, user_id: int, ticket_type: str, amount: int, reason: str, author_id: int, author_account_id: Optional[str] = None) -> bool:
+        account_id = self._get_account_id_for_discord_user(user_id)
+        if not account_id:
+            logger.error("❌ remove_ticket aborted: нет account_id для user_id=%s", user_id)
+            return False
+        return self.remove_ticket_by_account(account_id, ticket_type, amount, reason, author_account_id, author_id=author_id)
+
+    def give_ticket_by_account(
+        self,
+        account_id: str,
+        ticket_type: str,
+        amount: int,
+        reason: str,
+        author_account_id: Optional[str],
+        author_id: int = 0,
+    ) -> bool:
+        if self.update_tickets_by_account(account_id, ticket_type, amount):
+            self.log_ticket_action_by_account(account_id, ticket_type, amount, reason, author_account_id, author_id=author_id)
             return True
         return False
 
-    def remove_ticket(self, user_id: int, ticket_type: str, amount: int, reason: str, author_id: int) -> bool:
-        """
-        Снимает билеты и логирует
-        """
-        if self.update_tickets(user_id, ticket_type, -amount):
-            self.log_ticket_action(user_id, ticket_type, -amount, reason, author_id)
+    def remove_ticket_by_account(
+        self,
+        account_id: str,
+        ticket_type: str,
+        amount: int,
+        reason: str,
+        author_account_id: Optional[str],
+        author_id: int = 0,
+    ) -> bool:
+        if self.update_tickets_by_account(account_id, ticket_type, -amount):
+            self.log_ticket_action_by_account(account_id, ticket_type, -amount, reason, author_account_id, author_id=author_id)
             return True
         return False
 

@@ -1,5 +1,10 @@
+import logging
+
 from bot.data import db
 from .accounts_service import AccountsService
+
+
+logger = logging.getLogger(__name__)
 
 
 class PointsService:
@@ -34,8 +39,15 @@ class PointsService:
         if not account_id:
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("identity_resolve_errors")
+            logger.error("add_points_by_identity: unresolved target account provider=%s provider_user_id=%s", provider, provider_user_id)
             return False
-        return PointsService.add_points_by_account(account_id, points, reason, author_id)
+        author_account_id = AccountsService.resolve_account_id(provider, str(author_id))
+        if not author_account_id:
+            if hasattr(db, "_inc_metric"):
+                db._inc_metric("identity_resolve_errors")
+            logger.error("add_points_by_identity: unresolved author account provider=%s author_id=%s", provider, author_id)
+            return False
+        return PointsService.add_points_by_account(account_id, points, reason, author_account_id)
 
     @staticmethod
     def remove_points_by_identity(provider: str, provider_user_id: str, points: float, reason: str, author_id: int) -> bool:
@@ -43,8 +55,15 @@ class PointsService:
         if not account_id:
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("identity_resolve_errors")
+            logger.error("remove_points_by_identity: unresolved target account provider=%s provider_user_id=%s", provider, provider_user_id)
             return False
-        return PointsService.remove_points_by_account(account_id, points, reason, author_id)
+        author_account_id = AccountsService.resolve_account_id(provider, str(author_id))
+        if not author_account_id:
+            if hasattr(db, "_inc_metric"):
+                db._inc_metric("identity_resolve_errors")
+            logger.error("remove_points_by_identity: unresolved author account provider=%s author_id=%s", provider, author_id)
+            return False
+        return PointsService.remove_points_by_account(account_id, points, reason, author_account_id)
 
     @staticmethod
     def add_points(discord_user_id: int, points: float, reason: str, author_id: int) -> bool:
@@ -56,19 +75,9 @@ class PointsService:
 
 
     @staticmethod
-    def add_points_by_account(account_id: str, points: float, reason: str, author_id: int) -> bool:
-        anchor_user_id = PointsService._resolve_anchor_user_id(account_id)
-        if anchor_user_id is None:
-            if hasattr(db, "_inc_metric"):
-                db._inc_metric("identity_resolve_errors")
-            return False
-        return db.add_action(anchor_user_id, points, reason, author_id)
+    def add_points_by_account(account_id: str, points: float, reason: str, author_account_id: str) -> bool:
+        return db.add_action_by_account(account_id, points, reason, author_account_id)
 
     @staticmethod
-    def remove_points_by_account(account_id: str, points: float, reason: str, author_id: int) -> bool:
-        anchor_user_id = PointsService._resolve_anchor_user_id(account_id)
-        if anchor_user_id is None:
-            if hasattr(db, "_inc_metric"):
-                db._inc_metric("identity_resolve_errors")
-            return False
-        return db.add_action(anchor_user_id, -points, reason, author_id)
+    def remove_points_by_account(account_id: str, points: float, reason: str, author_account_id: str) -> bool:
+        return db.add_action_by_account(account_id, -points, reason, author_account_id)

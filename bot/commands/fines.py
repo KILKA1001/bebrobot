@@ -71,7 +71,7 @@ async def fine(
         )
 
         fine = FinesService.create_fine(
-            user_id=member.id,
+            discord_user_id=member.id,
             author_id=ctx.author.id,
             amount=amount_value,
             fine_type=fine_type,
@@ -171,7 +171,12 @@ async def finedetails(ctx, fine_id: int):
         return
 
     is_admin = ctx.author.guild_permissions.administrator or has_manage_permission(ctx)
-    if fine["user_id"] != ctx.author.id and not is_admin:
+    target_user_id = db._get_discord_user_for_account_id(fine.get("account_id"))
+    if target_user_id is None:
+        logger.error("finedetails: unresolved target user for fine_id=%s account_id=%s", fine_id, fine.get("account_id"))
+        await send_temp(ctx, "❌ Не удалось определить владельца штрафа.")
+        return
+    if target_user_id != ctx.author.id and not is_admin:
         await send_temp(ctx, "❌ Вы не можете просматривать чужие штрафы.")
         return
 
@@ -255,12 +260,16 @@ async def cancel_fine(ctx, fine_id: int):
         "id", fine_id
     ).execute()
 
-    db.add_action(
-        user_id=fine["user_id"],
-        points=0,
-        reason=f"Отмена штрафа ID #{fine_id}",
-        author_id=ctx.author.id,
-    )
+    target_user_id = db._get_discord_user_for_account_id(fine.get("account_id"))
+    if target_user_id is None:
+        logger.error("cancel_fine: unresolved target user for fine_id=%s account_id=%s", fine_id, fine.get("account_id"))
+    else:
+        db.add_action(
+            user_id=target_user_id,
+            points=0,
+            reason=f"Отмена штрафа ID #{fine_id}",
+            author_id=ctx.author.id,
+        )
 
     await send_temp(ctx, f"❌ Штраф #{fine_id} успешно отменён.")
 
@@ -285,7 +294,12 @@ async def finehistory(
         )
         return
 
-    fines = [f for f in db.fines if f["user_id"] == member.id]
+    member_account_id = db._get_account_id_for_discord_user(member.id)
+    if not member_account_id:
+        logger.warning("finehistory: no account_id for member_id=%s", member.id)
+        await send_temp(ctx, "📭 У пользователя нет штрафов.")
+        return
+    fines = [f for f in db.fines if f.get("account_id") == member_account_id]
     if not fines:
         await send_temp(ctx, "📭 У пользователя нет штрафов.")
         return
@@ -331,9 +345,10 @@ async def topfines(ctx):
         return
 
     formatted = []
-    for uid, amount in top:
-        member = ctx.guild.get_member(uid)
-        name = member.display_name if member else f"<@{uid}>"
+    for account_id, amount in top:
+        uid = db._get_discord_user_for_account_id(account_id)
+        member = ctx.guild.get_member(uid) if uid else None
+        name = member.display_name if member else (f"<@{uid}>" if uid else f"account:{account_id}")
         formatted.append((name, f"💰 Задолженность: {amount:.2f} баллов"))
 
     embed = build_top_embed(

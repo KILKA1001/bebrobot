@@ -14,6 +14,8 @@ ALTER TABLE IF EXISTS ticket_actions ADD COLUMN IF NOT EXISTS account_id uuid;
 ALTER TABLE IF EXISTS bank_history ADD COLUMN IF NOT EXISTS account_id uuid;
 ALTER TABLE IF EXISTS fines ADD COLUMN IF NOT EXISTS account_id uuid;
 ALTER TABLE IF EXISTS fine_payments ADD COLUMN IF NOT EXISTS account_id uuid;
+ALTER TABLE IF EXISTS fines ADD COLUMN IF NOT EXISTS author_account_id uuid;
+ALTER TABLE IF EXISTS fine_payments ADD COLUMN IF NOT EXISTS author_account_id uuid;
 
 -- 3) Hot-path indexes
 CREATE INDEX IF NOT EXISTS ix_scores_account_id ON scores(account_id);
@@ -22,6 +24,8 @@ CREATE INDEX IF NOT EXISTS ix_ticket_actions_account_id ON ticket_actions(accoun
 CREATE INDEX IF NOT EXISTS ix_bank_history_account_id ON bank_history(account_id);
 CREATE INDEX IF NOT EXISTS ix_fines_account_id ON fines(account_id);
 CREATE INDEX IF NOT EXISTS ix_fine_payments_account_id ON fine_payments(account_id);
+CREATE INDEX IF NOT EXISTS ix_fines_author_account_id ON fines(author_account_id);
+CREATE INDEX IF NOT EXISTS ix_fine_payments_author_account_id ON fine_payments(author_account_id);
 
 -- 4) Backfill account_id from discord identities
 UPDATE scores s
@@ -65,6 +69,20 @@ FROM account_identities ai
 WHERE fp.account_id IS NULL
   AND ai.provider = 'discord'
   AND ai.provider_user_id = fp.user_id::text;
+
+UPDATE fines f
+SET author_account_id = ai.account_id
+FROM account_identities ai
+WHERE f.author_account_id IS NULL
+  AND ai.provider = 'discord'
+  AND ai.provider_user_id = f.author_id::text;
+
+UPDATE fine_payments fp
+SET author_account_id = ai.account_id
+FROM account_identities ai
+WHERE fp.author_account_id IS NULL
+  AND ai.provider = 'discord'
+  AND ai.provider_user_id = fp.author_id::text;
 
 COMMIT;
 
