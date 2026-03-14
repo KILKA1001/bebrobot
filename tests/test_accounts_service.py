@@ -75,6 +75,26 @@ class _TableOp:
                     if str(row.get("account_id")) == key:
                         row.update(self._payload)
                         return _Resp([dict(row)])
+            if self.table_name == "account_links_registry" and self._payload.get("account_id"):
+                key = str(self._payload.get("account_id"))
+                payload_telegram = self._payload.get("telegram_user_id")
+                payload_discord = self._payload.get("discord_user_id")
+                for row in rows:
+                    if str(row.get("account_id")) == key:
+                        row.update(self._payload)
+                        for other in rows:
+                            if str(other.get("account_id")) == key:
+                                continue
+                            if payload_telegram and str(other.get("telegram_user_id")) == str(payload_telegram):
+                                raise Exception("duplicate key value violates unique constraint telegram_user_id")
+                            if payload_discord and str(other.get("discord_user_id")) == str(payload_discord):
+                                raise Exception("duplicate key value violates unique constraint discord_user_id")
+                        return _Resp([dict(row)])
+                for other in rows:
+                    if payload_telegram and str(other.get("telegram_user_id")) == str(payload_telegram):
+                        raise Exception("duplicate key value violates unique constraint telegram_user_id")
+                    if payload_discord and str(other.get("discord_user_id")) == str(payload_discord):
+                        raise Exception("duplicate key value violates unique constraint discord_user_id")
             rows.append(dict(self._payload))
             return _Resp([dict(self._payload)])
 
@@ -272,6 +292,58 @@ class AccountsServiceTests(unittest.TestCase):
         discord_account = AccountsService.resolve_account_id("discord", "111")
         telegram_account = AccountsService.resolve_account_id("telegram", "222")
         self.assertEqual(discord_account, telegram_account)
+
+
+
+    def test_merge_registry_rows_deletes_source_before_upsert_to_avoid_unique_conflict(self):
+        self.fake_db.tables["account_links_registry"].extend(
+            [
+                {"account_id": "acc-from", "telegram_user_id": "222", "discord_user_id": None},
+                {"account_id": "acc-to", "telegram_user_id": None, "discord_user_id": "111"},
+            ]
+        )
+
+        AccountsService._merge_registry_rows_for_accounts("acc-from", "acc-to")
+
+        self.assertEqual(
+            [row for row in self.fake_db.tables["account_links_registry"] if row.get("account_id") == "acc-from"],
+            [],
+        )
+        target_rows = [row for row in self.fake_db.tables["account_links_registry"] if row.get("account_id") == "acc-to"]
+        self.assertEqual(len(target_rows), 1)
+        self.assertEqual(target_rows[0].get("telegram_user_id"), "222")
+        self.assertEqual(target_rows[0].get("discord_user_id"), "111")
+
+    def test_merge_accounts_merges_registry_rows_before_rebind(self):
+        self.fake_db.tables["account_links_registry"].extend(
+            [
+                {
+                    "account_id": "acc-from",
+                    "telegram_user_id": "222",
+                    "discord_user_id": None,
+                    "has_used_link_code": True,
+                    "last_link_code_used": "ABC12345",
+                },
+                {
+                    "account_id": "acc-to",
+                    "telegram_user_id": None,
+                    "discord_user_id": "111",
+                    "has_used_link_code": False,
+                },
+            ]
+        )
+
+        AccountsService._merge_accounts("acc-from", "acc-to")
+
+        rows = [row for row in self.fake_db.tables["account_links_registry"] if row.get("account_id") == "acc-to"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].get("telegram_user_id"), "222")
+        self.assertEqual(rows[0].get("discord_user_id"), "111")
+        self.assertTrue(rows[0].get("has_used_link_code"))
+        self.assertEqual(rows[0].get("last_link_code_used"), "ABC12345")
+
+        source_rows = [row for row in self.fake_db.tables["account_links_registry"] if row.get("account_id") == "acc-from"]
+        self.assertEqual(source_rows, [])
 
     def test_merge_scores_between_accounts_sums_without_user_id_column(self):
         self.fake_db.tables["account_identities"].extend(
