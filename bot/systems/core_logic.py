@@ -136,14 +136,19 @@ async def render_history(ctx_or_interaction, member: discord.Member, page: int):
             else:
                 formatted_time = format_moscow_time(timestamp) if timestamp else "N/A"
 
-            author_id = action.get('author_id', 'N/A')
+            author_account_id = action.get('author_account_id')
             reason = action.get('reason', 'Не указана')
+            author_line = (
+                f"**Выдал (account_id):** `{author_account_id}`"
+                if author_account_id
+                else "**Выдал:** общий аккаунт"
+            )
 
             field_name = f"{emoji} {formatted_time}"
             field_value = (
                 f"```diff\n{'+' if points >= 0 else ''}{format_points(points)} баллов```\n"
                 f"**Причина:** {reason}\n"
-                f"**Выдал:** <@{author_id}>"
+                f"{author_line}"
             )
             embed.add_field(name=field_name, value=field_value, inline=False)
 

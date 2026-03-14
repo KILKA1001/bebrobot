@@ -438,11 +438,18 @@ class Database:
                 continue
             if user_id not in history:
                 history[user_id] = []
+            author_account_id = action.get('author_account_id')
+            if not author_account_id:
+                logger.warning(
+                    "_build_history action without author_account_id action_id=%s account_id=%s",
+                    action.get('id'),
+                    action.get('account_id'),
+                )
             history[user_id].append({
-                'points': float(action['points']),
-                'reason': action['reason'],
-                'author_id': int(action['author_id']),
-                'timestamp': action['timestamp']
+                'points': float(action.get('points') or 0),
+                'reason': action.get('reason') or 'Не указана',
+                'author_account_id': author_account_id,
+                'timestamp': action.get('timestamp')
             })
         self.history.set_data(history)
 
@@ -577,7 +584,7 @@ class Database:
             self.history[user_id].insert(0, {
                 'points': points,
                 'reason': reason,
-                'author_id': author_id,
+                'author_account_id': action_row.get('author_account_id'),
                 'timestamp': action_row['timestamp'],
                 'is_undo': is_undo
             })
