@@ -7,6 +7,7 @@ import traceback
 import logging
 
 from bot.data import db
+from bot.services import AccountsService
 from bot.utils.roles_and_activities import ROLE_THRESHOLDS
 from bot.utils import (
     send_temp,
@@ -18,6 +19,7 @@ from bot.utils import (
 )
 
 active_timers = {}
+logger = logging.getLogger(__name__)
   
 async def update_roles(member: discord.Member):
     user_id = member.id
@@ -550,18 +552,54 @@ async def transfer_data_logic(old_id: int, new_id: int) -> discord.Embed:
 def build_balance_embed(member: discord.Member) -> discord.Embed:
     user_id = member.id
     points = db.scores.get(user_id, 0)
+    account_id = AccountsService.resolve_account_id("discord", str(user_id))
+    score_row = None
+
+    if account_id and db.supabase:
+        try:
+            score_result = (
+                db.supabase.table("scores")
+                .select("points,tickets_normal,tickets_gold")
+                .eq("account_id", str(account_id))
+                .limit(1)
+                .execute()
+            )
+            if score_result.data:
+                score_row = score_result.data[0]
+        except Exception:
+            logger.exception(
+                "build_balance_embed account score lookup failed account_id=%s discord_user_id=%s",
+                account_id,
+                user_id,
+            )
+
+    if score_row is None and db.supabase:
+        try:
+            score_result = (
+                db.supabase.table("scores")
+                .select("points,tickets_normal,tickets_gold")
+                .eq("user_id", user_id)
+                .limit(1)
+                .execute()
+            )
+            if score_result.data:
+                score_row = score_result.data[0]
+        except Exception:
+            logger.exception(
+                "build_balance_embed discord score fallback failed discord_user_id=%s",
+                user_id,
+            )
+
+    if score_row is not None:
+        points = float(score_row.get("points") or 0)
+
     roles = [role for role in member.roles if role.id in ROLE_THRESHOLDS]
     role_names = ', '.join(role.name for role in roles) if roles else 'Нет роли'
 
     sorted_scores = sorted(db.scores.items(), key=lambda x: x[1], reverse=True)
     place = next((i for i, (uid, _) in enumerate(sorted_scores, 1) if uid == user_id), None)
 
-    # Загружаем билеты
-    try:
-        result = db.supabase.table("scores").select("tickets_normal, tickets_gold").eq("user_id", user_id).single().execute()
-        data = result.data or {}
-    except Exception:
-        data = {}
+    data = score_row or {}
 
     normal = data.get("tickets_normal", 0)
     gold = data.get("tickets_gold", 0)

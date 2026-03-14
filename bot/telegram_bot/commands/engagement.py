@@ -218,6 +218,41 @@ def _get_score_snapshot(account_id: str) -> tuple[float, int, int]:
     return 0.0, 0, 0
 
 
+@router.message(Command("balance"))
+async def balance_command(message: Message) -> None:
+    try:
+        if not message.from_user:
+            await message.answer("❌ Не удалось определить пользователя Telegram.")
+            return
+
+        target_id = _parse_target_arg(message)
+        if target_id is None:
+            await message.answer("❌ Не удалось определить цель. Используйте ответ на сообщение или id пользователя.")
+            return
+
+        profile = AccountsService.get_profile("telegram", str(target_id))
+        if not profile:
+            await message.answer("❌ Профиль не найден. Сначала выполните /register")
+            return
+
+        points, tickets_normal, tickets_gold = _get_score_snapshot(profile["account_id"])
+        await message.answer(
+            "💰 <b>Баланс пользователя</b>\n"
+            f"Пользователь: <a href=\"tg://user?id={target_id}\">{profile['custom_nick']}</a>\n"
+            f"Баллы: <b>{points:.2f}</b>\n"
+            f"Билеты: 🎟️ <b>{tickets_normal}</b> / 🪙 <b>{tickets_gold}</b>",
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception:
+        logger.exception(
+            "balance command failed actor_id=%s chat_id=%s text=%s",
+            message.from_user.id if message.from_user else None,
+            message.chat.id if message.chat else None,
+            message.text,
+        )
+        await message.answer("❌ Ошибка получения баланса.")
+
+
 @router.message(Command("points"))
 async def points_menu_command(message: Message) -> None:
     try:

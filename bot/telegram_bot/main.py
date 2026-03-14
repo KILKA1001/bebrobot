@@ -30,6 +30,7 @@ BOT_COMMANDS = [
     BotCommand(command="link", description="Привязать Telegram по коду из Discord"),
     BotCommand(command="link_discord", description="Сгенерировать код для привязки Discord"),
     BotCommand(command="points", description="Меню управления баллами"),
+    BotCommand(command="balance", description="Показать баланс пользователя"),
     BotCommand(command="tickets", description="Меню управления билетами"),
     BotCommand(command="helpy", description="Список команд"),
     BotCommand(command="guiy", description="Обратиться к Гую (особенно в группе)"),
