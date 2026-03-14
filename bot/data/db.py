@@ -322,10 +322,28 @@ class Database:
         таблицы `scores` сохраняем user_id даже при наличии account_id.
         """
         normalized = self._with_optional_account_id(table_name, user_id, dict(payload))
+        has_account_id = bool(normalized.get("account_id"))
+
         if table_name == "scores":
             normalized.setdefault("user_id", user_id)
+            if not has_account_id:
+                logger.warning(
+                    "⚠️ scores payload без account_id (legacy fallback) user_id=%s payload_keys=%s",
+                    user_id,
+                    sorted(normalized.keys()),
+                )
             return normalized
-        if normalized.get("account_id") and "user_id" in normalized:
+
+        if not has_account_id:
+            logger.warning(
+                "⚠️ account-first payload без account_id table=%s user_id=%s payload_keys=%s",
+                table_name,
+                user_id,
+                sorted(normalized.keys()),
+            )
+            return normalized
+
+        if "user_id" in normalized:
             normalized.pop("user_id", None)
         return normalized
 
