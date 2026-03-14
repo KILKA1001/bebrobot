@@ -118,6 +118,7 @@ class _FakeDb:
             "scores": [],
             "actions": [],
             "profile_title_roles": [],
+            "account_links_registry": [],
         }
         self.account_seq = 0
         self.supabase = _FakeSupabase(self)
@@ -155,6 +156,7 @@ class AccountsServiceTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(message, "Аккаунт успешно привязан")
         self.assertTrue(self.fake_db.tables["account_link_codes"][0]["is_used"])
+        self.assertEqual(self.fake_db.tables["account_links_registry"][0]["last_link_code_used"], code)
 
         discord_account = AccountsService.resolve_account_id("discord", "111")
         telegram_account = AccountsService.resolve_account_id("telegram", "222")
@@ -192,6 +194,22 @@ class AccountsServiceTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertTrue(code)
         AccountsService.consume_telegram_link_code(222, code)
+
+        ok, message = AccountsService.issue_discord_telegram_link_code(111)
+        self.assertFalse(ok)
+        self.assertEqual(message, "Аккаунт уже привязан к telegram")
+
+    def test_issue_link_code_uses_registry_table_for_target_link_check(self):
+        AccountsService.register_identity("discord", "111")
+        account_id = AccountsService.resolve_account_id("discord", "111")
+        self.assertIsNotNone(account_id)
+        self.fake_db.tables["account_links_registry"].append(
+            {
+                "account_id": account_id,
+                "telegram_user_id": "222",
+                "discord_user_id": "111",
+            }
+        )
 
         ok, message = AccountsService.issue_discord_telegram_link_code(111)
         self.assertFalse(ok)

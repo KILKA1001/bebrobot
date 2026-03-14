@@ -72,6 +72,29 @@ Track:
 - identity resolution errors (`identity_resolve_errors`),
 - unlink success/fail (`unlink_success`, `unlink_fail`).
 
+## 5.1) Optional parity projection table (P7)
+When support requests mention "Telegram linked but Discord not linked" (or vice versa),
+create `sql/p7_account_links_registry.sql` and query one projection row per account:
+
+```sql
+SELECT
+  account_id,
+  telegram_user_id,
+  discord_user_id,
+  (telegram_user_id IS NOT NULL) AS telegram_linked,
+  (discord_user_id IS NOT NULL) AS discord_linked,
+  (telegram_user_id IS NOT NULL AND discord_user_id IS NOT NULL) AS fully_linked,
+  updated_at
+FROM public.account_links_registry
+ORDER BY updated_at DESC;
+```
+
+The migration also installs a trigger on `account_identities`, so new links/unlinks are
+automatically mirrored in the projection table.
+
+Additionally, linking flow writes `last_link_code_used` and `last_link_code_used_at` into
+`account_links_registry` after successful code consumption for easier diagnostics.
+
 ## 6) Rollback
 1. Roll back code if runtime behavior degrades.
 2. Run `sql/p3_account_hardening_rollback.sql` (or affected statements only).
