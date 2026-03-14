@@ -531,14 +531,35 @@ class Database:
 
             rpc_applied = False
             try:
-                rpc_response = self.supabase.rpc("apply_points_action", {
-                    "p_account_id": resolved_account_id,
-                    "p_user_id": None,
-                    "p_delta": points,
-                    "p_reason": reason,
-                    "p_author_id": author_id,
-                    "p_op_key": op_key,
-                }).execute()
+                rpc_payload_variants = [
+                    {
+                        "p_account_id": resolved_account_id,
+                        "p_user_id": None,
+                        "p_delta": points,
+                        "p_reason": reason,
+                        "p_author_account_id": author_account_id,
+                        "p_op_key": op_key,
+                    },
+                    {
+                        "p_account_id": resolved_account_id,
+                        "p_user_id": None,
+                        "p_delta": points,
+                        "p_reason": reason,
+                        "p_author_id": author_id,
+                        "p_op_key": op_key,
+                    },
+                ]
+                rpc_response = None
+                rpc_errors = []
+                for rpc_payload in rpc_payload_variants:
+                    try:
+                        rpc_response = self.supabase.rpc("apply_points_action", rpc_payload).execute()
+                        break
+                    except Exception as rpc_variant_error:
+                        rpc_errors.append(str(rpc_variant_error))
+                        continue
+                if rpc_response is None:
+                    raise RuntimeError("; ".join(rpc_errors))
                 rpc_data = getattr(rpc_response, "data", None) or []
                 if rpc_data:
                     row = rpc_data[0]
@@ -563,7 +584,6 @@ class Database:
                     "account_id": resolved_account_id,
                     "points": points,
                     "reason": reason,
-                    "author_id": author_id,
                     "author_account_id": author_account_id,
                     "action_type": "remove" if points < 0 else "add",
                     "op_key": op_key,
@@ -584,7 +604,6 @@ class Database:
                     "account_id": resolved_account_id,
                     "points": points,
                     "reason": reason,
-                    "author_id": author_id,
                     "author_account_id": author_account_id,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "action_type": "remove" if points < 0 else "add",
