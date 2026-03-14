@@ -588,8 +588,60 @@ class Database:
                     "action_type": "remove" if points < 0 else "add",
                     "op_key": op_key,
                 }
-                response = self.supabase.table("actions").insert(action).execute()
+                try:
+                    response = self.supabase.table("actions").insert(action).execute()
+                except Exception as insert_error:
+                    logger.error(
+                        "❌ add_action fallback: не удалось вставить запись actions после обновления scores; откат баллов. account_id=%s op_key=%s error=%s",
+                        resolved_account_id,
+                        op_key,
+                        insert_error,
+                    )
+                    rollback_ok = self.update_scores_by_account(
+                        resolved_account_id,
+                        -points,
+                        user_id=cache_user_id,
+                    )
+                    if rollback_ok:
+                        logger.warning(
+                            "⚠️ add_action fallback: откат баллов выполнен account_id=%s op_key=%s delta=%s",
+                            resolved_account_id,
+                            op_key,
+                            points,
+                        )
+                    else:
+                        logger.error(
+                            "❌ add_action fallback: КРИТИЧЕСКАЯ рассинхронизация, откат не сработал account_id=%s op_key=%s delta=%s",
+                            resolved_account_id,
+                            op_key,
+                            points,
+                        )
+                    raise
                 if not response.data:
+                    logger.error(
+                        "❌ add_action fallback: пустой ответ insert actions, откат баллов. account_id=%s op_key=%s",
+                        resolved_account_id,
+                        op_key,
+                    )
+                    rollback_ok = self.update_scores_by_account(
+                        resolved_account_id,
+                        -points,
+                        user_id=cache_user_id,
+                    )
+                    if rollback_ok:
+                        logger.warning(
+                            "⚠️ add_action fallback: откат после пустого ответа insert выполнен account_id=%s op_key=%s delta=%s",
+                            resolved_account_id,
+                            op_key,
+                            points,
+                        )
+                    else:
+                        logger.error(
+                            "❌ add_action fallback: КРИТИЧЕСКАЯ рассинхронизация после пустого ответа insert account_id=%s op_key=%s delta=%s",
+                            resolved_account_id,
+                            op_key,
+                            points,
+                        )
                     raise ValueError("Пустой ответ от Supabase")
                 action_row = response.data[0]
             else:
