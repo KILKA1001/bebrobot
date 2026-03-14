@@ -55,7 +55,7 @@ class AccountsService:
         try:
             response = (
                 db.supabase.table("account_links_registry")
-                .select("account_id,telegram_user_id,discord_user_id,has_used_link_code")
+                .select("account_id,telegram_user_id,discord_user_id,telegram_linked_at,discord_linked_at,last_link_code_used,last_link_code_used_at,has_used_link_code")
                 .eq("account_id", str(account_id))
                 .limit(1)
                 .execute()
@@ -398,6 +398,7 @@ class AccountsService:
         if not from_account_id or not to_account_id or str(from_account_id) == str(to_account_id):
             return
 
+        AccountsService._merge_registry_rows_for_accounts(from_account_id, to_account_id)
         AccountsService._merge_scores_between_accounts(from_account_id, to_account_id)
         AccountsService._rebind_account_id(from_account_id, to_account_id)
         logger.info(
@@ -405,6 +406,100 @@ class AccountsService:
             from_account_id,
             to_account_id,
         )
+
+    @staticmethod
+    def _merge_registry_rows_for_accounts(from_account_id: str, to_account_id: str) -> None:
+        """Схлопывает account_links_registry перед merge, чтобы не ловить UNIQUE-конфликты по provider id."""
+        if not db.supabase:
+            return
+
+        source_row = AccountsService._get_account_link_registry_row(str(from_account_id)) or {}
+        target_row = AccountsService._get_account_link_registry_row(str(to_account_id)) or {}
+
+        if not source_row and not target_row:
+            return
+
+        source_telegram = source_row.get("telegram_user_id")
+        target_telegram = target_row.get("telegram_user_id")
+        if source_telegram and target_telegram and str(source_telegram) != str(target_telegram):
+            logger.error(
+                "merge_registry_rows_for_accounts conflicting telegram ids from_account_id=%s to_account_id=%s source=%s target=%s",
+                from_account_id,
+                to_account_id,
+                source_telegram,
+                target_telegram,
+            )
+
+        source_discord = source_row.get("discord_user_id")
+        target_discord = target_row.get("discord_user_id")
+        if source_discord and target_discord and str(source_discord) != str(target_discord):
+            logger.error(
+                "merge_registry_rows_for_accounts conflicting discord ids from_account_id=%s to_account_id=%s source=%s target=%s",
+                from_account_id,
+                to_account_id,
+                source_discord,
+                target_discord,
+            )
+
+        merged_row = {
+            "account_id": str(to_account_id),
+            "telegram_user_id": target_telegram or source_telegram,
+            "discord_user_id": target_discord or source_discord,
+            "telegram_linked_at": target_row.get("telegram_linked_at") or source_row.get("telegram_linked_at"),
+            "discord_linked_at": target_row.get("discord_linked_at") or source_row.get("discord_linked_at"),
+            "last_link_code_used": target_row.get("last_link_code_used") or source_row.get("last_link_code_used"),
+            "last_link_code_used_at": target_row.get("last_link_code_used_at") or source_row.get("last_link_code_used_at"),
+            "has_used_link_code": bool(target_row.get("has_used_link_code") or source_row.get("has_used_link_code")),
+        }
+
+        source_deleted = False
+        if source_row:
+            try:
+                db.supabase.table("account_links_registry").delete().eq("account_id", str(from_account_id)).execute()
+                source_deleted = True
+            except Exception as e:
+                logger.warning(
+                    "merge_registry_rows_for_accounts pre-upsert cleanup failed from_account_id=%s to_account_id=%s error=%s",
+                    from_account_id,
+                    to_account_id,
+                    AccountsService._format_db_error(e),
+                )
+
+        try:
+            try:
+                db.supabase.table("account_links_registry").upsert(merged_row, on_conflict="account_id").execute()
+            except TypeError:
+                db.supabase.table("account_links_registry").upsert(merged_row).execute()
+        except Exception as e:
+            logger.warning(
+                "merge_registry_rows_for_accounts upsert failed from_account_id=%s to_account_id=%s payload=%s error=%s",
+                from_account_id,
+                to_account_id,
+                merged_row,
+                AccountsService._format_db_error(e),
+            )
+            if source_deleted:
+                try:
+                    db.supabase.table("account_links_registry").upsert(source_row, on_conflict="account_id").execute()
+                except TypeError:
+                    try:
+                        db.supabase.table("account_links_registry").upsert(source_row).execute()
+                    except Exception as restore_error:
+                        logger.error(
+                            "merge_registry_rows_for_accounts restore source failed from_account_id=%s to_account_id=%s source_row=%s error=%s",
+                            from_account_id,
+                            to_account_id,
+                            source_row,
+                            AccountsService._format_db_error(restore_error),
+                        )
+                except Exception as restore_error:
+                    logger.error(
+                        "merge_registry_rows_for_accounts restore source failed from_account_id=%s to_account_id=%s source_row=%s error=%s",
+                        from_account_id,
+                        to_account_id,
+                        source_row,
+                        AccountsService._format_db_error(restore_error),
+                    )
 
     @staticmethod
     def _create_account() -> Optional[str]:
