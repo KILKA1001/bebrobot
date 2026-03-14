@@ -49,6 +49,117 @@ class AccountsService:
         return None
 
     @staticmethod
+    def _get_account_link_registry_row(account_id: str) -> Optional[dict]:
+        if not db.supabase or not account_id:
+            return None
+        try:
+            response = (
+                db.supabase.table("account_links_registry")
+                .select("account_id,telegram_user_id,discord_user_id,has_used_link_code")
+                .eq("account_id", str(account_id))
+                .limit(1)
+                .execute()
+            )
+            if response.data:
+                return response.data[0]
+        except Exception as e:
+            logger.warning(
+                "account_links_registry lookup failed account_id=%s error=%s",
+                account_id,
+                AccountsService._format_db_error(e),
+            )
+        return None
+
+    @staticmethod
+    def _is_target_already_linked(account_id: str, target_provider: str) -> bool:
+        registry_row = AccountsService._get_account_link_registry_row(account_id)
+        if registry_row is not None:
+            target_value = registry_row.get(f"{target_provider}_user_id")
+            if target_value:
+                return True
+
+        try:
+            identities_response = (
+                db.supabase.table("account_identities")
+                .select("provider")
+                .eq("account_id", str(account_id))
+                .execute()
+            )
+            identities = identities_response.data or []
+            return any(identity.get("provider") == target_provider for identity in identities)
+        except Exception as e:
+            logger.warning(
+                "target identity lookup failed target=%s account_id=%s error=%s",
+                target_provider,
+                account_id,
+                AccountsService._format_db_error(e),
+            )
+            return False
+
+    @staticmethod
+    def _registry_blocks_new_link_code(account_id: str, target_provider: str) -> bool:
+        registry_row = AccountsService._get_account_link_registry_row(account_id)
+        if not registry_row:
+            return False
+
+        target_value = registry_row.get(f"{target_provider}_user_id")
+        if target_value:
+            logger.info(
+                "registry blocks code issue: target already linked account_id=%s target_provider=%s",
+                account_id,
+                target_provider,
+            )
+            return True
+
+        has_used_link_code = bool(registry_row.get("has_used_link_code"))
+        has_telegram = bool(registry_row.get("telegram_user_id"))
+        has_discord = bool(registry_row.get("discord_user_id"))
+        if has_used_link_code and has_telegram and has_discord:
+            logger.info(
+                "registry blocks code issue: link code already consumed for fully linked account_id=%s target_provider=%s",
+                account_id,
+                target_provider,
+            )
+            return True
+
+        return False
+
+    @staticmethod
+    def _mark_registry_link_code_usage(account_id: str, link_code: str) -> None:
+        if not db.supabase or not account_id or not link_code:
+            return
+
+        payload = {
+            "account_id": str(account_id),
+            "last_link_code_used": str(link_code),
+            "last_link_code_used_at": datetime.now(timezone.utc).isoformat(),
+            "has_used_link_code": True,
+        }
+
+        try:
+            db.supabase.table("account_links_registry").upsert(payload, on_conflict="account_id").execute()
+            return
+        except TypeError:
+            try:
+                db.supabase.table("account_links_registry").upsert(payload).execute()
+                return
+            except Exception as e:
+                logger.warning(
+                    "account_links_registry code usage upsert failed (legacy) account_id=%s code=%s error=%s",
+                    account_id,
+                    link_code,
+                    AccountsService._format_db_error(e),
+                )
+                return
+        except Exception as e:
+            logger.warning(
+                "account_links_registry code usage upsert failed account_id=%s code=%s error=%s",
+                account_id,
+                link_code,
+                AccountsService._format_db_error(e),
+            )
+
+    @staticmethod
     def _generate_link_code(length: int = LINK_CODE_LEN) -> str:
         alphabet = string.ascii_uppercase + string.digits
         return "".join(secrets.choice(alphabet) for _ in range(length))
@@ -274,27 +385,17 @@ class AccountsService:
                 db._inc_metric("link_issue_fail")
             return False, "Сначала зарегистрируйтесь в боте"
 
-        try:
-            identities_response = (
-                db.supabase.table("account_identities")
-                .select("provider")
-                .eq("account_id", str(account_id))
-                .execute()
-            )
-            identities = identities_response.data or []
-            if any(identity.get("provider") == target_provider for identity in identities):
-                if hasattr(db, "_inc_metric"):
-                    db._inc_metric("link_issue_fail")
-                return False, f"Аккаунт уже привязан к {target_provider}"
-        except Exception as e:
-            logger.warning(
-                "issue_link_code identity lookup failed source=%s:%s target=%s account_id=%s error=%s",
+        if AccountsService._registry_blocks_new_link_code(str(account_id), target_provider) or AccountsService._is_target_already_linked(str(account_id), target_provider):
+            if hasattr(db, "_inc_metric"):
+                db._inc_metric("link_issue_fail")
+            logger.info(
+                "issue_link_code skipped because target already linked source=%s:%s target=%s account_id=%s",
                 source_provider,
                 source_provider_user_id,
                 target_provider,
                 account_id,
-                AccountsService._format_db_error(e),
             )
+            return False, f"Аккаунт уже привязан к {target_provider}"
 
         reusable_code = AccountsService._find_reusable_link_code(
             str(account_id),
@@ -545,6 +646,8 @@ class AccountsService:
                     db._inc_metric("link_consume_fail")
                 logger.error("consume_link_code failed to mark code as used code=%s table=%s", code, table_name)
                 return False, "Не удалось завершить привязку, попробуйте позже"
+
+            AccountsService._mark_registry_link_code_usage(str(account_id), code)
 
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("link_consume_success")
