@@ -186,7 +186,7 @@ class AccountsService:
         if not from_account_id or not to_account_id or str(from_account_id) == str(to_account_id):
             return
 
-        db.supabase.table("account_identities").update({"account_id": to_account_id}).eq("account_id", from_account_id).execute()
+        AccountsService._rebind_account_identities(from_account_id, to_account_id)
 
         for table_name in ("scores", "actions", "ticket_actions", "bank_history", "fines", "fine_payments"):
             try:
@@ -209,6 +209,92 @@ class AccountsService:
                 to_account_id,
                 AccountsService._format_db_error(e),
             )
+
+    @staticmethod
+    def _rebind_account_identities(from_account_id: str, to_account_id: str) -> None:
+        """Аккуратно переносит identities без падения на unique-конфликтах."""
+        if not db.supabase:
+            return
+
+        try:
+            source_resp = (
+                db.supabase.table("account_identities")
+                .select("provider,provider_user_id")
+                .eq("account_id", str(from_account_id))
+                .execute()
+            )
+            target_resp = (
+                db.supabase.table("account_identities")
+                .select("provider,provider_user_id")
+                .eq("account_id", str(to_account_id))
+                .execute()
+            )
+            source_identities = source_resp.data or []
+            target_keys = {
+                (str(row.get("provider")), str(row.get("provider_user_id")))
+                for row in (target_resp.data or [])
+                if row.get("provider") and row.get("provider_user_id")
+            }
+
+            for row in source_identities:
+                provider = row.get("provider")
+                provider_user_id = row.get("provider_user_id")
+                if not provider or not provider_user_id:
+                    logger.warning(
+                        "rebind_account_identities skipped invalid identity from_account_id=%s to_account_id=%s provider=%s provider_user_id=%s",
+                        from_account_id,
+                        to_account_id,
+                        provider,
+                        provider_user_id,
+                    )
+                    continue
+
+                identity_key = (str(provider), str(provider_user_id))
+                op = (
+                    db.supabase.table("account_identities")
+                    .eq("account_id", str(from_account_id))
+                    .eq("provider", str(provider))
+                    .eq("provider_user_id", str(provider_user_id))
+                )
+
+                if identity_key in target_keys:
+                    op.delete().execute()
+                    logger.warning(
+                        "rebind_account_identities removed duplicate source identity from_account_id=%s to_account_id=%s provider=%s provider_user_id=%s",
+                        from_account_id,
+                        to_account_id,
+                        provider,
+                        provider_user_id,
+                    )
+                    continue
+
+                try:
+                    op.update({"account_id": str(to_account_id)}).execute()
+                    target_keys.add(identity_key)
+                except Exception as e:
+                    if AccountsService._is_unique_violation(e):
+                        db.supabase.table("account_identities").delete().eq("account_id", str(from_account_id)).eq(
+                            "provider", str(provider)
+                        ).eq("provider_user_id", str(provider_user_id)).execute()
+                        target_keys.add(identity_key)
+                        logger.warning(
+                            "rebind_account_identities resolved unique conflict by deleting source identity from_account_id=%s to_account_id=%s provider=%s provider_user_id=%s error=%s",
+                            from_account_id,
+                            to_account_id,
+                            provider,
+                            provider_user_id,
+                            AccountsService._format_db_error(e),
+                        )
+                    else:
+                        raise
+        except Exception as e:
+            logger.exception(
+                "rebind_account_identities failed from_account_id=%s to_account_id=%s error=%s",
+                from_account_id,
+                to_account_id,
+                AccountsService._format_db_error(e),
+            )
+            raise
 
     @staticmethod
     def _resolve_numeric_user_id_for_account(account_id: str) -> Optional[int]:
@@ -255,14 +341,14 @@ class AccountsService:
         try:
             source_resp = (
                 db.supabase.table("scores")
-                .select("account_id,user_id,points,tickets_normal,tickets_gold")
+                .select("account_id,points,tickets_normal,tickets_gold")
                 .eq("account_id", str(from_account_id))
                 .limit(1)
                 .execute()
             )
             target_resp = (
                 db.supabase.table("scores")
-                .select("account_id,user_id,points,tickets_normal,tickets_gold")
+                .select("account_id,points,tickets_normal,tickets_gold")
                 .eq("account_id", str(to_account_id))
                 .limit(1)
                 .execute()
@@ -273,23 +359,8 @@ class AccountsService:
             if not source_row:
                 return
 
-            merged_user_id = (target_row or {}).get("user_id") or source_row.get("user_id")
-            if merged_user_id is None:
-                merged_user_id = AccountsService._resolve_numeric_user_id_for_account(str(to_account_id))
-            if merged_user_id is None:
-                merged_user_id = AccountsService._resolve_numeric_user_id_for_account(str(from_account_id))
-
-            if merged_user_id is None:
-                logger.error(
-                    "merge_scores_between_accounts skipped: cannot resolve non-null user_id from_account_id=%s to_account_id=%s",
-                    from_account_id,
-                    to_account_id,
-                )
-                return
-
             merged_payload = {
                 "account_id": str(to_account_id),
-                "user_id": int(merged_user_id),
                 "points": float((target_row or {}).get("points") or 0) + float(source_row.get("points") or 0),
                 "tickets_normal": int((target_row or {}).get("tickets_normal") or 0) + int(source_row.get("tickets_normal") or 0),
                 "tickets_gold": int((target_row or {}).get("tickets_gold") or 0) + int(source_row.get("tickets_gold") or 0),
