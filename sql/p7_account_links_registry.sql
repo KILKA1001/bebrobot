@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS public.account_links_registry (
   created_at timestamptz NOT NULL DEFAULT timezone('utc', now()),
   updated_at timestamptz NOT NULL DEFAULT timezone('utc', now()),
   last_link_code_used text,
-  last_link_code_used_at timestamptz
+  last_link_code_used_at timestamptz,
+  has_used_link_code boolean NOT NULL DEFAULT false
 );
 
 CREATE INDEX IF NOT EXISTS ix_account_links_registry_telegram_user_id
@@ -23,7 +24,8 @@ CREATE INDEX IF NOT EXISTS ix_account_links_registry_discord_user_id
 
 ALTER TABLE IF EXISTS public.account_links_registry
   ADD COLUMN IF NOT EXISTS last_link_code_used text,
-  ADD COLUMN IF NOT EXISTS last_link_code_used_at timestamptz;
+  ADD COLUMN IF NOT EXISTS last_link_code_used_at timestamptz,
+  ADD COLUMN IF NOT EXISTS has_used_link_code boolean NOT NULL DEFAULT false;
 
 CREATE OR REPLACE FUNCTION public.rebuild_account_links_registry_row(p_account_id uuid)
 RETURNS void

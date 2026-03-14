@@ -92,8 +92,9 @@ ORDER BY updated_at DESC;
 The migration also installs a trigger on `account_identities`, so new links/unlinks are
 automatically mirrored in the projection table.
 
-Additionally, linking flow writes `last_link_code_used` and `last_link_code_used_at` into
-`account_links_registry` after successful code consumption for easier diagnostics.
+Additionally, linking flow writes `last_link_code_used`, `last_link_code_used_at`, and
+`has_used_link_code=true` into `account_links_registry` after successful code consumption
+for easier diagnostics and quick no-issue checks.
 
 ## 6) Rollback
 1. Roll back code if runtime behavior degrades.

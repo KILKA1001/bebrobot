@@ -55,7 +55,7 @@ class AccountsService:
         try:
             response = (
                 db.supabase.table("account_links_registry")
-                .select("account_id,telegram_user_id,discord_user_id")
+                .select("account_id,telegram_user_id,discord_user_id,has_used_link_code")
                 .eq("account_id", str(account_id))
                 .limit(1)
                 .execute()
@@ -97,6 +97,34 @@ class AccountsService:
             return False
 
     @staticmethod
+    def _registry_blocks_new_link_code(account_id: str, target_provider: str) -> bool:
+        registry_row = AccountsService._get_account_link_registry_row(account_id)
+        if not registry_row:
+            return False
+
+        target_value = registry_row.get(f"{target_provider}_user_id")
+        if target_value:
+            logger.info(
+                "registry blocks code issue: target already linked account_id=%s target_provider=%s",
+                account_id,
+                target_provider,
+            )
+            return True
+
+        has_used_link_code = bool(registry_row.get("has_used_link_code"))
+        has_telegram = bool(registry_row.get("telegram_user_id"))
+        has_discord = bool(registry_row.get("discord_user_id"))
+        if has_used_link_code and has_telegram and has_discord:
+            logger.info(
+                "registry blocks code issue: link code already consumed for fully linked account_id=%s target_provider=%s",
+                account_id,
+                target_provider,
+            )
+            return True
+
+        return False
+
+    @staticmethod
     def _mark_registry_link_code_usage(account_id: str, link_code: str) -> None:
         if not db.supabase or not account_id or not link_code:
             return
@@ -105,6 +133,7 @@ class AccountsService:
             "account_id": str(account_id),
             "last_link_code_used": str(link_code),
             "last_link_code_used_at": datetime.now(timezone.utc).isoformat(),
+            "has_used_link_code": True,
         }
 
         try:
@@ -356,7 +385,7 @@ class AccountsService:
                 db._inc_metric("link_issue_fail")
             return False, "Сначала зарегистрируйтесь в боте"
 
-        if AccountsService._is_target_already_linked(str(account_id), target_provider):
+        if AccountsService._registry_blocks_new_link_code(str(account_id), target_provider) or AccountsService._is_target_already_linked(str(account_id), target_provider):
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("link_issue_fail")
             logger.info(

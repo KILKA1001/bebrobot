@@ -157,6 +157,7 @@ class AccountsServiceTests(unittest.TestCase):
         self.assertEqual(message, "Аккаунт успешно привязан")
         self.assertTrue(self.fake_db.tables["account_link_codes"][0]["is_used"])
         self.assertEqual(self.fake_db.tables["account_links_registry"][0]["last_link_code_used"], code)
+        self.assertTrue(self.fake_db.tables["account_links_registry"][0]["has_used_link_code"])
 
         discord_account = AccountsService.resolve_account_id("discord", "111")
         telegram_account = AccountsService.resolve_account_id("telegram", "222")
@@ -214,6 +215,23 @@ class AccountsServiceTests(unittest.TestCase):
         ok, message = AccountsService.issue_discord_telegram_link_code(111)
         self.assertFalse(ok)
         self.assertEqual(message, "Аккаунт уже привязан к telegram")
+
+    def test_issue_link_code_does_not_block_only_by_used_flag_without_target_binding(self):
+        AccountsService.register_identity("discord", "111")
+        account_id = AccountsService.resolve_account_id("discord", "111")
+        self.assertIsNotNone(account_id)
+        self.fake_db.tables["account_links_registry"].append(
+            {
+                "account_id": account_id,
+                "telegram_user_id": None,
+                "discord_user_id": "111",
+                "has_used_link_code": True,
+            }
+        )
+
+        ok, code = AccountsService.issue_discord_telegram_link_code(111)
+        self.assertTrue(ok)
+        self.assertTrue(code)
 
     def test_link_flow_expired_code(self):
         AccountsService.register_identity("discord", "111")
