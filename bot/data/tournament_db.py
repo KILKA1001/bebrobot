@@ -19,6 +19,11 @@ _has_team_auto = True
 _has_status_msg = True
 # Флаг наличия legacy-столбца player_id в tournament_participants
 _has_tp_player_id = True
+_has_tp_account_id = True
+_has_tp_discord_user_id = True
+_has_tb_account_id = True
+_has_tb_user_id = True
+_account_to_discord_cache: Dict[str, int] = {}
 
 
 def _participants_select_fields() -> str:
@@ -44,6 +49,63 @@ def _normalize_participant_rows(rows: List[dict]) -> List[dict]:
             row = {**row, "player_id": None}
         normalized.append(row)
     return normalized
+
+
+def _get_account_id_for_discord_user(discord_user_id: int) -> Optional[str]:
+    if not discord_user_id:
+        return None
+    try:
+        response = (
+            supabase.table("account_identities")
+            .select("account_id")
+            .eq("provider", "discord")
+            .eq("provider_user_id", str(discord_user_id))
+            .limit(1)
+            .execute()
+        )
+        if response.data:
+            return response.data[0].get("account_id")
+    except Exception as e:
+        logger.exception("resolve account_id for discord failed discord_user_id=%s error=%s", discord_user_id, e)
+    return None
+
+
+def _get_discord_user_for_account(account_id: str) -> Optional[int]:
+    if not account_id:
+        return None
+    if account_id in _account_to_discord_cache:
+        return _account_to_discord_cache[account_id]
+    try:
+        response = (
+            supabase.table("account_identities")
+            .select("provider_user_id")
+            .eq("provider", "discord")
+            .eq("account_id", str(account_id))
+            .limit(1)
+            .execute()
+        )
+        if response.data:
+            resolved = int(response.data[0]["provider_user_id"])
+            _account_to_discord_cache[account_id] = resolved
+            return resolved
+    except Exception as e:
+        logger.exception("resolve discord id for account failed account_id=%s error=%s", account_id, e)
+    return None
+
+
+def _normalize_bet_row(row: dict) -> dict:
+    if not isinstance(row, dict):
+        return row
+    account_id = row.get("account_id")
+    if account_id and row.get("user_id") is None:
+        resolved = _get_discord_user_for_account(account_id)
+        if resolved is not None:
+            return {**row, "user_id": resolved}
+    return row
+
+
+def _normalize_bet_rows(rows: List[dict]) -> List[dict]:
+    return [_normalize_bet_row(r) for r in (rows or [])]
 
 
 def create_tournament_record(
@@ -89,12 +151,17 @@ def add_discord_participant(
     team_name: Optional[str] = None,
 ) -> bool:
     """Для саморегистрации участника (по Discord ID)."""
-    global _has_tp_player_id
+    global _has_tp_player_id, _has_tp_account_id, _has_tp_discord_user_id
     payload = {
         "tournament_id": tournament_id,
-        "discord_user_id": discord_user_id,
         "confirmed": False,
     }
+    account_id = _get_account_id_for_discord_user(discord_user_id)
+    if _has_tp_account_id and account_id:
+        payload["account_id"] = account_id
+    elif _has_tp_discord_user_id:
+        payload["discord_user_id"] = discord_user_id
+
     if _has_tp_player_id:
         payload["player_id"] = None
     if team_id is not None:
@@ -104,18 +171,33 @@ def add_discord_participant(
         res = supabase.table("tournament_participants").insert(payload).execute()
         return bool(res.data)
     except APIError as e:
-        if _has_tp_player_id and "player_id" in str(e) and getattr(e, "code", "") == "PGRST204":
-            logger.warning("'player_id' column missing in tournament_participants table")
-            _has_tp_player_id = False
-            payload.pop("player_id", None)
-            retry = supabase.table("tournament_participants").insert(payload).execute()
-            return bool(retry.data)
+        if getattr(e, "code", "") == "PGRST204":
+            if _has_tp_player_id and "player_id" in str(e):
+                logger.warning("'player_id' column missing in tournament_participants table")
+                _has_tp_player_id = False
+                payload.pop("player_id", None)
+                retry = supabase.table("tournament_participants").insert(payload).execute()
+                return bool(retry.data)
+            if _has_tp_account_id and "account_id" in str(e):
+                logger.warning("'account_id' column missing in tournament_participants table; fallback to discord_user_id")
+                _has_tp_account_id = False
+                payload.pop("account_id", None)
+                if _has_tp_discord_user_id:
+                    payload["discord_user_id"] = discord_user_id
+                retry = supabase.table("tournament_participants").insert(payload).execute()
+                return bool(retry.data)
+            if _has_tp_discord_user_id and "discord_user_id" in str(e):
+                logger.warning("'discord_user_id' column missing in tournament_participants table")
+                _has_tp_discord_user_id = False
+                payload.pop("discord_user_id", None)
+                retry = supabase.table("tournament_participants").insert(payload).execute()
+                return bool(retry.data)
         if e.code == "23505":
             return False
         logger.error("add_discord_participant failed: %s", e)
         return False
     except Exception as e:
-        logger.error("Unexpected error in add_discord_participant: %s", e)
+        logger.exception("Unexpected error in add_discord_participant: %s", e)
         return False
 
 
@@ -126,12 +208,17 @@ def add_player_participant(
     team_name: Optional[str] = None,
 ) -> bool:
     """Для админской регистрации (по player_id)."""
-    global _has_tp_player_id
+    global _has_tp_player_id, _has_tp_account_id, _has_tp_discord_user_id
     payload = {
         "tournament_id": tournament_id,
-        "discord_user_id": player_id,
         "confirmed": True,
     }
+    account_id = _get_account_id_for_discord_user(player_id)
+    if _has_tp_account_id and account_id:
+        payload["account_id"] = account_id
+    elif _has_tp_discord_user_id:
+        payload["discord_user_id"] = player_id
+
     if _has_tp_player_id:
         payload["player_id"] = player_id
     if team_id is not None:
@@ -141,48 +228,83 @@ def add_player_participant(
         res = supabase.table("tournament_participants").insert(payload).execute()
         return bool(res.data)
     except APIError as e:
-        if _has_tp_player_id and "player_id" in str(e) and getattr(e, "code", "") == "PGRST204":
-            logger.warning("'player_id' column missing in tournament_participants table")
-            _has_tp_player_id = False
-            payload.pop("player_id", None)
-            retry = supabase.table("tournament_participants").insert(payload).execute()
-            return bool(retry.data)
+        if getattr(e, "code", "") == "PGRST204":
+            if _has_tp_player_id and "player_id" in str(e):
+                logger.warning("'player_id' column missing in tournament_participants table")
+                _has_tp_player_id = False
+                payload.pop("player_id", None)
+                retry = supabase.table("tournament_participants").insert(payload).execute()
+                return bool(retry.data)
+            if _has_tp_account_id and "account_id" in str(e):
+                logger.warning("'account_id' column missing in tournament_participants table; fallback to discord_user_id")
+                _has_tp_account_id = False
+                payload.pop("account_id", None)
+                if _has_tp_discord_user_id:
+                    payload["discord_user_id"] = player_id
+                retry = supabase.table("tournament_participants").insert(payload).execute()
+                return bool(retry.data)
+            if _has_tp_discord_user_id and "discord_user_id" in str(e):
+                logger.warning("'discord_user_id' column missing in tournament_participants table")
+                _has_tp_discord_user_id = False
+                payload.pop("discord_user_id", None)
+                retry = supabase.table("tournament_participants").insert(payload).execute()
+                return bool(retry.data)
         if e.code == "23505":
             return False
         logger.error("add_player_participant failed: %s", e)
         return False
     except Exception as e:
-        logger.error("Unexpected error in add_player_participant: %s", e)
+        logger.exception("Unexpected error in add_player_participant: %s", e)
         return False
 
 
 def list_participants(tournament_id: int) -> List[dict]:
     """
     Возвращает список участников как словари с полями
-    {discord_user_id, player_id}.
+    {account_id, discord_user_id, player_id}.
     """
-    global _has_tp_player_id
+    global _has_tp_player_id, _has_tp_account_id, _has_tp_discord_user_id
+
+    select_fields = _participants_select_fields()
+    if _has_tp_account_id:
+        select_fields = f"account_id,{select_fields}"
+
     try:
         res = (
             supabase.table("tournament_participants")
-            .select(_participants_select_fields())
+            .select(select_fields)
             .eq("tournament_id", tournament_id)
             .execute()
         )
-        return _normalize_participant_rows(res.data or [])
     except APIError as e:
-        if _has_tp_player_id and "player_id" in str(e) and getattr(e, "code", "") == "PGRST204":
-            logger.warning("'player_id' column missing in tournament_participants table")
-            _has_tp_player_id = False
-            res = (
-                supabase.table("tournament_participants")
-                .select(_participants_select_fields())
-                .eq("tournament_id", tournament_id)
-                .execute()
-            )
-            return _normalize_participant_rows(res.data or [])
+        if getattr(e, "code", "") == "PGRST204":
+            if _has_tp_player_id and "player_id" in str(e):
+                logger.warning("'player_id' column missing in tournament_participants table")
+                _has_tp_player_id = False
+                return list_participants(tournament_id)
+            if _has_tp_account_id and "account_id" in str(e):
+                logger.warning("'account_id' column missing in tournament_participants table")
+                _has_tp_account_id = False
+                return list_participants(tournament_id)
+            if _has_tp_discord_user_id and "discord_user_id" in str(e):
+                logger.warning("'discord_user_id' column missing in tournament_participants table")
+                _has_tp_discord_user_id = False
+                return list_participants(tournament_id)
         logger.error("list_participants failed: %s", e)
         return []
+    except Exception as e:
+        logger.exception("Unexpected error in list_participants: %s", e)
+        return []
+
+    rows = _normalize_participant_rows(res.data or [])
+    normalized = []
+    for row in rows:
+        if row.get("discord_user_id") is None and row.get("account_id"):
+            resolved = _get_discord_user_for_account(row.get("account_id"))
+            if resolved is not None:
+                row = {**row, "discord_user_id": resolved}
+        normalized.append(row)
+    return normalized
 
 
 def create_matches(tournament_id: int, round_number: int, matches: List) -> None:
@@ -940,25 +1062,47 @@ def create_bet(
     amount: float,
 ) -> int | None:
     """Creates a bet record and returns its ID."""
+    global _has_tb_account_id, _has_tb_user_id
+    account_id = _get_account_id_for_discord_user(user_id)
+    payload = {
+        "tournament_id": tournament_id,
+        "round": round_no,
+        "pair_index": pair_index,
+        "bet_on": bet_on,
+        "amount": amount,
+    }
+    if _has_tb_account_id and account_id:
+        payload["account_id"] = account_id
+    elif _has_tb_user_id:
+        payload["user_id"] = user_id
+
     try:
         res = (
             supabase.table("tournament_bets")
-            .insert(
-                {
-                    "tournament_id": tournament_id,
-                    "round": round_no,
-                    "pair_index": pair_index,
-                    "user_id": user_id,
-                    "bet_on": bet_on,
-                    "amount": amount,
-                },
-                returning="representation",
-            )
+            .insert(payload, returning="representation")
             .execute()
         )
         return res.data[0]["id"] if res.data else None
-    except Exception as e:
+    except APIError as e:
+        if getattr(e, "code", "") == "PGRST204":
+            if _has_tb_account_id and "account_id" in str(e):
+                logger.warning("'account_id' column missing in tournament_bets table; fallback to user_id")
+                _has_tb_account_id = False
+                payload.pop("account_id", None)
+                if _has_tb_user_id:
+                    payload["user_id"] = user_id
+                retry = supabase.table("tournament_bets").insert(payload, returning="representation").execute()
+                return retry.data[0]["id"] if retry.data else None
+            if _has_tb_user_id and "user_id" in str(e):
+                logger.warning("'user_id' column missing in tournament_bets table")
+                _has_tb_user_id = False
+                payload.pop("user_id", None)
+                retry = supabase.table("tournament_bets").insert(payload, returning="representation").execute()
+                return retry.data[0]["id"] if retry.data else None
         logger.error("Failed to create bet: %s", e)
+        return None
+    except Exception as e:
+        logger.exception("Failed to create bet: %s", e)
         return None
 
 
@@ -971,7 +1115,7 @@ def list_bets(tournament_id: int, round_no: int | None = None) -> list[dict]:
         query = query.eq("round", round_no)
     try:
         res = query.execute()
-        return res.data or []
+        return _normalize_bet_rows(res.data or [])
     except Exception as e:
         logger.error("Failed to list bets: %s", e)
         return []
@@ -1002,7 +1146,7 @@ def get_bet(bet_id: int) -> dict | None:
             .single()
             .execute()
         )
-        return res.data if res and res.data else None
+        return _normalize_bet_row(res.data) if res and res.data else None
     except Exception as e:
         logger.error("Failed to get bet: %s", e)
         return None
@@ -1012,17 +1156,21 @@ def list_user_bets(
     tournament_id: int, user_id: int, open_only: bool = True
 ) -> list[dict]:
     """Возвращает ставки пользователя на турнир."""
+    account_id = _get_account_id_for_discord_user(user_id)
     query = (
         supabase.table("tournament_bets")
         .select("*")
         .eq("tournament_id", tournament_id)
-        .eq("user_id", user_id)
     )
+    if account_id:
+        query = query.eq("account_id", account_id)
+    else:
+        query = query.eq("user_id", user_id)
     if open_only:
         query = query.is_("won", None)
     try:
         res = query.execute()
-        return res.data or []
+        return _normalize_bet_rows(res.data or [])
     except Exception as e:
         logger.error("Failed to list user bets: %s", e)
         return []
