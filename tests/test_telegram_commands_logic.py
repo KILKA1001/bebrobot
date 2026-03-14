@@ -51,6 +51,7 @@ class TelegramCommandsLogicTests(unittest.TestCase):
     def test_helpy_contains_profile_edit(self):
         self.assertIn("/profile_edit", get_helpy_text())
         self.assertIn("/points", get_helpy_text())
+        self.assertIn("/balance", get_helpy_text())
         self.assertIn("/tickets", get_helpy_text())
 
     def test_link_command_restricted_to_private_chat(self):

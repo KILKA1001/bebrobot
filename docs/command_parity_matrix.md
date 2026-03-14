@@ -32,7 +32,7 @@ This matrix reflects the current command parity between Discord and Telegram imp
 | Points | `/bankadd` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Points | `/bankspend` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Points | `/bankhistory` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
-| Points | `/balance` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
+| Points | `/balance` | `/balance [reply|id]` | partial | Read-only balance view is available in Telegram; Discord supports optional member argument via mention. |
 | Fines | `/fine` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Fines | `/myfines` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Fines | `/allfines` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |

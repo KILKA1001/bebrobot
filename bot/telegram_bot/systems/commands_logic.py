@@ -11,6 +11,7 @@ HELPY_TEXT = (
     "/link <код> — привязать Telegram к аккаунту по коду из Discord\n"
     "/link_discord — получить код для привязки Discord\n"
     "/points [reply|id] — меню управления баллами\n"
+    "/balance [reply|id] — показать баланс пользователя\n"
     "/tickets [reply|id] — меню управления билетами\n"
     "/helpy — показать это сообщение"
 )
