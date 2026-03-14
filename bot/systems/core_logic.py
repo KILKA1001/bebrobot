@@ -554,7 +554,7 @@ async def transfer_data_logic(old_id: int, new_id: int) -> discord.Embed:
         )
     return embed
 
-def build_balance_embed(member: discord.Member) -> discord.Embed:
+def build_balance_embed(member: discord.abc.User, guild: discord.Guild | None = None) -> discord.Embed:
     user_id = member.id
     points = db.scores.get(user_id, 0)
     account_id = AccountsService.resolve_account_id("discord", str(user_id))
@@ -598,7 +598,16 @@ def build_balance_embed(member: discord.Member) -> discord.Embed:
     if score_row is not None:
         points = float(score_row.get("points") or 0)
 
-    roles = [role for role in member.roles if role.id in ROLE_THRESHOLDS]
+    guild_member = member if isinstance(member, discord.Member) else None
+    if guild_member is None and guild is not None:
+        try:
+            guild_member = guild.get_member(user_id)
+        except Exception:
+            logger.exception("build_balance_embed failed to resolve guild member user_id=%s guild_id=%s", user_id, getattr(guild, "id", None))
+
+    roles = []
+    if guild_member is not None:
+        roles = [role for role in guild_member.roles if role.id in ROLE_THRESHOLDS]
     role_names = ', '.join(role.name for role in roles) if roles else 'Нет роли'
 
     sorted_scores = sorted(db.scores.items(), key=lambda x: x[1], reverse=True)
@@ -609,11 +618,17 @@ def build_balance_embed(member: discord.Member) -> discord.Embed:
     normal = data.get("tickets_normal", 0)
     gold = data.get("tickets_gold", 0)
 
+    display_name = getattr(member, "display_name", getattr(member, "name", str(user_id)))
     embed = discord.Embed(
-        title=f"Баланс пользователя {member.display_name}",
+        title=f"Баланс пользователя {display_name}",
         color=discord.Color.blue()
     )
-    embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
+    avatar = getattr(member, "avatar", None)
+    default_avatar = getattr(member, "default_avatar", None)
+    if avatar:
+        embed.set_thumbnail(url=avatar.url)
+    elif default_avatar:
+        embed.set_thumbnail(url=default_avatar.url)
 
     embed.add_field(name="🎯 Баллы", value=format_points(points), inline=True)
     embed.add_field(name="🎟 Обычные билеты", value=f"{normal}", inline=True)

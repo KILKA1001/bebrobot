@@ -2,7 +2,6 @@ import discord
 from discord.ext import commands
 from aiohttp import TraceConfig
 from typing import Optional
-import os
 import logging
 
 from bot.data import db
@@ -20,9 +19,9 @@ from bot.systems.core_logic import (
     LeaderboardView,
     build_balance_embed,
 )
-from bot.utils import send_temp, format_moscow_time, format_points
+from bot.utils import send_temp
 from bot.utils.api_monitor import monitor
-from bot.services import PointsService, AuthorityService
+from bot.services import AuthorityService
 from bot import COMMAND_PREFIX
 
 
@@ -38,12 +37,6 @@ intents.message_content = True
 
 trace_config = TraceConfig()
 logger = logging.getLogger(__name__)
-
-# Дополнительные роли, которым разрешено начислять и снимать баллы
-POINTS_ROLE_IDS = tuple(
-    int(r) for r in os.getenv("POINTS_ROLE_IDS", "").split(",") if r
-)
-
 
 @trace_config.on_request_end.append
 async def _trace_request_end(session, ctx, params):
@@ -71,15 +64,6 @@ async def show_loading_state(ctx: commands.Context):
         pass
 
 
-def has_points_permission(ctx: commands.Context) -> bool:
-    """Check if user can modify points."""
-    if ctx.author.guild_permissions.administrator:
-        return True
-    if any(role.id in POINTS_ROLE_IDS for role in ctx.author.roles):
-        return True
-    return AuthorityService.has_command_permission("discord", str(ctx.author.id), "points_manage")
-
-
 async def _check_command_authority(ctx: commands.Context, command_key: str, target: discord.Member | None = None) -> bool:
     if ctx.author.guild_permissions.administrator:
         return True
@@ -98,106 +82,6 @@ async def _check_command_authority(ctx: commands.Context, command_key: str, targ
 
 
 
-
-
-@bot.hybrid_command(name="addpoints", description="Начислить баллы участнику")
-@commands.check(has_points_permission)
-async def add_points(
-    ctx, member: discord.Member, points: str, *, reason: str = "Без причины"
-):
-    if not await _check_command_authority(ctx, "points_manage", member):
-        return
-    try:
-        points_float = float(points.replace(",", "."))
-        user_id = member.id
-        ok = PointsService.add_points(user_id, points_float, reason, ctx.author.id)
-        if not ok:
-            logger.error("add_points failed author_id=%s target_id=%s", ctx.author.id, member.id)
-            await send_temp(ctx, "❌ Не удалось начислить баллы. Проверьте привязку аккаунтов.", delete_after=None)
-            return
-        await update_roles(member)
-        embed = discord.Embed(
-            title="🎉 Баллы начислены!", color=discord.Color.green()
-        )
-        embed.add_field(
-            name="👤 Пользователь:", value=member.mention, inline=False
-        )
-        embed.add_field(
-            name="➕ Количество:", value=f"**{points}** баллов", inline=False
-        )
-        embed.add_field(name="📝 Причина:", value=reason, inline=False)
-        embed.add_field(
-            name="🕒 Время:", value=format_moscow_time(), inline=False
-        )
-        embed.add_field(
-            name="🎯 Текущий баланс:",
-            value=f"{format_points(db.scores[user_id])} баллов",
-            inline=False,
-        )
-        await send_temp(ctx, embed=embed, delete_after=None)
-    except ValueError:
-        logger.exception("add_points invalid value author_id=%s target_id=%s points=%s", ctx.author.id, member.id, points)
-        await send_temp(ctx, "Ошибка: введите корректное число", delete_after=None)
-
-
-@bot.hybrid_command(name="removepoints", description="Снять баллы у участника")
-@commands.check(has_points_permission)
-async def remove_points(
-    ctx, member: discord.Member, points: str, *, reason: str = "Без причины"
-):
-    if not await _check_command_authority(ctx, "points_manage", member):
-        return
-    try:
-        points_float = float(points.replace(",", "."))
-        if points_float <= 0:
-            await send_temp(
-                ctx,
-                "❌ Ошибка: введите число больше 0 для снятия баллов.",
-                delete_after=None,
-            )
-            return
-        user_id = member.id
-        current_points = db.scores.get(user_id, 0)
-        if points_float > current_points:
-            embed = discord.Embed(
-                title="⚠️ Недостаточно баллов",
-                description=(
-                    f"У {member.mention} только {current_points} баллов"
-                ),
-                color=discord.Color.red(),
-            )
-            await send_temp(ctx, embed=embed, delete_after=None)
-            return
-        ok = PointsService.remove_points(user_id, points_float, reason, ctx.author.id)
-        if not ok:
-            logger.error("remove_points failed author_id=%s target_id=%s", ctx.author.id, member.id)
-            await send_temp(ctx, "❌ Не удалось списать баллы. Проверьте привязку аккаунтов.", delete_after=None)
-            return
-        await update_roles(member)
-        embed = discord.Embed(
-            title="⚠️ Баллы сняты!", color=discord.Color.red()
-        )
-        embed.add_field(
-            name="👤 Пользователь:", value=member.mention, inline=False
-        )
-        embed.add_field(
-            name="➖ Снято баллов:", value=f"**{points_float}**", inline=False
-        )
-        embed.add_field(name="📝 Причина:", value=reason, inline=False)
-        embed.add_field(
-            name="🕒 Время:", value=format_moscow_time(), inline=False
-        )
-        embed.add_field(
-            name="🎯 Текущий баланс:",
-            value=f"{format_points(db.scores[user_id])} баллов",
-            inline=False,
-        )
-        await send_temp(ctx, embed=embed, delete_after=None)
-    except ValueError:
-        logger.exception("remove_points invalid value author_id=%s target_id=%s points=%s", ctx.author.id, member.id, points)
-        await send_temp(
-            ctx, "Ошибка: введите корректное число больше 0", delete_after=None
-        )
 
 
 @bot.hybrid_command(
@@ -444,5 +328,5 @@ async def bank_history(ctx):
 @bot.hybrid_command(name="balance", description="Показать баланс пользователя")
 async def balance(ctx, member: discord.Member = None):
     member = member or ctx.author
-    embed = build_balance_embed(member)
+    embed = build_balance_embed(member, ctx.guild)
     await send_temp(ctx, embed=embed)

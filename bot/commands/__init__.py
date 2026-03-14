@@ -3,7 +3,7 @@ from bot.commands.base import bot, run_monthly_top
 # Import all command modules to register them
 from . import fines  # noqa: F401
 from . import tournament  # noqa: F401
-from . import tickets  # noqa: F401
+from . import engagement  # noqa: F401
 from . import maps  # noqa: F401
 from . import linking  # noqa: F401
 
