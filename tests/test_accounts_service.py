@@ -2,6 +2,8 @@ from datetime import datetime, timedelta, timezone
 import unittest
 from unittest.mock import patch
 
+from bot.services.auth.role_resolver import ResolvedAccess
+
 from bot.services.accounts_service import AccountsService
 
 
@@ -145,6 +147,9 @@ class _FakeDb:
             "actions": [],
             "profile_title_roles": [],
             "account_links_registry": [],
+            "account_role_assignments": [],
+            "roles": [],
+            "role_permissions": [],
         }
         self.account_seq = 0
         self.supabase = _FakeSupabase(self)
@@ -451,6 +456,45 @@ class AccountsServiceTests(unittest.TestCase):
         self.assertEqual(profile["titles"], ["Глава клуба", "Главный вице"])
         self.assertEqual(profile["titles_text"], "Глава клуба, Главный вице")
 
+
+    def test_profile_contains_resolved_roles_payload(self):
+        AccountsService.register_identity("discord", "111")
+        account_id = AccountsService.resolve_account_id("discord", "111")
+        self.assertIsNotNone(account_id)
+
+        self.fake_db.tables["account_role_assignments"].append(
+            {
+                "account_id": account_id,
+                "role_name": "moderator",
+                "source": "discord",
+                "origin_label": "Discord role",
+                "synced_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        self.fake_db.tables["roles"].append({"name": "moderator"})
+        self.fake_db.tables["role_permissions"].append(
+            {"role_name": "moderator", "permission_name": "tickets.manage", "effect": "allow"}
+        )
+
+        with patch(
+            "bot.services.accounts_service.RoleResolver.resolve_for_account",
+            return_value=ResolvedAccess(
+                roles=[
+                    {
+                        "name": "moderator",
+                        "source": "discord",
+                        "origin_label": "Discord role",
+                        "synced_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                ],
+                permissions={"allow": ["tickets.manage"], "deny": []},
+            ),
+        ):
+            profile = AccountsService.get_profile("discord", "111", "Nick")
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile["roles"][0]["name"], "moderator")
+        self.assertEqual(profile["roles"][0]["source"], "discord")
+        self.assertEqual(profile["permissions"]["allow"], ["tickets.manage"])
 
     def test_get_configured_title_roles_from_db(self):
         self.fake_db.tables["profile_title_roles"].extend(
