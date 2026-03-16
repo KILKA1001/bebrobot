@@ -148,6 +148,14 @@ class ExternalRolesSyncService:
     @staticmethod
     def _collect_discord_roles(bot: discord.Client) -> dict[str, list[dict[str, str]]]:
         roles_by_user: dict[str, list[dict[str, str]]] = defaultdict(list)
+        guilds = getattr(bot, "guilds", None)
+        if guilds is None:
+            logger.error(
+                "external roles sync skipped discord snapshot: bot has no guilds attribute bot_type=%s",
+                type(bot).__name__,
+            )
+            return roles_by_user
+
         for guild in bot.guilds:
             for member in guild.members:
                 if getattr(member, "bot", False):
