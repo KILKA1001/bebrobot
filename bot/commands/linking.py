@@ -166,6 +166,15 @@ async def profile(ctx):
         ),
         inline=False,
     )
+    roles = data.get("roles") or []
+    if roles:
+        roles_text = "\n".join(
+            f"• {item.get('name', 'unknown')} ({item.get('source', 'unknown')}) | {item.get('origin_label') or '—'} | {item.get('synced_at') or '—'}"
+            for item in roles
+        )
+    else:
+        roles_text = "Нет назначенных ролей"
+    embed.add_field(name="**Роли**", value=roles_text[:1024], inline=False)
     thumbnail_url = None
     if getattr(target_user, "avatar", None):
         thumbnail_url = target_user.display_avatar.url

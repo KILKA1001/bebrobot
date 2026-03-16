@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 
 from bot.data import db
+from bot.services.auth import RoleResolver
 
 logger = logging.getLogger(__name__)
 
@@ -1178,6 +1179,21 @@ class AccountsService:
                 AccountsService._format_db_error(e),
             )
 
+        resolved_roles: list[dict[str, str | None]] = []
+        resolved_permissions: dict[str, list[str]] = {"allow": [], "deny": []}
+        try:
+            access = RoleResolver.resolve_for_account(str(account_id))
+            resolved_roles = access.roles
+            resolved_permissions = access.permissions
+        except Exception as e:
+            logger.exception(
+                "get_profile role resolution failed account_id=%s provider=%s provider_user_id=%s error=%s",
+                account_id,
+                provider,
+                provider_user_id,
+                AccountsService._format_db_error(e),
+            )
+
         return {
             "account_id": account_id,
             "custom_nick": custom_nick,
@@ -1190,6 +1206,8 @@ class AccountsService:
             "points": points,
             "titles": titles,
             "titles_text": titles_text,
+            "roles": resolved_roles,
+            "permissions": resolved_permissions,
         }
 
     @staticmethod
