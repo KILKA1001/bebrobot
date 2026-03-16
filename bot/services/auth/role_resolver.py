@@ -43,6 +43,7 @@ class RoleResolver:
                 "source": assignment.source,
                 "origin_label": assignment.origin_label,
                 "synced_at": assignment.synced_at.isoformat() if assignment.synced_at else None,
+                "category": str(assignment.metadata.get("category") or "Без категории"),
             }
             for assignment in assignments
         ]
