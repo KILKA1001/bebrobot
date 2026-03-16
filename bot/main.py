@@ -44,8 +44,10 @@ from bot.utils.guiy_trigger import is_guiy_name_trigger
 from bot.utils.guiy_typing import calculate_typing_delay_seconds
 from bot.utils.conversation_activity import should_thread_reply
 from bot.telegram_bot.main import (
+    TelegramPollingConflictDetectedError,
     TelegramPollingAlreadyRunningInProcessError,
     TelegramPollingLockActiveError,
+    TelegramPollingPreflightConflictError,
     run_polling as run_telegram_polling,
 )
 
@@ -575,8 +577,10 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
 
     async def _run_telegram_with_retries() -> None:
         global telegram_runtime_started
-        retry_delay = 5.0
+        crash_retry_delay = 5.0
+        conflict_retry_delay = 15.0
         max_retry_delay = float(os.getenv("BOTH_RUNTIME_MAX_RETRY_DELAY", "300"))
+        max_conflict_retry_delay = float(os.getenv("BOTH_RUNTIME_MAX_CONFLICT_RETRY_DELAY", "600"))
 
         while True:
             async with telegram_runtime_guard:
@@ -591,34 +595,64 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
             try:
                 logging.info("telegram runtime starting (both mode)")
                 await run_telegram_polling(telegram_token)
-                logging.warning("telegram runtime stopped; restarting")
+                logging.warning(
+                    "telegram runtime exited without exception in both mode; "
+                    "treating as graceful stop and restarting in %.1fs",
+                    crash_retry_delay,
+                )
             except TelegramPollingAlreadyRunningInProcessError as exc:
-                logging.info(
-                    "telegram runtime duplicate startup ignored in both mode; details=%s",
+                logging.warning(
+                    "telegram runtime duplicate in-process startup detected in both mode; no restart. details=%s",
                     exc,
                 )
                 return
             except TelegramPollingLockActiveError as exc:
                 logging.error(
-                    "telegram runtime duplicate process detected in both mode; another process is already polling "
-                    "with same token. details=%s Retry in %.1fs",
+                    "telegram runtime duplicate cross-process polling detected in both mode; "
+                    "another process already owns the polling lock. details=%s retry_in=%.1fs",
                     exc,
-                    retry_delay,
+                    conflict_retry_delay,
                 )
+                await asyncio.sleep(conflict_retry_delay)
+                conflict_retry_delay = min(conflict_retry_delay * 2, max_conflict_retry_delay)
+                continue
+            except TelegramPollingPreflightConflictError as exc:
+                logging.warning(
+                    "telegram runtime conflict (preflight getUpdates) in both mode; "
+                    "another consumer is active. details=%s retry_in=%.1fs",
+                    exc,
+                    conflict_retry_delay,
+                )
+                await asyncio.sleep(conflict_retry_delay)
+                conflict_retry_delay = min(conflict_retry_delay * 2, max_conflict_retry_delay)
+                continue
+            except TelegramPollingConflictDetectedError as exc:
+                logging.error(
+                    "telegram runtime conflict (active polling) in both mode; "
+                    "lost getUpdates ownership. details=%s retry_in=%.1fs",
+                    exc,
+                    conflict_retry_delay,
+                )
+                await asyncio.sleep(conflict_retry_delay)
+                conflict_retry_delay = min(conflict_retry_delay * 2, max_conflict_retry_delay)
+                continue
             except asyncio.CancelledError:
                 logging.info("telegram runtime cancelled")
                 raise
             except Exception:
                 logging.exception(
-                    "telegram runtime error in both mode; retry in %.1fs",
-                    retry_delay,
+                    "telegram runtime crash in both mode; retry_in=%.1fs",
+                    crash_retry_delay,
                 )
+                await asyncio.sleep(crash_retry_delay)
+                crash_retry_delay = min(crash_retry_delay * 2, max_retry_delay)
+                continue
             finally:
                 async with telegram_runtime_guard:
                     telegram_runtime_started = False
 
-            await asyncio.sleep(retry_delay)
-            retry_delay = min(retry_delay * 2, max_retry_delay)
+            await asyncio.sleep(crash_retry_delay)
+            crash_retry_delay = min(crash_retry_delay * 2, max_retry_delay)
 
     discord_task = asyncio.create_task(_run_discord_with_retries(), name="discord-runtime")
     telegram_task = asyncio.create_task(_run_telegram_with_retries(), name="telegram-runtime")
