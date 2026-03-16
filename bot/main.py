@@ -14,7 +14,7 @@ import contextlib
 import re
 from dotenv import load_dotenv
 
-from bot.telegram_bot.config import get_telegram_bot_token
+from bot.telegram_bot.config import TELEGRAM_BOT_TOKEN_ENV, get_telegram_bot_token
 from bot.services.ai_service import generate_guiy_reply
 
 
@@ -37,16 +37,10 @@ def _resolve_runtime() -> str:
     return "discord"
 
 
-# Unified runtime bootstrap: allow Telegram mode without importing Discord subsystems.
 load_dotenv()
 _RUNTIME = _resolve_runtime()
-if _RUNTIME == "telegram":
-    from bot.telegram_bot.main import main as run_telegram_main
 
-    run_telegram_main()
-    raise SystemExit(0)
-
-# Основные импорты Discord (below runtime bootstrap on purpose)
+# Основные импорты Discord
 import discord
 import pytz
 from bot.commands import bot as command_bot
@@ -419,6 +413,23 @@ def save_next_startup_retry_at(next_retry_at: float) -> None:
     save_startup_retry_state(next_retry_at, retry_delay)
 # Основной запуск
 
+def run_telegram_main() -> None:
+    configure_logging()
+    token = get_telegram_bot_token()
+    if not token:
+        logging.error(
+            "Не задана переменная окружения %s. Добавьте её в Render перед запуском Telegram-процесса.",
+            TELEGRAM_BOT_TOKEN_ENV,
+        )
+        return
+
+    try:
+        asyncio.run(run_telegram_polling(token))
+    except Exception:
+        logging.exception("telegram runtime failed in telegram-only mode")
+        raise
+
+
 def run_discord_main():
     global bot
     load_dotenv()
@@ -598,9 +609,8 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
                 await run_telegram_polling(telegram_token)
                 logging.warning("telegram runtime stopped; restarting")
             except TelegramPollingAlreadyRunningInProcessError as exc:
-                logging.warning(
-                    "telegram runtime duplicate startup detected in current process (both mode); "
-                    "assuming another in-process telegram loop is active and stopping duplicate loop. details=%s",
+                logging.info(
+                    "telegram runtime duplicate startup ignored in both mode; details=%s",
                     exc,
                 )
                 return
@@ -666,7 +676,11 @@ def run_both_main() -> None:
 
 
 def main():
-    """Launcher for discord/both modes (telegram-only handled at import bootstrap)."""
+    """Unified launcher for discord/telegram/both runtimes."""
+
+    if _RUNTIME == "telegram":
+        run_telegram_main()
+        return
 
     if _RUNTIME == "both":
         run_both_main()
