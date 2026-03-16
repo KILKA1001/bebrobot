@@ -184,10 +184,7 @@ async def run_polling(token: str) -> None:
                 existing_owner,
             )
             os.close(lock_fd)
-            raise TelegramPollingAlreadyRunningInProcessError(
-                "telegram polling lock is already owned by current process; "
-                "skip duplicate startup"
-            )
+            return
 
         logger.warning(
             "telegram polling already running (lock=%s, owner=%s), exiting duplicate process",
