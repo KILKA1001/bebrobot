@@ -33,6 +33,7 @@ def _build_home_keyboard(actor_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📋 Категории и роли", callback_data=f"roles_admin:{actor_id}:list:0")],
+            [InlineKeyboardButton(text="ℹ️ Что делает каждая функция", callback_data=f"roles_admin:{actor_id}:help")],
             [InlineKeyboardButton(text="🔄 Обновить", callback_data=f"roles_admin:{actor_id}:home")],
         ]
     )
@@ -95,9 +96,32 @@ def _render_home_text() -> str:
         "<code>/roles_admin role_move &lt;name&gt; &lt;category&gt; [position]</code>\n"
         "<code>/roles_admin user_roles [reply|telegram_id]</code>\n"
         "<code>/roles_admin user_grant &lt;telegram_id&gt; &lt;role_name&gt;</code>\n"
-        "<code>/roles_admin user_revoke &lt;telegram_id&gt; &lt;role_name&gt;</code>"
+        "<code>/roles_admin user_revoke &lt;telegram_id&gt; &lt;role_name&gt;</code>\n"
+        "\nНужны пояснения по функциям? Нажми кнопку <b>ℹ️ Что делает каждая функция</b>."
     )
 
+
+
+
+def _render_help_text() -> str:
+    return (
+        "ℹ️ <b>Что делает /roles_admin</b>\n\n"
+        "<b>Категории</b>\n"
+        "• <code>category_create &lt;name&gt; [position]</code> — создать/обновить категорию.\n"
+        "• <code>category_delete &lt;name&gt;</code> — удалить категорию (роли уйдут в 'Без категории').\n\n"
+        "<b>Роли</b>\n"
+        "• <code>role_create &lt;name&gt; &lt;category&gt; [discord_role_id]</code> — добавить роль в каталог.\n"
+        "• <code>role_move &lt;name&gt; &lt;category&gt; [position]</code> — переместить роль в другую категорию.\n"
+        "• <code>role_delete &lt;name&gt;</code> — удалить роль из каталога.\n\n"
+        "<b>Роли пользователей</b>\n"
+        "• <code>user_roles [reply|telegram_id]</code> — показать роли пользователя.\n"
+        "• <code>user_grant &lt;telegram_id&gt; &lt;role_name&gt;</code> — выдать роль в БД.\n"
+        "• <code>user_revoke &lt;telegram_id&gt; &lt;role_name&gt;</code> — снять роль в БД.\n\n"
+        "<b>Кнопки в панели</b>\n"
+        "• 'Категории и роли' — просмотр списка и переход по категориям.\n"
+        "• Внутри категории доступны кнопки удаления категории/ролей.\n"
+        "• Все экраны обновляются в одном сообщении без спама."
+    )
 
 def _render_list_text(grouped: list[dict], page: int) -> str:
     safe_page = _normalize_page(page, len(grouped), _ROLES_PAGE_SIZE)
@@ -159,6 +183,10 @@ async def roles_admin_command(message: Message) -> None:
 
         subcommand = parts[1].lower()
         args = parts[2:]
+
+        if subcommand == "help":
+            await message.answer(_render_help_text(), parse_mode="HTML")
+            return
 
         if subcommand == "list":
             grouped = RoleManagementService.list_roles_grouped()
@@ -262,6 +290,15 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
 
         action = parts[2]
         grouped = RoleManagementService.list_roles_grouped() or []
+
+        if action == "help":
+            await callback.message.edit_text(
+                _render_help_text(),
+                parse_mode="HTML",
+                reply_markup=_build_home_keyboard(owner_id),
+            )
+            await callback.answer()
+            return
 
         if action == "home":
             await callback.message.edit_text(
