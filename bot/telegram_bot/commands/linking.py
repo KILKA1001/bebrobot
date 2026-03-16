@@ -7,12 +7,13 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from bot.services import AccountsService, AuthorityService, ExternalRolesSyncService
+from bot.services import AccountsService
 from bot.telegram_bot.systems.commands_logic import (
     get_helpy_text,
     process_link_command,
     process_link_discord_command,
     process_profile_command,
+    process_profile_roles_command,
     process_register_command,
 )
 
@@ -23,6 +24,7 @@ _EDIT_FIELD_LABELS = {
     "custom_nick": "Никнейм",
     "description": "Описание",
     "nulls_brawl_id": "Null's Brawl ID",
+    "visible_roles": "Отображаемые роли",
 }
 _PENDING_EDIT_FIELD: dict[int, str] = {}
 
@@ -92,6 +94,7 @@ def _profile_settings_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="✏️ Изменить никнейм", callback_data="profile_edit:custom_nick")],
             [InlineKeyboardButton(text="📝 Изменить описание", callback_data="profile_edit:description")],
             [InlineKeyboardButton(text="🆔 Изменить Null's ID", callback_data="profile_edit:nulls_brawl_id")],
+            [InlineKeyboardButton(text="🏅 Отображаемые роли", callback_data="profile_edit:visible_roles")],
         ]
     )
 
@@ -131,17 +134,6 @@ async def profile_command(message: Message) -> None:
     reply_markup = None
     if message.chat.type == "private" and telegram_user_id == target_user_id:
         buttons = [[InlineKeyboardButton(text="⚙️ Настройки профиля", callback_data="profile_settings")]]
-        if telegram_user_id is not None and AuthorityService.can_manage_self("telegram", str(telegram_user_id)):
-            profile_data = AccountsService.get_profile("telegram", str(telegram_user_id), display_name=display_name)
-            if profile_data and profile_data.get("account_id"):
-                buttons.append(
-                    [
-                        InlineKeyboardButton(
-                            text="🔄 Обновить внешние роли",
-                            callback_data=f"profile_force_sync:{profile_data['account_id']}",
-                        )
-                    ]
-                )
         reply_markup = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     async def _send_avatar_caption(user_id: int) -> bool:
@@ -221,25 +213,6 @@ async def profile_settings_callback(callback: CallbackQuery) -> None:
 
 
 
-@router.callback_query(F.data.startswith("profile_force_sync:"))
-async def profile_force_sync_callback(callback: CallbackQuery) -> None:
-    try:
-        if callback.from_user is None:
-            await callback.answer("Не удалось определить пользователя", show_alert=True)
-            return
-        if not AuthorityService.can_manage_self("telegram", str(callback.from_user.id)):
-            await callback.answer("Недостаточно прав", show_alert=True)
-            return
-
-        account_id = str(callback.data).split(":", 1)[1].strip()
-        changed = ExternalRolesSyncService.sync_account_by_account_id(callback.bot, account_id)
-        text = "✅ Синхронизация ролей выполнена." if changed else "✅ Синхронизация выполнена, изменений нет."
-        await callback.answer("Готово", show_alert=False)
-        if callback.message:
-            await callback.message.answer(text)
-    except Exception:
-        logger.exception("telegram profile force sync failed callback_data=%s", callback.data)
-        await callback.answer("Ошибка синхронизации ролей", show_alert=True)
 @router.callback_query(F.data.startswith("profile_edit:"))
 async def profile_edit_field_callback(callback: CallbackQuery) -> None:
     try:
@@ -257,9 +230,14 @@ async def profile_edit_field_callback(callback: CallbackQuery) -> None:
 
         _PENDING_EDIT_FIELD[callback.from_user.id] = field_name
         _PENDING_EDIT_FIELD_CREATED_AT[callback.from_user.id] = time.time()
+        helper_text = "Чтобы очистить поле, отправьте символ <code>-</code>."
+        if field_name == "visible_roles":
+            helper_text = (
+                "Введите до 3 ролей через запятую (только из ролей пользователя).\n"
+                "Чтобы очистить поле, отправьте символ <code>-</code>."
+            )
         await callback.message.answer(
-            f"✍️ Введите новое значение для поля <b>{_EDIT_FIELD_LABELS[field_name]}</b>.\n"
-            "Чтобы очистить поле, отправьте символ <code>-</code>.",
+            f"✍️ Введите новое значение для поля <b>{_EDIT_FIELD_LABELS[field_name]}</b>.\n{helper_text}",
             parse_mode=ParseMode.HTML,
         )
         await callback.answer()
@@ -313,6 +291,24 @@ async def profile_edit_value_handler(message: Message) -> None:
         _PENDING_EDIT_FIELD.pop(message.from_user.id, None)
         _PENDING_EDIT_FIELD_CREATED_AT.pop(message.from_user.id, None)
         await message.answer("❌ Ошибка обновления профиля. Попробуйте позже.")
+
+
+@router.message(Command("profile_roles"))
+async def profile_roles_command(message: Message) -> None:
+    telegram_user_id = message.from_user.id if message.from_user is not None else None
+    display_name = message.from_user.full_name if message.from_user is not None else None
+
+    target_user = message.reply_to_message.from_user if message.reply_to_message else None
+    target_user_id = target_user.id if target_user is not None else telegram_user_id
+    target_display_name = target_user.full_name if target_user is not None else display_name
+
+    response = process_profile_roles_command(
+        telegram_user_id,
+        display_name=display_name,
+        target_telegram_user_id=target_user_id,
+        target_display_name=target_display_name,
+    )
+    await message.answer(response, parse_mode=ParseMode.HTML)
 
 
 @router.message(Command("link"))

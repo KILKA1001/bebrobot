@@ -3,7 +3,7 @@ import logging
 import discord
 
 from bot.commands.base import bot
-from bot.services import AccountsService, AuthorityService, ExternalRolesSyncService
+from bot.services import AccountsService
 from bot.systems.linking_logic import (
     consume_discord_link_code,
     issue_discord_telegram_link_code,
@@ -57,31 +57,6 @@ class ProfileEditModal(discord.ui.Modal):
 
 
 
-class ForceRoleSyncView(discord.ui.View):
-    def __init__(self, actor_user_id: int, account_id: str):
-        super().__init__(timeout=300)
-        self.actor_user_id = actor_user_id
-        self.account_id = account_id
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.actor_user_id:
-            await interaction.response.send_message("❌ Обновить роли может только инициатор команды.", ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(label="🔄 Обновить внешние роли", style=discord.ButtonStyle.secondary)
-    async def force_sync(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        try:
-            changed = ExternalRolesSyncService.sync_account_by_account_id(interaction.client, self.account_id)
-            text = "✅ Синхронизация ролей выполнена." if changed else "✅ Синхронизация выполнена, изменений нет."
-            await interaction.response.send_message(text, ephemeral=True)
-        except Exception:
-            logger.exception(
-                "discord force role sync failed actor_user_id=%s account_id=%s",
-                getattr(interaction.user, "id", None),
-                self.account_id,
-            )
-            await interaction.response.send_message("❌ Ошибка синхронизации ролей.", ephemeral=True)
 class ProfileEditView(discord.ui.View):
     def __init__(self, user_id: int):
         super().__init__(timeout=300)
@@ -112,6 +87,17 @@ class ProfileEditView(discord.ui.View):
     async def edit_nulls_id(self, interaction: discord.Interaction, _button: discord.ui.Button):
         await interaction.response.send_modal(
             ProfileEditModal("nulls_brawl_id", "Null's Brawl ID", "Например: #ABCD123", max_length=32)
+        )
+
+    @discord.ui.button(label="🏅 Отображаемые роли", style=discord.ButtonStyle.secondary)
+    async def edit_visible_roles(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        await interaction.response.send_modal(
+            ProfileEditModal(
+                "visible_roles",
+                "Отображаемые роли",
+                "Через запятую, максимум 3 (из ваших ролей)",
+                max_length=120,
+            )
         )
 
 
@@ -174,35 +160,31 @@ async def profile(ctx):
         await send_temp(ctx, "❌ Профиль не найден. Сначала выполните `/register_account`.", delete_after=None)
         return
 
-    embed = discord.Embed(title=f"👤 {data['custom_nick']}", color=discord.Color.blurple())
+    platform_target_name = display_name
+    title_text = data["custom_nick"]
+    if platform_target_name and platform_target_name != data["custom_nick"]:
+        title_text = f"{title_text} ({platform_target_name})"
+
+    embed = discord.Embed(title=f"👤 {title_text}", color=discord.Color.blurple())
     embed.add_field(
         name="**Общая информация**",
         value=(
             f"Звания: {data['titles_text']}\n"
-            f"Айди в Null's Brawl: `{data['nulls_brawl_id']}`\n"
+            f"Айди в Null's Brawl: `{data['nulls_brawl_id']}` ({data['nulls_status']})\n"
             f"Баллы: {data['points']}"
         ),
         inline=False,
     )
     embed.add_field(name="**Описание**", value=data["description"][:100], inline=False)
-    external_roles_last_synced_at = data.get("external_roles_last_synced_at") or "—"
     embed.add_field(
         name="**Дополнительная информация**",
         value=(
-            f"🔗 TG ↔ DC: **{data['link_status']}**\n"
-            f"🛡️ Null's Brawl: **{data['nulls_status']}**\n"
-            f"🕒 Последний sync ролей: **{external_roles_last_synced_at}**"
+            f"🔗 TG ↔ DC: **{data['link_status']}**"
         ),
         inline=False,
     )
-    roles = data.get("roles") or []
-    if roles:
-        roles_text = "\n".join(
-            f"• {item.get('name', 'unknown')} ({item.get('source', 'unknown')}) | {item.get('origin_label') or '—'} | {item.get('synced_at') or '—'}"
-            for item in roles
-        )
-    else:
-        roles_text = "Нет назначенных ролей"
+    visible_roles = data.get("visible_roles") or []
+    roles_text = "\n".join(f"• {role_name}" for role_name in visible_roles) if visible_roles else "Нет назначенных ролей"
     embed.add_field(name="**Роли**", value=roles_text[:1024], inline=False)
     thumbnail_url = None
     if getattr(target_user, "avatar", None):
@@ -213,10 +195,39 @@ async def profile(ctx):
     if thumbnail_url:
         embed.set_thumbnail(url=thumbnail_url)
 
-    view = None
-    if AuthorityService.can_manage_self("discord", str(ctx.author.id)):
-        view = ForceRoleSyncView(ctx.author.id, data["account_id"])
-    await send_temp(ctx, embed=embed, view=view, delete_after=None)
+    await send_temp(ctx, embed=embed, delete_after=None)
+
+
+@bot.hybrid_command(name="profile_roles", description="Показать все роли профиля по категориям")
+async def profile_roles(ctx):
+    target_user = ctx.author
+    reference = getattr(ctx.message, "reference", None)
+    if reference and reference.message_id and ctx.guild:
+        try:
+            referenced_message = await ctx.channel.fetch_message(reference.message_id)
+            if referenced_message and referenced_message.author:
+                target_user = referenced_message.author
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+
+    display_name = getattr(target_user, "display_name", None) or getattr(target_user, "name", None)
+    data = AccountsService.get_profile("discord", str(target_user.id), display_name=display_name)
+    if not data:
+        await send_temp(ctx, "❌ Профиль не найден. Сначала выполните `/register_account`.", delete_after=None)
+        return
+
+    roles_by_category = data.get("roles_by_category") or {}
+    embed = discord.Embed(title="🏅 Роли пользователя", color=discord.Color.green())
+    if not roles_by_category:
+        embed.description = "Нет назначенных ролей"
+    else:
+        for category_name in sorted(roles_by_category.keys()):
+            role_names = roles_by_category.get(category_name) or []
+            if not role_names:
+                continue
+            embed.add_field(name=category_name, value="\n".join(f"• {name}" for name in role_names)[:1024], inline=False)
+
+    await send_temp(ctx, embed=embed, delete_after=None)
 
 
 @bot.hybrid_command(name="profile_edit", description="Настройки и редактирование своего профиля")

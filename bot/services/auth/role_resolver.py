@@ -43,6 +43,7 @@ class RoleResolver:
                 "source": assignment.source,
                 "origin_label": assignment.origin_label,
                 "synced_at": assignment.synced_at.isoformat() if assignment.synced_at else None,
+                "category": str(assignment.metadata.get("category") or "Без категории"),
             }
             for assignment in assignments
         ]
@@ -52,7 +53,17 @@ class RoleResolver:
     @staticmethod
     def _collect_assignments(account_id: str) -> list[UserRoleAssignment]:
         assignments: list[UserRoleAssignment] = []
-        assignments.extend(RoleResolver._load_db_assignments(account_id))
+        db_assignments = RoleResolver._load_db_assignments(account_id)
+        assignments.extend(db_assignments)
+        if not db_assignments:
+            fallback_assignments = RoleResolver._load_external_bindings_assignments(account_id)
+            assignments.extend(fallback_assignments)
+            if fallback_assignments:
+                logger.info(
+                    "role resolver: fallback to external_role_bindings account_id=%s assignments=%s",
+                    account_id,
+                    len(fallback_assignments),
+                )
         assignments.extend(RoleResolver._load_title_assignments(account_id))
 
         now = datetime.now(timezone.utc)
@@ -109,6 +120,48 @@ class RoleResolver:
                 )
             )
         return [item for item in result if item.role_name]
+
+
+    @staticmethod
+    def _load_external_bindings_assignments(account_id: str) -> list[UserRoleAssignment]:
+        if not db.supabase:
+            return []
+        try:
+            response = (
+                db.supabase.table("external_role_bindings")
+                .select("source,external_role_id,external_role_name,last_synced_at")
+                .eq("account_id", str(account_id))
+                .is_("deleted_at", "null")
+                .execute()
+            )
+        except Exception as error:
+            logger.warning(
+                "role resolver: external_role_bindings fallback read failed account_id=%s error=%s",
+                account_id,
+                error,
+            )
+            return []
+
+        result: list[UserRoleAssignment] = []
+        for row in response.data or []:
+            source_raw = str(row.get("source") or "discord").lower()
+            source: AssignmentSource = source_raw if source_raw in {"custom", "discord", "telegram", "system"} else "discord"
+            role_name = str(row.get("external_role_name") or "").strip()
+            external_id = str(row.get("external_role_id") or "").strip() or None
+            if not role_name:
+                continue
+            result.append(
+                UserRoleAssignment(
+                    role_name=role_name,
+                    source=source,
+                    external_id=external_id,
+                    expires_at=None,
+                    metadata={"source": "external_role_bindings", "category": "Внешние роли"},
+                    origin_label="legacy external_role_bindings",
+                    synced_at=RoleResolver._parse_datetime(row.get("last_synced_at")),
+                )
+            )
+        return result
 
     @staticmethod
     def _load_title_assignments(account_id: str) -> list[UserRoleAssignment]:
