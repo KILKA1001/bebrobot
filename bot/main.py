@@ -14,39 +14,14 @@ import contextlib
 import re
 from dotenv import load_dotenv
 
-from bot.telegram_bot.config import get_telegram_bot_token
+from bot.telegram_bot.config import TELEGRAM_BOT_TOKEN_ENV, get_telegram_bot_token
 from bot.services.ai_service import generate_guiy_reply
 
 
-def _resolve_runtime() -> str:
-    """Resolve runtime mode for unified launcher.
-
-    Runtime mode must be controlled only via BOT_RUNTIME.
-    Bot tokens are treated purely as credentials for the selected runtime
-    and never as implicit launch switches.
-    """
-
-    explicit = (os.getenv("BOT_RUNTIME") or "").strip().lower()
-    if explicit:
-        if explicit in {"telegram", "tg"}:
-            return "telegram"
-        if explicit in {"both", "all"}:
-            return "both"
-        return "discord"
-
-    return "discord"
-
-
-# Unified runtime bootstrap: allow Telegram mode without importing Discord subsystems.
 load_dotenv()
-_RUNTIME = _resolve_runtime()
-if _RUNTIME == "telegram":
-    from bot.telegram_bot.main import main as run_telegram_main
 
-    run_telegram_main()
-    raise SystemExit(0)
 
-# Основные импорты Discord (below runtime bootstrap on purpose)
+# Основные импорты Discord
 import discord
 import pytz
 from bot.commands import bot as command_bot
@@ -86,6 +61,8 @@ active_timers = {}
 tasks_started = False
 startup_tasks_started = False
 commands_synced = False
+telegram_runtime_started = False
+telegram_runtime_guard = asyncio.Lock()
 
 COMMAND_SYNC_STATE_FILE = os.getenv(
     "COMMAND_SYNC_STATE_FILE",
@@ -417,6 +394,26 @@ def save_next_startup_retry_at(next_retry_at: float) -> None:
     save_startup_retry_state(next_retry_at, retry_delay)
 # Основной запуск
 
+def run_telegram_main() -> None:
+    configure_logging()
+    token = get_telegram_bot_token()
+    if not token:
+        logging.error(
+            "Не задана переменная окружения %s. Добавьте её в Render перед запуском Telegram-процесса.",
+            TELEGRAM_BOT_TOKEN_ENV,
+        )
+        return
+
+    try:
+        asyncio.run(run_telegram_polling(token))
+    except TelegramPollingAlreadyRunningInProcessError as exc:
+        logging.warning("telegram runtime duplicate startup detected in telegram-only mode; details=%s", exc)
+        return
+    except Exception:
+        logging.exception("telegram runtime failed in telegram-only mode")
+        raise
+
+
 def run_discord_main():
     global bot
     load_dotenv()
@@ -577,18 +574,27 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
             retry_delay = min(retry_delay * 2, max_retry_delay)
 
     async def _run_telegram_with_retries() -> None:
+        global telegram_runtime_started
         retry_delay = 5.0
         max_retry_delay = float(os.getenv("BOTH_RUNTIME_MAX_RETRY_DELAY", "300"))
 
         while True:
+            async with telegram_runtime_guard:
+                if telegram_runtime_started:
+                    logging.warning(
+                        "telegram runtime duplicate startup prevented in both mode; "
+                        "another in-process telegram loop is already active"
+                    )
+                    return
+                telegram_runtime_started = True
+
             try:
                 logging.info("telegram runtime starting (both mode)")
                 await run_telegram_polling(telegram_token)
                 logging.warning("telegram runtime stopped; restarting")
             except TelegramPollingAlreadyRunningInProcessError as exc:
-                logging.warning(
-                    "telegram runtime duplicate startup detected in current process (both mode); "
-                    "assuming another in-process telegram loop is active and stopping duplicate loop. details=%s",
+                logging.info(
+                    "telegram runtime duplicate startup ignored in both mode; details=%s",
                     exc,
                 )
                 return
@@ -607,6 +613,9 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
                     "telegram runtime error in both mode; retry in %.1fs",
                     retry_delay,
                 )
+            finally:
+                async with telegram_runtime_guard:
+                    telegram_runtime_started = False
 
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, max_retry_delay)
@@ -644,20 +653,27 @@ def run_both_main() -> None:
     discord_token = (os.getenv('DISCORD_TOKEN') or '').strip()
     telegram_token = get_telegram_bot_token()
     if not discord_token or not telegram_token:
-        print("❌ Для BOT_RUNTIME=both нужны DISCORD_TOKEN и TELEGRAM_BOT_TOKEN.")
+        logging.error(
+            "Не заданы токены для одновременного запуска: DISCORD_TOKEN=%s TELEGRAM_BOT_TOKEN=%s",
+            bool(discord_token),
+            bool(telegram_token),
+        )
         return
 
     asyncio.run(_run_both_async(discord_token, telegram_token))
 
 
 def main():
-    """Launcher for discord/both modes (telegram-only handled at import bootstrap)."""
+    """Launcher that always starts Discord and Telegram runtimes together."""
 
-    if _RUNTIME == "both":
-        run_both_main()
-        return
+    runtime_hint = (os.getenv("BOT_RUNTIME") or "").strip()
+    if runtime_hint:
+        logging.warning(
+            "BOT_RUNTIME=%r is ignored: launcher always starts both runtimes for parity",
+            runtime_hint,
+        )
 
-    run_discord_main()
+    run_both_main()
 
 
 if __name__ == "__main__":
