@@ -211,9 +211,3 @@ async def rolesadmin_user_revoke(ctx: commands.Context, member: discord.Member, 
 
     await send_temp(ctx, f"✅ Роль **{role_name}** снята у {member.mention}.")
 
-
-@rolesadmin.command(name="help", description="Показать объяснение команд rolesadmin")
-async def rolesadmin_help(ctx: commands.Context):
-    if not await _ensure_roles_admin(ctx):
-        return
-    await send_temp(ctx, embed=_rolesadmin_help_embed())

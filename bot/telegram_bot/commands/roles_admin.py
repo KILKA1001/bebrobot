@@ -184,9 +184,6 @@ async def roles_admin_command(message: Message) -> None:
         subcommand = parts[1].lower()
         args = parts[2:]
 
-        if subcommand == "help":
-            await message.answer(_render_help_text(), parse_mode="HTML")
-            return
 
         if subcommand == "list":
             grouped = RoleManagementService.list_roles_grouped()
