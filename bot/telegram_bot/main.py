@@ -178,14 +178,16 @@ async def run_polling(token: str) -> None:
         current_hostname = socket.gethostname()
 
         if owner_pid == current_pid and owner_hostname == current_hostname:
-            logger.info(
-                "telegram polling duplicate startup ignored in current process "
-                "(lock=%s, owner=%s)",
+            logger.error(
+                "telegram polling duplicate startup detected in current process "
+                "(lock=%s, owner=%s); stopping duplicate loop",
                 lock_path,
                 existing_owner,
             )
             os.close(lock_fd)
-            return
+            raise TelegramPollingAlreadyRunningInProcessError(
+                f"telegram polling already running in current process ({existing_owner})"
+            )
 
         logger.warning(
             "telegram polling already running (lock=%s, owner=%s), exiting duplicate process",
