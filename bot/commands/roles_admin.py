@@ -9,6 +9,41 @@ from bot.utils import send_temp
 
 logger = logging.getLogger(__name__)
 
+def _rolesadmin_help_embed() -> discord.Embed:
+    embed = discord.Embed(title="ℹ️ Что делает /rolesadmin", color=discord.Color.blurple())
+    embed.description = (
+        "Управление каталогом ролей и ролями пользователей.\n"
+        "Все команды доступны только администраторам/модераторам с правами."
+    )
+    embed.add_field(
+        name="Категории",
+        value=(
+            "`/rolesadmin category_create <name> [position]` — создать/обновить категорию\n"
+            "`/rolesadmin category_delete <name>` — удалить категорию"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Роли",
+        value=(
+            "`/rolesadmin list` — показать роли по категориям\n"
+            "`/rolesadmin role_create <name> <category> [discord_role] [position]` — создать роль\n"
+            "`/rolesadmin role_move <role_name> <category> [position]` — переместить роль\n"
+            "`/rolesadmin role_delete <name>` — удалить роль"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Роли пользователей",
+        value=(
+            "`/rolesadmin user_roles <member>` — посмотреть роли пользователя\n"
+            "`/rolesadmin user_grant <member> <role_name>` — выдать роль\n"
+            "`/rolesadmin user_revoke <member> <role_name>` — снять роль"
+        ),
+        inline=False,
+    )
+    return embed
+
 
 async def _ensure_roles_admin(ctx: commands.Context) -> bool:
     if ctx.author.guild_permissions.administrator:
@@ -22,7 +57,7 @@ async def _ensure_roles_admin(ctx: commands.Context) -> bool:
 @bot.hybrid_group(name="rolesadmin", description="Управление ролями и категориями", with_app_command=True)
 async def rolesadmin(ctx: commands.Context):
     if ctx.invoked_subcommand is None:
-        await send_temp(ctx, "Используйте подкоманды: list, category_create, category_delete, role_create, role_delete, role_move, user_roles, user_grant, user_revoke")
+        await send_temp(ctx, embed=_rolesadmin_help_embed())
 
 
 @rolesadmin.command(name="list", description="Показать роли по категориям")
@@ -175,3 +210,4 @@ async def rolesadmin_user_revoke(ctx: commands.Context, member: discord.Member, 
                 return
 
     await send_temp(ctx, f"✅ Роль **{role_name}** снята у {member.mention}.")
+
