@@ -34,6 +34,14 @@ class TelegramPollingAlreadyRunningInProcessError(TelegramPollingLockActiveError
     """Raised when current process already owns Telegram polling lock."""
 
 
+class TelegramPollingPreflightConflictError(RuntimeError):
+    """Raised when preflight getUpdates detects another active consumer."""
+
+
+class TelegramPollingConflictDetectedError(RuntimeError):
+    """Raised when polling detects another active getUpdates consumer."""
+
+
 def _is_local_process_alive(pid: int) -> bool:
     """Best-effort check for local process existence."""
 
@@ -105,13 +113,15 @@ def _patch_aiogram_conflict_behavior() -> None:
         while True:
             try:
                 updates = await bot(get_updates, **kwargs)
-            except TelegramConflictError:
+            except TelegramConflictError as exc:
                 aiogram_loggers.dispatcher.error(
                     "Polling stopped due to TelegramConflictError: another getUpdates consumer is active "
                     "(bot id = %d)",
                     bot.id,
                 )
-                return
+                raise TelegramPollingConflictDetectedError(
+                    "telegram polling conflict detected while fetching updates"
+                ) from exc
             except Exception as e:  # noqa: BLE001
                 failed = True
                 aiogram_loggers.dispatcher.error("Failed to fetch updates - %s: %s", type(e).__name__, e)
@@ -250,22 +260,26 @@ async def run_polling(token: str) -> None:
         # `timeout=0` keeps this check instantaneous.
         try:
             await bot.get_updates(timeout=0, limit=1)
-        except TelegramConflictError:
+        except TelegramConflictError as exc:
             logger.error(
                 "telegram polling preflight failed: another getUpdates consumer is active. "
                 "Ensure only one Telegram runtime is running for this token "
                 "(for example, only one process with BOT_RUNTIME=telegram/both)."
             )
-            return
+            raise TelegramPollingPreflightConflictError(
+                "telegram polling preflight conflict: another getUpdates consumer is already active"
+            ) from exc
 
         try:
             await dp.start_polling(bot)
-        except TelegramConflictError:
+        except TelegramConflictError as exc:
             logger.error(
                 "telegram polling conflict detected: another instance is already consuming updates; "
                 "stopping this process to avoid endless retries"
             )
-            return
+            raise TelegramPollingConflictDetectedError(
+                "telegram polling conflict detected while running dispatcher polling"
+            ) from exc
     finally:
         await bot.session.close()
         with contextlib.suppress(OSError):
