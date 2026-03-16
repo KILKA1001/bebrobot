@@ -584,11 +584,11 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
                 logging.info("telegram runtime starting (both mode)")
                 await run_telegram_polling(telegram_token)
                 logging.warning("telegram runtime stopped; restarting")
-            except TelegramPollingLockActiveError:
-                logging.exception(
-                    "telegram runtime duplicate process detected in both mode; "
-                    "another process is already polling with same token. "
-                    "Retry in %.1fs",
+            except TelegramPollingLockActiveError as exc:
+                logging.error(
+                    "telegram runtime duplicate process detected in both mode; another process is already polling "
+                    "with same token. details=%s Retry in %.1fs",
+                    exc,
                     retry_delay,
                 )
             except asyncio.CancelledError:
