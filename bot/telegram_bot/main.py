@@ -205,6 +205,13 @@ async def run_polling(token: str) -> None:
             (os.getenv("BOT_RUNTIME") or "").strip() or "discord(default)",
         )
         os.close(lock_fd)
+
+        if owner_pid == current_pid and owner_hostname == current_hostname:
+            raise TelegramPollingAlreadyRunningInProcessError(
+                "telegram polling lock is already owned by current process; "
+                "skip duplicate startup"
+            )
+
         raise TelegramPollingLockActiveError(
             f"telegram polling lock is active by another process ({existing_owner})"
         )
