@@ -7,7 +7,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from bot.services import AccountsService
+from bot.services import AccountsService, AuthorityService, ExternalRolesSyncService
 from bot.telegram_bot.systems.commands_logic import (
     get_helpy_text,
     process_link_command,
@@ -130,9 +130,19 @@ async def profile_command(message: Message) -> None:
 
     reply_markup = None
     if message.chat.type == "private" and telegram_user_id == target_user_id:
-        reply_markup = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="⚙️ Настройки профиля", callback_data="profile_settings")]]
-        )
+        buttons = [[InlineKeyboardButton(text="⚙️ Настройки профиля", callback_data="profile_settings")]]
+        if telegram_user_id is not None and AuthorityService.can_manage_self("telegram", str(telegram_user_id)):
+            profile_data = AccountsService.get_profile("telegram", str(telegram_user_id), display_name=display_name)
+            if profile_data and profile_data.get("account_id"):
+                buttons.append(
+                    [
+                        InlineKeyboardButton(
+                            text="🔄 Обновить внешние роли",
+                            callback_data=f"profile_force_sync:{profile_data['account_id']}",
+                        )
+                    ]
+                )
+        reply_markup = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     async def _send_avatar_caption(user_id: int) -> bool:
         try:
@@ -209,6 +219,27 @@ async def profile_settings_callback(callback: CallbackQuery) -> None:
         await callback.answer("Ошибка открытия настроек", show_alert=True)
 
 
+
+
+@router.callback_query(F.data.startswith("profile_force_sync:"))
+async def profile_force_sync_callback(callback: CallbackQuery) -> None:
+    try:
+        if callback.from_user is None:
+            await callback.answer("Не удалось определить пользователя", show_alert=True)
+            return
+        if not AuthorityService.can_manage_self("telegram", str(callback.from_user.id)):
+            await callback.answer("Недостаточно прав", show_alert=True)
+            return
+
+        account_id = str(callback.data).split(":", 1)[1].strip()
+        changed = ExternalRolesSyncService.sync_account_by_account_id(callback.bot, account_id)
+        text = "✅ Синхронизация ролей выполнена." if changed else "✅ Синхронизация выполнена, изменений нет."
+        await callback.answer("Готово", show_alert=False)
+        if callback.message:
+            await callback.message.answer(text)
+    except Exception:
+        logger.exception("telegram profile force sync failed callback_data=%s", callback.data)
+        await callback.answer("Ошибка синхронизации ролей", show_alert=True)
 @router.callback_query(F.data.startswith("profile_edit:"))
 async def profile_edit_field_callback(callback: CallbackQuery) -> None:
     try:

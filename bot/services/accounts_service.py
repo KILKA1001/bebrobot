@@ -1181,6 +1181,7 @@ class AccountsService:
 
         resolved_roles: list[dict[str, str | None]] = []
         resolved_permissions: dict[str, list[str]] = {"allow": [], "deny": []}
+        external_roles_last_synced_at: str | None = None
         try:
             access = RoleResolver.resolve_for_account(str(account_id))
             resolved_roles = access.roles
@@ -1188,6 +1189,19 @@ class AccountsService:
         except Exception as e:
             logger.exception(
                 "get_profile role resolution failed account_id=%s provider=%s provider_user_id=%s error=%s",
+                account_id,
+                provider,
+                provider_user_id,
+                AccountsService._format_db_error(e),
+            )
+
+        try:
+            from bot.services.external_roles_sync_service import ExternalRolesSyncService
+
+            external_roles_last_synced_at = ExternalRolesSyncService.get_last_sync_at(str(account_id))
+        except Exception as e:
+            logger.exception(
+                "get_profile external roles sync timestamp failed account_id=%s provider=%s provider_user_id=%s error=%s",
                 account_id,
                 provider,
                 provider_user_id,
@@ -1208,6 +1222,7 @@ class AccountsService:
             "titles_text": titles_text,
             "roles": resolved_roles,
             "permissions": resolved_permissions,
+            "external_roles_last_synced_at": external_roles_last_synced_at,
         }
 
     @staticmethod
