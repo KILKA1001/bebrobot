@@ -27,6 +27,7 @@ class AccountsService:
     }
     _account_titles_cache: dict[str, list[str]] = {}
     _title_roles_cache: dict[int, str] | None = None
+    MAX_VISIBLE_PROFILE_ROLES = 3
 
     @staticmethod
     def resolve_account_id(provider: str, provider_user_id: str) -> Optional[str]:
@@ -1044,6 +1045,9 @@ class AccountsService:
 
     @staticmethod
     def update_profile_field(provider: str, provider_user_id: str, field_name: str, value: str) -> Tuple[bool, str]:
+        if field_name == "visible_roles":
+            return AccountsService.update_profile_visible_roles(provider, provider_user_id, value)
+
         config = AccountsService.PROFILE_FIELDS_CONFIG.get(field_name)
         if not config:
             logger.warning(
@@ -1080,6 +1084,44 @@ class AccountsService:
             return False, "Не удалось обновить профиль"
 
     @staticmethod
+    def update_profile_visible_roles(provider: str, provider_user_id: str, value: str) -> Tuple[bool, str]:
+        account_id = AccountsService.resolve_account_id(provider, provider_user_id)
+        if not account_id or not db.supabase:
+            logger.warning(
+                "update_profile_visible_roles failed to resolve account provider=%s provider_user_id=%s",
+                provider,
+                provider_user_id,
+            )
+            return False, "Профиль не найден. Сначала зарегистрируйтесь"
+
+        role_names = [item.strip() for item in str(value or "").split(",") if item.strip()]
+        if len(role_names) > AccountsService.MAX_VISIBLE_PROFILE_ROLES:
+            return False, f"Можно выбрать не более {AccountsService.MAX_VISIBLE_PROFILE_ROLES} ролей"
+
+        try:
+            access = RoleResolver.resolve_for_account(str(account_id))
+            available_roles = {str(item.get('name') or '').strip().lower(): str(item.get('name') or '').strip() for item in access.roles}
+            normalized_roles: list[str] = []
+            for role_name in role_names:
+                resolved_name = available_roles.get(role_name.lower())
+                if not resolved_name:
+                    return False, f"Роль не найдена в вашем профиле: {role_name}"
+                if resolved_name not in normalized_roles:
+                    normalized_roles.append(resolved_name)
+
+            db.supabase.table("accounts").update({"profile_visible_roles": normalized_roles}).eq("id", str(account_id)).execute()
+            return True, "Роли профиля обновлены"
+        except Exception as e:
+            logger.exception(
+                "update_profile_visible_roles failed account_id=%s provider=%s provider_user_id=%s error=%s",
+                account_id,
+                provider,
+                provider_user_id,
+                AccountsService._format_db_error(e),
+            )
+            return False, "Не удалось обновить отображаемые роли"
+
+    @staticmethod
     def get_profile(provider: str, provider_user_id: str, display_name: Optional[str] = None) -> Optional[dict]:
         account_id = AccountsService.resolve_account_id(provider, provider_user_id)
         if not account_id or not db.supabase:
@@ -1104,10 +1146,11 @@ class AccountsService:
         custom_nick = display_name or str(AccountsService.PROFILE_FIELDS_CONFIG["custom_nick"]["default"])
         description = str(AccountsService.PROFILE_FIELDS_CONFIG["description"]["default"])
         nulls_id = str(AccountsService.PROFILE_FIELDS_CONFIG["nulls_brawl_id"]["default"])
+        profile_visible_roles: list[str] = []
         try:
             account_response = (
                 db.supabase.table("accounts")
-                .select("custom_nick,description,nulls_brawl_id")
+                .select("custom_nick,description,nulls_brawl_id,profile_visible_roles")
                 .eq("id", str(account_id))
                 .limit(1)
                 .execute()
@@ -1121,6 +1164,9 @@ class AccountsService:
                 )
                 description = AccountsService._normalize_profile_field_value("description", account_row.get("description"))
                 nulls_id = AccountsService._normalize_profile_field_value("nulls_brawl_id", account_row.get("nulls_brawl_id"))
+                visible_roles_value = account_row.get("profile_visible_roles")
+                if isinstance(visible_roles_value, list):
+                    profile_visible_roles = [str(item).strip() for item in visible_roles_value if str(item).strip()]
         except Exception as e:
             logger.exception(
                 "get_profile account fields read failed account_id=%s provider=%s provider_user_id=%s error=%s",
@@ -1195,6 +1241,28 @@ class AccountsService:
                 AccountsService._format_db_error(e),
             )
 
+        role_names = [str(item.get("name") or "").strip() for item in resolved_roles if str(item.get("name") or "").strip()]
+        role_names_lower_to_original = {name.lower(): name for name in role_names}
+        visible_roles: list[str] = []
+        for selected in profile_visible_roles:
+            resolved = role_names_lower_to_original.get(str(selected).lower())
+            if resolved and resolved not in visible_roles:
+                visible_roles.append(resolved)
+        if not visible_roles:
+            visible_roles = role_names[: AccountsService.MAX_VISIBLE_PROFILE_ROLES]
+        else:
+            visible_roles = visible_roles[: AccountsService.MAX_VISIBLE_PROFILE_ROLES]
+
+        roles_by_category: dict[str, list[str]] = {}
+        for role_item in resolved_roles:
+            role_name = str(role_item.get("name") or "").strip()
+            if not role_name:
+                continue
+            category = str(role_item.get("category") or "Без категории").strip() or "Без категории"
+            roles_by_category.setdefault(category, [])
+            if role_name not in roles_by_category[category]:
+                roles_by_category[category].append(role_name)
+
         try:
             from bot.services.external_roles_sync_service import ExternalRolesSyncService
 
@@ -1221,6 +1289,8 @@ class AccountsService:
             "titles": titles,
             "titles_text": titles_text,
             "roles": resolved_roles,
+            "visible_roles": visible_roles,
+            "roles_by_category": roles_by_category,
             "permissions": resolved_permissions,
             "external_roles_last_synced_at": external_roles_last_synced_at,
         }
