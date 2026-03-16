@@ -3,7 +3,7 @@ import logging
 import discord
 
 from bot.commands.base import bot
-from bot.services import AccountsService
+from bot.services import AccountsService, AuthorityService, ExternalRolesSyncService
 from bot.systems.linking_logic import (
     consume_discord_link_code,
     issue_discord_telegram_link_code,
@@ -55,6 +55,33 @@ class ProfileEditModal(discord.ui.Modal):
                 await interaction.response.send_message("❌ Не удалось сохранить изменения профиля.", ephemeral=True)
 
 
+
+
+class ForceRoleSyncView(discord.ui.View):
+    def __init__(self, actor_user_id: int, account_id: str):
+        super().__init__(timeout=300)
+        self.actor_user_id = actor_user_id
+        self.account_id = account_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.actor_user_id:
+            await interaction.response.send_message("❌ Обновить роли может только инициатор команды.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="🔄 Обновить внешние роли", style=discord.ButtonStyle.secondary)
+    async def force_sync(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        try:
+            changed = ExternalRolesSyncService.sync_account_by_account_id(interaction.client, self.account_id)
+            text = "✅ Синхронизация ролей выполнена." if changed else "✅ Синхронизация выполнена, изменений нет."
+            await interaction.response.send_message(text, ephemeral=True)
+        except Exception:
+            logger.exception(
+                "discord force role sync failed actor_user_id=%s account_id=%s",
+                getattr(interaction.user, "id", None),
+                self.account_id,
+            )
+            await interaction.response.send_message("❌ Ошибка синхронизации ролей.", ephemeral=True)
 class ProfileEditView(discord.ui.View):
     def __init__(self, user_id: int):
         super().__init__(timeout=300)
@@ -158,11 +185,13 @@ async def profile(ctx):
         inline=False,
     )
     embed.add_field(name="**Описание**", value=data["description"][:100], inline=False)
+    external_roles_last_synced_at = data.get("external_roles_last_synced_at") or "—"
     embed.add_field(
         name="**Дополнительная информация**",
         value=(
             f"🔗 TG ↔ DC: **{data['link_status']}**\n"
-            f"🛡️ Null's Brawl: **{data['nulls_status']}**"
+            f"🛡️ Null's Brawl: **{data['nulls_status']}**\n"
+            f"🕒 Последний sync ролей: **{external_roles_last_synced_at}**"
         ),
         inline=False,
     )
@@ -184,7 +213,10 @@ async def profile(ctx):
     if thumbnail_url:
         embed.set_thumbnail(url=thumbnail_url)
 
-    await send_temp(ctx, embed=embed, delete_after=None)
+    view = None
+    if AuthorityService.can_manage_self("discord", str(ctx.author.id)):
+        view = ForceRoleSyncView(ctx.author.id, data["account_id"])
+    await send_temp(ctx, embed=embed, view=view, delete_after=None)
 
 
 @bot.hybrid_command(name="profile_edit", description="Настройки и редактирование своего профиля")

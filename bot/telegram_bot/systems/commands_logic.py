@@ -56,6 +56,7 @@ def process_profile_command(
     safe_nulls_status = escape(data["nulls_status"])
     safe_points = escape(str(data["points"]))
     safe_titles_text = escape(str(data.get("titles_text") or "Нет званий"))
+    safe_external_sync = escape(str(data.get("external_roles_last_synced_at") or "—"))
     roles = data.get("roles") or []
     safe_roles_text = (
         "\n".join(
@@ -82,6 +83,7 @@ def process_profile_command(
         "<b>Дополнительная информация</b>\n"
         "🔗 TG ↔ DC: {safe_link_status}\n"
         "🛡️ Null's Brawl: {safe_nulls_status}\n"
+        "🕒 Sync внешних ролей: {safe_external_sync}\n"
         "━━━━━━━━━━━━━━\n"
         "<b>Роли</b>\n"
         "{safe_roles_text}"
@@ -95,6 +97,7 @@ def process_profile_command(
         safe_points=safe_points,
         safe_titles_text=safe_titles_text,
         safe_roles_text=safe_roles_text,
+        safe_external_sync=safe_external_sync,
     )
 
 
