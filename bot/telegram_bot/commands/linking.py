@@ -31,6 +31,7 @@ _PENDING_EDIT_FIELD: dict[int, str] = {}
 
 PENDING_PROFILE_EDIT_TTL_SECONDS = 900
 _PENDING_EDIT_FIELD_CREATED_AT: dict[int, float] = {}
+_PENDING_VISIBLE_ROLES: dict[int, dict[str, object]] = {}
 
 
 def _has_non_expired_profile_edit(telegram_user_id: int) -> bool:
@@ -96,6 +97,30 @@ def _profile_settings_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🆔 Изменить Null's ID", callback_data="profile_edit:nulls_brawl_id")],
             [InlineKeyboardButton(text="🏅 Отображаемые роли", callback_data="profile_edit:visible_roles")],
         ]
+    )
+
+
+def _build_visible_roles_keyboard(role_names: list[str], selected_roles: list[str]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    limited_roles = role_names[:10]
+    for idx, role_name in enumerate(limited_roles):
+        prefix = "✅ " if role_name in selected_roles else ""
+        rows.append([InlineKeyboardButton(text=f"{prefix}{role_name}"[:64], callback_data=f"profile_visible_roles:toggle:{idx}")])
+    rows.append(
+        [
+            InlineKeyboardButton(text="💾 Сохранить", callback_data="profile_visible_roles:save"),
+            InlineKeyboardButton(text="🧹 Очистить", callback_data="profile_visible_roles:clear"),
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _build_visible_roles_text(selected_roles: list[str]) -> str:
+    selected_text = ", ".join(f"<code>{item}</code>" for item in selected_roles) if selected_roles else "—"
+    return (
+        "🏅 <b>Выбор отображаемых ролей</b>\n"
+        "Нажмите на роли ниже (до 3), затем нажмите <b>Сохранить</b>.\n"
+        f"Выбрано ({len(selected_roles)}/{AccountsService.MAX_VISIBLE_PROFILE_ROLES}): {selected_text}"
     )
 
 
@@ -186,7 +211,7 @@ async def profile_edit_command(message: Message) -> None:
 
     await message.answer(
         "⚙️ <b>Настройки профиля</b>\n"
-        "Выберите, что хотите изменить:",
+        "Выберите, что хотите изменить. Для ролей используйте точные названия из /profile_roles:",
         parse_mode=ParseMode.HTML,
         reply_markup=_profile_settings_keyboard(),
     )
@@ -201,7 +226,7 @@ async def profile_settings_callback(callback: CallbackQuery) -> None:
 
         await callback.message.answer(
             "⚙️ <b>Настройки профиля</b>\n"
-            "Выберите поле для изменения:",
+            "Выберите поле для изменения. Для ролей используйте точные названия из /profile_roles:",
             parse_mode=ParseMode.HTML,
             reply_markup=_profile_settings_keyboard(),
         )
@@ -232,10 +257,40 @@ async def profile_edit_field_callback(callback: CallbackQuery) -> None:
         _PENDING_EDIT_FIELD_CREATED_AT[callback.from_user.id] = time.time()
         helper_text = "Чтобы очистить поле, отправьте символ <code>-</code>."
         if field_name == "visible_roles":
-            helper_text = (
-                "Введите до 3 ролей через запятую (только из ролей пользователя).\n"
-                "Чтобы очистить поле, отправьте символ <code>-</code>."
+            display_name = callback.from_user.full_name if callback.from_user is not None else None
+            profile_data = AccountsService.get_profile("telegram", str(callback.from_user.id), display_name=display_name)
+            role_names = [
+                str(item.get("name") or "").strip()
+                for item in (profile_data or {}).get("roles", [])
+                if str(item.get("name") or "").strip()
+            ]
+            visible_roles = [str(name).strip() for name in (profile_data or {}).get("visible_roles", []) if str(name).strip()]
+
+            if not role_names:
+                await callback.message.answer("❌ Нет доступных ролей для выбора. Проверьте /profile_roles.")
+                await callback.answer()
+                return
+
+            _PENDING_VISIBLE_ROLES[callback.from_user.id] = {
+                "role_names": role_names[:10],
+                "selected_roles": [
+                    role_name
+                    for role_name in visible_roles
+                    if role_name in role_names[:10]
+                ][: AccountsService.MAX_VISIBLE_PROFILE_ROLES],
+                "created_at": time.time(),
+            }
+            _PENDING_EDIT_FIELD.pop(callback.from_user.id, None)
+            _PENDING_EDIT_FIELD_CREATED_AT.pop(callback.from_user.id, None)
+            selected = [str(item) for item in _PENDING_VISIBLE_ROLES[callback.from_user.id]["selected_roles"]]
+            await callback.message.answer(
+                _build_visible_roles_text(selected),
+                parse_mode=ParseMode.HTML,
+                reply_markup=_build_visible_roles_keyboard(role_names[:10], selected),
             )
+            await callback.answer()
+            return
+
         await callback.message.answer(
             f"✍️ Введите новое значение для поля <b>{_EDIT_FIELD_LABELS[field_name]}</b>.\n{helper_text}",
             parse_mode=ParseMode.HTML,
@@ -244,6 +299,80 @@ async def profile_edit_field_callback(callback: CallbackQuery) -> None:
     except Exception:
         logger.exception("profile_edit field callback failed callback_data=%s", callback.data)
         await callback.answer("Ошибка выбора поля", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("profile_visible_roles:"))
+async def profile_visible_roles_callback(callback: CallbackQuery) -> None:
+    try:
+        if callback.from_user is None:
+            await callback.answer("Не удалось определить пользователя", show_alert=True)
+            return
+
+        state = _PENDING_VISIBLE_ROLES.get(callback.from_user.id)
+        if not state:
+            await callback.answer("Меню выбора ролей устарело. Откройте заново.", show_alert=True)
+            return
+        created_at = float(state.get("created_at") or 0)
+        if created_at and (time.time() - created_at) > PENDING_PROFILE_EDIT_TTL_SECONDS:
+            _PENDING_VISIBLE_ROLES.pop(callback.from_user.id, None)
+            logger.info("profile_visible_roles state expired user_id=%s", callback.from_user.id)
+            await callback.answer("Меню выбора ролей устарело. Откройте заново.", show_alert=True)
+            return
+
+        role_names = [str(item) for item in state.get("role_names", []) if str(item).strip()]
+        selected_roles = [str(item) for item in state.get("selected_roles", []) if str(item).strip()]
+
+        action = str(callback.data).split(":", 2)[2]
+        if action == "save":
+            value = ", ".join(selected_roles)
+            success, payload = AccountsService.update_profile_field("telegram", str(callback.from_user.id), "visible_roles", value)
+            _PENDING_VISIBLE_ROLES.pop(callback.from_user.id, None)
+            prefix = "✅" if success else "❌"
+            if callback.message:
+                await callback.message.edit_text(f"{prefix} {payload}", reply_markup=None)
+            await callback.answer("Сохранено" if success else "Ошибка", show_alert=not success)
+            return
+
+        if action == "clear":
+            selected_roles = []
+        elif action.startswith("toggle:"):
+            idx_raw = action.split(":", 1)[1]
+            try:
+                idx = int(idx_raw)
+            except ValueError:
+                await callback.answer("Некорректный выбор", show_alert=True)
+                return
+            if idx < 0 or idx >= len(role_names):
+                await callback.answer("Роль не найдена", show_alert=True)
+                return
+            role_name = role_names[idx]
+            if role_name in selected_roles:
+                selected_roles = [item for item in selected_roles if item != role_name]
+            else:
+                if len(selected_roles) >= AccountsService.MAX_VISIBLE_PROFILE_ROLES:
+                    await callback.answer(
+                        f"Можно выбрать не более {AccountsService.MAX_VISIBLE_PROFILE_ROLES} ролей",
+                        show_alert=True,
+                    )
+                    return
+                selected_roles.append(role_name)
+        else:
+            await callback.answer("Неизвестное действие", show_alert=True)
+            return
+
+        state["selected_roles"] = selected_roles
+        _PENDING_VISIBLE_ROLES[callback.from_user.id] = state
+
+        if callback.message:
+            await callback.message.edit_text(
+                _build_visible_roles_text(selected_roles),
+                parse_mode=ParseMode.HTML,
+                reply_markup=_build_visible_roles_keyboard(role_names, selected_roles),
+            )
+        await callback.answer()
+    except Exception:
+        logger.exception("profile_visible_roles callback failed callback_data=%s", callback.data)
+        await callback.answer("Ошибка выбора ролей", show_alert=True)
 
 
 @router.message(F.chat.type == "private", F.from_user, F.from_user.id.func(has_pending_profile_edit))
