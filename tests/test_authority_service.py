@@ -70,5 +70,23 @@ class AuthorityServiceTests(unittest.TestCase):
         self.assertTrue(AuthorityService.can_manage_self("discord", "1"))
 
 
+
+    @patch("bot.services.authority_service.AccountsService.get_account_titles")
+    @patch("bot.services.authority_service.AccountsService.resolve_account_id")
+    def test_can_manage_role_requires_vice_or_above(self, mock_resolve, mock_titles):
+        mock_resolve.return_value = "acc-role"
+        mock_titles.return_value = ["Ветеран города"]
+
+        self.assertFalse(AuthorityService.can_manage_role("discord", "1", "оператор"))
+
+    @patch("bot.services.authority_service.AccountsService.get_account_titles")
+    @patch("bot.services.authority_service.AccountsService.resolve_account_id")
+    def test_can_manage_role_blocks_roles_above_operator(self, mock_resolve, mock_titles):
+        mock_resolve.return_value = "acc-role2"
+        mock_titles.return_value = ["Глава клуба"]
+
+        self.assertFalse(AuthorityService.can_manage_role("discord", "1", "глава клуба"))
+        self.assertTrue(AuthorityService.can_manage_role("discord", "1", "оператор"))
+
 if __name__ == "__main__":
     unittest.main()
