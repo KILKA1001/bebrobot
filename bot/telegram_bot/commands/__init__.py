@@ -10,6 +10,7 @@ def get_commands_router() -> Router:
     router = Router()
     router.include_router(linking_router)
     router.include_router(engagement_router)
+    router.include_router(roles_admin_router)
     router.include_router(ai_chat_router)
     router.include_router(roles_admin_router)
     return router
