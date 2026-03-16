@@ -18,27 +18,8 @@ from bot.telegram_bot.config import TELEGRAM_BOT_TOKEN_ENV, get_telegram_bot_tok
 from bot.services.ai_service import generate_guiy_reply
 
 
-def _resolve_runtime() -> str:
-    """Resolve runtime mode for unified launcher.
-
-    Runtime mode must be controlled only via BOT_RUNTIME.
-    Bot tokens are treated purely as credentials for the selected runtime
-    and never as implicit launch switches.
-    """
-
-    explicit = (os.getenv("BOT_RUNTIME") or "").strip().lower()
-    if explicit:
-        if explicit in {"telegram", "tg"}:
-            return "telegram"
-        if explicit in {"both", "all"}:
-            return "both"
-        return "discord"
-
-    return "discord"
-
-
 load_dotenv()
-_RUNTIME = _resolve_runtime()
+
 
 # Основные импорты Discord
 import discord
@@ -425,6 +406,9 @@ def run_telegram_main() -> None:
 
     try:
         asyncio.run(run_telegram_polling(token))
+    except TelegramPollingAlreadyRunningInProcessError as exc:
+        logging.warning("telegram runtime duplicate startup detected in telegram-only mode; details=%s", exc)
+        return
     except Exception:
         logging.exception("telegram runtime failed in telegram-only mode")
         raise
@@ -669,24 +653,27 @@ def run_both_main() -> None:
     discord_token = (os.getenv('DISCORD_TOKEN') or '').strip()
     telegram_token = get_telegram_bot_token()
     if not discord_token or not telegram_token:
-        print("❌ Для BOT_RUNTIME=both нужны DISCORD_TOKEN и TELEGRAM_BOT_TOKEN.")
+        logging.error(
+            "Не заданы токены для одновременного запуска: DISCORD_TOKEN=%s TELEGRAM_BOT_TOKEN=%s",
+            bool(discord_token),
+            bool(telegram_token),
+        )
         return
 
     asyncio.run(_run_both_async(discord_token, telegram_token))
 
 
 def main():
-    """Unified launcher for discord/telegram/both runtimes."""
+    """Launcher that always starts Discord and Telegram runtimes together."""
 
-    if _RUNTIME == "telegram":
-        run_telegram_main()
-        return
+    runtime_hint = (os.getenv("BOT_RUNTIME") or "").strip()
+    if runtime_hint:
+        logging.warning(
+            "BOT_RUNTIME=%r is ignored: launcher always starts both runtimes for parity",
+            runtime_hint,
+        )
 
-    if _RUNTIME == "both":
-        run_both_main()
-        return
-
-    run_discord_main()
+    run_both_main()
 
 
 if __name__ == "__main__":
