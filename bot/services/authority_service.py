@@ -21,6 +21,19 @@ TITLE_WEIGHTS: dict[str, int] = {
     "участник клубов": 0,
 }
 
+
+ROLE_LEVELS: dict[str, int] = {
+    "глава клуба": 100,
+    "главный вице": 100,
+    "вице города": 80,
+    "оператор": 80,
+    "ветеран города": 30,
+    "участник клубов": 0,
+}
+
+MAX_MANAGEABLE_ROLE_LEVEL = 80
+
+
 COMMAND_LEVELS: dict[str, int] = {
     "points_manage": 80,
     "fine_create": 30,
@@ -120,6 +133,36 @@ class AuthorityService:
             target_user_id,
             target.rank_weight,
             sorted(target_titles),
+            allowed,
+        )
+        return allowed
+
+
+    @staticmethod
+    def can_manage_role(actor_provider: str, actor_user_id: str, target_role: str) -> bool:
+        actor = AuthorityService.resolve_authority(actor_provider, actor_user_id)
+        role_key = str(target_role).strip().lower()
+        target_level = ROLE_LEVELS.get(role_key, 0)
+
+        if target_level > MAX_MANAGEABLE_ROLE_LEVEL:
+            logger.info(
+                "authority role-manage denied: target role above operator actor=%s:%s target_role=%s target_level=%s max=%s",
+                actor_provider,
+                actor_user_id,
+                target_role,
+                target_level,
+                MAX_MANAGEABLE_ROLE_LEVEL,
+            )
+            return False
+
+        allowed = actor.level >= 80 and actor.level >= target_level
+        logger.info(
+            "authority role-manage check actor=%s:%s actor_level=%s target_role=%s target_level=%s allowed=%s",
+            actor_provider,
+            actor_user_id,
+            actor.level,
+            target_role,
+            target_level,
             allowed,
         )
         return allowed
