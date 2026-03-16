@@ -1187,14 +1187,7 @@ class AccountsService:
             logger.info("get_profile no titles yet account_id=%s provider=%s", account_id, provider)
 
         points_from_actions = AccountsService._load_points_from_actions(str(account_id), discord_identity)
-        if points_from_actions is not None:
-            points = AccountsService._format_points(points_from_actions)
-        else:
-            logger.warning(
-                "get_profile actions points unavailable account_id=%s; fallback to scores snapshot",
-                account_id,
-            )
-
+        points_from_scores: Optional[float] = None
         try:
             points_response = (
                 db.supabase.table("scores")
@@ -1214,8 +1207,8 @@ class AccountsService:
                     .execute()
                 )
                 points_rows = points_response.data or []
-            if points_from_actions is None:
-                points = AccountsService._format_points(points_rows[0].get("points", 0)) if points_rows else "0"
+            if points_rows:
+                points_from_scores = float(points_rows[0].get("points") or 0)
         except Exception as e:
             logger.exception(
                 "get_profile points failed account_id=%s provider=%s provider_user_id=%s error=%s",
@@ -1223,6 +1216,29 @@ class AccountsService:
                 provider,
                 provider_user_id,
                 AccountsService._format_db_error(e),
+            )
+
+        if points_from_scores is not None:
+            points = AccountsService._format_points(points_from_scores)
+            if points_from_actions is not None and abs(points_from_actions - points_from_scores) >= 0.01:
+                logger.warning(
+                    "get_profile points mismatch account_id=%s actions_total=%s scores_snapshot=%s",
+                    account_id,
+                    points_from_actions,
+                    points_from_scores,
+                )
+        elif points_from_actions is not None:
+            points = AccountsService._format_points(points_from_actions)
+            logger.warning(
+                "get_profile scores points unavailable account_id=%s; using actions fallback=%s",
+                account_id,
+                points_from_actions,
+            )
+        else:
+            points = "0"
+            logger.warning(
+                "get_profile points unavailable account_id=%s; defaulting to zero",
+                account_id,
             )
 
         resolved_roles: list[dict[str, str | None]] = []
