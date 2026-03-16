@@ -99,6 +99,15 @@ class AuthorityServiceTests(unittest.TestCase):
 
     @patch("bot.services.authority_service.AccountsService.get_account_titles")
     @patch("bot.services.authority_service.AccountsService.resolve_account_id")
+    def test_vice_cannot_manage_head_or_main_vice(self, mock_resolve, mock_titles):
+        mock_resolve.return_value = "acc-role5"
+        mock_titles.return_value = ["Вице города"]
+
+        self.assertFalse(AuthorityService.can_manage_role("telegram", "55", "главный вице"))
+        self.assertFalse(AuthorityService.can_manage_role("telegram", "55", "глава клуба"))
+
+    @patch("bot.services.authority_service.AccountsService.get_account_titles")
+    @patch("bot.services.authority_service.AccountsService.resolve_account_id")
     def test_can_manage_role_allows_vice_level(self, mock_resolve, mock_titles):
         mock_resolve.return_value = "acc-role3"
         mock_titles.return_value = ["Вице города"]
