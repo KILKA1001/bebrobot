@@ -23,6 +23,7 @@ from bot.telegram_bot.commands import get_commands_router
 from bot.telegram_bot.config import TELEGRAM_BOT_TOKEN_ENV, get_telegram_bot_token
 
 logger = logging.getLogger(__name__)
+_DISPATCHER: Dispatcher | None = None
 
 
 class TelegramPollingLockActiveError(RuntimeError):
@@ -220,8 +221,17 @@ async def run_polling(token: str) -> None:
     )
 
     bot = Bot(token=token)
-    dp = Dispatcher()
-    dp.include_router(get_commands_router())
+
+    global _DISPATCHER
+    if _DISPATCHER is None:
+        _DISPATCHER = Dispatcher()
+        try:
+            _DISPATCHER.include_router(get_commands_router())
+        except Exception:
+            logger.exception("telegram dispatcher router attach failed")
+            raise
+
+    dp = _DISPATCHER
 
     try:
         me = await bot.get_me()
