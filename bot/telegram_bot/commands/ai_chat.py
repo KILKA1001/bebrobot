@@ -24,6 +24,7 @@ KNOWN_COMMAND_PREFIXES = (
     "/link_discord",
     "/points",
     "/tickets",
+    "/roles_admin",
     "/helpy",
     "/guiy",
 )
