@@ -7,6 +7,7 @@ import hashlib
 import logging
 import os
 import socket
+import traceback
 from pathlib import Path
 
 import fcntl
@@ -155,6 +156,27 @@ async def run_polling(token: str) -> None:
     # directly and bypasses telegram main().
     _patch_aiogram_conflict_behavior()
 
+    current_task = asyncio.current_task()
+    startup_context = {
+        "correlation_id": f"tg-run-{os.getpid()}-{id(current_task)}",
+        "pid": os.getpid(),
+        "hostname": socket.gethostname(),
+        "bot_runtime": (os.getenv("BOT_RUNTIME") or "").strip() or "discord(default)",
+        "task_name": current_task.get_name() if current_task else "unknown",
+        "stack": " | ".join(
+            line.strip() for line in traceback.format_stack(limit=8) if line.strip()
+        ),
+    }
+    logger.info(
+        "telegram polling startup context: correlation_id=%s pid=%s hostname=%s BOT_RUNTIME=%s task=%s stack=%s",
+        startup_context["correlation_id"],
+        startup_context["pid"],
+        startup_context["hostname"],
+        startup_context["bot_runtime"],
+        startup_context["task_name"],
+        startup_context["stack"],
+    )
+
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
     lock_path = Path(f"/tmp/bebrobot_telegram_polling_{token_hash}.lock")
     lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
@@ -190,9 +212,16 @@ async def run_polling(token: str) -> None:
         if owner_pid == current_pid and owner_hostname == current_hostname:
             logger.error(
                 "telegram polling duplicate startup detected in current process "
-                "(lock=%s, owner=%s); stopping duplicate loop",
+                "(lock=%s, owner=%s, correlation_id=%s, pid=%s, hostname=%s, BOT_RUNTIME=%s, task=%s, stack=%s); "
+                "stopping duplicate loop",
                 lock_path,
                 existing_owner,
+                startup_context["correlation_id"],
+                startup_context["pid"],
+                startup_context["hostname"],
+                startup_context["bot_runtime"],
+                startup_context["task_name"],
+                startup_context["stack"],
             )
             os.close(lock_fd)
             raise TelegramPollingAlreadyRunningInProcessError(
