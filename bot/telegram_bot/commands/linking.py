@@ -322,7 +322,26 @@ async def profile_visible_roles_callback(callback: CallbackQuery) -> None:
         role_names = [str(item) for item in state.get("role_names", []) if str(item).strip()]
         selected_roles = [str(item) for item in state.get("selected_roles", []) if str(item).strip()]
 
-        action = str(callback.data).split(":", 2)[2]
+        callback_data = str(callback.data or "")
+        prefix = "profile_visible_roles:"
+        if not callback_data.startswith(prefix):
+            logger.error(
+                "profile_visible_roles callback invalid prefix user_id=%s callback_data=%s",
+                callback.from_user.id,
+                callback_data,
+            )
+            await callback.answer("Неизвестное действие", show_alert=True)
+            return
+
+        action = callback_data[len(prefix) :]
+        if not action:
+            logger.error(
+                "profile_visible_roles callback empty action user_id=%s callback_data=%s",
+                callback.from_user.id,
+                callback_data,
+            )
+            await callback.answer("Неизвестное действие", show_alert=True)
+            return
         if action == "save":
             value = ", ".join(selected_roles)
             success, payload = AccountsService.update_profile_field("telegram", str(callback.from_user.id), "visible_roles", value)
