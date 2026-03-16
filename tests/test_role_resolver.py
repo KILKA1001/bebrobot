@@ -28,6 +28,10 @@ class _TableOp:
         self._limit = n
         return self
 
+    def is_(self, key, value):
+        self._filters.append((key, None if str(value).lower() == "null" else value))
+        return self
+
     def execute(self):
         rows = self.fake_db.tables.get(self.table_name, [])
         selected = []
@@ -54,6 +58,7 @@ class _FakeDb:
             "accounts": [],
             "roles": [],
             "role_permissions": [],
+            "external_role_bindings": [],
         }
         self.supabase = _FakeSupabase(self)
 
@@ -136,6 +141,26 @@ class RoleResolverTests(unittest.TestCase):
         result = RoleResolver.resolve_for_account("acc-1")
 
         self.assertEqual(result.roles, [])
+
+
+    def test_fallback_to_external_role_bindings_when_assignments_empty(self):
+        now = datetime.now(timezone.utc)
+        self.fake_db.tables["external_role_bindings"] = [
+            {
+                "account_id": "acc-1",
+                "source": "discord",
+                "external_role_id": "123",
+                "external_role_name": "Сладкая бебра",
+                "last_synced_at": now.isoformat(),
+                "deleted_at": None,
+            }
+        ]
+
+        result = RoleResolver.resolve_for_account("acc-1")
+
+        self.assertEqual(len(result.roles), 1)
+        self.assertEqual(result.roles[0]["name"], "Сладкая бебра")
+        self.assertEqual(result.roles[0]["category"], "Внешние роли")
 
 
 if __name__ == "__main__":
