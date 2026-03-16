@@ -117,6 +117,14 @@ def admin_user_custom_roles(provider: str, provider_user_id: str):
         return jsonify({"ok": False, "error": "source_not_allowed"}), 400
 
     if not AuthorityService.can_manage_role(actor_provider, actor_user_id, role_name):
+        logger.error(
+            "admin api role change forbidden actor=%s:%s target=%s:%s role=%s",
+            actor_provider,
+            actor_user_id,
+            provider,
+            provider_user_id,
+            role_name,
+        )
         return jsonify({"ok": False, "error": "forbidden_role_manage"}), 403
 
     account_id = _resolve_account_id(provider, provider_user_id)

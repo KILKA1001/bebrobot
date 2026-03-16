@@ -31,7 +31,9 @@ ROLE_LEVELS: dict[str, int] = {
     "участник клубов": 0,
 }
 
-MAX_MANAGEABLE_ROLE_LEVEL = 80
+MIN_ROLE_MANAGER_LEVEL = 80
+SUPER_ADMIN_ROLE_KEYS = {"глава клуба", "главный вице"}
+SUPER_ADMIN_LEVEL = 100
 
 
 COMMAND_LEVELS: dict[str, int] = {
@@ -144,23 +146,24 @@ class AuthorityService:
         role_key = str(target_role).strip().lower()
         target_level = ROLE_LEVELS.get(role_key, 0)
 
-        if target_level > MAX_MANAGEABLE_ROLE_LEVEL:
+        if role_key in SUPER_ADMIN_ROLE_KEYS and actor.level < SUPER_ADMIN_LEVEL:
             logger.info(
-                "authority role-manage denied: target role above operator actor=%s:%s target_role=%s target_level=%s max=%s",
+                "authority role-manage denied: super role requires level=%s actor=%s:%s actor_level=%s target_role=%s",
+                SUPER_ADMIN_LEVEL,
                 actor_provider,
                 actor_user_id,
+                actor.level,
                 target_role,
-                target_level,
-                MAX_MANAGEABLE_ROLE_LEVEL,
             )
             return False
 
-        allowed = actor.level >= 80 and actor.level >= target_level
+        allowed = actor.level >= MIN_ROLE_MANAGER_LEVEL and actor.level >= target_level
         logger.info(
-            "authority role-manage check actor=%s:%s actor_level=%s target_role=%s target_level=%s allowed=%s",
+            "authority role-manage check actor=%s:%s actor_level=%s min_level=%s target_role=%s target_level=%s allowed=%s",
             actor_provider,
             actor_user_id,
             actor.level,
+            MIN_ROLE_MANAGER_LEVEL,
             target_role,
             target_level,
             allowed,
