@@ -29,6 +29,10 @@ class TelegramPollingLockActiveError(RuntimeError):
     """Raised when another process already owns Telegram polling lock."""
 
 
+class TelegramPollingAlreadyRunningInProcessError(TelegramPollingLockActiveError):
+    """Raised when current process already owns Telegram polling lock."""
+
+
 def _is_local_process_alive(pid: int) -> bool:
     """Best-effort check for local process existence."""
 
@@ -174,17 +178,26 @@ async def run_polling(token: str) -> None:
             lock_path,
             existing_owner,
         )
+        current_pid = os.getpid()
+        current_hostname = socket.gethostname()
         logger.error(
             "telegram lock diagnostic: current_pid=%s current_hostname=%s owner_pid=%s "
             "owner_hostname=%s owner_alive=%s BOT_RUNTIME=%s",
-            os.getpid(),
-            socket.gethostname(),
+            current_pid,
+            current_hostname,
             owner_pid if owner_pid > 0 else "unknown",
             owner_hostname,
             owner_alive if owner_alive is not None else "unknown",
             (os.getenv("BOT_RUNTIME") or "").strip() or "discord(default)",
         )
         os.close(lock_fd)
+
+        if owner_pid == current_pid and owner_hostname == current_hostname:
+            raise TelegramPollingAlreadyRunningInProcessError(
+                "telegram polling lock is already owned by current process; "
+                "skip duplicate startup"
+            )
+
         raise TelegramPollingLockActiveError(
             f"telegram polling lock is active by another process ({existing_owner})"
         )
