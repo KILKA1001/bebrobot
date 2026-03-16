@@ -586,9 +586,9 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
                 await run_telegram_polling(telegram_token)
                 logging.warning("telegram runtime stopped; restarting")
             except TelegramPollingAlreadyRunningInProcessError as exc:
-                logging.error(
+                logging.warning(
                     "telegram runtime duplicate startup detected in current process (both mode); "
-                    "disabling telegram retry loop to preserve runtime parity. details=%s",
+                    "assuming another in-process telegram loop is active and stopping duplicate loop. details=%s",
                     exc,
                 )
                 return

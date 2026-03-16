@@ -173,13 +173,27 @@ async def run_polling(token: str) -> None:
         owner_pid = int(owner_pid_raw) if owner_pid_raw.isdigit() else -1
         owner_alive = _is_local_process_alive(owner_pid) if owner_hostname == socket.gethostname() else None
 
+        current_pid = os.getpid()
+        current_hostname = socket.gethostname()
+
+        if owner_pid == current_pid and owner_hostname == current_hostname:
+            logger.warning(
+                "telegram polling re-entry detected in current process "
+                "(lock=%s, owner=%s); skipping duplicate startup",
+                lock_path,
+                existing_owner,
+            )
+            os.close(lock_fd)
+            raise TelegramPollingAlreadyRunningInProcessError(
+                "telegram polling lock is already owned by current process; "
+                "skip duplicate startup"
+            )
+
         logger.warning(
             "telegram polling already running (lock=%s, owner=%s), exiting duplicate process",
             lock_path,
             existing_owner,
         )
-        current_pid = os.getpid()
-        current_hostname = socket.gethostname()
         logger.error(
             "telegram lock diagnostic: current_pid=%s current_hostname=%s owner_pid=%s "
             "owner_hostname=%s owner_alive=%s BOT_RUNTIME=%s",
