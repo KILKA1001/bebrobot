@@ -250,15 +250,11 @@ class AccountsService:
                     continue
 
                 identity_key = (str(provider), str(provider_user_id))
-                op = (
-                    db.supabase.table("account_identities")
-                    .eq("account_id", str(from_account_id))
-                    .eq("provider", str(provider))
-                    .eq("provider_user_id", str(provider_user_id))
-                )
 
                 if identity_key in target_keys:
-                    op.delete().execute()
+                    db.supabase.table("account_identities").delete().eq("account_id", str(from_account_id)).eq(
+                        "provider", str(provider)
+                    ).eq("provider_user_id", str(provider_user_id)).execute()
                     logger.warning(
                         "rebind_account_identities removed duplicate source identity from_account_id=%s to_account_id=%s provider=%s provider_user_id=%s",
                         from_account_id,
@@ -269,7 +265,9 @@ class AccountsService:
                     continue
 
                 try:
-                    op.update({"account_id": str(to_account_id)}).execute()
+                    db.supabase.table("account_identities").update({"account_id": str(to_account_id)}).eq(
+                        "account_id", str(from_account_id)
+                    ).eq("provider", str(provider)).eq("provider_user_id", str(provider_user_id)).execute()
                     target_keys.add(identity_key)
                 except Exception as e:
                     if AccountsService._is_unique_violation(e):
@@ -286,6 +284,14 @@ class AccountsService:
                             AccountsService._format_db_error(e),
                         )
                     else:
+                        logger.exception(
+                            "rebind_account_identities update failed from_account_id=%s to_account_id=%s provider=%s provider_user_id=%s error=%s",
+                            from_account_id,
+                            to_account_id,
+                            provider,
+                            provider_user_id,
+                            AccountsService._format_db_error(e),
+                        )
                         raise
         except Exception as e:
             logger.exception(
