@@ -112,14 +112,20 @@ python bot/main.py
 - Матрица паритета команд Discord/Telegram: [docs/command_parity_matrix.md](docs/command_parity_matrix.md) (обновляется вместе с новыми user-facing командами).
 - Переменная токена для Render: `TELEGRAM_BOT_TOKEN`.
 - Единая точка запуска: `python bot/main.py`.
-- Выбор рантайма через `BOT_RUNTIME`:
-  - `BOT_RUNTIME=discord` (только Discord)
-  - `BOT_RUNTIME=telegram` (только Telegram)
-  - `BOT_RUNTIME=both` (запуск Telegram + Discord одновременно в одном asyncio event loop / основном потоке)
-- Если `BOT_RUNTIME` не задан, лаунчер автоматически:
-  - выберет `discord`, когда заданы и `DISCORD_TOKEN`, и Telegram-токен (`TELEGRAM_BOT_TOKEN`) (без параллельного старта Telegram);
-  - выберет `telegram`, когда задан только Telegram-токен (`TELEGRAM_BOT_TOKEN`).
-- `bot/telegram_bot/main.py` — это Telegram runtime-модуль, который вызывается из `bot/main.py` при `BOT_RUNTIME=telegram`.
+- Рекомендуемое управление рантаймами через отдельные флаги:
+  - `DISCORD_RUNTIME=true` — запуск только Discord.
+  - `TELEGRAM_RUNTIME=true` — запуск только Telegram.
+  - Оба флага `true` — одновременный запуск Discord + Telegram.
+  - Если оба флага заданы как `false`, запуск не произойдёт (ошибка в логах).
+- Legacy-режим через `BOT_RUNTIME` сохранён для совместимости:
+  - `BOT_RUNTIME=discord`
+  - `BOT_RUNTIME=telegram`
+  - `BOT_RUNTIME=both`
+- Если ни новые флаги, ни `BOT_RUNTIME` не заданы, лаунчер выбирает режим автоматически по токенам:
+  - есть оба токена (`DISCORD_TOKEN` + `TELEGRAM_BOT_TOKEN`) → `both`;
+  - есть только `DISCORD_TOKEN` → `discord`;
+  - есть только `TELEGRAM_BOT_TOKEN` → `telegram`.
+- `bot/telegram_bot/main.py` — Telegram runtime-модуль, вызывается из `bot/main.py` в Telegram-режиме.
 - В Telegram-режиме поднимается polling-loop (aiogram) и в лог пишется `telegram bot started`.
 - В Telegram-режиме доступны команды `/start`, `/link`, `/helpy` (список команд обновляется через Telegram API при запуске).
 - AI-ответы персонажа Гуй работают и в Discord, и в Telegram (паритет): бот отвечает только если его явно позвали словом `Гуй` или если сообщение является ответом на сообщение бота.

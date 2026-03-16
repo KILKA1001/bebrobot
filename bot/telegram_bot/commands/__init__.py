@@ -1,3 +1,5 @@
+import logging
+
 from aiogram import Router
 
 from .engagement import router as engagement_router
@@ -7,6 +9,10 @@ from .roles_admin import router as roles_admin_router
 
 
 def get_commands_router() -> Router:
+    global _COMMANDS_ROUTER
+    if _COMMANDS_ROUTER is not None:
+        return _COMMANDS_ROUTER
+
     router = Router()
     router.include_router(linking_router)
     router.include_router(engagement_router)
