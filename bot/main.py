@@ -68,7 +68,10 @@ from bot.utils import safe_send
 from bot.utils.guiy_trigger import is_guiy_name_trigger
 from bot.utils.guiy_typing import calculate_typing_delay_seconds
 from bot.utils.conversation_activity import should_thread_reply
-from bot.telegram_bot.main import run_polling as run_telegram_polling
+from bot.telegram_bot.main import (
+    TelegramPollingLockActiveError,
+    run_polling as run_telegram_polling,
+)
 
 
 # Константы
@@ -581,6 +584,13 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
                 logging.info("telegram runtime starting (both mode)")
                 await run_telegram_polling(telegram_token)
                 logging.warning("telegram runtime stopped; restarting")
+            except TelegramPollingLockActiveError:
+                logging.exception(
+                    "telegram runtime duplicate process detected in both mode; "
+                    "another process is already polling with same token. "
+                    "Retry in %.1fs",
+                    retry_delay,
+                )
             except asyncio.CancelledError:
                 logging.info("telegram runtime cancelled")
                 raise

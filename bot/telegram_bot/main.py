@@ -2,9 +2,11 @@
 
 import asyncio
 import contextlib
+import datetime as dt
 import hashlib
 import logging
 import os
+import socket
 from pathlib import Path
 
 import fcntl
@@ -21,6 +23,10 @@ from bot.telegram_bot.commands import get_commands_router
 from bot.telegram_bot.config import TELEGRAM_BOT_TOKEN_ENV, get_telegram_bot_token
 
 logger = logging.getLogger(__name__)
+
+
+class TelegramPollingLockActiveError(RuntimeError):
+    """Raised when another process already owns Telegram polling lock."""
 
 
 BOT_COMMANDS = [
@@ -113,15 +119,45 @@ async def run_polling(token: str) -> None:
     lock_path = Path(f"/tmp/bebrobot_telegram_polling_{token_hash}.lock")
     lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
 
+    lock_owner = {
+        "pid": os.getpid(),
+        "hostname": socket.gethostname(),
+        "started_at": dt.datetime.now(dt.UTC).isoformat(),
+    }
+    owner_line = (
+        f"pid={lock_owner['pid']} hostname={lock_owner['hostname']} started_at={lock_owner['started_at']}\n"
+    )
+
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
+        existing_owner = "unknown"
+        with contextlib.suppress(Exception):
+            os.lseek(lock_fd, 0, os.SEEK_SET)
+            raw = os.read(lock_fd, 512).decode("utf-8", errors="replace").strip()
+            if raw:
+                existing_owner = raw
         logger.warning(
-            "telegram polling already running (lock=%s), exiting duplicate process",
+            "telegram polling already running (lock=%s, owner=%s), exiting duplicate process",
             lock_path,
+            existing_owner,
         )
         os.close(lock_fd)
-        return
+        raise TelegramPollingLockActiveError(
+            f"telegram polling lock is active by another process ({existing_owner})"
+        )
+
+    with contextlib.suppress(OSError):
+        os.ftruncate(lock_fd, 0)
+        os.lseek(lock_fd, 0, os.SEEK_SET)
+        os.write(lock_fd, owner_line.encode("utf-8"))
+        os.fsync(lock_fd)
+
+    logger.info(
+        "telegram polling lock acquired (lock=%s, owner=%s)",
+        lock_path,
+        owner_line.strip(),
+    )
 
     bot = Bot(token=token)
     dp = Dispatcher()
@@ -161,6 +197,7 @@ async def run_polling(token: str) -> None:
     finally:
         await bot.session.close()
         with contextlib.suppress(OSError):
+            os.ftruncate(lock_fd, 0)
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             os.close(lock_fd)
 
