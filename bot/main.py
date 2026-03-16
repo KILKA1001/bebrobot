@@ -663,17 +663,101 @@ def run_both_main() -> None:
     asyncio.run(_run_both_async(discord_token, telegram_token))
 
 
-def main():
-    """Launcher that always starts Discord and Telegram runtimes together."""
+def _parse_runtime_flag(raw: str | None) -> bool | None:
+    """Parse runtime toggle env var and return True/False/None (unset or invalid)."""
 
-    runtime_hint = (os.getenv("BOT_RUNTIME") or "").strip()
+    if raw is None:
+        return None
+
+    normalized = raw.strip().lower()
+    if not normalized:
+        return None
+
+    if normalized in {"1", "true", "yes", "on", "enable", "enabled"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "disable", "disabled"}:
+        return False
+
+    logging.error(
+        "Некорректное значение runtime-флага %r. Используйте true/false, 1/0, on/off.",
+        raw,
+    )
+    return None
+
+
+def _resolve_runtime_mode() -> str:
+    """Resolve launcher mode based on dedicated runtime flags and legacy BOT_RUNTIME."""
+
+    telegram_runtime = _parse_runtime_flag(os.getenv("TELEGRAM_RUNTIME"))
+    discord_runtime = _parse_runtime_flag(os.getenv("DISCORD_RUNTIME"))
+
+    # Dedicated flags have priority when at least one was explicitly set.
+    if telegram_runtime is not None or discord_runtime is not None:
+        telegram_enabled = bool(telegram_runtime) if telegram_runtime is not None else False
+        discord_enabled = bool(discord_runtime) if discord_runtime is not None else False
+
+        if telegram_enabled and discord_enabled:
+            return "both"
+        if telegram_enabled:
+            return "telegram"
+        if discord_enabled:
+            return "discord"
+
+        logging.error(
+            "И Telegram, и Discord runtime выключены (TELEGRAM_RUNTIME=%r, DISCORD_RUNTIME=%r). "
+            "Включите хотя бы один рантайм.",
+            os.getenv("TELEGRAM_RUNTIME"),
+            os.getenv("DISCORD_RUNTIME"),
+        )
+        return "none"
+
+    runtime_hint = (os.getenv("BOT_RUNTIME") or "").strip().lower()
+    if runtime_hint in {"discord", "telegram", "both"}:
+        return runtime_hint
     if runtime_hint:
         logging.warning(
-            "BOT_RUNTIME=%r is ignored: launcher always starts both runtimes for parity",
+            "Неизвестный BOT_RUNTIME=%r. Допустимо: discord/telegram/both. Применяю auto-режим.",
             runtime_hint,
         )
 
-    run_both_main()
+    discord_token = (os.getenv('DISCORD_TOKEN') or '').strip()
+    telegram_token = get_telegram_bot_token()
+    if discord_token and telegram_token:
+        return "both"
+    if discord_token:
+        return "discord"
+    if telegram_token:
+        return "telegram"
+    return "none"
+
+
+def main():
+    """Launcher for Discord/Telegram runtimes with explicit per-runtime toggles."""
+
+    configure_logging()
+    mode = _resolve_runtime_mode()
+    logging.info(
+        "resolved runtime mode=%s (TELEGRAM_RUNTIME=%r DISCORD_RUNTIME=%r BOT_RUNTIME=%r)",
+        mode,
+        os.getenv("TELEGRAM_RUNTIME"),
+        os.getenv("DISCORD_RUNTIME"),
+        os.getenv("BOT_RUNTIME"),
+    )
+
+    if mode == "both":
+        run_both_main()
+        return
+    if mode == "discord":
+        run_discord_main()
+        return
+    if mode == "telegram":
+        run_telegram_main()
+        return
+
+    logging.error(
+        "Не удалось определить режим запуска. Проверьте токены DISCORD_TOKEN / TELEGRAM_BOT_TOKEN "
+        "или задайте TELEGRAM_RUNTIME / DISCORD_RUNTIME.",
+    )
 
 
 if __name__ == "__main__":
