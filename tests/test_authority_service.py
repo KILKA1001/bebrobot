@@ -81,12 +81,21 @@ class AuthorityServiceTests(unittest.TestCase):
 
     @patch("bot.services.authority_service.AccountsService.get_account_titles")
     @patch("bot.services.authority_service.AccountsService.resolve_account_id")
-    def test_can_manage_role_blocks_roles_above_operator(self, mock_resolve, mock_titles):
+    def test_can_manage_role_allows_head_club_to_manage_high_roles(self, mock_resolve, mock_titles):
         mock_resolve.return_value = "acc-role2"
         mock_titles.return_value = ["Глава клуба"]
 
-        self.assertFalse(AuthorityService.can_manage_role("discord", "1", "глава клуба"))
+        self.assertTrue(AuthorityService.can_manage_role("discord", "1", "глава клуба"))
         self.assertTrue(AuthorityService.can_manage_role("discord", "1", "оператор"))
+
+
+    @patch("bot.services.authority_service.AccountsService.get_account_titles")
+    @patch("bot.services.authority_service.AccountsService.resolve_account_id")
+    def test_can_manage_role_allows_main_vice_to_manage_head_role(self, mock_resolve, mock_titles):
+        mock_resolve.return_value = "acc-role4"
+        mock_titles.return_value = ["Главный вице"]
+
+        self.assertTrue(AuthorityService.can_manage_role("discord", "9", "глава клуба"))
 
     @patch("bot.services.authority_service.AccountsService.get_account_titles")
     @patch("bot.services.authority_service.AccountsService.resolve_account_id")
