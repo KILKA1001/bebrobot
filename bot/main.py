@@ -86,6 +86,8 @@ active_timers = {}
 tasks_started = False
 startup_tasks_started = False
 commands_synced = False
+telegram_runtime_started = False
+telegram_runtime_guard = asyncio.Lock()
 
 COMMAND_SYNC_STATE_FILE = os.getenv(
     "COMMAND_SYNC_STATE_FILE",
@@ -577,10 +579,20 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
             retry_delay = min(retry_delay * 2, max_retry_delay)
 
     async def _run_telegram_with_retries() -> None:
+        global telegram_runtime_started
         retry_delay = 5.0
         max_retry_delay = float(os.getenv("BOTH_RUNTIME_MAX_RETRY_DELAY", "300"))
 
         while True:
+            async with telegram_runtime_guard:
+                if telegram_runtime_started:
+                    logging.warning(
+                        "telegram runtime duplicate startup prevented in both mode; "
+                        "another in-process telegram loop is already active"
+                    )
+                    return
+                telegram_runtime_started = True
+
             try:
                 logging.info("telegram runtime starting (both mode)")
                 await run_telegram_polling(telegram_token)
@@ -607,6 +619,9 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
                     "telegram runtime error in both mode; retry in %.1fs",
                     retry_delay,
                 )
+            finally:
+                async with telegram_runtime_guard:
+                    telegram_runtime_started = False
 
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, max_retry_delay)
