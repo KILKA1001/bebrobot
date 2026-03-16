@@ -7,6 +7,7 @@ HELPY_TEXT = (
     "📚 Список команд:\n"
     "/register — зарегистрировать общий аккаунт\n"
     "/profile — показать профиль общего аккаунта\n"
+    "/profile_roles — показать все роли пользователя по категориям\n"
     "/profile_edit — открыть меню редактирования профиля\n"
     "/link <код> — привязать Telegram к аккаунту по коду из Discord\n"
     "/link_discord — получить код для привязки Discord\n"
@@ -50,31 +51,24 @@ def process_profile_command(
         return "❌ Профиль не найден. Сначала выполните /register"
 
     title_name = escape(data["custom_nick"])
+    target_platform_name = (lookup_display_name or "").strip()
+    if target_platform_name and target_platform_name != data["custom_nick"]:
+        title_name = f"{title_name} ({escape(target_platform_name)})"
     safe_description = escape(data["description"][:100])
     safe_nulls_id = escape(data["nulls_brawl_id"])
     safe_link_status = escape(data["link_status"])
     safe_nulls_status = escape(data["nulls_status"])
     safe_points = escape(str(data["points"]))
     safe_titles_text = escape(str(data.get("titles_text") or "Нет званий"))
-    safe_external_sync = escape(str(data.get("external_roles_last_synced_at") or "—"))
-    roles = data.get("roles") or []
-    safe_roles_text = (
-        "\n".join(
-            escape(
-                f"{item.get('name', 'unknown')} [{item.get('source', 'unknown')}] | {item.get('origin_label') or '—'} | {item.get('synced_at') or '—'}"
-            )
-            for item in roles
-        )
-        if roles
-        else "Нет назначенных ролей"
-    )
+    visible_roles = data.get("visible_roles") or []
+    safe_roles_text = "\n".join(f"• {escape(str(role))}" for role in visible_roles) if visible_roles else "Нет назначенных ролей"
 
     return (
-        "👤 <b><a href=\"tg://user?id={telegram_user_id}\">{title_name}</a></b>\n\n"
+        "👤 <b><a href=\"tg://user?id={telegram_user_id}\">{title_name}</a></b>\n"
         "━━━━━━━━━━━━━━\n"
         "<b>Общая информация</b>\n"
         "Звания: {safe_titles_text}\n"
-        "Айди в Null's Brawl: <code>{safe_nulls_id}</code>\n"
+        "Айди в Null's Brawl: <code>{safe_nulls_id}</code> ({safe_nulls_status})\n"
         "Баллы: {safe_points}\n"
         "━━━━━━━━━━━━━━\n"
         "<b>Описание</b>\n"
@@ -82,8 +76,6 @@ def process_profile_command(
         "━━━━━━━━━━━━━━\n"
         "<b>Дополнительная информация</b>\n"
         "🔗 TG ↔ DC: {safe_link_status}\n"
-        "🛡️ Null's Brawl: {safe_nulls_status}\n"
-        "🕒 Sync внешних ролей: {safe_external_sync}\n"
         "━━━━━━━━━━━━━━\n"
         "<b>Роли</b>\n"
         "{safe_roles_text}"
@@ -97,7 +89,6 @@ def process_profile_command(
         safe_points=safe_points,
         safe_titles_text=safe_titles_text,
         safe_roles_text=safe_roles_text,
-        safe_external_sync=safe_external_sync,
     )
 
 
@@ -147,3 +138,34 @@ def process_link_discord_command(
         f"Срок действия: {AccountsService.LINK_TTL_MINUTES} минут.\n"
         "Используйте в Discord: `/link <код>`"
     )
+
+
+def process_profile_roles_command(
+    telegram_user_id: int | None,
+    display_name: str | None = None,
+    target_telegram_user_id: int | None = None,
+    target_display_name: str | None = None,
+) -> str:
+    lookup_user_id = target_telegram_user_id or telegram_user_id
+    lookup_display_name = target_display_name or display_name
+
+    if lookup_user_id is None:
+        return "❌ Не удалось определить пользователя Telegram."
+
+    data = AccountsService.get_profile("telegram", str(lookup_user_id), display_name=lookup_display_name)
+    if not data:
+        return "❌ Профиль не найден. Сначала выполните /register"
+
+    roles_by_category = data.get("roles_by_category") or {}
+    if not roles_by_category:
+        return "🏅 <b>Роли пользователя</b>\nНет назначенных ролей"
+
+    parts = ["🏅 <b>Роли пользователя</b>"]
+    for category in sorted(roles_by_category.keys()):
+        role_names = roles_by_category.get(category) or []
+        if not role_names:
+            continue
+        rendered = "\n".join(f"• {escape(str(role_name))}" for role_name in role_names)
+        parts.append(f"\n<b>{escape(str(category))}</b>\n{rendered}")
+
+    return "\n".join(parts)

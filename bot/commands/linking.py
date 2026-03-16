@@ -3,7 +3,7 @@ import logging
 import discord
 
 from bot.commands.base import bot
-from bot.services import AccountsService, AuthorityService, ExternalRolesSyncService
+from bot.services import AccountsService
 from bot.systems.linking_logic import (
     consume_discord_link_code,
     issue_discord_telegram_link_code,
@@ -12,6 +12,7 @@ from bot.systems.linking_logic import (
 from bot.utils import send_temp
 
 logger = logging.getLogger(__name__)
+MAX_ROLE_PICKER_BUTTONS = 10
 
 
 def _is_private_context(ctx) -> bool:
@@ -19,7 +20,14 @@ def _is_private_context(ctx) -> bool:
 
 
 class ProfileEditModal(discord.ui.Modal):
-    def __init__(self, field_name: str, title_text: str, placeholder: str, max_length: int):
+    def __init__(
+        self,
+        field_name: str,
+        title_text: str,
+        placeholder: str,
+        max_length: int,
+        default_value: str | None = None,
+    ):
         super().__init__(title=f"Изменить: {title_text}")
         self.field_name = field_name
         self.field_label = title_text
@@ -29,6 +37,7 @@ class ProfileEditModal(discord.ui.Modal):
             max_length=max_length,
             required=False,
             placeholder=placeholder,
+            default=default_value,
         )
         self.add_item(self.value_input)
 
@@ -56,32 +65,117 @@ class ProfileEditModal(discord.ui.Modal):
 
 
 
+class VisibleRoleToggleButton(discord.ui.Button):
+    def __init__(self, role_name: str, selected: bool, index: int):
+        super().__init__(
+            label=(f"✅ {role_name}" if selected else role_name)[:80],
+            style=discord.ButtonStyle.success if selected else discord.ButtonStyle.secondary,
+            row=index // 2,
+        )
+        self.role_name = role_name
 
-class ForceRoleSyncView(discord.ui.View):
-    def __init__(self, actor_user_id: int, account_id: str):
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if not isinstance(view, VisibleRolesPickerView):
+            await interaction.response.send_message("❌ Ошибка интерфейса выбора ролей.", ephemeral=True)
+            return
+        await view.toggle_role(interaction, self.role_name)
+
+
+class VisibleRolesPickerView(discord.ui.View):
+    def __init__(self, user_id: int, role_names: list[str], selected_roles: list[str]):
         super().__init__(timeout=300)
-        self.actor_user_id = actor_user_id
-        self.account_id = account_id
+        self.user_id = user_id
+        deduped_roles: list[str] = []
+        for role in role_names:
+            role_name = str(role).strip()
+            if role_name and role_name not in deduped_roles:
+                deduped_roles.append(role_name)
+        self.role_names = deduped_roles[:MAX_ROLE_PICKER_BUTTONS]
+        self.selected_roles = [role for role in selected_roles if role in self.role_names][: AccountsService.MAX_VISIBLE_PROFILE_ROLES]
+        self._rebuild_buttons()
+
+    def _rebuild_buttons(self):
+        self.clear_items()
+        for idx, role_name in enumerate(self.role_names):
+            self.add_item(VisibleRoleToggleButton(role_name, role_name in self.selected_roles, idx))
+        self.add_item(
+            discord.ui.Button(
+                label="💾 Сохранить",
+                style=discord.ButtonStyle.primary,
+                custom_id="visible_roles_save",
+                row=4,
+            )
+        )
+        self.children[-1].callback = self._save_callback
+        self.add_item(
+            discord.ui.Button(
+                label="🧹 Очистить",
+                style=discord.ButtonStyle.danger,
+                custom_id="visible_roles_clear",
+                row=4,
+            )
+        )
+        self.children[-1].callback = self._clear_callback
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.actor_user_id:
-            await interaction.response.send_message("❌ Обновить роли может только инициатор команды.", ephemeral=True)
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Это меню не для вас.", ephemeral=True)
             return False
         return True
 
-    @discord.ui.button(label="🔄 Обновить внешние роли", style=discord.ButtonStyle.secondary)
-    async def force_sync(self, interaction: discord.Interaction, _button: discord.ui.Button):
+    async def toggle_role(self, interaction: discord.Interaction, role_name: str):
         try:
-            changed = ExternalRolesSyncService.sync_account_by_account_id(interaction.client, self.account_id)
-            text = "✅ Синхронизация ролей выполнена." if changed else "✅ Синхронизация выполнена, изменений нет."
-            await interaction.response.send_message(text, ephemeral=True)
-        except Exception:
-            logger.exception(
-                "discord force role sync failed actor_user_id=%s account_id=%s",
-                getattr(interaction.user, "id", None),
-                self.account_id,
+            if role_name in self.selected_roles:
+                self.selected_roles = [item for item in self.selected_roles if item != role_name]
+            else:
+                if len(self.selected_roles) >= AccountsService.MAX_VISIBLE_PROFILE_ROLES:
+                    await interaction.response.send_message(
+                        f"❌ Можно выбрать не более {AccountsService.MAX_VISIBLE_PROFILE_ROLES} ролей.",
+                        ephemeral=True,
+                    )
+                    return
+                self.selected_roles.append(role_name)
+
+            self._rebuild_buttons()
+            selected_text = ", ".join(self.selected_roles) if self.selected_roles else "—"
+            await interaction.response.edit_message(
+                content=(
+                    "🏅 Выбор отображаемых ролей\n"
+                    f"Выбрано ({len(self.selected_roles)}/{AccountsService.MAX_VISIBLE_PROFILE_ROLES}): {selected_text}"
+                ),
+                view=self,
             )
-            await interaction.response.send_message("❌ Ошибка синхронизации ролей.", ephemeral=True)
+        except Exception:
+            logger.exception("discord visible role toggle failed user_id=%s role=%s", interaction.user.id, role_name)
+            await interaction.response.send_message("❌ Не удалось переключить роль.", ephemeral=True)
+
+    async def _save_callback(self, interaction: discord.Interaction):
+        try:
+            value = ", ".join(self.selected_roles)
+            success, payload = AccountsService.update_profile_field("discord", str(interaction.user.id), "visible_roles", value)
+            prefix = "✅" if success else "❌"
+            await interaction.response.edit_message(content=f"{prefix} {payload}", view=None)
+        except Exception:
+            logger.exception("discord visible roles save failed user_id=%s", interaction.user.id)
+            await interaction.response.send_message("❌ Не удалось сохранить роли.", ephemeral=True)
+
+    async def _clear_callback(self, interaction: discord.Interaction):
+        try:
+            self.selected_roles = []
+            self._rebuild_buttons()
+            await interaction.response.edit_message(
+                content=(
+                    "🏅 Выбор отображаемых ролей\n"
+                    f"Выбрано (0/{AccountsService.MAX_VISIBLE_PROFILE_ROLES}): —"
+                ),
+                view=self,
+            )
+        except Exception:
+            logger.exception("discord visible roles clear failed user_id=%s", interaction.user.id)
+            await interaction.response.send_message("❌ Не удалось очистить выбор.", ephemeral=True)
+
+
 class ProfileEditView(discord.ui.View):
     def __init__(self, user_id: int):
         super().__init__(timeout=300)
@@ -113,6 +207,39 @@ class ProfileEditView(discord.ui.View):
         await interaction.response.send_modal(
             ProfileEditModal("nulls_brawl_id", "Null's Brawl ID", "Например: #ABCD123", max_length=32)
         )
+
+    @discord.ui.button(label="🏅 Отображаемые роли", style=discord.ButtonStyle.secondary)
+    async def edit_visible_roles(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        try:
+            display_name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "name", None)
+            profile = AccountsService.get_profile("discord", str(interaction.user.id), display_name=display_name) or {}
+            role_names = [
+                str(item.get("name") or "").strip()
+                for item in profile.get("roles", [])
+                if str(item.get("name") or "").strip()
+            ]
+            visible_roles = [str(name).strip() for name in profile.get("visible_roles", []) if str(name).strip()]
+            if not role_names:
+                await interaction.response.send_message(
+                    "❌ Нет доступных ролей для выбора. Проверьте /profile_roles.",
+                    ephemeral=True,
+                )
+                return
+
+            view = VisibleRolesPickerView(interaction.user.id, role_names, visible_roles)
+            selected_text = ", ".join(view.selected_roles) if view.selected_roles else "—"
+            await interaction.response.send_message(
+                (
+                    "🏅 Выбор отображаемых ролей\n"
+                    "Нажимайте кнопки ролей для выбора (до 3), затем нажмите «Сохранить».\n"
+                    f"Выбрано ({len(view.selected_roles)}/{AccountsService.MAX_VISIBLE_PROFILE_ROLES}): {selected_text}"
+                ),
+                view=view,
+                ephemeral=True,
+            )
+        except Exception:
+            logger.exception("discord visible roles picker open failed user_id=%s", getattr(interaction.user, "id", None))
+            await interaction.response.send_message("❌ Не удалось открыть выбор ролей.", ephemeral=True)
 
 
 @bot.hybrid_command(name="register_account", description="Зарегистрировать общий аккаунт")
@@ -174,35 +301,31 @@ async def profile(ctx):
         await send_temp(ctx, "❌ Профиль не найден. Сначала выполните `/register_account`.", delete_after=None)
         return
 
-    embed = discord.Embed(title=f"👤 {data['custom_nick']}", color=discord.Color.blurple())
+    platform_target_name = display_name
+    title_text = data["custom_nick"]
+    if platform_target_name and platform_target_name != data["custom_nick"]:
+        title_text = f"{title_text} ({platform_target_name})"
+
+    embed = discord.Embed(title=f"👤 {title_text}", color=discord.Color.blurple())
     embed.add_field(
         name="**Общая информация**",
         value=(
             f"Звания: {data['titles_text']}\n"
-            f"Айди в Null's Brawl: `{data['nulls_brawl_id']}`\n"
+            f"Айди в Null's Brawl: `{data['nulls_brawl_id']}` ({data['nulls_status']})\n"
             f"Баллы: {data['points']}"
         ),
         inline=False,
     )
     embed.add_field(name="**Описание**", value=data["description"][:100], inline=False)
-    external_roles_last_synced_at = data.get("external_roles_last_synced_at") or "—"
     embed.add_field(
         name="**Дополнительная информация**",
         value=(
-            f"🔗 TG ↔ DC: **{data['link_status']}**\n"
-            f"🛡️ Null's Brawl: **{data['nulls_status']}**\n"
-            f"🕒 Последний sync ролей: **{external_roles_last_synced_at}**"
+            f"🔗 TG ↔ DC: **{data['link_status']}**"
         ),
         inline=False,
     )
-    roles = data.get("roles") or []
-    if roles:
-        roles_text = "\n".join(
-            f"• {item.get('name', 'unknown')} ({item.get('source', 'unknown')}) | {item.get('origin_label') or '—'} | {item.get('synced_at') or '—'}"
-            for item in roles
-        )
-    else:
-        roles_text = "Нет назначенных ролей"
+    visible_roles = data.get("visible_roles") or []
+    roles_text = "\n".join(f"• {role_name}" for role_name in visible_roles) if visible_roles else "Нет назначенных ролей"
     embed.add_field(name="**Роли**", value=roles_text[:1024], inline=False)
     thumbnail_url = None
     if getattr(target_user, "avatar", None):
@@ -213,10 +336,39 @@ async def profile(ctx):
     if thumbnail_url:
         embed.set_thumbnail(url=thumbnail_url)
 
-    view = None
-    if AuthorityService.can_manage_self("discord", str(ctx.author.id)):
-        view = ForceRoleSyncView(ctx.author.id, data["account_id"])
-    await send_temp(ctx, embed=embed, view=view, delete_after=None)
+    await send_temp(ctx, embed=embed, delete_after=None)
+
+
+@bot.hybrid_command(name="profile_roles", description="Показать все роли профиля по категориям")
+async def profile_roles(ctx):
+    target_user = ctx.author
+    reference = getattr(ctx.message, "reference", None)
+    if reference and reference.message_id and ctx.guild:
+        try:
+            referenced_message = await ctx.channel.fetch_message(reference.message_id)
+            if referenced_message and referenced_message.author:
+                target_user = referenced_message.author
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+
+    display_name = getattr(target_user, "display_name", None) or getattr(target_user, "name", None)
+    data = AccountsService.get_profile("discord", str(target_user.id), display_name=display_name)
+    if not data:
+        await send_temp(ctx, "❌ Профиль не найден. Сначала выполните `/register_account`.", delete_after=None)
+        return
+
+    roles_by_category = data.get("roles_by_category") or {}
+    embed = discord.Embed(title="🏅 Роли пользователя", color=discord.Color.green())
+    if not roles_by_category:
+        embed.description = "Нет назначенных ролей"
+    else:
+        for category_name in sorted(roles_by_category.keys()):
+            role_names = roles_by_category.get(category_name) or []
+            if not role_names:
+                continue
+            embed.add_field(name=category_name, value="\n".join(f"• {name}" for name in role_names)[:1024], inline=False)
+
+    await send_temp(ctx, embed=embed, delete_after=None)
 
 
 @bot.hybrid_command(name="profile_edit", description="Настройки и редактирование своего профиля")
@@ -227,7 +379,7 @@ async def profile_edit(ctx):
 
     embed = discord.Embed(
         title="⚙️ Настройки профиля",
-        description="Выберите, какое поле хотите изменить.",
+        description="Выберите, какое поле хотите изменить. Роли можно выбрать кнопками.",
         color=discord.Color.blue(),
     )
     await send_temp(ctx, embed=embed, view=ProfileEditView(ctx.author.id), delete_after=None)
