@@ -107,6 +107,7 @@ def _build_home_keyboard(actor_id: int) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="📋 Категории и роли", callback_data=f"roles_admin:{actor_id}:list:0")],
             [InlineKeyboardButton(text="⚡ Действия кнопками", callback_data=f"roles_admin:{actor_id}:actions")],
+            [InlineKeyboardButton(text="🆘 Не работают кнопки?", callback_data=f"roles_admin:{actor_id}:fallback")],
             [InlineKeyboardButton(text="ℹ️ Что делает каждая функция", callback_data=f"roles_admin:{actor_id}:help")],
             [InlineKeyboardButton(text="🔄 Обновить", callback_data=f"roles_admin:{actor_id}:home")],
         ]
@@ -304,16 +305,29 @@ def _render_home_text() -> str:
         "🛠 <b>Панель управления ролями</b>\n\n"
         "Все обновления идут в <b>одном сообщении</b> через кнопки.\n\n"
         "Управление через <b>кнопки</b> в разделе <b>⚡ Действия кнопками</b>.\n"
-        "Командные подкоманды оставлены как резерв:\n"
+        "Если кнопки не срабатывают, открой <b>🆘 Не работают кнопки?</b> — там резервные команды и примеры.\n"
+        "\nНужны пояснения по функциям? Нажми кнопку <b>ℹ️ Что делает каждая функция</b>."
+    )
+
+
+def _render_fallback_text() -> str:
+    return (
+        "🆘 <b>Не работают кнопки?</b>\n\n"
+        "Если Telegram-кнопки не срабатывают (лаг, старый клиент, проблемы сети), используй резервные команды.\n"
+        "Формат: отправляй команду одной строкой после <code>/roles_admin</code>.\n\n"
+        "<b>Категории</b>\n"
         "<code>/roles_admin category_create &lt;name&gt; [position]</code>\n"
         "<code>/roles_admin category_order &lt;name&gt; &lt;position&gt;</code>\n"
+        "<code>/roles_admin category_delete &lt;name&gt;</code>\n\n"
+        "<b>Роли</b>\n"
         "<code>/roles_admin role_create &lt;name&gt; &lt;category&gt; [discord_role_id] [position]</code>\n"
         "<code>/roles_admin role_move &lt;name&gt; &lt;category&gt; [position]</code>\n"
         "<code>/roles_admin role_order &lt;role_name&gt; &lt;category&gt; &lt;position&gt;</code>\n"
+        "<code>/roles_admin role_delete &lt;name&gt;</code>\n\n"
+        "<b>Пользователи</b>\n"
         "<code>/roles_admin user_roles [reply|telegram_id]</code>\n"
         "<code>/roles_admin user_grant &lt;telegram_id&gt; &lt;role_name&gt;</code>\n"
-        "<code>/roles_admin user_revoke &lt;telegram_id&gt; &lt;role_name&gt;</code>\n"
-        "\nНужны пояснения по функциям? Нажми кнопку <b>ℹ️ Что делает каждая функция</b>."
+        "<code>/roles_admin user_revoke &lt;telegram_id&gt; &lt;role_name&gt;</code>"
     )
 
 
@@ -589,6 +603,17 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
         if action == "help":
             await _safe_edit_message_text(callback, 
                 _render_help_text(),
+                parse_mode="HTML",
+                reply_markup=_build_home_keyboard(owner_id),
+            )
+            await callback.answer()
+            return
+
+        if action == "fallback":
+            logger.info("roles_admin fallback opened actor_id=%s", callback.from_user.id)
+            await _safe_edit_message_text(
+                callback,
+                _render_fallback_text(),
                 parse_mode="HTML",
                 reply_markup=_build_home_keyboard(owner_id),
             )
