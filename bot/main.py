@@ -80,6 +80,36 @@ bot = command_bot
 db.bot = bot
 
 
+def _reset_discord_http_client_state(reason: str) -> None:
+    """Reset discord.py HTTP client internals after transport/session failures."""
+    try:
+        http_client = getattr(bot, "http", None)
+        if not http_client:
+            logging.warning("discord http reset skipped: http client is missing reason=%s", reason)
+            return
+
+        connector = getattr(http_client, "connector", None)
+        connector_closed = bool(connector and getattr(connector, "closed", False))
+
+        session = getattr(http_client, "_HTTPClient__session", None)
+        session_closed = bool(session and getattr(session, "closed", False))
+
+        with contextlib.suppress(Exception):
+            http_client.clear()
+
+        if connector_closed:
+            http_client.connector = discord.utils.MISSING
+
+        logging.info(
+            "discord http state reset reason=%s session_closed=%s connector_closed=%s",
+            reason,
+            session_closed,
+            connector_closed,
+        )
+    except Exception:
+        logging.exception("discord http state reset failed reason=%s", reason)
+
+
 class _SuppressKnownRateLimitWarning(logging.Filter):
     """Filter noisy upstream 429 warnings that we already handle explicitly."""
 
@@ -520,9 +550,11 @@ def run_discord_main():
         except Exception as exc:
             error_text = str(exc)
             if "Session is closed" in error_text:
+                _reset_discord_http_client_state("start_bot.session_closed")
                 retry_delay = wait_before_retry(retry_delay)
                 continue
             if "429" in error_text or "rate limit" in error_text.lower():
+                _reset_discord_http_client_state("start_bot.rate_limited")
                 retry_delay = wait_before_retry(retry_delay)
                 continue
             logging.exception("❌ Ошибка при запуске Discord-бота")
@@ -569,6 +601,7 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
 
             with contextlib.suppress(Exception):
                 await bot.close()
+            _reset_discord_http_client_state("both_mode.retry_after_failure")
 
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, max_retry_delay)
