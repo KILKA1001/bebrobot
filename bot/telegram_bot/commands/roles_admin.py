@@ -1,6 +1,7 @@
 import logging
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramConflictError, TelegramNetworkError
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -68,11 +69,21 @@ def _build_list_keyboard(grouped: list[dict], actor_id: int, page: int) -> Inlin
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _build_category_keyboard(actor_id: int, page: int, category_idx: int, roles_count: int) -> InlineKeyboardMarkup:
+def _build_category_keyboard(
+    actor_id: int,
+    page: int,
+    category_idx: int,
+    roles_count: int,
+    *,
+    can_manage_categories: bool,
+) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(text="⬅️ Назад к списку", callback_data=f"roles_admin:{actor_id}:list:{page}")],
-        [InlineKeyboardButton(text="🗑 Удалить категорию", callback_data=f"roles_admin:{actor_id}:delete_category:{page}:{category_idx}")],
     ]
+    if can_manage_categories:
+        rows.append(
+            [InlineKeyboardButton(text="🗑 Удалить категорию", callback_data=f"roles_admin:{actor_id}:delete_category:{page}:{category_idx}")]
+        )
     for role_idx in range(min(roles_count, _MAX_ROLE_BUTTONS)):
         rows.append(
             [
@@ -92,8 +103,10 @@ def _render_home_text() -> str:
         "Все обновления идут в <b>одном сообщении</b> через кнопки.\n\n"
         "Быстрые действия через команду (если нужно точное имя):\n"
         "<code>/roles_admin category_create &lt;name&gt; [position]</code>\n"
-        "<code>/roles_admin role_create &lt;name&gt; &lt;category&gt; [discord_role_id]</code>\n"
+        "<code>/roles_admin category_order &lt;name&gt; &lt;position&gt;</code>\n"
+        "<code>/roles_admin role_create &lt;name&gt; &lt;category&gt; [discord_role_id] [position]</code>\n"
         "<code>/roles_admin role_move &lt;name&gt; &lt;category&gt; [position]</code>\n"
+        "<code>/roles_admin role_order &lt;role_name&gt; &lt;category&gt; &lt;position&gt;</code>\n"
         "<code>/roles_admin user_roles [reply|telegram_id]</code>\n"
         "<code>/roles_admin user_grant &lt;telegram_id&gt; &lt;role_name&gt;</code>\n"
         "<code>/roles_admin user_revoke &lt;telegram_id&gt; &lt;role_name&gt;</code>\n"
@@ -107,11 +120,13 @@ def _render_help_text() -> str:
     return (
         "ℹ️ <b>Что делает /roles_admin</b>\n\n"
         "<b>Категории</b>\n"
-        "• <code>category_create &lt;name&gt; [position]</code> — создать/обновить категорию.\n"
-        "• <code>category_delete &lt;name&gt;</code> — удалить категорию (роли уйдут в 'Без категории').\n\n"
+        "• <code>category_create &lt;name&gt; [position]</code> — создать/обновить категорию (<b>только Глава клуба/Главный вице</b>).\n"
+        "• <code>category_order &lt;name&gt; &lt;position&gt;</code> — выставить порядок категории (<b>только Глава клуба/Главный вице</b>).\n"
+        "• <code>category_delete &lt;name&gt;</code> — удалить категорию (роли уйдут в 'Без категории', <b>только Глава клуба/Главный вице</b>).\n\n"
         "<b>Роли</b>\n"
-        "• <code>role_create &lt;name&gt; &lt;category&gt; [discord_role_id]</code> — добавить роль в каталог.\n"
+        "• <code>role_create &lt;name&gt; &lt;category&gt; [discord_role_id] [position]</code> — добавить роль в каталог.\n"
         "• <code>role_move &lt;name&gt; &lt;category&gt; [position]</code> — переместить роль в другую категорию.\n"
+        "• <code>role_order &lt;role_name&gt; &lt;category&gt; &lt;position&gt;</code> — выставить очередь роли в категории.\n"
         "• <code>role_delete &lt;name&gt;</code> — удалить роль из каталога.\n\n"
         "<b>Роли пользователей</b>\n"
         "• <code>user_roles [reply|telegram_id]</code> — показать роли пользователя.\n"
@@ -123,6 +138,24 @@ def _render_help_text() -> str:
         "• Все экраны обновляются в одном сообщении без спама."
     )
 
+
+async def _safe_callback_answer(
+    callback: CallbackQuery,
+    text: str | None = None,
+    *,
+    show_alert: bool = False,
+) -> None:
+    try:
+        await callback.answer(text, show_alert=show_alert)
+    except Exception:
+        logger.exception(
+            "roles_admin callback answer failed callback_data=%s actor_id=%s text=%s show_alert=%s",
+            callback.data,
+            callback.from_user.id if callback.from_user else None,
+            text,
+            show_alert,
+        )
+
 def _render_list_text(grouped: list[dict], page: int) -> str:
     safe_page = _normalize_page(page, len(grouped), _ROLES_PAGE_SIZE)
     start = safe_page * _ROLES_PAGE_SIZE
@@ -133,14 +166,14 @@ def _render_list_text(grouped: list[dict], page: int) -> str:
     if not page_items:
         lines.append("\n📭 Категории отсутствуют.")
     for item in page_items:
-        lines.append(f"\n<b>{item['category']}</b>")
+        lines.append(f"\n• <i>{item['category']}</i>")
         roles = item.get("roles", [])
         if not roles:
-            lines.append("• —")
+            lines.append("  • —")
             continue
         for role in roles:
             suffix = f" (Discord ID: {role['discord_role_id']})" if role.get("discord_role_id") else ""
-            lines.append(f"• {role['name']}{suffix}")
+            lines.append(f"  • {role['name']}{suffix}")
 
     lines.append("\nНажми на категорию ниже для действий (удаление категории/ролей).")
     return "\n".join(lines)
@@ -164,6 +197,10 @@ async def _ensure_roles_admin(message: Message) -> bool:
         await message.answer("❌ Недостаточно полномочий для управления ролями.")
         return False
     return True
+
+
+def _can_manage_categories(provider: str, provider_user_id: str) -> bool:
+    return AuthorityService.can_manage_role_categories(provider, provider_user_id)
 
 
 @router.message(Command("roles_admin"))
@@ -194,13 +231,32 @@ async def roles_admin_command(message: Message) -> None:
             return
 
         if subcommand == "category_create" and len(args) >= 1:
+            if not message.from_user or not _can_manage_categories("telegram", str(message.from_user.id)):
+                await message.answer("❌ Категориями может управлять только Глава клуба или Главный вице.")
+                return
             position = int(args[-1]) if len(args) > 1 and args[-1].isdigit() else 0
             name = " ".join(args[:-1] if len(args) > 1 and args[-1].isdigit() else args)
             ok = RoleManagementService.create_category(name, position)
             await message.answer("✅ Категория сохранена." if ok else "❌ Не удалось создать категорию (смотри логи).")
             return
 
+        if subcommand == "category_order" and len(args) >= 2:
+            if not message.from_user or not _can_manage_categories("telegram", str(message.from_user.id)):
+                await message.answer("❌ Категориями может управлять только Глава клуба или Главный вице.")
+                return
+            position_raw = args[-1]
+            name = " ".join(args[:-1]).strip()
+            if not position_raw.lstrip("-").isdigit() or not name:
+                await message.answer("❌ Формат: /roles_admin category_order <name> <position>")
+                return
+            ok = RoleManagementService.create_category(name, int(position_raw))
+            await message.answer("✅ Порядок категории обновлён." if ok else "❌ Не удалось обновить порядок категории (смотри логи).")
+            return
+
         if subcommand == "category_delete" and len(args) >= 1:
+            if not message.from_user or not _can_manage_categories("telegram", str(message.from_user.id)):
+                await message.answer("❌ Категориями может управлять только Глава клуба или Главный вице.")
+                return
             ok = RoleManagementService.delete_category(" ".join(args))
             await message.answer("✅ Категория удалена." if ok else "❌ Не удалось удалить категорию (смотри логи).")
             return
@@ -209,7 +265,13 @@ async def roles_admin_command(message: Message) -> None:
             role_name = args[0]
             category = args[1]
             discord_role_id = args[2] if len(args) >= 3 else None
-            ok = RoleManagementService.create_role(role_name, category, discord_role_id=discord_role_id)
+            position = int(args[3]) if len(args) >= 4 and args[3].lstrip("-").isdigit() else 0
+            ok = RoleManagementService.create_role(
+                role_name,
+                category,
+                discord_role_id=discord_role_id,
+                position=position,
+            )
             await message.answer("✅ Роль создана." if ok else "❌ Не удалось создать роль (смотри логи).")
             return
 
@@ -222,6 +284,17 @@ async def roles_admin_command(message: Message) -> None:
             position = int(args[2]) if len(args) >= 3 and args[2].isdigit() else 0
             ok = RoleManagementService.move_role(args[0], args[1], position)
             await message.answer("✅ Роль перемещена." if ok else "❌ Не удалось переместить роль (смотри логи).")
+            return
+
+        if subcommand == "role_order" and len(args) >= 3:
+            role_name = args[0]
+            category = args[1]
+            position_raw = args[2]
+            if not position_raw.lstrip("-").isdigit():
+                await message.answer("❌ Формат: /roles_admin role_order <role_name> <category> <position>")
+                return
+            ok = RoleManagementService.move_role(role_name, category, int(position_raw))
+            await message.answer("✅ Очередность роли обновлена." if ok else "❌ Не удалось обновить очередь роли (смотри логи).")
             return
 
         if subcommand == "user_roles":
@@ -275,6 +348,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             return
 
         owner_id = int(parts[1]) if parts[1].isdigit() else 0
+        actor_can_manage_categories = _can_manage_categories("telegram", str(callback.from_user.id))
         if owner_id != callback.from_user.id:
             logger.warning(
                 "roles_admin callback denied foreign actor callback_data=%s actor_id=%s owner_id=%s",
@@ -338,12 +412,26 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             await callback.message.edit_text(
                 "\n".join(lines),
                 parse_mode="HTML",
-                reply_markup=_build_category_keyboard(owner_id, page, category_idx, len(roles)),
+                reply_markup=_build_category_keyboard(
+                    owner_id,
+                    page,
+                    category_idx,
+                    len(roles),
+                    can_manage_categories=actor_can_manage_categories,
+                ),
             )
             await callback.answer()
             return
 
         if action == "delete_category":
+            if not actor_can_manage_categories:
+                logger.warning(
+                    "roles_admin category delete denied callback_data=%s actor_id=%s",
+                    callback.data,
+                    callback.from_user.id,
+                )
+                await callback.answer("Категориями может управлять только Глава клуба или Главный вице.", show_alert=True)
+                return
             page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
             category_idx = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else -1
             category_item = _resolve_category(grouped, page, category_idx)
@@ -395,7 +483,13 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 await callback.message.edit_text(
                     "\n".join(lines),
                     parse_mode="HTML",
-                    reply_markup=_build_category_keyboard(owner_id, page, category_idx, len(refreshed_roles)),
+                    reply_markup=_build_category_keyboard(
+                        owner_id,
+                        page,
+                        category_idx,
+                        len(refreshed_roles),
+                        can_manage_categories=actor_can_manage_categories,
+                    ),
                 )
             else:
                 await callback.message.edit_text(
@@ -407,10 +501,21 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             return
 
         await callback.answer("Неизвестное действие", show_alert=True)
+    except (TelegramNetworkError, TelegramConflictError):
+        logger.exception(
+            "roles_admin callback transport failed (telegram runtime/session issue) callback_data=%s actor_id=%s",
+            callback.data,
+            callback.from_user.id if callback.from_user else None,
+        )
+        await _safe_callback_answer(
+            callback,
+            "Сеть Telegram недоступна или идёт перезапуск polling. Попробуйте ещё раз через пару секунд.",
+            show_alert=True,
+        )
     except Exception:
         logger.exception(
             "roles_admin callback failed callback_data=%s actor_id=%s",
             callback.data,
             callback.from_user.id if callback.from_user else None,
         )
-        await callback.answer("Ошибка в панели ролей (смотри логи).", show_alert=True)
+        await _safe_callback_answer(callback, "Ошибка в панели ролей (смотри логи).", show_alert=True)

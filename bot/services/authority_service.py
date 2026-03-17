@@ -169,3 +169,18 @@ class AuthorityService:
             allowed,
         )
         return allowed
+
+    @staticmethod
+    def can_manage_role_categories(actor_provider: str, actor_user_id: str) -> bool:
+        actor = AuthorityService.resolve_authority(actor_provider, actor_user_id)
+        actor_titles = AuthorityService._normalized_titles(actor.titles)
+        allowed = bool(actor_titles & SUPER_ADMIN_ROLE_KEYS)
+        logger.info(
+            "authority category-manage check actor=%s:%s actor_level=%s titles=%s allowed=%s",
+            actor_provider,
+            actor_user_id,
+            actor.level,
+            sorted(actor_titles),
+            allowed,
+        )
+        return allowed
