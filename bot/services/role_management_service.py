@@ -10,6 +10,29 @@ logger = logging.getLogger(__name__)
 
 class RoleManagementService:
     @staticmethod
+    def _load_roles_rows() -> list[dict[str, Any]]:
+        """Read role rows with backward-compatible column fallback."""
+        if not db.supabase:
+            return []
+
+        try:
+            response = (
+                db.supabase.table("roles")
+                .select("name,category_name,position,is_discord_managed,discord_role_id")
+                .execute()
+            )
+            return response.data or []
+        except Exception:
+            logger.exception("roles query with discord columns failed, fallback to base columns")
+
+        try:
+            response = db.supabase.table("roles").select("name,category_name,position").execute()
+            return response.data or []
+        except Exception:
+            logger.exception("roles query fallback failed")
+            return []
+
+    @staticmethod
     def _normalized_category(name: str | None) -> str:
         value = str(name or "").strip()
         return value or "Без категории"
@@ -22,11 +45,7 @@ class RoleManagementService:
 
         try:
             categories_resp = db.supabase.table("role_categories").select("name,position").execute()
-            roles_resp = (
-                db.supabase.table("roles")
-                .select("name,category_name,position,is_discord_managed,discord_role_id")
-                .execute()
-            )
+            roles_rows = RoleManagementService._load_roles_rows()
         except Exception:
             logger.exception("list_roles_grouped failed")
             return []
@@ -37,7 +56,7 @@ class RoleManagementService:
             category_positions[name] = int(row.get("position") or 0)
 
         grouped: dict[str, list[dict[str, Any]]] = {}
-        for row in roles_resp.data or []:
+        for row in roles_rows:
             role_name = str(row.get("name") or "").strip()
             if not role_name:
                 continue
@@ -248,27 +267,51 @@ class RoleManagementService:
         active_ids: set[str] = set()
         try:
             db.supabase.table("role_categories").upsert({"name": auto_category, "position": 9999}).execute()
+            existing_managed_resp = (
+                db.supabase.table("roles")
+                .select("name,discord_role_id,category_name,position")
+                .eq("is_discord_managed", True)
+                .execute()
+            )
+            existing_by_role_id: dict[str, dict[str, Any]] = {}
+            for row in existing_managed_resp.data or []:
+                existing_role_id = str(row.get("discord_role_id") or "").strip()
+                if existing_role_id and existing_role_id not in existing_by_role_id:
+                    existing_by_role_id[existing_role_id] = row
+
             for role in guild_roles:
                 role_id = str(role.get("id") or "").strip()
                 role_name = str(role.get("name") or "").strip()
                 if not role_id or not role_name:
                     continue
                 active_ids.add(role_id)
+
+                existing = existing_by_role_id.get(role_id)
+                preserved_category = RoleManagementService._normalized_category(
+                    (existing or {}).get("category_name")
+                )
+                preserved_position = int((existing or {}).get("position") or 0)
+                target_category = preserved_category if existing else auto_category
+                target_position = preserved_position if existing else int(role.get("position") or 0)
+
                 payload = {
                     "name": role_name,
-                    "category_name": auto_category,
-                    "position": int(role.get("position") or 0),
+                    "category_name": target_category,
+                    "position": target_position,
                     "is_discord_managed": True,
                     "discord_role_id": role_id,
                     "discord_role_name": role_name,
                 }
-                db.supabase.table("roles").upsert(payload, on_conflict="name").execute()
+
+                if existing:
+                    db.supabase.table("roles").update(payload).eq("discord_role_id", role_id).execute()
+                else:
+                    db.supabase.table("roles").upsert(payload, on_conflict="name").execute()
                 upserted += 1
 
             existing_resp = (
                 db.supabase.table("roles")
                 .select("name,discord_role_id,category_name")
-                .eq("category_name", auto_category)
                 .eq("is_discord_managed", True)
                 .execute()
             )
@@ -280,7 +323,12 @@ class RoleManagementService:
                     db.supabase.table("account_role_assignments").delete().eq("role_name", role_name).execute()
                     removed += 1
 
-            logger.info("sync_discord_guild_roles completed upserted=%s removed=%s", upserted, removed)
+            logger.info(
+                "sync_discord_guild_roles completed upserted=%s removed=%s active_ids=%s",
+                upserted,
+                removed,
+                len(active_ids),
+            )
             return {"upserted": upserted, "removed": removed}
         except Exception:
             logger.exception("sync_discord_guild_roles failed")
