@@ -93,8 +93,10 @@ def _render_home_text() -> str:
         "Все обновления идут в <b>одном сообщении</b> через кнопки.\n\n"
         "Быстрые действия через команду (если нужно точное имя):\n"
         "<code>/roles_admin category_create &lt;name&gt; [position]</code>\n"
-        "<code>/roles_admin role_create &lt;name&gt; &lt;category&gt; [discord_role_id]</code>\n"
+        "<code>/roles_admin category_order &lt;name&gt; &lt;position&gt;</code>\n"
+        "<code>/roles_admin role_create &lt;name&gt; &lt;category&gt; [discord_role_id] [position]</code>\n"
         "<code>/roles_admin role_move &lt;name&gt; &lt;category&gt; [position]</code>\n"
+        "<code>/roles_admin role_order &lt;role_name&gt; &lt;category&gt; &lt;position&gt;</code>\n"
         "<code>/roles_admin user_roles [reply|telegram_id]</code>\n"
         "<code>/roles_admin user_grant &lt;telegram_id&gt; &lt;role_name&gt;</code>\n"
         "<code>/roles_admin user_revoke &lt;telegram_id&gt; &lt;role_name&gt;</code>\n"
@@ -109,10 +111,12 @@ def _render_help_text() -> str:
         "ℹ️ <b>Что делает /roles_admin</b>\n\n"
         "<b>Категории</b>\n"
         "• <code>category_create &lt;name&gt; [position]</code> — создать/обновить категорию.\n"
+        "• <code>category_order &lt;name&gt; &lt;position&gt;</code> — выставить порядок категории в общем списке.\n"
         "• <code>category_delete &lt;name&gt;</code> — удалить категорию (роли уйдут в 'Без категории').\n\n"
         "<b>Роли</b>\n"
-        "• <code>role_create &lt;name&gt; &lt;category&gt; [discord_role_id]</code> — добавить роль в каталог.\n"
+        "• <code>role_create &lt;name&gt; &lt;category&gt; [discord_role_id] [position]</code> — добавить роль в каталог.\n"
         "• <code>role_move &lt;name&gt; &lt;category&gt; [position]</code> — переместить роль в другую категорию.\n"
+        "• <code>role_order &lt;role_name&gt; &lt;category&gt; &lt;position&gt;</code> — выставить очередь роли в категории.\n"
         "• <code>role_delete &lt;name&gt;</code> — удалить роль из каталога.\n\n"
         "<b>Роли пользователей</b>\n"
         "• <code>user_roles [reply|telegram_id]</code> — показать роли пользователя.\n"
@@ -152,14 +156,14 @@ def _render_list_text(grouped: list[dict], page: int) -> str:
     if not page_items:
         lines.append("\n📭 Категории отсутствуют.")
     for item in page_items:
-        lines.append(f"\n<b>{item['category']}</b>")
+        lines.append(f"\n• <i>{item['category']}</i>")
         roles = item.get("roles", [])
         if not roles:
-            lines.append("• —")
+            lines.append("  • —")
             continue
         for role in roles:
             suffix = f" (Discord ID: {role['discord_role_id']})" if role.get("discord_role_id") else ""
-            lines.append(f"• {role['name']}{suffix}")
+            lines.append(f"  • {role['name']}{suffix}")
 
     lines.append("\nНажми на категорию ниже для действий (удаление категории/ролей).")
     return "\n".join(lines)
@@ -219,6 +223,16 @@ async def roles_admin_command(message: Message) -> None:
             await message.answer("✅ Категория сохранена." if ok else "❌ Не удалось создать категорию (смотри логи).")
             return
 
+        if subcommand == "category_order" and len(args) >= 2:
+            position_raw = args[-1]
+            name = " ".join(args[:-1]).strip()
+            if not position_raw.lstrip("-").isdigit() or not name:
+                await message.answer("❌ Формат: /roles_admin category_order <name> <position>")
+                return
+            ok = RoleManagementService.create_category(name, int(position_raw))
+            await message.answer("✅ Порядок категории обновлён." if ok else "❌ Не удалось обновить порядок категории (смотри логи).")
+            return
+
         if subcommand == "category_delete" and len(args) >= 1:
             ok = RoleManagementService.delete_category(" ".join(args))
             await message.answer("✅ Категория удалена." if ok else "❌ Не удалось удалить категорию (смотри логи).")
@@ -228,7 +242,13 @@ async def roles_admin_command(message: Message) -> None:
             role_name = args[0]
             category = args[1]
             discord_role_id = args[2] if len(args) >= 3 else None
-            ok = RoleManagementService.create_role(role_name, category, discord_role_id=discord_role_id)
+            position = int(args[3]) if len(args) >= 4 and args[3].lstrip("-").isdigit() else 0
+            ok = RoleManagementService.create_role(
+                role_name,
+                category,
+                discord_role_id=discord_role_id,
+                position=position,
+            )
             await message.answer("✅ Роль создана." if ok else "❌ Не удалось создать роль (смотри логи).")
             return
 
@@ -241,6 +261,17 @@ async def roles_admin_command(message: Message) -> None:
             position = int(args[2]) if len(args) >= 3 and args[2].isdigit() else 0
             ok = RoleManagementService.move_role(args[0], args[1], position)
             await message.answer("✅ Роль перемещена." if ok else "❌ Не удалось переместить роль (смотри логи).")
+            return
+
+        if subcommand == "role_order" and len(args) >= 3:
+            role_name = args[0]
+            category = args[1]
+            position_raw = args[2]
+            if not position_raw.lstrip("-").isdigit():
+                await message.answer("❌ Формат: /roles_admin role_order <role_name> <category> <position>")
+                return
+            ok = RoleManagementService.move_role(role_name, category, int(position_raw))
+            await message.answer("✅ Очередность роли обновлена." if ok else "❌ Не удалось обновить очередь роли (смотри логи).")
             return
 
         if subcommand == "user_roles":
