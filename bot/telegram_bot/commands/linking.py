@@ -20,6 +20,8 @@ from bot.telegram_bot.systems.commands_logic import (
 logger = logging.getLogger(__name__)
 router = Router()
 
+_VISIBLE_ROLES_PAGE_SIZE = 10
+
 _EDIT_FIELD_LABELS = {
     "custom_nick": "Никнейм",
     "description": "Описание",
@@ -100,12 +102,44 @@ def _profile_settings_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def _build_visible_roles_keyboard(role_names: list[str], selected_roles: list[str]) -> InlineKeyboardMarkup:
+def _normalize_visible_roles_catalog(roles_by_category: dict[str, list[str]] | None) -> list[dict[str, object]]:
+    catalog: list[dict[str, object]] = []
+    for category_name in sorted((roles_by_category or {}).keys(), key=lambda value: str(value).lower()):
+        role_names = [str(name).strip() for name in (roles_by_category or {}).get(category_name, []) if str(name).strip()]
+        role_names = sorted(set(role_names), key=lambda value: value.lower())
+        if role_names:
+            for role_name in role_names:
+                catalog.append({"category": str(category_name).strip() or "Без категории", "role": role_name})
+    return catalog
+
+
+def _get_visible_roles_page(catalog: list[dict[str, object]], page: int) -> tuple[int, int, list[dict[str, object]]]:
+    total_pages = max((len(catalog) - 1) // _VISIBLE_ROLES_PAGE_SIZE + 1, 1)
+    safe_page = min(max(page, 0), total_pages - 1)
+    start = safe_page * _VISIBLE_ROLES_PAGE_SIZE
+    return safe_page, total_pages, catalog[start : start + _VISIBLE_ROLES_PAGE_SIZE]
+
+
+def _build_visible_roles_keyboard(catalog: list[dict[str, object]], selected_roles: list[str], page: int) -> InlineKeyboardMarkup:
+    safe_page, total_pages, page_items = _get_visible_roles_page(catalog, page)
     rows: list[list[InlineKeyboardButton]] = []
-    limited_roles = role_names[:10]
-    for idx, role_name in enumerate(limited_roles):
+    for idx, item in enumerate(page_items):
+        role_name = str(item.get("role") or "").strip()
+        category = str(item.get("category") or "Без категории").strip() or "Без категории"
         prefix = "✅ " if role_name in selected_roles else ""
-        rows.append([InlineKeyboardButton(text=f"{prefix}{role_name}"[:64], callback_data=f"profile_visible_roles:toggle:{idx}")])
+        label = f"{prefix}{role_name} [{category}]"[:64]
+        row_idx = idx // 2
+        if len(rows) <= row_idx:
+            rows.append([])
+        rows[row_idx].append(InlineKeyboardButton(text=label, callback_data=f"profile_visible_roles:toggle:{safe_page}:{idx}"))
+
+    nav: list[InlineKeyboardButton] = []
+    if safe_page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"profile_visible_roles:page:{safe_page - 1}"))
+    nav.append(InlineKeyboardButton(text=f"{safe_page + 1}/{total_pages}", callback_data="profile_visible_roles:noop"))
+    if safe_page + 1 < total_pages:
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"profile_visible_roles:page:{safe_page + 1}"))
+    rows.append(nav)
     rows.append(
         [
             InlineKeyboardButton(text="💾 Сохранить", callback_data="profile_visible_roles:save"),
@@ -115,11 +149,12 @@ def _build_visible_roles_keyboard(role_names: list[str], selected_roles: list[st
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _build_visible_roles_text(selected_roles: list[str]) -> str:
+def _build_visible_roles_text(selected_roles: list[str], page: int, total_pages: int) -> str:
     selected_text = ", ".join(f"<code>{item}</code>" for item in selected_roles) if selected_roles else "—"
     return (
         "🏅 <b>Выбор отображаемых ролей</b>\n"
-        "Нажмите на роли ниже (до 3), затем нажмите <b>Сохранить</b>.\n"
+        "Роли отсортированы по категориям. Нажмите на роли ниже (до 3), затем нажмите <b>Сохранить</b>.\n"
+        f"Страница: <b>{page + 1}/{total_pages}</b>\n"
         f"Выбрано ({len(selected_roles)}/{AccountsService.MAX_VISIBLE_PROFILE_ROLES}): {selected_text}"
     )
 
@@ -259,34 +294,35 @@ async def profile_edit_field_callback(callback: CallbackQuery) -> None:
         if field_name == "visible_roles":
             display_name = callback.from_user.full_name if callback.from_user is not None else None
             profile_data = AccountsService.get_profile("telegram", str(callback.from_user.id), display_name=display_name)
-            role_names = [
-                str(item.get("name") or "").strip()
-                for item in (profile_data or {}).get("roles", [])
-                if str(item.get("name") or "").strip()
-            ]
+            roles_by_category = (profile_data or {}).get("roles_by_category") or {}
+            catalog = _normalize_visible_roles_catalog(roles_by_category)
             visible_roles = [str(name).strip() for name in (profile_data or {}).get("visible_roles", []) if str(name).strip()]
 
-            if not role_names:
+            if not catalog:
                 await callback.message.answer("❌ Нет доступных ролей для выбора. Проверьте /profile_roles.")
                 await callback.answer()
                 return
 
+            allowed_names = {str(item.get("role") or "").strip() for item in catalog}
+            selected_roles = [
+                role_name
+                for role_name in visible_roles
+                if role_name in allowed_names
+            ][: AccountsService.MAX_VISIBLE_PROFILE_ROLES]
+            safe_page, total_pages, _ = _get_visible_roles_page(catalog, 0)
+
             _PENDING_VISIBLE_ROLES[callback.from_user.id] = {
-                "role_names": role_names[:10],
-                "selected_roles": [
-                    role_name
-                    for role_name in visible_roles
-                    if role_name in role_names[:10]
-                ][: AccountsService.MAX_VISIBLE_PROFILE_ROLES],
+                "catalog": catalog,
+                "selected_roles": selected_roles,
+                "page": safe_page,
                 "created_at": time.time(),
             }
             _PENDING_EDIT_FIELD.pop(callback.from_user.id, None)
             _PENDING_EDIT_FIELD_CREATED_AT.pop(callback.from_user.id, None)
-            selected = [str(item) for item in _PENDING_VISIBLE_ROLES[callback.from_user.id]["selected_roles"]]
             await callback.message.answer(
-                _build_visible_roles_text(selected),
+                _build_visible_roles_text(selected_roles, safe_page, total_pages),
                 parse_mode=ParseMode.HTML,
-                reply_markup=_build_visible_roles_keyboard(role_names[:10], selected),
+                reply_markup=_build_visible_roles_keyboard(catalog, selected_roles, safe_page),
             )
             await callback.answer()
             return
@@ -319,8 +355,9 @@ async def profile_visible_roles_callback(callback: CallbackQuery) -> None:
             await callback.answer("Меню выбора ролей устарело. Откройте заново.", show_alert=True)
             return
 
-        role_names = [str(item) for item in state.get("role_names", []) if str(item).strip()]
+        catalog = [item for item in state.get("catalog", []) if isinstance(item, dict)]
         selected_roles = [str(item) for item in state.get("selected_roles", []) if str(item).strip()]
+        page = int(state.get("page") or 0)
 
         callback_data = str(callback.data or "")
         prefix = "profile_visible_roles:"
@@ -352,19 +389,35 @@ async def profile_visible_roles_callback(callback: CallbackQuery) -> None:
             await callback.answer("Сохранено" if success else "Ошибка", show_alert=not success)
             return
 
+        if action == "noop":
+            await callback.answer()
+            return
+
         if action == "clear":
             selected_roles = []
+        elif action.startswith("page:"):
+            target_page_raw = action.split(":", 1)[1]
+            target_page = int(target_page_raw) if target_page_raw.lstrip("-").isdigit() else page
+            page, _, _ = _get_visible_roles_page(catalog, target_page)
         elif action.startswith("toggle:"):
-            idx_raw = action.split(":", 1)[1]
+            payload = action.split(":")
+            if len(payload) < 3:
+                await callback.answer("Некорректный выбор", show_alert=True)
+                return
+            page_raw = payload[1]
+            idx_raw = payload[2]
             try:
+                current_page = int(page_raw)
                 idx = int(idx_raw)
             except ValueError:
                 await callback.answer("Некорректный выбор", show_alert=True)
                 return
-            if idx < 0 or idx >= len(role_names):
+            safe_page, _, page_items = _get_visible_roles_page(catalog, current_page)
+            if idx < 0 or idx >= len(page_items):
                 await callback.answer("Роль не найдена", show_alert=True)
                 return
-            role_name = role_names[idx]
+            role_name = str(page_items[idx].get("role") or "").strip()
+            page = safe_page
             if role_name in selected_roles:
                 selected_roles = [item for item in selected_roles if item != role_name]
             else:
@@ -380,13 +433,15 @@ async def profile_visible_roles_callback(callback: CallbackQuery) -> None:
             return
 
         state["selected_roles"] = selected_roles
+        state["page"] = page
         _PENDING_VISIBLE_ROLES[callback.from_user.id] = state
 
+        safe_page, total_pages, _ = _get_visible_roles_page(catalog, page)
         if callback.message:
             await callback.message.edit_text(
-                _build_visible_roles_text(selected_roles),
+                _build_visible_roles_text(selected_roles, safe_page, total_pages),
                 parse_mode=ParseMode.HTML,
-                reply_markup=_build_visible_roles_keyboard(role_names, selected_roles),
+                reply_markup=_build_visible_roles_keyboard(catalog, selected_roles, safe_page),
             )
         await callback.answer()
     except Exception:
