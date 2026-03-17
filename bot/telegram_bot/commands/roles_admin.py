@@ -1,6 +1,7 @@
 import logging
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramConflictError, TelegramNetworkError
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -122,6 +123,24 @@ def _render_help_text() -> str:
         "• Внутри категории доступны кнопки удаления категории/ролей.\n"
         "• Все экраны обновляются в одном сообщении без спама."
     )
+
+
+async def _safe_callback_answer(
+    callback: CallbackQuery,
+    text: str | None = None,
+    *,
+    show_alert: bool = False,
+) -> None:
+    try:
+        await callback.answer(text, show_alert=show_alert)
+    except Exception:
+        logger.exception(
+            "roles_admin callback answer failed callback_data=%s actor_id=%s text=%s show_alert=%s",
+            callback.data,
+            callback.from_user.id if callback.from_user else None,
+            text,
+            show_alert,
+        )
 
 def _render_list_text(grouped: list[dict], page: int) -> str:
     safe_page = _normalize_page(page, len(grouped), _ROLES_PAGE_SIZE)
@@ -407,10 +426,21 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             return
 
         await callback.answer("Неизвестное действие", show_alert=True)
+    except (TelegramNetworkError, TelegramConflictError):
+        logger.exception(
+            "roles_admin callback transport failed (telegram runtime/session issue) callback_data=%s actor_id=%s",
+            callback.data,
+            callback.from_user.id if callback.from_user else None,
+        )
+        await _safe_callback_answer(
+            callback,
+            "Сеть Telegram недоступна или идёт перезапуск polling. Попробуйте ещё раз через пару секунд.",
+            show_alert=True,
+        )
     except Exception:
         logger.exception(
             "roles_admin callback failed callback_data=%s actor_id=%s",
             callback.data,
             callback.from_user.id if callback.from_user else None,
         )
-        await callback.answer("Ошибка в панели ролей (смотри логи).", show_alert=True)
+        await _safe_callback_answer(callback, "Ошибка в панели ролей (смотри логи).", show_alert=True)
