@@ -69,11 +69,21 @@ def _build_list_keyboard(grouped: list[dict], actor_id: int, page: int) -> Inlin
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _build_category_keyboard(actor_id: int, page: int, category_idx: int, roles_count: int) -> InlineKeyboardMarkup:
+def _build_category_keyboard(
+    actor_id: int,
+    page: int,
+    category_idx: int,
+    roles_count: int,
+    *,
+    can_manage_categories: bool,
+) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(text="⬅️ Назад к списку", callback_data=f"roles_admin:{actor_id}:list:{page}")],
-        [InlineKeyboardButton(text="🗑 Удалить категорию", callback_data=f"roles_admin:{actor_id}:delete_category:{page}:{category_idx}")],
     ]
+    if can_manage_categories:
+        rows.append(
+            [InlineKeyboardButton(text="🗑 Удалить категорию", callback_data=f"roles_admin:{actor_id}:delete_category:{page}:{category_idx}")]
+        )
     for role_idx in range(min(roles_count, _MAX_ROLE_BUTTONS)):
         rows.append(
             [
@@ -110,9 +120,9 @@ def _render_help_text() -> str:
     return (
         "ℹ️ <b>Что делает /roles_admin</b>\n\n"
         "<b>Категории</b>\n"
-        "• <code>category_create &lt;name&gt; [position]</code> — создать/обновить категорию.\n"
-        "• <code>category_order &lt;name&gt; &lt;position&gt;</code> — выставить порядок категории в общем списке.\n"
-        "• <code>category_delete &lt;name&gt;</code> — удалить категорию (роли уйдут в 'Без категории').\n\n"
+        "• <code>category_create &lt;name&gt; [position]</code> — создать/обновить категорию (<b>только Глава клуба/Главный вице</b>).\n"
+        "• <code>category_order &lt;name&gt; &lt;position&gt;</code> — выставить порядок категории (<b>только Глава клуба/Главный вице</b>).\n"
+        "• <code>category_delete &lt;name&gt;</code> — удалить категорию (роли уйдут в 'Без категории', <b>только Глава клуба/Главный вице</b>).\n\n"
         "<b>Роли</b>\n"
         "• <code>role_create &lt;name&gt; &lt;category&gt; [discord_role_id] [position]</code> — добавить роль в каталог.\n"
         "• <code>role_move &lt;name&gt; &lt;category&gt; [position]</code> — переместить роль в другую категорию.\n"
@@ -189,6 +199,10 @@ async def _ensure_roles_admin(message: Message) -> bool:
     return True
 
 
+def _can_manage_categories(provider: str, provider_user_id: str) -> bool:
+    return AuthorityService.can_manage_role_categories(provider, provider_user_id)
+
+
 @router.message(Command("roles_admin"))
 async def roles_admin_command(message: Message) -> None:
     try:
@@ -217,6 +231,9 @@ async def roles_admin_command(message: Message) -> None:
             return
 
         if subcommand == "category_create" and len(args) >= 1:
+            if not message.from_user or not _can_manage_categories("telegram", str(message.from_user.id)):
+                await message.answer("❌ Категориями может управлять только Глава клуба или Главный вице.")
+                return
             position = int(args[-1]) if len(args) > 1 and args[-1].isdigit() else 0
             name = " ".join(args[:-1] if len(args) > 1 and args[-1].isdigit() else args)
             ok = RoleManagementService.create_category(name, position)
@@ -224,6 +241,9 @@ async def roles_admin_command(message: Message) -> None:
             return
 
         if subcommand == "category_order" and len(args) >= 2:
+            if not message.from_user or not _can_manage_categories("telegram", str(message.from_user.id)):
+                await message.answer("❌ Категориями может управлять только Глава клуба или Главный вице.")
+                return
             position_raw = args[-1]
             name = " ".join(args[:-1]).strip()
             if not position_raw.lstrip("-").isdigit() or not name:
@@ -234,6 +254,9 @@ async def roles_admin_command(message: Message) -> None:
             return
 
         if subcommand == "category_delete" and len(args) >= 1:
+            if not message.from_user or not _can_manage_categories("telegram", str(message.from_user.id)):
+                await message.answer("❌ Категориями может управлять только Глава клуба или Главный вице.")
+                return
             ok = RoleManagementService.delete_category(" ".join(args))
             await message.answer("✅ Категория удалена." if ok else "❌ Не удалось удалить категорию (смотри логи).")
             return
@@ -325,6 +348,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             return
 
         owner_id = int(parts[1]) if parts[1].isdigit() else 0
+        actor_can_manage_categories = _can_manage_categories("telegram", str(callback.from_user.id))
         if owner_id != callback.from_user.id:
             logger.warning(
                 "roles_admin callback denied foreign actor callback_data=%s actor_id=%s owner_id=%s",
@@ -388,12 +412,26 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             await callback.message.edit_text(
                 "\n".join(lines),
                 parse_mode="HTML",
-                reply_markup=_build_category_keyboard(owner_id, page, category_idx, len(roles)),
+                reply_markup=_build_category_keyboard(
+                    owner_id,
+                    page,
+                    category_idx,
+                    len(roles),
+                    can_manage_categories=actor_can_manage_categories,
+                ),
             )
             await callback.answer()
             return
 
         if action == "delete_category":
+            if not actor_can_manage_categories:
+                logger.warning(
+                    "roles_admin category delete denied callback_data=%s actor_id=%s",
+                    callback.data,
+                    callback.from_user.id,
+                )
+                await callback.answer("Категориями может управлять только Глава клуба или Главный вице.", show_alert=True)
+                return
             page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
             category_idx = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else -1
             category_item = _resolve_category(grouped, page, category_idx)
@@ -445,7 +483,13 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 await callback.message.edit_text(
                     "\n".join(lines),
                     parse_mode="HTML",
-                    reply_markup=_build_category_keyboard(owner_id, page, category_idx, len(refreshed_roles)),
+                    reply_markup=_build_category_keyboard(
+                        owner_id,
+                        page,
+                        category_idx,
+                        len(refreshed_roles),
+                        can_manage_categories=actor_can_manage_categories,
+                    ),
                 )
             else:
                 await callback.message.edit_text(

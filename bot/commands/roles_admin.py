@@ -19,6 +19,7 @@ def _rolesadmin_help_embed() -> discord.Embed:
         name="Категории",
         value=(
             "`/rolesadmin category_create <name> [position]` — создать/обновить категорию\n"
+            "`/rolesadmin category_order <name> <position>` — изменить порядок категории\n"
             "`/rolesadmin category_delete <name>` — удалить категорию"
         ),
         inline=False,
@@ -50,6 +51,21 @@ async def _ensure_roles_admin(ctx: commands.Context) -> bool:
         return True
     if not AuthorityService.has_command_permission("discord", str(ctx.author.id), "players_manage"):
         await send_temp(ctx, "❌ Недостаточно полномочий для управления ролями.")
+        return False
+    return True
+
+
+async def _ensure_category_manager(ctx: commands.Context) -> bool:
+    if ctx.author.guild_permissions.administrator:
+        return True
+    allowed = AuthorityService.can_manage_role_categories("discord", str(ctx.author.id))
+    if not allowed:
+        logger.warning(
+            "rolesadmin category access denied actor_id=%s guild_id=%s",
+            ctx.author.id,
+            ctx.guild.id if ctx.guild else None,
+        )
+        await send_temp(ctx, "❌ Категориями может управлять только Глава клуба или Главный вице.")
         return False
     return True
 
@@ -89,6 +105,8 @@ async def rolesadmin_list(ctx: commands.Context):
 async def rolesadmin_category_create(ctx: commands.Context, name: str, position: int = 0):
     if not await _ensure_roles_admin(ctx):
         return
+    if not await _ensure_category_manager(ctx):
+        return
     if RoleManagementService.create_category(name, position):
         await send_temp(ctx, f"✅ Категория **{name}** создана/обновлена.")
     else:
@@ -99,10 +117,24 @@ async def rolesadmin_category_create(ctx: commands.Context, name: str, position:
 async def rolesadmin_category_delete(ctx: commands.Context, name: str):
     if not await _ensure_roles_admin(ctx):
         return
+    if not await _ensure_category_manager(ctx):
+        return
     if RoleManagementService.delete_category(name):
         await send_temp(ctx, f"✅ Категория **{name}** удалена. Роли перенесены в 'Без категории'.")
     else:
         await send_temp(ctx, "❌ Не удалось удалить категорию (смотри логи).")
+
+
+@rolesadmin.command(name="category_order", description="Изменить порядок категории")
+async def rolesadmin_category_order(ctx: commands.Context, name: str, position: int):
+    if not await _ensure_roles_admin(ctx):
+        return
+    if not await _ensure_category_manager(ctx):
+        return
+    if RoleManagementService.create_category(name, position):
+        await send_temp(ctx, f"✅ Порядок категории **{name}** обновлён: {position}.")
+    else:
+        await send_temp(ctx, "❌ Не удалось обновить порядок категории (смотри логи).")
 
 
 @rolesadmin.command(name="role_create", description="Создать роль в каталоге")
@@ -210,4 +242,3 @@ async def rolesadmin_user_revoke(ctx: commands.Context, member: discord.Member, 
                 return
 
     await send_temp(ctx, f"✅ Роль **{role_name}** снята у {member.mention}.")
-
