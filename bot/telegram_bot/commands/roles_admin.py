@@ -3,7 +3,7 @@ import time
 from dataclasses import dataclass
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramConflictError, TelegramNetworkError
+from aiogram.exceptions import TelegramBadRequest, TelegramConflictError, TelegramNetworkError
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -359,6 +359,23 @@ async def _safe_callback_answer(
             show_alert,
         )
 
+
+async def _safe_edit_message_text(callback: CallbackQuery, *args, **kwargs) -> bool:
+    if not callback.message:
+        return False
+    try:
+        await callback.message.edit_text(*args, **kwargs)
+        return True
+    except TelegramBadRequest as error:
+        if "message is not modified" in str(error).lower():
+            logger.info(
+                "roles_admin edit skipped message not modified callback_data=%s actor_id=%s",
+                callback.data,
+                callback.from_user.id if callback.from_user else None,
+            )
+            return False
+        raise
+
 def _render_list_text(grouped: list[dict], page: int) -> str:
     safe_page = _normalize_page(page, len(grouped), _ROLES_PAGE_SIZE)
     start = safe_page * _ROLES_PAGE_SIZE
@@ -570,7 +587,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
         grouped = RoleManagementService.list_roles_grouped() or []
 
         if action == "help":
-            await callback.message.edit_text(
+            await _safe_edit_message_text(callback, 
                 _render_help_text(),
                 parse_mode="HTML",
                 reply_markup=_build_home_keyboard(owner_id),
@@ -579,7 +596,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             return
 
         if action == "home":
-            await callback.message.edit_text(
+            await _safe_edit_message_text(callback, 
                 _render_home_text(),
                 parse_mode="HTML",
                 reply_markup=_build_home_keyboard(owner_id),
@@ -589,7 +606,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
 
         if action == "list":
             page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
-            await callback.message.edit_text(
+            await _safe_edit_message_text(callback, 
                 _render_list_text(grouped, page),
                 parse_mode="HTML",
                 reply_markup=_build_list_keyboard(grouped, owner_id, page),
@@ -598,7 +615,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             return
 
         if action == "actions":
-            await callback.message.edit_text(
+            await _safe_edit_message_text(callback, 
                 _render_actions_text(),
                 parse_mode="HTML",
                 reply_markup=_build_actions_keyboard(owner_id),
@@ -613,14 +630,14 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 return
             button_ops = {"category_order", "category_delete", "role_move", "role_order", "role_delete"}
             if operation in {"category_order", "category_delete"}:
-                await callback.message.edit_text(
+                await _safe_edit_message_text(callback, 
                     "Выберите категорию:",
                     reply_markup=_build_pick_category_keyboard(grouped, owner_id, operation),
                 )
                 await callback.answer()
                 return
             if operation in {"role_move", "role_order", "role_delete"}:
-                await callback.message.edit_text(
+                await _safe_edit_message_text(callback, 
                     "Выберите роль:",
                     reply_markup=_build_pick_role_keyboard(grouped, owner_id, operation, 0),
                 )
@@ -634,7 +651,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
         if action == "pick_role_page":
             operation = parts[3] if len(parts) > 3 else ""
             page = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 0
-            await callback.message.edit_text(
+            await _safe_edit_message_text(callback, 
                 "Выберите роль:",
                 reply_markup=_build_pick_role_keyboard(grouped, owner_id, operation, page),
             )
@@ -652,7 +669,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 ok = RoleManagementService.delete_category(category_name)
                 await callback.answer("Категория удалена" if ok else "Не удалось удалить категорию", show_alert=not ok)
                 grouped_after = RoleManagementService.list_roles_grouped() or []
-                await callback.message.edit_text(_render_actions_text(), parse_mode="HTML", reply_markup=_build_actions_keyboard(owner_id))
+                await _safe_edit_message_text(callback, _render_actions_text(), parse_mode="HTML", reply_markup=_build_actions_keyboard(owner_id))
                 return
             if operation == "category_order":
                 _PENDING_ACTIONS[callback.from_user.id] = PendingRolesAdminAction(
@@ -660,7 +677,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     created_at=time.time(),
                     payload={"category": category_name},
                 )
-                await callback.message.edit_text(
+                await _safe_edit_message_text(callback, 
                     f"Выбрана категория: <b>{category_name}</b>\nВыберите новую позицию:",
                     parse_mode="HTML",
                     reply_markup=_build_position_choice_keyboard(owner_id, "category_order"),
@@ -677,7 +694,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 pending.payload["mode"] = "move" if operation == "role_move_target" else "order"
                 pending.created_at = time.time()
                 _PENDING_ACTIONS[callback.from_user.id] = pending
-                await callback.message.edit_text(
+                await _safe_edit_message_text(callback, 
                     f"Роль: <b>{pending.payload['role']}</b>\nКатегория: <b>{category_name}</b>\nВыберите позицию:",
                     parse_mode="HTML",
                     reply_markup=_build_position_choice_keyboard(owner_id, "role_position"),
@@ -700,7 +717,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             if operation == "role_delete":
                 ok = RoleManagementService.delete_role(role_name)
                 await callback.answer(f"Роль {role_name} удалена" if ok else "Не удалось удалить роль", show_alert=not ok)
-                await callback.message.edit_text(_render_actions_text(), parse_mode="HTML", reply_markup=_build_actions_keyboard(owner_id))
+                await _safe_edit_message_text(callback, _render_actions_text(), parse_mode="HTML", reply_markup=_build_actions_keyboard(owner_id))
                 return
             if operation in {"role_move", "role_order"}:
                 _PENDING_ACTIONS[callback.from_user.id] = PendingRolesAdminAction(
@@ -709,7 +726,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     payload={"role": role_name, "mode": "move" if operation == "role_move" else "order"},
                 )
                 next_operation = "role_move_target" if operation == "role_move" else "role_order_target"
-                await callback.message.edit_text(
+                await _safe_edit_message_text(callback, 
                     f"Роль: <b>{role_name}</b>\nВыберите целевую категорию:",
                     parse_mode="HTML",
                     reply_markup=_build_pick_category_keyboard(grouped, owner_id, next_operation),
@@ -730,7 +747,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 ok = RoleManagementService.create_category(category_name, new_pos)
                 _PENDING_ACTIONS.pop(callback.from_user.id, None)
                 await callback.answer("Порядок категории обновлён" if ok else "Не удалось обновить порядок", show_alert=not ok)
-                await callback.message.edit_text(_render_actions_text(), parse_mode="HTML", reply_markup=_build_actions_keyboard(owner_id))
+                await _safe_edit_message_text(callback, _render_actions_text(), parse_mode="HTML", reply_markup=_build_actions_keyboard(owner_id))
                 return
             if op == "role_position":
                 if not pending or pending.operation != "role_pick_position" or not pending.payload:
@@ -744,7 +761,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 ok = RoleManagementService.move_role(role_name, category_name, new_pos)
                 _PENDING_ACTIONS.pop(callback.from_user.id, None)
                 await callback.answer("Позиция роли обновлена" if ok else "Не удалось обновить позицию роли", show_alert=not ok)
-                await callback.message.edit_text(_render_actions_text(), parse_mode="HTML", reply_markup=_build_actions_keyboard(owner_id))
+                await _safe_edit_message_text(callback, _render_actions_text(), parse_mode="HTML", reply_markup=_build_actions_keyboard(owner_id))
                 return
 
         if action == "category":
@@ -766,7 +783,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 if len(roles) > _MAX_ROLE_BUTTONS:
                     lines.append(f"\n… и ещё {len(roles) - _MAX_ROLE_BUTTONS} ролей (удаляй через /roles_admin role_delete)")
 
-            await callback.message.edit_text(
+            await _safe_edit_message_text(callback, 
                 "\n".join(lines),
                 parse_mode="HTML",
                 reply_markup=_build_category_keyboard(
@@ -802,7 +819,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 return
 
             grouped_after = RoleManagementService.list_roles_grouped() or []
-            await callback.message.edit_text(
+            await _safe_edit_message_text(callback, 
                 _render_list_text(grouped_after, page),
                 parse_mode="HTML",
                 reply_markup=_build_list_keyboard(grouped_after, owner_id, page),
@@ -837,7 +854,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     for idx, role in enumerate(refreshed_roles[:_MAX_ROLE_BUTTONS], start=1):
                         suffix = f" (Discord ID: {role['discord_role_id']})" if role.get("discord_role_id") else ""
                         lines.append(f"\n{idx}. {role['name']}{suffix}")
-                await callback.message.edit_text(
+                await _safe_edit_message_text(callback, 
                     "\n".join(lines),
                     parse_mode="HTML",
                     reply_markup=_build_category_keyboard(
@@ -849,7 +866,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     ),
                 )
             else:
-                await callback.message.edit_text(
+                await _safe_edit_message_text(callback, 
                     _render_list_text(grouped_after, page),
                     parse_mode="HTML",
                     reply_markup=_build_list_keyboard(grouped_after, owner_id, page),
