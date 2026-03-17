@@ -143,8 +143,8 @@ async def on_ready():
             else:
                 print("⏭️ Синхронизация slash-команд пропущена (слишком рано после прошлого запуска)")
             commands_synced = True
-        except Exception as e:
-            print(f"❌ Ошибка синхронизации команд: {e}")
+        except Exception:
+            logging.exception("❌ Ошибка синхронизации slash-команд")
     
     active_tournaments = tournament_db.get_active_tournaments()
     for tour in active_tournaments:
@@ -335,10 +335,10 @@ async def monthly_top_task():
 
                     db.log_monthly_fine_top(list(zip(top_fines, punishments)))
                 else:
-                    print("❌ Указанный канал недоступен или не текстовый")
+                    logging.error("❌ Указанный канал недоступен или не текстовый channel_id=%s", TOP_CHANNEL_ID)
 
-            except Exception as e:
-                print(f"❌ Ошибка автозапуска топа месяца: {e}")
+            except Exception:
+                logging.exception("❌ Ошибка автозапуска топа месяца")
 
         await asyncio.sleep(3600)
 
@@ -425,7 +425,7 @@ def run_discord_main():
     TOKEN = (os.getenv('DISCORD_TOKEN') or '').strip()
 
     if not TOKEN:
-        print("❌ Переменная DISCORD_TOKEN не задана.")
+        logging.error("❌ Переменная DISCORD_TOKEN не задана.")
         return
 
     max_retry_delay = float(os.getenv("STARTUP_MAX_RETRY_DELAY", "300"))
@@ -506,7 +506,7 @@ def run_discord_main():
             save_startup_retry_state(0.0, 60.0)
             break
         except discord.LoginFailure:
-            print("❌ Неверный токен DISCORD_TOKEN. Проверьте переменную окружения на Render.")
+            logging.error("❌ Неверный токен DISCORD_TOKEN. Проверьте переменную окружения на Render.")
             break
         except discord.HTTPException as e:
             if e.status == 429:
@@ -517,17 +517,15 @@ def run_discord_main():
                 continue
 
             raise
-        except Exception as e:
-            error_text = str(e)
+        except Exception as exc:
+            error_text = str(exc)
             if "Session is closed" in error_text:
                 retry_delay = wait_before_retry(retry_delay)
                 continue
             if "429" in error_text or "rate limit" in error_text.lower():
                 retry_delay = wait_before_retry(retry_delay)
                 continue
-            print("❌ Ошибка при запуске бота:", e)
-            import traceback
-            traceback.print_exc()
+            logging.exception("❌ Ошибка при запуске Discord-бота")
             break
 
 async def _run_both_async(discord_token: str, telegram_token: str) -> None:
