@@ -7,7 +7,8 @@ from aiogram.exceptions import TelegramConflictError, TelegramNetworkError
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from bot.services import AuthorityService, RoleManagementService
+from bot.data import db
+from bot.services import AccountsService, AuthorityService, RoleManagementService
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -21,9 +22,68 @@ _PENDING_TTL_SECONDS = 300
 class PendingRolesAdminAction:
     operation: str
     created_at: float
+    payload: dict[str, str] | None = None
 
 
 _PENDING_ACTIONS: dict[int, PendingRolesAdminAction] = {}
+
+
+async def _sync_linked_discord_role(provider_user_id: str, role_name: str, *, revoke: bool) -> None:
+    try:
+        account_id = AccountsService.resolve_account_id("telegram", str(provider_user_id))
+        if not account_id or not db.supabase:
+            return
+        role_info = RoleManagementService.get_role(role_name)
+        discord_role_id = str((role_info or {}).get("discord_role_id") or "").strip()
+        if not discord_role_id:
+            return
+        identity_resp = (
+            db.supabase.table("account_identities")
+            .select("provider_user_id")
+            .eq("account_id", str(account_id))
+            .eq("provider", "discord")
+            .limit(1)
+            .execute()
+        )
+        if not identity_resp.data:
+            return
+        discord_user_id = int(identity_resp.data[0].get("provider_user_id") or 0)
+        if not discord_user_id:
+            return
+
+        from bot.commands.base import bot as discord_bot
+
+        if not getattr(discord_bot, "guilds", None):
+            logger.warning("discord sync skipped: bot guilds unavailable target_telegram_id=%s", provider_user_id)
+            return
+        for guild in discord_bot.guilds:
+            member = guild.get_member(discord_user_id)
+            guild_role = guild.get_role(int(discord_role_id))
+            if not member or not guild_role:
+                continue
+            try:
+                if revoke:
+                    await member.remove_roles(guild_role, reason=f"telegram roles_admin revoke by {provider_user_id}")
+                else:
+                    await member.add_roles(guild_role, reason=f"telegram roles_admin grant by {provider_user_id}")
+            except Exception:
+                logger.exception(
+                    "telegram roles_admin discord sync failed discord_user_id=%s role_id=%s revoke=%s guild_id=%s",
+                    discord_user_id,
+                    discord_role_id,
+                    revoke,
+                    guild.id,
+                )
+            return
+        logger.warning(
+            "telegram roles_admin discord sync target not found discord_user_id=%s role_id=%s revoke=%s",
+            discord_user_id,
+            discord_role_id,
+            revoke,
+        )
+    except Exception:
+        logger.exception("telegram roles_admin discord sync crashed target_telegram_id=%s role=%s revoke=%s", provider_user_id, role_name, revoke)
+
 
 
 def _parse_target_arg(message: Message) -> int | None:
@@ -121,6 +181,66 @@ def has_pending_roles_admin_action(telegram_user_id: int | None) -> bool:
         return False
     return True
 
+
+
+
+def _flatten_roles(grouped: list[dict]) -> list[dict[str, str]]:
+    flattened: list[dict[str, str]] = []
+    for item in grouped:
+        category = str(item.get("category") or "Без категории")
+        for role in item.get("roles", []):
+            role_name = str(role.get("name") or "").strip()
+            if role_name:
+                flattened.append({"role": role_name, "category": category})
+    return flattened
+
+
+def _build_pick_category_keyboard(grouped: list[dict], actor_id: int, operation: str) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for idx, item in enumerate(grouped[:20]):
+        rows.append([
+            InlineKeyboardButton(
+                text=f"📂 {item['category']}"[:64],
+                callback_data=f"roles_admin:{actor_id}:pick_category:{operation}:{idx}",
+            )
+        ])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"roles_admin:{actor_id}:actions")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _build_pick_role_keyboard(grouped: list[dict], actor_id: int, operation: str, page: int = 0) -> InlineKeyboardMarkup:
+    flattened = _flatten_roles(grouped)
+    page_size = 8
+    safe_page = _normalize_page(page, len(flattened), page_size)
+    start = safe_page * page_size
+    items = flattened[start : start + page_size]
+    rows: list[list[InlineKeyboardButton]] = []
+    for idx, item in enumerate(items):
+        rows.append([
+            InlineKeyboardButton(
+                text=f"🎭 {item['role']} [{item['category']}]"[:64],
+                callback_data=f"roles_admin:{actor_id}:pick_role:{operation}:{safe_page}:{idx}",
+            )
+        ])
+    nav: list[InlineKeyboardButton] = []
+    if safe_page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"roles_admin:{actor_id}:pick_role_page:{operation}:{safe_page - 1}"))
+    nav.append(InlineKeyboardButton(text="🔄", callback_data=f"roles_admin:{actor_id}:pick_role_page:{operation}:{safe_page}"))
+    if (safe_page + 1) * page_size < len(flattened):
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"roles_admin:{actor_id}:pick_role_page:{operation}:{safe_page + 1}"))
+    rows.append(nav)
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"roles_admin:{actor_id}:actions")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _build_position_choice_keyboard(actor_id: int, operation: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⏫ В начало", callback_data=f"roles_admin:{actor_id}:set_position:{operation}:start")],
+            [InlineKeyboardButton(text="⏬ В конец", callback_data=f"roles_admin:{actor_id}:set_position:{operation}:end")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"roles_admin:{actor_id}:actions")],
+        ]
+    )
 
 def _build_list_keyboard(grouped: list[dict], actor_id: int, page: int) -> InlineKeyboardMarkup:
     safe_page = _normalize_page(page, len(grouped), _ROLES_PAGE_SIZE)
@@ -402,9 +522,13 @@ async def roles_admin_command(message: Message) -> None:
                 role_info = RoleManagementService.get_role(role_name)
                 category = role_info.get("category_name") if role_info else None
                 ok = RoleManagementService.assign_user_role("telegram", target_id, role_name, category=category)
+                if ok:
+                    await _sync_linked_discord_role(target_id, role_name, revoke=False)
                 await message.answer("✅ Роль выдана в БД." if ok else "❌ Не удалось выдать роль (смотри логи).")
             else:
                 ok = RoleManagementService.revoke_user_role("telegram", target_id, role_name)
+                if ok:
+                    await _sync_linked_discord_role(target_id, role_name, revoke=True)
                 await message.answer("✅ Роль снята в БД." if ok else "❌ Не удалось снять роль (смотри логи).")
             return
 
@@ -487,10 +611,141 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             if operation.startswith("category_") and not actor_can_manage_categories:
                 await callback.answer("Категориями может управлять только Глава клуба или Главный вице.", show_alert=True)
                 return
+            button_ops = {"category_order", "category_delete", "role_move", "role_order", "role_delete"}
+            if operation in {"category_order", "category_delete"}:
+                await callback.message.edit_text(
+                    "Выберите категорию:",
+                    reply_markup=_build_pick_category_keyboard(grouped, owner_id, operation),
+                )
+                await callback.answer()
+                return
+            if operation in {"role_move", "role_order", "role_delete"}:
+                await callback.message.edit_text(
+                    "Выберите роль:",
+                    reply_markup=_build_pick_role_keyboard(grouped, owner_id, operation, 0),
+                )
+                await callback.answer()
+                return
             _PENDING_ACTIONS[callback.from_user.id] = PendingRolesAdminAction(operation=operation, created_at=time.time())
             await callback.answer("Ожидаю ввод параметров", show_alert=True)
             await callback.message.reply(_operation_hint(operation), parse_mode="HTML")
             return
+
+        if action == "pick_role_page":
+            operation = parts[3] if len(parts) > 3 else ""
+            page = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 0
+            await callback.message.edit_text(
+                "Выберите роль:",
+                reply_markup=_build_pick_role_keyboard(grouped, owner_id, operation, page),
+            )
+            await callback.answer()
+            return
+
+        if action == "pick_category":
+            operation = parts[3] if len(parts) > 3 else ""
+            category_idx = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else -1
+            if category_idx < 0 or category_idx >= len(grouped):
+                await callback.answer("Категория не найдена", show_alert=True)
+                return
+            category_name = str(grouped[category_idx]["category"])
+            if operation == "category_delete":
+                ok = RoleManagementService.delete_category(category_name)
+                await callback.answer("Категория удалена" if ok else "Не удалось удалить категорию", show_alert=not ok)
+                grouped_after = RoleManagementService.list_roles_grouped() or []
+                await callback.message.edit_text(_render_actions_text(), parse_mode="HTML", reply_markup=_build_actions_keyboard(owner_id))
+                return
+            if operation == "category_order":
+                _PENDING_ACTIONS[callback.from_user.id] = PendingRolesAdminAction(
+                    operation="category_order_pick_position",
+                    created_at=time.time(),
+                    payload={"category": category_name},
+                )
+                await callback.message.edit_text(
+                    f"Выбрана категория: <b>{category_name}</b>\nВыберите новую позицию:",
+                    parse_mode="HTML",
+                    reply_markup=_build_position_choice_keyboard(owner_id, "category_order"),
+                )
+                await callback.answer()
+                return
+            if operation in {"role_move_target", "role_order_target"}:
+                pending = _PENDING_ACTIONS.get(callback.from_user.id)
+                if not pending or not pending.payload or not pending.payload.get("role"):
+                    await callback.answer("Сессия устарела, начните заново", show_alert=True)
+                    return
+                pending.operation = "role_pick_position"
+                pending.payload["category"] = category_name
+                pending.payload["mode"] = "move" if operation == "role_move_target" else "order"
+                pending.created_at = time.time()
+                _PENDING_ACTIONS[callback.from_user.id] = pending
+                await callback.message.edit_text(
+                    f"Роль: <b>{pending.payload['role']}</b>\nКатегория: <b>{category_name}</b>\nВыберите позицию:",
+                    parse_mode="HTML",
+                    reply_markup=_build_position_choice_keyboard(owner_id, "role_position"),
+                )
+                await callback.answer()
+                return
+
+        if action == "pick_role":
+            operation = parts[3] if len(parts) > 3 else ""
+            page = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 0
+            role_idx = int(parts[5]) if len(parts) > 5 and parts[5].isdigit() else -1
+            flattened = _flatten_roles(grouped)
+            page_size = 8
+            safe_page = _normalize_page(page, len(flattened), page_size)
+            item_index = safe_page * page_size + role_idx
+            if role_idx < 0 or item_index >= len(flattened):
+                await callback.answer("Роль не найдена", show_alert=True)
+                return
+            role_name = flattened[item_index]["role"]
+            if operation == "role_delete":
+                ok = RoleManagementService.delete_role(role_name)
+                await callback.answer(f"Роль {role_name} удалена" if ok else "Не удалось удалить роль", show_alert=not ok)
+                await callback.message.edit_text(_render_actions_text(), parse_mode="HTML", reply_markup=_build_actions_keyboard(owner_id))
+                return
+            if operation in {"role_move", "role_order"}:
+                _PENDING_ACTIONS[callback.from_user.id] = PendingRolesAdminAction(
+                    operation="role_pick_category",
+                    created_at=time.time(),
+                    payload={"role": role_name, "mode": "move" if operation == "role_move" else "order"},
+                )
+                next_operation = "role_move_target" if operation == "role_move" else "role_order_target"
+                await callback.message.edit_text(
+                    f"Роль: <b>{role_name}</b>\nВыберите целевую категорию:",
+                    parse_mode="HTML",
+                    reply_markup=_build_pick_category_keyboard(grouped, owner_id, next_operation),
+                )
+                await callback.answer()
+                return
+
+        if action == "set_position":
+            op = parts[3] if len(parts) > 3 else ""
+            value = parts[4] if len(parts) > 4 else ""
+            pending = _PENDING_ACTIONS.get(callback.from_user.id)
+            if op == "category_order":
+                if not pending or pending.operation != "category_order_pick_position" or not pending.payload:
+                    await callback.answer("Сессия устарела, начните заново", show_alert=True)
+                    return
+                category_name = pending.payload.get("category", "")
+                new_pos = 0 if value == "start" else max(len(grouped) - 1, 0)
+                ok = RoleManagementService.create_category(category_name, new_pos)
+                _PENDING_ACTIONS.pop(callback.from_user.id, None)
+                await callback.answer("Порядок категории обновлён" if ok else "Не удалось обновить порядок", show_alert=not ok)
+                await callback.message.edit_text(_render_actions_text(), parse_mode="HTML", reply_markup=_build_actions_keyboard(owner_id))
+                return
+            if op == "role_position":
+                if not pending or pending.operation != "role_pick_position" or not pending.payload:
+                    await callback.answer("Сессия устарела, начните заново", show_alert=True)
+                    return
+                role_name = pending.payload.get("role", "")
+                category_name = pending.payload.get("category", "")
+                category_item = next((item for item in grouped if str(item.get("category")) == category_name), None)
+                total_roles = len((category_item or {}).get("roles", []))
+                new_pos = 0 if value == "start" else total_roles
+                ok = RoleManagementService.move_role(role_name, category_name, new_pos)
+                _PENDING_ACTIONS.pop(callback.from_user.id, None)
+                await callback.answer("Позиция роли обновлена" if ok else "Не удалось обновить позицию роли", show_alert=not ok)
+                await callback.message.edit_text(_render_actions_text(), parse_mode="HTML", reply_markup=_build_actions_keyboard(owner_id))
+                return
 
         if action == "category":
             page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
@@ -723,9 +978,13 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                 role_info = RoleManagementService.get_role(args[1])
                 category = role_info.get("category_name") if role_info else None
                 ok = RoleManagementService.assign_user_role("telegram", args[0], args[1], category=category)
+                if ok:
+                    await _sync_linked_discord_role(args[0], args[1], revoke=False)
                 await message.answer("✅ Роль выдана в БД." if ok else "❌ Не удалось выдать роль (смотри логи).")
             else:
                 ok = RoleManagementService.revoke_user_role("telegram", args[0], args[1])
+                if ok:
+                    await _sync_linked_discord_role(args[0], args[1], revoke=True)
                 await message.answer("✅ Роль снята в БД." if ok else "❌ Не удалось снять роль (смотри логи).")
         else:
             logger.warning("roles_admin pending unknown operation user_id=%s operation=%s", message.from_user.id, op)

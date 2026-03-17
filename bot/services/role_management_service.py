@@ -236,3 +236,52 @@ class RoleManagementService:
         except Exception:
             logger.exception("get_role failed role_name=%s", role_key)
         return None
+
+    @staticmethod
+    def sync_discord_guild_roles(guild_roles: list[dict[str, Any]]) -> dict[str, int]:
+        if not db.supabase:
+            return {"upserted": 0, "removed": 0}
+
+        auto_category = "Discord сервер (auto)"
+        upserted = 0
+        removed = 0
+        active_ids: set[str] = set()
+        try:
+            db.supabase.table("role_categories").upsert({"name": auto_category, "position": 9999}).execute()
+            for role in guild_roles:
+                role_id = str(role.get("id") or "").strip()
+                role_name = str(role.get("name") or "").strip()
+                if not role_id or not role_name:
+                    continue
+                active_ids.add(role_id)
+                payload = {
+                    "name": role_name,
+                    "category_name": auto_category,
+                    "position": int(role.get("position") or 0),
+                    "is_discord_managed": True,
+                    "discord_role_id": role_id,
+                    "discord_role_name": role_name,
+                }
+                db.supabase.table("roles").upsert(payload, on_conflict="name").execute()
+                upserted += 1
+
+            existing_resp = (
+                db.supabase.table("roles")
+                .select("name,discord_role_id,category_name")
+                .eq("category_name", auto_category)
+                .eq("is_discord_managed", True)
+                .execute()
+            )
+            for row in existing_resp.data or []:
+                role_id = str(row.get("discord_role_id") or "").strip()
+                role_name = str(row.get("name") or "").strip()
+                if role_id and role_id not in active_ids and role_name:
+                    db.supabase.table("roles").delete().eq("name", role_name).execute()
+                    db.supabase.table("account_role_assignments").delete().eq("role_name", role_name).execute()
+                    removed += 1
+
+            logger.info("sync_discord_guild_roles completed upserted=%s removed=%s", upserted, removed)
+            return {"upserted": upserted, "removed": removed}
+        except Exception:
+            logger.exception("sync_discord_guild_roles failed")
+            return {"upserted": upserted, "removed": removed}

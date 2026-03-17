@@ -242,3 +242,26 @@ async def rolesadmin_user_revoke(ctx: commands.Context, member: discord.Member, 
                 return
 
     await send_temp(ctx, f"✅ Роль **{role_name}** снята у {member.mention}.")
+
+
+@rolesadmin.command(name="sync_discord_roles", description="Синхронизировать роли сервера Discord в каталог")
+async def rolesadmin_sync_discord_roles(ctx: commands.Context):
+    if not await _ensure_roles_admin(ctx):
+        return
+    if not ctx.guild:
+        await send_temp(ctx, "❌ Команда доступна только на сервере.")
+        return
+    try:
+        guild_roles = [
+            {"id": str(role.id), "name": role.name, "position": role.position}
+            for role in ctx.guild.roles
+            if not role.is_default()
+        ]
+        result = RoleManagementService.sync_discord_guild_roles(guild_roles)
+        await send_temp(
+            ctx,
+            f"✅ Синхронизация ролей завершена. Обновлено: {result.get('upserted', 0)}, удалено устаревших: {result.get('removed', 0)}.",
+        )
+    except Exception:
+        logger.exception("rolesadmin sync_discord_roles failed guild_id=%s actor_id=%s", ctx.guild.id if ctx.guild else None, ctx.author.id)
+        await send_temp(ctx, "❌ Не удалось синхронизировать роли Discord (смотри логи).")
