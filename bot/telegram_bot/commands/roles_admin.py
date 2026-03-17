@@ -637,6 +637,16 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 await callback.answer()
                 return
             if operation in {"role_move", "role_order", "role_delete"}:
+                flattened_roles = _flatten_roles(grouped)
+                if not flattened_roles:
+                    logger.error(
+                        "roles_admin start=%s has no roles to pick actor_id=%s grouped_categories=%s",
+                        operation,
+                        callback.from_user.id,
+                        len(grouped),
+                    )
+                    await callback.answer("В каталоге ролей пока нет ни одной роли", show_alert=True)
+                    return
                 await _safe_edit_message_text(callback, 
                     "Выберите роль:",
                     reply_markup=_build_pick_role_keyboard(grouped, owner_id, operation, 0),

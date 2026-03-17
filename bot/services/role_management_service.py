@@ -10,6 +10,29 @@ logger = logging.getLogger(__name__)
 
 class RoleManagementService:
     @staticmethod
+    def _load_roles_rows() -> list[dict[str, Any]]:
+        """Read role rows with backward-compatible column fallback."""
+        if not db.supabase:
+            return []
+
+        try:
+            response = (
+                db.supabase.table("roles")
+                .select("name,category_name,position,is_discord_managed,discord_role_id")
+                .execute()
+            )
+            return response.data or []
+        except Exception:
+            logger.exception("roles query with discord columns failed, fallback to base columns")
+
+        try:
+            response = db.supabase.table("roles").select("name,category_name,position").execute()
+            return response.data or []
+        except Exception:
+            logger.exception("roles query fallback failed")
+            return []
+
+    @staticmethod
     def _normalized_category(name: str | None) -> str:
         value = str(name or "").strip()
         return value or "Без категории"
@@ -22,11 +45,7 @@ class RoleManagementService:
 
         try:
             categories_resp = db.supabase.table("role_categories").select("name,position").execute()
-            roles_resp = (
-                db.supabase.table("roles")
-                .select("name,category_name,position,is_discord_managed,discord_role_id")
-                .execute()
-            )
+            roles_rows = RoleManagementService._load_roles_rows()
         except Exception:
             logger.exception("list_roles_grouped failed")
             return []
@@ -37,7 +56,7 @@ class RoleManagementService:
             category_positions[name] = int(row.get("position") or 0)
 
         grouped: dict[str, list[dict[str, Any]]] = {}
-        for row in roles_resp.data or []:
+        for row in roles_rows:
             role_name = str(row.get("name") or "").strip()
             if not role_name:
                 continue
