@@ -85,6 +85,53 @@ async def _sync_linked_discord_role(provider_user_id: str, role_name: str, *, re
         logger.exception("telegram roles_admin discord sync crashed target_telegram_id=%s role=%s revoke=%s", provider_user_id, role_name, revoke)
 
 
+async def _sync_discord_roles_catalog() -> None:
+    """Sync live Discord guild roles into local catalog for Telegram role operations."""
+    try:
+        from bot.commands.base import bot as discord_bot
+
+        guilds = list(getattr(discord_bot, "guilds", []) or [])
+        if not guilds:
+            logger.warning("telegram roles_admin discord catalog sync skipped: no guilds attached")
+            return
+
+        guild_roles: list[dict[str, str | int]] = []
+        for guild in guilds:
+            try:
+                guild_roles.extend(
+                    {
+                        "id": str(role.id),
+                        "name": role.name,
+                        "position": int(role.position),
+                    }
+                    for role in guild.roles
+                    if not role.is_default()
+                )
+            except Exception:
+                logger.exception(
+                    "telegram roles_admin discord catalog sync failed to read guild roles guild_id=%s",
+                    getattr(guild, "id", None),
+                )
+
+        if not guild_roles:
+            logger.warning(
+                "telegram roles_admin discord catalog sync has no roles guild_count=%s",
+                len(guilds),
+            )
+            return
+
+        result = RoleManagementService.sync_discord_guild_roles(guild_roles)
+        logger.info(
+            "telegram roles_admin discord catalog sync completed guild_count=%s roles=%s upserted=%s removed=%s",
+            len(guilds),
+            len(guild_roles),
+            result.get("upserted", 0),
+            result.get("removed", 0),
+        )
+    except Exception:
+        logger.exception("telegram roles_admin discord catalog sync crashed")
+
+
 
 def _parse_target_arg(message: Message) -> int | None:
     if message.reply_to_message and message.reply_to_message.from_user and not message.reply_to_message.from_user.is_bot:
@@ -443,6 +490,8 @@ async def roles_admin_command(message: Message) -> None:
         if not await _ensure_roles_admin(message):
             return
 
+        await _sync_discord_roles_catalog()
+
         text = (message.text or "").strip()
         parts = text.split()
         if len(parts) < 2:
@@ -598,6 +647,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             return
 
         action = parts[2]
+        await _sync_discord_roles_catalog()
         grouped = RoleManagementService.list_roles_grouped() or []
 
         if action == "help":
