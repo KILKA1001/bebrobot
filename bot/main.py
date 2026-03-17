@@ -94,6 +94,18 @@ def _reset_discord_http_client_state(reason: str) -> None:
         session = getattr(http_client, "_HTTPClient__session", None)
         session_closed = bool(session and getattr(session, "closed", False))
 
+        # clear() only сбрасывает ссылки в discord.py и не всегда закрывает
+        # aiohttp-сессию после раннего падения login/start, из-за чего в логах
+        # появляется "Unclosed client session". Закрываем её явно.
+        if session and not session_closed:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                with contextlib.suppress(Exception):
+                    asyncio.run(session.close())
+            else:
+                loop.create_task(session.close())
+
         with contextlib.suppress(Exception):
             http_client.clear()
 
@@ -565,6 +577,36 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
         retry_delay = 5.0
         max_retry_delay = float(os.getenv("BOTH_RUNTIME_MAX_RETRY_DELAY", "300"))
 
+        def _normalize_retry_after(raw: float) -> float:
+            if raw <= 0:
+                return 1.0
+            return max(1.0, min(float(raw), max_retry_delay))
+
+        def _parse_retry_after(exc: discord.HTTPException, default: float) -> float:
+            response = getattr(exc, "response", None)
+            if response is not None:
+                retry = response.headers.get("Retry-After") or response.headers.get("retry-after")
+                if retry:
+                    retry = retry.strip()
+                    try:
+                        return _normalize_retry_after(float(retry))
+                    except ValueError:
+                        pass
+
+            match = re.search(
+                r"retry(?:_|-|\s)after[:]?\s*(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|sec|seconds?)?",
+                exc.text or "",
+                re.I,
+            )
+            if match:
+                parsed_retry = float(match.group(1))
+                unit = (match.group(2) or "").lower()
+                if unit.startswith("ms"):
+                    parsed_retry /= 1000
+                return _normalize_retry_after(parsed_retry)
+
+            return _normalize_retry_after(default)
+
         while True:
             try:
                 logging.info("discord runtime starting (both mode)")
@@ -578,6 +620,8 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
                 raise
             except discord.HTTPException as exc:
                 if exc.status in {429, 500, 502, 503, 504}:
+                    if exc.status == 429:
+                        retry_delay = _parse_retry_after(exc, retry_delay)
                     logging.exception(
                         "discord runtime transient HTTP error in both mode (status=%s); retry in %.1fs",
                         exc.status,
