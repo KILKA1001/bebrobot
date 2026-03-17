@@ -12,7 +12,7 @@ from bot.systems.linking_logic import (
 from bot.utils import send_temp
 
 logger = logging.getLogger(__name__)
-MAX_ROLE_PICKER_BUTTONS = 10
+MAX_ROLE_PICKER_PAGE_SIZE = 8
 
 
 def _is_private_context(ctx) -> bool:
@@ -66,13 +66,14 @@ class ProfileEditModal(discord.ui.Modal):
 
 
 class VisibleRoleToggleButton(discord.ui.Button):
-    def __init__(self, role_name: str, selected: bool, index: int):
+    def __init__(self, role_name: str, category_name: str, selected: bool, index: int):
         super().__init__(
             label=(f"✅ {role_name}" if selected else role_name)[:80],
             style=discord.ButtonStyle.success if selected else discord.ButtonStyle.secondary,
             row=index // 2,
         )
         self.role_name = role_name
+        self.category_name = category_name
 
     async def callback(self, interaction: discord.Interaction):
         view = self.view
@@ -83,40 +84,58 @@ class VisibleRoleToggleButton(discord.ui.Button):
 
 
 class VisibleRolesPickerView(discord.ui.View):
-    def __init__(self, user_id: int, role_names: list[str], selected_roles: list[str]):
+    def __init__(self, user_id: int, role_catalog: list[dict[str, str]], selected_roles: list[str]):
         super().__init__(timeout=300)
         self.user_id = user_id
-        deduped_roles: list[str] = []
-        for role in role_names:
-            role_name = str(role).strip()
-            if role_name and role_name not in deduped_roles:
-                deduped_roles.append(role_name)
-        self.role_names = deduped_roles[:MAX_ROLE_PICKER_BUTTONS]
-        self.selected_roles = [role for role in selected_roles if role in self.role_names][: AccountsService.MAX_VISIBLE_PROFILE_ROLES]
+        self.role_catalog = [item for item in role_catalog if str(item.get("role") or "").strip()]
+        self.page = 0
+        allowed_roles = {str(item.get("role") or "").strip() for item in self.role_catalog}
+        self.selected_roles = [
+            role_name for role_name in selected_roles if role_name in allowed_roles
+        ][: AccountsService.MAX_VISIBLE_PROFILE_ROLES]
         self._rebuild_buttons()
+
+    def _get_page_items(self) -> tuple[int, int, list[dict[str, str]]]:
+        total_pages = max((len(self.role_catalog) - 1) // MAX_ROLE_PICKER_PAGE_SIZE + 1, 1)
+        self.page = min(max(self.page, 0), total_pages - 1)
+        start = self.page * MAX_ROLE_PICKER_PAGE_SIZE
+        return self.page, total_pages, self.role_catalog[start : start + MAX_ROLE_PICKER_PAGE_SIZE]
+
+    def _content_text(self) -> str:
+        page, total_pages, _ = self._get_page_items()
+        selected_text = ", ".join(self.selected_roles) if self.selected_roles else "—"
+        return (
+            "🏅 Выбор отображаемых ролей\n"
+            "Роли отсортированы по категориям. Листайте страницы и выбирайте до 3 ролей.\n"
+            f"Страница: {page + 1}/{total_pages}\n"
+            f"Выбрано ({len(self.selected_roles)}/{AccountsService.MAX_VISIBLE_PROFILE_ROLES}): {selected_text}"
+        )
+
 
     def _rebuild_buttons(self):
         self.clear_items()
-        for idx, role_name in enumerate(self.role_names):
-            self.add_item(VisibleRoleToggleButton(role_name, role_name in self.selected_roles, idx))
-        self.add_item(
-            discord.ui.Button(
-                label="💾 Сохранить",
-                style=discord.ButtonStyle.primary,
-                custom_id="visible_roles_save",
-                row=4,
-            )
-        )
-        self.children[-1].callback = self._save_callback
-        self.add_item(
-            discord.ui.Button(
-                label="🧹 Очистить",
-                style=discord.ButtonStyle.danger,
-                custom_id="visible_roles_clear",
-                row=4,
-            )
-        )
-        self.children[-1].callback = self._clear_callback
+        page, total_pages, page_items = self._get_page_items()
+        for idx, item in enumerate(page_items):
+            role_name = str(item.get("role") or "").strip()
+            category_name = str(item.get("category") or "Без категории").strip() or "Без категории"
+            self.add_item(VisibleRoleToggleButton(role_name, category_name, role_name in self.selected_roles, idx))
+
+        if page > 0:
+            prev_button = discord.ui.Button(label="⬅️", style=discord.ButtonStyle.secondary, custom_id="visible_roles_prev", row=4)
+            prev_button.callback = self._prev_callback
+            self.add_item(prev_button)
+
+        if page + 1 < total_pages:
+            next_button = discord.ui.Button(label="➡️", style=discord.ButtonStyle.secondary, custom_id="visible_roles_next", row=4)
+            next_button.callback = self._next_callback
+            self.add_item(next_button)
+
+        save_button = discord.ui.Button(label="💾 Сохранить", style=discord.ButtonStyle.primary, custom_id="visible_roles_save", row=4)
+        save_button.callback = self._save_callback
+        self.add_item(save_button)
+        clear_button = discord.ui.Button(label="🧹 Очистить", style=discord.ButtonStyle.danger, custom_id="visible_roles_clear", row=4)
+        clear_button.callback = self._clear_callback
+        self.add_item(clear_button)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
@@ -138,17 +157,20 @@ class VisibleRolesPickerView(discord.ui.View):
                 self.selected_roles.append(role_name)
 
             self._rebuild_buttons()
-            selected_text = ", ".join(self.selected_roles) if self.selected_roles else "—"
-            await interaction.response.edit_message(
-                content=(
-                    "🏅 Выбор отображаемых ролей\n"
-                    f"Выбрано ({len(self.selected_roles)}/{AccountsService.MAX_VISIBLE_PROFILE_ROLES}): {selected_text}"
-                ),
-                view=self,
-            )
+            await interaction.response.edit_message(content=self._content_text(), view=self)
         except Exception:
             logger.exception("discord visible role toggle failed user_id=%s role=%s", interaction.user.id, role_name)
             await interaction.response.send_message("❌ Не удалось переключить роль.", ephemeral=True)
+
+    async def _prev_callback(self, interaction: discord.Interaction):
+        self.page -= 1
+        self._rebuild_buttons()
+        await interaction.response.edit_message(content=self._content_text(), view=self)
+
+    async def _next_callback(self, interaction: discord.Interaction):
+        self.page += 1
+        self._rebuild_buttons()
+        await interaction.response.edit_message(content=self._content_text(), view=self)
 
     async def _save_callback(self, interaction: discord.Interaction):
         try:
@@ -164,13 +186,7 @@ class VisibleRolesPickerView(discord.ui.View):
         try:
             self.selected_roles = []
             self._rebuild_buttons()
-            await interaction.response.edit_message(
-                content=(
-                    "🏅 Выбор отображаемых ролей\n"
-                    f"Выбрано (0/{AccountsService.MAX_VISIBLE_PROFILE_ROLES}): —"
-                ),
-                view=self,
-            )
+            await interaction.response.edit_message(content=self._content_text(), view=self)
         except Exception:
             logger.exception("discord visible roles clear failed user_id=%s", interaction.user.id)
             await interaction.response.send_message("❌ Не удалось очистить выбор.", ephemeral=True)
@@ -213,27 +229,30 @@ class ProfileEditView(discord.ui.View):
         try:
             display_name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "name", None)
             profile = AccountsService.get_profile("discord", str(interaction.user.id), display_name=display_name) or {}
-            role_names = [
-                str(item.get("name") or "").strip()
-                for item in profile.get("roles", [])
-                if str(item.get("name") or "").strip()
-            ]
+            roles_by_category = profile.get("roles_by_category") or {}
+            role_catalog: list[dict[str, str]] = []
+            for category_name in sorted(roles_by_category.keys(), key=lambda value: str(value).lower()):
+                role_names = sorted(
+                    {
+                        str(role_name).strip()
+                        for role_name in (roles_by_category.get(category_name) or [])
+                        if str(role_name).strip()
+                    },
+                    key=lambda value: value.lower(),
+                )
+                for role_name in role_names:
+                    role_catalog.append({"category": str(category_name).strip() or "Без категории", "role": role_name})
             visible_roles = [str(name).strip() for name in profile.get("visible_roles", []) if str(name).strip()]
-            if not role_names:
+            if not role_catalog:
                 await interaction.response.send_message(
                     "❌ Нет доступных ролей для выбора. Проверьте /profile_roles.",
                     ephemeral=True,
                 )
                 return
 
-            view = VisibleRolesPickerView(interaction.user.id, role_names, visible_roles)
-            selected_text = ", ".join(view.selected_roles) if view.selected_roles else "—"
+            view = VisibleRolesPickerView(interaction.user.id, role_catalog, visible_roles)
             await interaction.response.send_message(
-                (
-                    "🏅 Выбор отображаемых ролей\n"
-                    "Нажимайте кнопки ролей для выбора (до 3), затем нажмите «Сохранить».\n"
-                    f"Выбрано ({len(view.selected_roles)}/{AccountsService.MAX_VISIBLE_PROFILE_ROLES}): {selected_text}"
-                ),
+                view._content_text(),
                 view=view,
                 ephemeral=True,
             )
