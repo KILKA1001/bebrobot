@@ -63,6 +63,7 @@ active_timers = {}
 tasks_started = False
 startup_tasks_started = False
 commands_synced = False
+presence_initialized = False
 telegram_runtime_started = False
 telegram_runtime_guard = asyncio.Lock()
 
@@ -139,6 +140,35 @@ def configure_logging() -> None:
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
 
+def is_cloudflare_rate_limited_http_exception(exc: discord.HTTPException) -> bool:
+    """Detect Cloudflare IP-level bans (1015) returned via Discord edge."""
+    if getattr(exc, "status", None) != 403:
+        return False
+
+    error_text = (getattr(exc, "text", "") or "").lower()
+    if "cloudflare" in error_text and "1015" in error_text:
+        return True
+    if "access denied" in error_text and "rate limited" in error_text:
+        return True
+
+    response = getattr(exc, "response", None)
+    if response is not None:
+        server = (response.headers.get("server") or "").lower()
+        if "cloudflare" in server and "rate limited" in error_text:
+            return True
+
+    return False
+
+
+def is_transient_rate_limit_error(exc: Exception) -> bool:
+    """Identify retryable Discord startup/runtime errors related to rate limiting."""
+    if isinstance(exc, discord.HTTPException):
+        return exc.status == 429 or is_cloudflare_rate_limited_http_exception(exc)
+
+    error_text = str(exc).lower()
+    return "429" in error_text or "rate limit" in error_text or "cloudflare" in error_text
+
+
 async def send_greetings(channel, user_list):
     for user_id in user_list:
         await safe_send(channel, f"Привет, <@{user_id}>!")
@@ -155,7 +185,7 @@ async def on_ready():
     print(f'🟢 Бот {bot.user} запущен!')
     print(f'Серверов: {len(bot.guilds)}')
 
-    global tasks_started, startup_tasks_started, commands_synced
+    global tasks_started, startup_tasks_started, commands_synced, presence_initialized
     if not tasks_started:
         tasks_started = True
 
@@ -170,11 +200,13 @@ async def on_ready():
         asyncio.create_task(profile_titles_sync_loop(bot))
         asyncio.create_task(external_roles_sync_loop(bot))
 
-    activity = discord.Activity(
-        name="Привет! Напиши команду /helpy чтобы увидеть все команды 🧠",
-        type=discord.ActivityType.listening
-    )
-    await bot.change_presence(activity=activity)
+    if not presence_initialized:
+        activity = discord.Activity(
+            name="Привет! Напиши команду /helpy чтобы увидеть все команды 🧠",
+            type=discord.ActivityType.listening
+        )
+        await bot.change_presence(activity=activity)
+        presence_initialized = True
 
     if not commands_synced:
         try:
@@ -555,7 +587,19 @@ def run_discord_main():
                 retry_after = get_retry_after(e, retry_delay)
                 # Для входа лучше опираться на Retry-After от Discord,
                 # чтобы не раздувать задержку экспоненциально между перезапусками.
+                logging.warning(
+                    "Discord login hit HTTP 429; waiting %.1fs before retry",
+                    retry_after,
+                )
                 retry_delay = wait_before_retry(retry_after)
+                continue
+            if is_cloudflare_rate_limited_http_exception(e):
+                retry_after = wait_before_retry(retry_delay)
+                logging.warning(
+                    "Discord login blocked by Cloudflare 1015/IP-level rate limit; retry in %.1fs",
+                    retry_after,
+                )
+                retry_delay = retry_after
                 continue
 
             raise
@@ -565,8 +609,12 @@ def run_discord_main():
                 _reset_discord_http_client_state("start_bot.session_closed")
                 retry_delay = wait_before_retry(retry_delay)
                 continue
-            if "429" in error_text or "rate limit" in error_text.lower():
+            if is_transient_rate_limit_error(exc):
                 _reset_discord_http_client_state("start_bot.rate_limited")
+                logging.exception(
+                    "Discord login transient rate-limit failure; retry in %.1fs",
+                    retry_delay,
+                )
                 retry_delay = wait_before_retry(retry_delay)
                 continue
             logging.exception("❌ Ошибка при запуске Discord-бота")
@@ -619,9 +667,14 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
                 logging.info("discord runtime cancelled")
                 raise
             except discord.HTTPException as exc:
-                if exc.status in {429, 500, 502, 503, 504}:
+                if exc.status in {429, 500, 502, 503, 504} or is_cloudflare_rate_limited_http_exception(exc):
                     if exc.status == 429:
                         retry_delay = _parse_retry_after(exc, retry_delay)
+                    elif is_cloudflare_rate_limited_http_exception(exc):
+                        logging.exception(
+                            "discord runtime Cloudflare 1015/IP-level rate limit in both mode; retry in %.1fs",
+                            retry_delay,
+                        )
                     logging.exception(
                         "discord runtime transient HTTP error in both mode (status=%s); retry in %.1fs",
                         exc.status,
@@ -637,7 +690,7 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
                 )
             except Exception as exc:
                 error_text = str(exc)
-                if "Session is closed" in error_text or "429" in error_text or "rate limit" in error_text.lower():
+                if "Session is closed" in error_text or is_transient_rate_limit_error(exc):
                     logging.exception("discord runtime transient error in both mode; retry in %.1fs", retry_delay)
                 else:
                     logging.exception("discord runtime fatal error in both mode")
