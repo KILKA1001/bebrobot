@@ -261,20 +261,22 @@ async def run_polling(token: str) -> None:
         owner_line.strip(),
     )
 
-    bot = Bot(token=token)
-
-    global _DISPATCHER
-    if _DISPATCHER is None:
-        _DISPATCHER = Dispatcher()
-        try:
-            _DISPATCHER.include_router(get_commands_router())
-        except Exception:
-            logger.exception("telegram dispatcher router attach failed")
-            raise
-
-    dp = _DISPATCHER
+    bot: Bot | None = None
 
     try:
+        bot = Bot(token=token)
+
+        global _DISPATCHER
+        if _DISPATCHER is None:
+            _DISPATCHER = Dispatcher()
+            try:
+                _DISPATCHER.include_router(get_commands_router())
+            except Exception:
+                logger.exception("telegram dispatcher router attach failed")
+                raise
+
+        dp = _DISPATCHER
+
         me = await bot.get_me()
         logger.info("telegram bot started: @%s (id=%s)", me.username, me.id)
 
@@ -310,7 +312,8 @@ async def run_polling(token: str) -> None:
                 "telegram polling conflict detected while running dispatcher polling"
             ) from exc
     finally:
-        await bot.session.close()
+        if bot is not None:
+            await bot.session.close()
         with contextlib.suppress(OSError):
             os.ftruncate(lock_fd, 0)
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
