@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from bot.services.role_management_service import (
     DELETE_ROLE_REASON_DISCORD_MANAGED,
+    DELETE_ROLE_REASON_NOT_FOUND,
     RoleManagementService,
 )
 
@@ -174,6 +175,18 @@ class RoleManagementServiceTests(unittest.TestCase):
             self.fake_db.tables["account_role_assignments"],
             [{"account_id": "acc-2", "role_name": "Other", "source": "custom"}],
         )
+
+    def test_delete_role_returns_not_found_without_false_success(self):
+        with self.assertLogs("bot.services.role_management_service", level="WARNING") as captured:
+            result = RoleManagementService.delete_role(
+                "Missing",
+                actor_id="777",
+                telegram_user_id="888",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], DELETE_ROLE_REASON_NOT_FOUND)
+        self.assertTrue(any("delete_role skipped role missing" in message for message in captured.output), captured.output)
 
     def test_list_roles_grouped_auto_upserts_external_bindings_into_catalog(self):
         self.fake_db.tables["external_role_bindings"] = [

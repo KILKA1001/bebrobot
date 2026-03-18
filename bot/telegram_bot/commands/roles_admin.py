@@ -10,7 +10,10 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from bot.data import db
 from bot.services import AccountsService, AuthorityService, RoleManagementService
-from bot.services.role_management_service import DELETE_ROLE_REASON_DISCORD_MANAGED
+from bot.services.role_management_service import (
+    DELETE_ROLE_REASON_DISCORD_MANAGED,
+    DELETE_ROLE_REASON_NOT_FOUND,
+)
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -32,10 +35,10 @@ _PENDING_ACTIONS: dict[int, PendingRolesAdminAction] = {}
 
 def _role_catalog_note() -> str:
     return (
-        "Для <code>role_move</code> и <code>role_order</code> доступны только роли из канонического каталога "
-        "<code>roles</code>. Перед показом панели Telegram бот запускает синхронизацию Discord-ролей, а "
-        "ручная синхронизация доступна через <code>/rolesadmin sync_discord_roles</code> в Discord. "
-        "Если роль не видна, значит она ещё не попала в каталог или синхронизация упала — проверь консольные логи."
+        "Команды списка и изменения ролей стараются автоматически подтягивать актуальные Discord-роли в "
+        "канонический каталог <code>roles</code>. Внешние Discord-роли можно <code>move/order</code>, "
+        "но нельзя <code>delete</code>. Если роль не видна, обнови экран, при необходимости запусти "
+        "<code>/rolesadmin sync_discord_roles</code> в Discord и проверь консольные логи."
     )
 
 
@@ -50,6 +53,11 @@ def _delete_role_denied_message() -> str:
 def _delete_role_result_message(result: dict[str, object]) -> str:
     if result.get("reason") == DELETE_ROLE_REASON_DISCORD_MANAGED:
         return _delete_role_denied_message()
+    if result.get("reason") == DELETE_ROLE_REASON_NOT_FOUND:
+        return (
+            "❌ Роль не найдена в каноническом каталоге `roles`.\n"
+            "Обнови экран или дождись автосинхронизации Discord-ролей, затем попробуй ещё раз."
+        )
     return "❌ Не удалось удалить роль (смотри логи)."
 
 
@@ -62,9 +70,9 @@ def _canonical_role_missing_message() -> str:
 
 def _telegram_user_lookup_hint() -> str:
     return (
-        "В ЛС используй @username или username. "
-        "Для Telegram можно указать tg:@username, для Discord — ds:username. "
-        "В группе удобнее всего reply. ID оставь как резерв."
+        "Порядок такой: в Telegram ЛС используй @username / username, в Telegram группе — reply, "
+        "в Discord — mention / username / display_name. Для явного провайдера можно указать "
+        "tg:@username или ds:username. ID оставь только как резерв."
     )
 
 
@@ -223,6 +231,14 @@ def _format_telegram_lookup_candidate(candidate: dict[str, Any]) -> str:
     return " | ".join(parts) or "неизвестный пользователь"
 
 
+def _user_not_found_message() -> str:
+    return (
+        "❌ Пользователь не найден в локальном реестре. "
+        "Пусть он хотя бы раз взаимодействует с ботом: /register, /link, /profile или просто сообщение боту. "
+        + _telegram_user_lookup_hint()
+    )
+
+
 def _resolve_telegram_target(
     *,
     actor_id: int | None,
@@ -248,14 +264,18 @@ def _resolve_telegram_target(
     token = str(raw_target or "").strip()
     if not token:
         logger.warning(
-            "roles_admin user lookup failed provider=telegram actor_id=%s telegram_user_id=%s operation=%s source=%s username=%s candidates=%s reason=%s",
+            "roles_admin user lookup failed actor_id=%s telegram_user_id=%s operation=%s source=%s lookup_value=%s role_name=%s category=%s provider=%s provider_user_id=%s reason=%s candidates=%s",
             actor_id,
             actor_id,
             operation,
             source,
             token,
-            0,
+            None,
+            None,
+            "telegram",
+            None,
             "empty_target",
+            0,
         )
         return None
 
@@ -285,20 +305,27 @@ def _resolve_telegram_target(
     location = "telegram_group" if source == "group" else "telegram_dm"
     if lookup.get("status") == "multiple":
         logger.warning(
-            "roles_admin user lookup ambiguous actor_id=%s location=%s operation=%s source=%s lookup_value=%s candidates=%s provider=%s reason=%s",
+            "roles_admin user lookup ambiguous actor_id=%s location=%s operation=%s source=%s lookup_value=%s role_name=%s category=%s provider=%s provider_user_id=%s reason=%s candidates=%s",
             actor_id,
             location,
             operation,
             source,
             token,
-            len(candidates),
+            None,
+            None,
             "telegram",
+            None,
             "multiple_matches",
+            len(candidates),
         )
         return {
             "error": "multiple",
-            "message": "❌ Найдено несколько пользователей. Уточни provider или username: "
-            + "; ".join(_format_telegram_lookup_candidate(candidate) for candidate in candidates[:5]),
+            "message": (
+                "❌ Найдено несколько пользователей. Уточни username / provider / reply. Кандидаты:\n"
+                + "\n".join(f"• {_format_telegram_lookup_candidate(candidate)}" for candidate in candidates[:5])
+                + "\n\n"
+                + _telegram_user_lookup_hint()
+            ),
         }
 
     if token.isdigit():
@@ -311,23 +338,22 @@ def _resolve_telegram_target(
         }
 
     logger.warning(
-        "roles_admin user lookup failed actor_id=%s location=%s operation=%s source=%s lookup_value=%s candidates=%s provider=%s reason=%s",
+        "roles_admin user lookup failed actor_id=%s location=%s operation=%s source=%s lookup_value=%s role_name=%s category=%s provider=%s provider_user_id=%s reason=%s candidates=%s",
         actor_id,
         location,
         operation,
         source,
         token,
-        len(candidates),
+        None,
+        None,
         "telegram",
+        None,
         str(lookup.get("reason") or "not_found"),
+        len(candidates),
     )
     return {
         "error": "not_found" if lookup.get("status") == "not_found" else "invalid_format",
-        "message": (
-            "❌ Пользователь не найден в локальном реестре. "
-            "Пусть он хотя бы один раз напишет боту или выполнит /register, /link, /profile. "
-            + _telegram_user_lookup_hint()
-        ),
+        "message": _user_not_found_message(),
     }
 
 
@@ -384,12 +410,12 @@ def _operation_hint(operation: str) -> str:
         "category_order": "Отправь: <code>Название категории | position</code>",
         "category_delete": "Отправь: <code>Название категории</code>",
         "role_create": "Отправь: <code>Название роли | Категория | discord_role_id(опц) | position(опц)</code>",
-        "role_move": "Отправь: <code>Название роли | Категория | position(опц)</code>",
-        "role_order": "Отправь: <code>Название роли | Категория | position</code>",
-        "role_delete": "Отправь: <code>Название роли</code>",
-        "user_roles": "Отправь: <code>@username</code>, <code>username</code>, <code>tg:@username</code> или <code>ds:username</code>. В группе удобнее reply.",
-        "user_grant": "Отправь: <code>@username | Название роли</code> или reply + <code>Название роли</code>. Можно и <code>ds:username | Роль</code>.",
-        "user_revoke": "Отправь: <code>@username | Название роли</code> или reply + <code>Название роли</code>. Можно и <code>ds:username | Роль</code>.",
+        "role_move": "Отправь: <code>Название роли | Категория | position(опц)</code>. Внешнюю Discord-роль можно переместить.",
+        "role_order": "Отправь: <code>Название роли | Категория | position</code>. Внешнюю Discord-роль можно отсортировать.",
+        "role_delete": "Отправь: <code>Название роли</code>. Внешние Discord-роли удалить нельзя.",
+        "user_roles": "Отправь: <code>@username</code> / <code>username</code> / <code>tg:@username</code> / <code>ds:username</code>. В группе удобнее reply.",
+        "user_grant": "Отправь: <code>@username | Название роли</code> или reply + <code>Название роли</code>. Для Discord можно <code>ds:username | Роль</code>.",
+        "user_revoke": "Отправь: <code>@username | Название роли</code> или reply + <code>Название роли</code>. Для Discord можно <code>ds:username | Роль</code>.",
     }
     return hints.get(operation, "Неизвестная операция")
 
@@ -572,6 +598,8 @@ def _render_home_text() -> str:
         "Управление через <b>кнопки</b> в разделе <b>⚡ Действия кнопками</b>.\n"
         "Если кнопки не срабатывают, открой <b>🆘 Не работают кнопки?</b> — там резервные команды и примеры.\n"
         "\nНужны пояснения по функциям? Нажми кнопку <b>ℹ️ Что делает каждая функция</b>.\n\n"
+        "Как указывать пользователя: в ЛС — <code>@username</code> / <code>username</code>, в группе — reply. "
+        "Для Discord-аккаунта можно использовать <code>ds:username</code>. ID нужен только как резерв.\n\n"
         f"{_role_catalog_note()}"
     )
 
@@ -595,7 +623,8 @@ def _render_fallback_text() -> str:
         "<code>/roles_admin user_roles [reply|@username|username|tg:@username|ds:username|id]</code>\n"
         "<code>/roles_admin user_grant &lt;@username|ds:username&gt; &lt;role_name&gt;</code>\n"
         "<code>/roles_admin user_revoke &lt;@username|ds:username&gt; &lt;role_name&gt;</code>\n"
-        "В ЛС удобнее всего @username, в группе — reply. ID оставлен только как резерв для админов.\n\n"
+        "В ЛС удобнее всего @username / username, в группе — reply. Для Discord используй mention / username / display_name или <code>ds:username</code>. ID оставлен только как резерв для админов.\n"
+        "Если найдено несколько совпадений, бот покажет кандидатов с provider, username, display и matched_by.\n\n"
         f"{_role_catalog_note()}"
     )
 
@@ -618,8 +647,8 @@ def _render_help_text() -> str:
         "• <code>user_roles [reply|@username|username|tg:@username|ds:username|id]</code> — показать роли пользователя.\n"
         "• <code>user_grant &lt;@username|ds:username&gt; &lt;role_name&gt;</code> — выдать роль в БД.\n"
         "• <code>user_revoke &lt;@username|ds:username&gt; &lt;role_name&gt;</code> — снять роль в БД.\n"
-        "• В ЛС удобнее всего использовать <code>@username</code>, в группе — reply на сообщение пользователя.\n"
-        "• Если нужен Discord fallback, укажи <code>ds:username</code>; для Telegram можно явно написать <code>tg:@username</code>.\n"
+        "• Порядок ввода одинаковый: Telegram ЛС — <code>@username</code> / <code>username</code>, Telegram группа — reply, Discord — mention / username / display_name.\n"
+        "• Если нужен Discord fallback, укажи <code>ds:username</code>; для Telegram можно явно написать <code>tg:@username</code>; ID оставь как резерв.\n"
         "• Если найдено несколько совпадений, бот попросит уточнение, а не выберет первого молча.\n\n"
         "<b>Кнопки в панели</b>\n"
         "• 'Категории и роли' — просмотр списка и переход по категориям.\n"
@@ -875,7 +904,7 @@ async def roles_admin_command(message: Message) -> None:
                 source="fallback_text_command",
             )
             if not resolved:
-                await message.answer(f"❌ Укажи @username или сделай reply на сообщение пользователя. {_telegram_user_lookup_hint()}")
+                await message.answer(f"❌ Укажи пользователя по правилам поиска. {_telegram_user_lookup_hint()}")
                 return
             if resolved.get("error"):
                 await message.answer(str(resolved.get("message") or "❌ Не удалось найти пользователя."))
@@ -902,7 +931,7 @@ async def roles_admin_command(message: Message) -> None:
                 source="fallback_text_command",
             )
             if not resolved:
-                await message.answer(f"❌ Укажи @username или сделай reply на сообщение пользователя. {_telegram_user_lookup_hint()}")
+                await message.answer(f"❌ Укажи пользователя по правилам поиска. {_telegram_user_lookup_hint()}")
                 return
             if resolved.get("error"):
                 await message.answer(str(resolved.get("message") or "❌ Не удалось найти пользователя."))
@@ -1543,7 +1572,7 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                 source="button",
             )
             if not resolved:
-                await message.answer(f"❌ Формат: @username или reply на пользователя. {_telegram_user_lookup_hint()}")
+                await message.answer(f"❌ Формат: укажи пользователя по правилам поиска. {_telegram_user_lookup_hint()}")
                 return
             if resolved.get("error"):
                 await message.answer(str(resolved.get("message") or "❌ Не удалось найти пользователя."))
@@ -1561,7 +1590,7 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
             raw_target = args[0] if args else None
             role_name = args[1] if len(args) > 1 else (args[0] if reply_user and args else None)
             if not role_name:
-                await message.answer(f"❌ Формат: @username | Название роли. {_telegram_user_lookup_hint()}")
+                await message.answer(f"❌ Формат: пользователь | Название роли. {_telegram_user_lookup_hint()}")
                 return
             resolved = _resolve_telegram_target(
                 actor_id=message.from_user.id if message.from_user else None,
@@ -1571,7 +1600,7 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                 source="button",
             )
             if not resolved:
-                await message.answer(f"❌ Формат: @username | Название роли. {_telegram_user_lookup_hint()}")
+                await message.answer(f"❌ Формат: пользователь | Название роли. {_telegram_user_lookup_hint()}")
                 return
             if resolved.get("error"):
                 await message.answer(str(resolved.get("message") or "❌ Не удалось найти пользователя."))

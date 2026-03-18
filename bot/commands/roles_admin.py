@@ -7,7 +7,10 @@ from discord.ext import commands
 
 from bot.commands.base import bot
 from bot.services import AccountsService, AuthorityService, RoleManagementService
-from bot.services.role_management_service import DELETE_ROLE_REASON_DISCORD_MANAGED
+from bot.services.role_management_service import (
+    DELETE_ROLE_REASON_DISCORD_MANAGED,
+    DELETE_ROLE_REASON_NOT_FOUND,
+)
 from bot.utils import send_temp
 
 logger = logging.getLogger(__name__)
@@ -18,11 +21,24 @@ def _delete_role_denied_message() -> str:
     return "❌ Эту внешнюю Discord-роль нельзя удалить из каталога. Её можно только переместить или отсортировать."
 
 
+def _delete_role_not_found_message() -> str:
+    return "❌ Роль не найдена в каноническом каталоге `roles`. Обнови список или дождись автосинхронизации Discord-ролей."
+
+
+def _delete_role_result_message(result: dict[str, Any]) -> str:
+    if result.get("reason") == DELETE_ROLE_REASON_DISCORD_MANAGED:
+        return _delete_role_denied_message()
+    if result.get("reason") == DELETE_ROLE_REASON_NOT_FOUND:
+        return _delete_role_not_found_message()
+    return "❌ Не удалось удалить роль. Проверь синхронизацию каталога и логи."
+
+
 def _render_role_source_note() -> str:
     return (
-        "Для `role_move` и `role_order` доступны только роли из канонического каталога `roles`. "
-        "Перед открытием панели или ручной синхронизацией `/rolesadmin sync_discord_roles` Discord-роли "
-        "подтягиваются в каталог; если роль ещё не появилась, дождитесь синхронизации и проверьте логи."
+        "Команды `list`, `role_move` и `role_order` сначала пытаются автоматически подтянуть актуальные Discord-роли "
+        "в канонический каталог `roles`. Внешние Discord-роли можно перемещать и сортировать, но нельзя удалять. "
+        "Если автосинхронизация не успела или упала, обнови список, при необходимости запусти "
+        "`/rolesadmin sync_discord_roles` и проверь логи."
     )
 
 
@@ -32,9 +48,9 @@ def _canonical_role_missing_message() -> str:
 
 def _render_user_lookup_hint() -> str:
     return (
-        "Используй mention или username/display_name. "
-        "Если нужен явный провайдер, укажи `ds:username` или `tg:@username`. "
-        "ID используй только как резерв."
+        "Порядок поиска такой: Telegram ЛС — `@username` / `username`; Telegram группа — reply; "
+        "Discord — mention / username / display_name. Если нужен явный провайдер, укажи `ds:username` "
+        "или `tg:@username`. ID используй только как резерв."
     )
 
 
@@ -45,9 +61,9 @@ def _catalog_role_exists(role_name: str) -> bool:
     return any(item["role"] == role_key for item in RoleManagementService.list_roles_available_for_admin_reorder())
 
 
-async def _sync_ctx_discord_roles_catalog(ctx: commands.Context) -> None:
+async def _sync_ctx_discord_roles_catalog(ctx: commands.Context, *, operation: str) -> bool:
     if not ctx.guild:
-        return
+        return True
     try:
         guild_roles = [
             {"id": str(role.id), "name": role.name, "position": role.position, "guild_id": str(ctx.guild.id)}
@@ -56,19 +72,26 @@ async def _sync_ctx_discord_roles_catalog(ctx: commands.Context) -> None:
         ]
         result = RoleManagementService.sync_discord_guild_roles(guild_roles)
         logger.info(
-            "rolesadmin implicit discord catalog sync completed actor_id=%s guild_id=%s roles=%s upserted=%s removed=%s",
+            "rolesadmin implicit discord catalog sync completed actor_id=%s guild_id=%s operation=%s source=%s roles=%s upserted=%s removed=%s",
             ctx.author.id,
             ctx.guild.id,
+            operation,
+            "discord_hybrid",
             len(guild_roles),
             result.get("upserted", 0),
             result.get("removed", 0),
         )
+        return True
     except Exception:
         logger.exception(
-            "rolesadmin implicit discord catalog sync failed actor_id=%s guild_id=%s",
+            "rolesadmin implicit discord catalog sync failed actor_id=%s guild_id=%s operation=%s source=%s reason=%s",
             ctx.author.id,
             ctx.guild.id if ctx.guild else None,
+            operation,
+            "discord_hybrid",
+            "exception",
         )
+        return False
 
 
 def _match_discord_member_candidates(guild: discord.Guild | None, raw_target: str) -> list[discord.Member]:
@@ -102,7 +125,14 @@ def _match_discord_member_candidates(guild: discord.Guild | None, raw_target: st
 
 def _format_discord_candidate(member: discord.Member) -> str:
     global_name = getattr(member, "global_name", None)
-    pieces = [member.mention, f"display={member.display_name}", f"name={member.name}"]
+    pieces = [
+        "discord",
+        f"username=@{member.name}",
+        f"display={member.display_name}",
+        "via=guild_member",
+        f"id={member.id}",
+        member.mention,
+    ]
     if global_name:
         pieces.append(f"global={global_name}")
     return " | ".join(pieces)
@@ -167,7 +197,11 @@ async def _resolve_discord_target(ctx: commands.Context, raw_target: str, *, ope
             "guild_member_ambiguous",
         )
         formatted = "\n".join(f"• {_format_discord_candidate(item)}" for item in member_candidates[:5])
-        await send_temp(ctx, f"❌ Найдено несколько пользователей. Уточни через mention или более точный username:\n{formatted}")
+        await send_temp(
+            ctx,
+            "❌ Найдено несколько пользователей. Уточни через mention, username или display_name:\n"
+            f"{formatted}\n\n{_render_user_lookup_hint()}",
+        )
         return None
 
     if len(member_candidates) == 1:
@@ -206,7 +240,11 @@ async def _resolve_discord_target(ctx: commands.Context, raw_target: str, *, ope
             f"• {_format_identity_lookup_candidate(item)}"
             for item in identity_candidates[:5]
         )
-        await send_temp(ctx, f"❌ Найдено несколько пользователей. Уточни mention, provider или более точный username:\n{formatted}")
+        await send_temp(
+            ctx,
+            "❌ Найдено несколько пользователей. Уточни mention, provider или более точный username:\n"
+            f"{formatted}\n\n{_render_user_lookup_hint()}",
+        )
         return None
 
     if lookup.get("status") == "ok":
@@ -262,7 +300,7 @@ def _rolesadmin_help_embed() -> discord.Embed:
     embed.add_field(
         name="Роли",
         value=(
-            "`/rolesadmin list` — показать роли по категориям\n"
+            "`/rolesadmin list` — показать роли по категориям (с автосинхронизацией Discord-каталога)\n"
             "`/rolesadmin role_create <name> <category> [discord_role] [position]` — создать роль\n"
             "`/rolesadmin role_move <role_name> <category> [position]` — переместить роль\n"
             "`/rolesadmin role_order <role_name> <category> <position>` — изменить порядок роли\n"
@@ -277,7 +315,8 @@ def _rolesadmin_help_embed() -> discord.Embed:
             "`/rolesadmin user_roles <mention|username|display_name>` — посмотреть роли пользователя\n"
             "`/rolesadmin user_grant <mention|username|display_name> <role_name>` — выдать роль\n"
             "`/rolesadmin user_revoke <mention|username|display_name> <role_name>` — снять роль\n"
-            "Приоритет: mention/member, затем username/display_name, затем id. Можно уточнить через `ds:username` или `tg:@username`."
+            "Порядок подсказок: Telegram ЛС — `@username`/`username`, Telegram группа — reply, Discord — mention/username/display_name, id только как резерв.\n"
+            "Если найдено несколько совпадений, бот покажет кандидатов с provider, username, display и matched_by."
         ),
         inline=False,
     )
@@ -319,12 +358,19 @@ async def rolesadmin_list(ctx: commands.Context):
     if not await _ensure_roles_admin(ctx):
         return
 
+    sync_ok = await _sync_ctx_discord_roles_catalog(ctx, operation="list")
     grouped = RoleManagementService.list_roles_grouped()
     if not grouped:
         await send_temp(ctx, "📭 Список ролей пуст или БД недоступна.")
         return
 
     embed = discord.Embed(title="🧩 Роли по категориям", color=discord.Color.blurple())
+    if not sync_ok:
+        embed.description = (
+            "⚠️ Автосинхронизация Discord-каталога перед `/rolesadmin list` не удалась. "
+            "Ниже показан текущий локальный каталог, он может быть неактуален. "
+            "Попробуй ещё раз или запусти `/rolesadmin sync_discord_roles`."
+        )
     for item in grouped:
         category = item["category"]
         roles = item["roles"]
@@ -408,41 +454,48 @@ async def rolesadmin_role_delete(ctx: commands.Context, name: str):
     )
     if result["ok"]:
         await send_temp(ctx, f"✅ Роль **{name}** удалена.")
-    elif result["reason"] == DELETE_ROLE_REASON_DISCORD_MANAGED:
-        await send_temp(ctx, _delete_role_denied_message())
     else:
-        await send_temp(ctx, "❌ Не удалось удалить роль (смотри логи).")
+        await send_temp(ctx, _delete_role_result_message(result))
 
 
 @rolesadmin.command(name="role_move", description="Переместить роль в другую категорию")
 async def rolesadmin_role_move(ctx: commands.Context, role_name: str, category: str, position: int = 0):
     if not await _ensure_roles_admin(ctx):
         return
-    await _sync_ctx_discord_roles_catalog(ctx)
+    sync_ok = await _sync_ctx_discord_roles_catalog(ctx, operation="role_move")
     if not _catalog_role_exists(role_name):
         logger.warning(
-            "rolesadmin role_move denied role missing from canonical catalog actor_id=%s guild_id=%s role_name=%s category=%s operation=%s source=%s",
+            "rolesadmin role_move denied role missing from canonical catalog actor_id=%s guild_id=%s operation=%s source=%s role_name=%s category=%s provider=%s provider_user_id=%s reason=%s",
             ctx.author.id,
             ctx.guild.id if ctx.guild else None,
-            role_name,
-            category,
             "role_move",
             "discord_hybrid",
+            role_name,
+            category,
+            None,
+            None,
+            "missing_from_canonical_catalog",
         )
-        await send_temp(ctx, _canonical_role_missing_message())
+        message = _canonical_role_missing_message()
+        if not sync_ok:
+            message += " Автосинхронизация тоже не подтвердила каталог — попробуй ещё раз после `/rolesadmin sync_discord_roles`."
+        await send_temp(ctx, message)
         return
     if RoleManagementService.move_role(role_name, category, position):
         await send_temp(ctx, f"✅ Роль **{role_name}** перемещена в **{category}**.")
     else:
         logger.warning(
-            "rolesadmin role_move failed actor_id=%s guild_id=%s role_name=%s category=%s position=%s operation=%s source=%s",
+            "rolesadmin role_move failed actor_id=%s guild_id=%s operation=%s source=%s role_name=%s category=%s provider=%s provider_user_id=%s reason=%s position=%s",
             ctx.author.id,
             ctx.guild.id if ctx.guild else None,
-            role_name,
-            category,
-            position,
             "role_move",
             "discord_hybrid",
+            role_name,
+            category,
+            None,
+            None,
+            "move_role_returned_false_after_validation",
+            position,
         )
         await send_temp(ctx, "❌ Не удалось переместить роль. Проверь синхронизацию каталога и логи.")
 
@@ -451,31 +504,40 @@ async def rolesadmin_role_move(ctx: commands.Context, role_name: str, category: 
 async def rolesadmin_role_order(ctx: commands.Context, role_name: str, category: str, position: int):
     if not await _ensure_roles_admin(ctx):
         return
-    await _sync_ctx_discord_roles_catalog(ctx)
+    sync_ok = await _sync_ctx_discord_roles_catalog(ctx, operation="role_order")
     if not _catalog_role_exists(role_name):
         logger.warning(
-            "rolesadmin role_order denied role missing from canonical catalog actor_id=%s guild_id=%s role_name=%s category=%s operation=%s source=%s",
+            "rolesadmin role_order denied role missing from canonical catalog actor_id=%s guild_id=%s operation=%s source=%s role_name=%s category=%s provider=%s provider_user_id=%s reason=%s",
             ctx.author.id,
             ctx.guild.id if ctx.guild else None,
-            role_name,
-            category,
             "role_order",
             "discord_hybrid",
+            role_name,
+            category,
+            None,
+            None,
+            "missing_from_canonical_catalog",
         )
-        await send_temp(ctx, _canonical_role_missing_message())
+        message = _canonical_role_missing_message()
+        if not sync_ok:
+            message += " Автосинхронизация тоже не подтвердила каталог — попробуй ещё раз после `/rolesadmin sync_discord_roles`."
+        await send_temp(ctx, message)
         return
     if RoleManagementService.move_role(role_name, category, position):
         await send_temp(ctx, f"✅ Порядок роли **{role_name}** обновлён: категория **{category}**, позиция **{position}**.")
     else:
         logger.warning(
-            "rolesadmin role_order failed actor_id=%s guild_id=%s role_name=%s category=%s position=%s operation=%s source=%s",
+            "rolesadmin role_order failed actor_id=%s guild_id=%s operation=%s source=%s role_name=%s category=%s provider=%s provider_user_id=%s reason=%s position=%s",
             ctx.author.id,
             ctx.guild.id if ctx.guild else None,
-            role_name,
-            category,
-            position,
             "role_order",
             "discord_hybrid",
+            role_name,
+            category,
+            None,
+            None,
+            "move_role_returned_false_after_validation",
+            position,
         )
         await send_temp(ctx, "❌ Не удалось обновить порядок роли. Проверь синхронизацию каталога и логи.")
 
