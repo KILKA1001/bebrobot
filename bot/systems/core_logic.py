@@ -7,6 +7,11 @@ import traceback
 import logging
 
 from bot.data import db
+from bot.legacy_identity_logging import (
+    log_identity_resolve_error,
+    log_legacy_identity_path_detected,
+    log_legacy_schema_fallback,
+)
 from bot.services import AccountsService
 from bot.utils.roles_and_activities import ROLE_THRESHOLDS
 from bot.utils import (
@@ -20,10 +25,284 @@ from bot.utils import (
 
 active_timers = {}
 logger = logging.getLogger(__name__)
-  
+
+
+def _resolve_account_id_from_discord(discord_user_id: int, *, handler: str) -> str | None:
+    log_legacy_identity_path_detected(
+        logger,
+        module=__name__,
+        handler=handler,
+        field="discord_user_id",
+        action="resolve_account_id",
+        continue_execution=True,
+        provider="discord",
+    )
+    account_id = AccountsService.resolve_account_id("discord", str(discord_user_id))
+    if account_id:
+        return str(account_id)
+    if hasattr(db, "_inc_metric"):
+        db._inc_metric("identity_resolve_errors")
+    log_identity_resolve_error(
+        logger,
+        module=__name__,
+        handler=handler,
+        field="discord_user_id",
+        action="resolve_account_id",
+        continue_execution=False,
+        provider="discord",
+        discord_user_id=discord_user_id,
+    )
+    return None
+
+
+def _ensure_core_data_loaded() -> None:
+    if hasattr(db, "ensure_core_data_loaded"):
+        db.ensure_core_data_loaded()
+
+
+def _get_score_row_for_account(
+    account_id: str,
+    *,
+    discord_user_id: int | None,
+    handler: str,
+) -> dict | None:
+    if not account_id or not db.supabase:
+        return None
+    try:
+        score_result = (
+            db.supabase.table("scores")
+            .select("points,tickets_normal,tickets_gold,account_id,user_id")
+            .eq("account_id", str(account_id))
+            .limit(1)
+            .execute()
+        )
+        rows = score_result.data or []
+        if rows:
+            return rows[0]
+    except Exception:
+        logger.exception(
+            "%s account-first score lookup failed account_id=%s discord_user_id=%s",
+            handler,
+            account_id,
+            discord_user_id,
+        )
+
+    if discord_user_id is None:
+        return None
+
+    log_legacy_schema_fallback(
+        logger,
+        module=__name__,
+        table="scores",
+        field="user_id",
+        action="migrate_scores_lookup_to_account_id",
+        continue_execution=True,
+        handler=handler,
+        account_id=account_id,
+        discord_user_id=discord_user_id,
+        recommended_field="account_id",
+        developer_hint="temporary compatibility path; migrate scores rows to scores.account_id",
+    )
+    try:
+        score_result = (
+            db.supabase.table("scores")
+            .select("points,tickets_normal,tickets_gold,account_id,user_id")
+            .eq("user_id", str(discord_user_id))
+            .limit(1)
+            .execute()
+        )
+        rows = score_result.data or []
+        if rows:
+            return rows[0]
+    except Exception:
+        logger.exception(
+            "%s legacy score fallback failed account_id=%s discord_user_id=%s",
+            handler,
+            account_id,
+            discord_user_id,
+        )
+    return None
+
+
+def _normalize_history_entry(action: dict) -> dict:
+    return {
+        "points": float(action.get("points") or 0),
+        "reason": action.get("reason") or "Не указана",
+        "author_account_id": action.get("author_account_id"),
+        "timestamp": action.get("timestamp"),
+        "is_undo": bool(action.get("is_undo", False)),
+    }
+
+
+def _get_action_rows_for_account(
+    account_id: str,
+    *,
+    discord_user_id: int | None,
+    handler: str,
+) -> list[dict]:
+    _ensure_core_data_loaded()
+    action_rows = list(getattr(db.actions, "data", db.actions) or [])
+    if not action_rows:
+        return []
+
+    account_rows = [
+        _normalize_history_entry(action)
+        for action in action_rows
+        if str(action.get("account_id") or "") == str(account_id)
+    ]
+    if account_rows:
+        return account_rows
+
+    if discord_user_id is None:
+        return []
+
+    legacy_rows = [
+        _normalize_history_entry(action)
+        for action in action_rows
+        if str(action.get("user_id") or "") == str(discord_user_id)
+    ]
+    if legacy_rows:
+        log_legacy_schema_fallback(
+            logger,
+            module=__name__,
+            table="actions",
+            field="user_id",
+            action="migrate_history_lookup_to_actions_account_id",
+            continue_execution=True,
+            handler=handler,
+            account_id=account_id,
+            discord_user_id=discord_user_id,
+            recommended_field="account_id",
+            developer_hint="temporary compatibility path; backfill actions.account_id for history rendering",
+        )
+        return legacy_rows
+
+    legacy_history = db.history.get(discord_user_id, [])
+    if legacy_history:
+        log_legacy_schema_fallback(
+            logger,
+            module=__name__,
+            table="history_cache",
+            field="user_id",
+            action="replace_history_cache_with_account_first_actions",
+            continue_execution=True,
+            handler=handler,
+            account_id=account_id,
+            discord_user_id=discord_user_id,
+            recommended_field="account_id",
+            developer_hint="temporary compatibility path; rebuild history cache from actions.account_id rows",
+        )
+        return [_normalize_history_entry(action) for action in legacy_history]
+
+    return []
+
+
+def _get_balance_snapshot(
+    account_id: str,
+    *,
+    discord_user_id: int | None,
+    handler: str,
+) -> tuple[float, dict]:
+    score_row = _get_score_row_for_account(account_id, discord_user_id=discord_user_id, handler=handler) or {}
+    if score_row:
+        return float(score_row.get("points") or 0), score_row
+
+    history_rows = _get_action_rows_for_account(account_id, discord_user_id=discord_user_id, handler=handler)
+    if history_rows:
+        return sum(float(row.get("points") or 0) for row in history_rows), score_row
+
+    return 0.0, score_row
+
+
+def _get_leaderboard_place(
+    account_id: str,
+    *,
+    discord_user_id: int | None,
+    handler: str,
+) -> int | None:
+    if account_id and db.supabase:
+        try:
+            score_result = (
+                db.supabase.table("scores")
+                .select("account_id,user_id,points")
+                .order("points", desc=True)
+                .execute()
+            )
+            score_rows = score_result.data or []
+            for index, row in enumerate(score_rows, start=1):
+                if str(row.get("account_id") or "") == str(account_id):
+                    return index
+            if discord_user_id is not None:
+                for index, row in enumerate(score_rows, start=1):
+                    if str(row.get("user_id") or "") == str(discord_user_id):
+                        log_legacy_schema_fallback(
+                            logger,
+                            module=__name__,
+                            table="scores",
+                            field="user_id",
+                            action="replace_leaderboard_place_lookup_with_account_id",
+                            continue_execution=True,
+                            handler=handler,
+                            account_id=account_id,
+                            discord_user_id=discord_user_id,
+                            recommended_field="account_id",
+                            developer_hint="temporary compatibility path; backfill scores.account_id for leaderboard place",
+                        )
+                        return index
+        except Exception:
+            logger.exception(
+                "%s leaderboard lookup failed account_id=%s discord_user_id=%s",
+                handler,
+                account_id,
+                discord_user_id,
+            )
+
+    if discord_user_id is None:
+        return None
+
+    sorted_scores = sorted(db.scores.items(), key=lambda x: x[1], reverse=True)
+    place = next((i for i, (uid, _) in enumerate(sorted_scores, 1) if uid == discord_user_id), None)
+    if place is not None:
+        log_legacy_schema_fallback(
+            logger,
+            module=__name__,
+            table="scores_cache",
+            field="user_id",
+            action="replace_cached_leaderboard_place_lookup_with_account_id",
+            continue_execution=True,
+            handler=handler,
+            account_id=account_id,
+            discord_user_id=discord_user_id,
+            recommended_field="account_id",
+            developer_hint="temporary compatibility path; derive leaderboard place from scores.account_id rows",
+        )
+    return place
+
+
+def _build_missing_account_embed(member: discord.abc.User, *, title: str) -> discord.Embed:
+    display_name = getattr(member, "display_name", getattr(member, "name", str(getattr(member, "id", "unknown"))))
+    embed = discord.Embed(
+        title=title,
+        description=(
+            "Не удалось найти связанный аккаунт для этого Discord-профиля.\n"
+            "Чтобы баланс и история отображались корректно, зарегистрируйте аккаунт "
+            "или привяжите его через `/link <код>`."
+        ),
+        color=discord.Color.orange(),
+    )
+    embed.set_author(
+        name=display_name,
+        icon_url=member.avatar.url if getattr(member, "avatar", None) else member.default_avatar.url,
+    )
+    return embed
+
+
 async def update_roles(member: discord.Member):
     user_id = member.id
-    user_points = db.scores.get(user_id, 0)
+    account_id = _resolve_account_id_from_discord(user_id, handler="update_roles")
+    if not account_id:
+        return
+    user_points, _ = _get_balance_snapshot(account_id, discord_user_id=user_id, handler="update_roles")
     threshold_role_ids = set(ROLE_THRESHOLDS)
 
     target_role_id = None
@@ -73,15 +352,28 @@ class HistoryView(SafeView):
 
 
 async def render_history(ctx_or_interaction, member: discord.Member, page: int):
+    account_id = None
+    user_id = member.id
     try:
-        user_id = member.id
         entries_per_page = 5
-        user_history = db.history.get(user_id, [])
+        account_id = _resolve_account_id_from_discord(user_id, handler="render_history")
+        if not account_id:
+            embed = _build_missing_account_embed(member, title="📜 История баллов")
+            if isinstance(ctx_or_interaction, discord.Interaction):
+                await ctx_or_interaction.response.send_message(embed=embed, ephemeral=True)
+            else:
+                await ctx_or_interaction.send(embed=embed)
+            return
+
+        user_history = _get_action_rows_for_account(account_id, discord_user_id=user_id, handler="render_history")
 
         if not user_history:
             embed = discord.Embed(
                 title="📜 История баллов",
-                description="```Записей не найдено```",
+                description=(
+                    "```Записей не найдено```\n"
+                    "Когда по аккаунту появятся начисления или списания, они отобразятся здесь."
+                ),
                 color=discord.Color.orange()
             )
             embed.set_author(name=member.display_name, icon_url=member.avatar.url if member.avatar else member.default_avatar.url)
@@ -113,7 +405,7 @@ async def render_history(ctx_or_interaction, member: discord.Member, page: int):
         embed = discord.Embed(title="📜 История баллов", color=discord.Color.blue())
         embed.set_author(name=member.display_name, icon_url=member.avatar.url if member.avatar else member.default_avatar.url)
 
-        total_points = db.scores.get(user_id, 0)
+        total_points, _ = _get_balance_snapshot(account_id, discord_user_id=user_id, handler="render_history")
         embed.add_field(
             name="💰 Текущий баланс",
             value=f"```{format_points(total_points)} баллов```",
@@ -175,7 +467,12 @@ async def render_history(ctx_or_interaction, member: discord.Member, page: int):
             await ctx_or_interaction.response.send_message(embed=error_embed, ephemeral=True)
         else:
             await ctx_or_interaction.send(embed=error_embed)
-        print(f"Ошибка в render_history: {traceback.format_exc()}")
+        logger.exception(
+            "render_history failed discord_user_id=%s account_id=%s traceback=%s",
+            user_id,
+            account_id,
+            traceback.format_exc(),
+        )
 
 
 async def log_action_cancellation(ctx, member: discord.Member, entries: list):
@@ -556,47 +853,7 @@ async def transfer_data_logic(old_id: int, new_id: int) -> discord.Embed:
 
 def build_balance_embed(member: discord.abc.User, guild: discord.Guild | None = None) -> discord.Embed:
     user_id = member.id
-    points = db.scores.get(user_id, 0)
-    account_id = AccountsService.resolve_account_id("discord", str(user_id))
-    score_row = None
-
-    if account_id and db.supabase:
-        try:
-            score_result = (
-                db.supabase.table("scores")
-                .select("points,tickets_normal,tickets_gold")
-                .eq("account_id", str(account_id))
-                .limit(1)
-                .execute()
-            )
-            if score_result.data:
-                score_row = score_result.data[0]
-        except Exception:
-            logger.exception(
-                "build_balance_embed account score lookup failed account_id=%s discord_user_id=%s",
-                account_id,
-                user_id,
-            )
-
-    if score_row is None and db.supabase:
-        try:
-            score_result = (
-                db.supabase.table("scores")
-                .select("points,tickets_normal,tickets_gold")
-                .eq("user_id", user_id)
-                .limit(1)
-                .execute()
-            )
-            if score_result.data:
-                score_row = score_result.data[0]
-        except Exception:
-            logger.exception(
-                "build_balance_embed discord score fallback failed discord_user_id=%s",
-                user_id,
-            )
-
-    if score_row is not None:
-        points = float(score_row.get("points") or 0)
+    account_id = _resolve_account_id_from_discord(user_id, handler="build_balance_embed")
 
     guild_member = member if isinstance(member, discord.Member) else None
     if guild_member is None and guild is not None:
@@ -610,15 +867,25 @@ def build_balance_embed(member: discord.abc.User, guild: discord.Guild | None = 
         roles = [role for role in guild_member.roles if role.id in ROLE_THRESHOLDS]
     role_names = ', '.join(role.name for role in roles) if roles else 'Нет роли'
 
-    sorted_scores = sorted(db.scores.items(), key=lambda x: x[1], reverse=True)
-    place = next((i for i, (uid, _) in enumerate(sorted_scores, 1) if uid == user_id), None)
+    display_name = getattr(member, "display_name", getattr(member, "name", str(user_id)))
+    if not account_id:
+        embed = _build_missing_account_embed(member, title=f"Баланс пользователя {display_name}")
+        embed.add_field(name="🎯 Баллы", value="Недоступно", inline=True)
+        embed.add_field(name="🎟 Обычные билеты", value="Недоступно", inline=True)
+        embed.add_field(name="🪙 Золотые билеты", value="Недоступно", inline=True)
+        embed.add_field(name="🏅 Роли", value=role_names, inline=False)
+        embed.add_field(
+            name="ℹ️ Что делать",
+            value="Используйте `/register_account` или привяжите аккаунт через `/link <код>`, затем повторите команду.",
+            inline=False,
+        )
+        return embed
 
-    data = score_row or {}
-
+    points, data = _get_balance_snapshot(account_id, discord_user_id=user_id, handler="build_balance_embed")
     normal = data.get("tickets_normal", 0)
     gold = data.get("tickets_gold", 0)
+    place = _get_leaderboard_place(account_id, discord_user_id=user_id, handler="build_balance_embed")
 
-    display_name = getattr(member, "display_name", getattr(member, "name", str(user_id)))
     embed = discord.Embed(
         title=f"Баланс пользователя {display_name}",
         color=discord.Color.blue()
@@ -639,7 +906,7 @@ def build_balance_embed(member: discord.abc.User, guild: discord.Guild | None = 
     # ➕ Добавим бонусы за топ месяца
     top_bonus_count = 0
     top_bonus_sum = 0.0
-    for action in db.history.get(user_id, []):
+    for action in _get_action_rows_for_account(account_id, discord_user_id=user_id, handler="build_balance_embed"):
         if action.get("reason", "").startswith("Бонус за "):
             top_bonus_count += 1
             top_bonus_sum += action.get("points", 0)
