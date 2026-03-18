@@ -9,13 +9,13 @@ from bot.telegram_bot.commands.roles_admin import (
 
 
 class TelegramRolesAdminTargetResolutionTests(unittest.TestCase):
-    def test_resolve_target_prefers_reply_user(self):
+    def test_resolve_target_uses_reply_when_explicit_target_missing(self):
         reply_user = SimpleNamespace(id=777, username="reply_target", full_name="Reply Target", is_bot=False)
 
-        with patch("bot.telegram_bot.commands.roles_admin.AccountsService.persist_identity_lookup_fields") as persist_mock:
+        with patch("bot.telegram_bot.commands.roles_admin.AccountsService.resolve_account_id", return_value="acc-777"):
             result = _resolve_telegram_target(
                 actor_id=100,
-                raw_target="@ignored",
+                raw_target=None,
                 reply_user=reply_user,
                 operation="user_roles",
                 source="button",
@@ -23,7 +23,7 @@ class TelegramRolesAdminTargetResolutionTests(unittest.TestCase):
 
         self.assertEqual(result["provider_user_id"], "777")
         self.assertEqual(result["label"], "@reply_target")
-        persist_mock.assert_called_once()
+        self.assertEqual(result["account_id"], "acc-777")
 
     def test_resolve_target_returns_multiple_error_for_ambiguous_username(self):
         with patch(
@@ -57,7 +57,7 @@ class TelegramRolesAdminTargetResolutionTests(unittest.TestCase):
             )
 
         self.assertEqual(result["error"], "multiple")
-        self.assertIn("Найдено несколько пользователей", result["message"])
+        self.assertIn("Найдено несколько кандидатов", result["message"])
         self.assertIn("telegram | @dup_user | One | id=1 | via=username", result["message"])
         self.assertIn("discord | @dup_user | Two | id=2 | via=display_name", result["message"])
 
@@ -75,7 +75,7 @@ class TelegramRolesAdminTargetResolutionTests(unittest.TestCase):
             )
 
         self.assertEqual(result["error"], "not_found")
-        self.assertIn("Пользователь не найден", result["message"])
+        self.assertIn("локальном реестре", result["message"])
         self.assertIn("/register", result["message"])
         self.assertIn("reply", result["message"])
 
