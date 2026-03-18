@@ -333,6 +333,51 @@ class AccountsService:
             if variant not in payload_variants:
                 payload_variants.append(variant)
 
+        def _update_existing_identity(variant: dict[str, str]) -> bool:
+            update_payload = {
+                key: value
+                for key, value in variant.items()
+                if key not in {"provider", "provider_user_id"}
+            }
+            if not update_payload:
+                return False
+            try:
+                response = (
+                    db.supabase.table("account_identities")
+                    .update(update_payload)
+                    .eq("provider", normalized_provider)
+                    .eq("provider_user_id", normalized_provider_user_id)
+                    .execute()
+                )
+                updated_rows = list(response.data or [])
+                if updated_rows:
+                    if variant != payload:
+                        logger.info(
+                            "persist_identity_lookup_fields updated existing row with fallback columns provider=%s provider_user_id=%s payload_keys=%s requested_keys=%s",
+                            normalized_provider,
+                            normalized_provider_user_id,
+                            sorted(update_payload.keys()),
+                            sorted(k for k in payload.keys() if k not in {"provider", "provider_user_id"}),
+                        )
+                    return True
+            except Exception as error:
+                logger.warning(
+                    "persist_identity_lookup_fields update failed provider=%s provider_user_id=%s payload_keys=%s error=%s",
+                    normalized_provider,
+                    normalized_provider_user_id,
+                    sorted(update_payload.keys()),
+                    AccountsService._format_db_error(error),
+                )
+            return False
+
+        def _is_missing_account_id_violation(error: Exception) -> bool:
+            lowered = AccountsService._format_db_error(error).lower()
+            return "null value in column \"account_id\"" in lowered and "23502" in lowered
+
+        for variant in payload_variants:
+            if _update_existing_identity(variant):
+                return
+
         last_error: Exception | None = None
         for variant in payload_variants:
             try:
@@ -348,6 +393,16 @@ class AccountsService:
                 return
             except Exception as error:
                 last_error = error
+                if _is_missing_account_id_violation(error):
+                    logger.warning(
+                        "persist_identity_lookup_fields skipped insert because account_id is required provider=%s provider_user_id=%s username=%s display_name=%s global_username=%s",
+                        normalized_provider,
+                        normalized_provider_user_id,
+                        normalized_username,
+                        normalized_display_name,
+                        normalized_global_username,
+                    )
+                    return
                 logger.warning(
                     "persist_identity_lookup_fields upsert failed provider=%s provider_user_id=%s payload_keys=%s error=%s",
                     normalized_provider,
