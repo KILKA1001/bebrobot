@@ -5,6 +5,8 @@ from bot.data import db
 from bot.services.accounts_service import AccountsService
 from bot.services.auth import RoleResolver
 
+_AUTO_DISCORD_CATEGORY = "Discord сервер (auto)"
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,25 +40,17 @@ class RoleManagementService:
         return value or "Без категории"
 
     @staticmethod
-    def list_roles_grouped() -> list[dict[str, Any]]:
-        if not db.supabase:
-            logger.warning("list_roles_grouped skipped: supabase is not configured")
-            return []
-
-        try:
-            categories_resp = db.supabase.table("role_categories").select("name,position").execute()
-            roles_rows = RoleManagementService._load_roles_rows()
-        except Exception:
-            logger.exception("list_roles_grouped failed")
-            return []
-
+    def _build_grouped_roles(
+        categories_rows: list[dict[str, Any]] | None,
+        roles_rows: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
         category_positions: dict[str, int] = {}
-        for row in categories_resp.data or []:
+        for row in categories_rows or []:
             name = RoleManagementService._normalized_category(row.get("name"))
             category_positions[name] = int(row.get("position") or 0)
 
         grouped: dict[str, list[dict[str, Any]]] = {}
-        for row in roles_rows:
+        for row in roles_rows or []:
             role_name = str(row.get("name") or "").strip()
             if not role_name:
                 continue
@@ -76,6 +70,158 @@ class RoleManagementService:
             roles = sorted(grouped.get(category, []), key=lambda item: (item["position"], item["name"].lower()))
             result.append({"category": category, "position": category_positions.get(category, 0), "roles": roles})
         return result
+
+    @staticmethod
+    def _load_external_discord_bindings() -> list[dict[str, Any]]:
+        if not db.supabase:
+            return []
+        try:
+            response = (
+                db.supabase.table("external_role_bindings")
+                .select("account_id,external_role_id,external_role_name")
+                .eq("source", "discord")
+                .is_("deleted_at", "null")
+                .execute()
+            )
+            return response.data or []
+        except Exception:
+            logger.exception("external_role_bindings discord query failed")
+            return []
+
+    @staticmethod
+    def _upsert_discord_catalog_role(
+        *,
+        role_id: str,
+        role_name: str,
+        existing: dict[str, Any] | None,
+        default_category: str,
+        default_position: int,
+        source: str,
+        account_id: str | None = None,
+        guild_id: str | None = None,
+    ) -> bool:
+        if not db.supabase or not role_id or not role_name:
+            return False
+
+        if not existing:
+            logger.warning(
+                "discord role missing in catalog; creating canonical entry role_name=%s external_role_id=%s account_id=%s guild_id=%s source=%s",
+                role_name,
+                role_id,
+                account_id,
+                guild_id,
+                source,
+            )
+
+        preserved_category = RoleManagementService._normalized_category((existing or {}).get("category_name"))
+        preserved_position = int((existing or {}).get("position") or default_position)
+        payload = {
+            "name": role_name,
+            "category_name": preserved_category if existing else default_category,
+            "position": preserved_position,
+            "is_discord_managed": True,
+            "discord_role_id": role_id,
+            "discord_role_name": role_name,
+        }
+
+        try:
+            db.supabase.table("role_categories").upsert({"name": payload["category_name"], "position": 9999}).execute()
+            if existing:
+                db.supabase.table("roles").update(payload).eq("discord_role_id", role_id).execute()
+            else:
+                db.supabase.table("roles").upsert(payload, on_conflict="name").execute()
+            return True
+        except Exception:
+            logger.exception(
+                "discord role catalog upsert failed role_name=%s external_role_id=%s account_id=%s guild_id=%s source=%s",
+                role_name,
+                role_id,
+                account_id,
+                guild_id,
+                source,
+            )
+            return False
+
+    @staticmethod
+    def _sync_discord_roles_from_external_bindings(
+        existing_by_role_id: dict[str, dict[str, Any]],
+    ) -> tuple[int, set[str]]:
+        if not db.supabase:
+            return 0, set()
+
+        upserted = 0
+        synced_ids: set[str] = set()
+        for row in RoleManagementService._load_external_discord_bindings():
+            role_id = str(row.get("external_role_id") or "").strip()
+            role_name = str(row.get("external_role_name") or "").strip()
+            account_id = str(row.get("account_id") or "").strip() or None
+            if not role_id or not role_name:
+                continue
+            synced_ids.add(role_id)
+            existing = existing_by_role_id.get(role_id)
+            if RoleManagementService._upsert_discord_catalog_role(
+                role_id=role_id,
+                role_name=role_name,
+                existing=existing,
+                default_category=_AUTO_DISCORD_CATEGORY,
+                default_position=0,
+                source="external_role_bindings",
+                account_id=account_id,
+            ):
+                upserted += 1
+                existing_by_role_id[role_id] = {
+                    "name": role_name,
+                    "discord_role_id": role_id,
+                    "category_name": (existing or {}).get("category_name") or _AUTO_DISCORD_CATEGORY,
+                    "position": int((existing or {}).get("position") or 0),
+                }
+        return upserted, synced_ids
+
+    @staticmethod
+    def list_roles_grouped() -> list[dict[str, Any]]:
+        if not db.supabase:
+            logger.warning("list_roles_grouped skipped: supabase is not configured")
+            return []
+
+        try:
+            categories_resp = db.supabase.table("role_categories").select("name,position").execute()
+            roles_rows = RoleManagementService._load_roles_rows()
+        except Exception:
+            logger.exception("list_roles_grouped failed")
+            return []
+
+        external_rows = RoleManagementService._load_external_discord_bindings()
+        catalog_role_ids = {
+            str(row.get("discord_role_id") or "").strip()
+            for row in roles_rows
+            if str(row.get("discord_role_id") or "").strip()
+        }
+        for row in external_rows:
+            role_id = str(row.get("external_role_id") or "").strip()
+            role_name = str(row.get("external_role_name") or "").strip()
+            account_id = str(row.get("account_id") or "").strip() or None
+            if role_id and role_name and role_id not in catalog_role_ids:
+                logger.warning(
+                    "discord role present in external snapshot but absent from canonical catalog role_name=%s external_role_id=%s account_id=%s guild_id=%s",
+                    role_name,
+                    role_id,
+                    account_id,
+                    None,
+                )
+
+        return RoleManagementService._build_grouped_roles(categories_resp.data or [], roles_rows)
+
+    @staticmethod
+    def list_roles_available_for_admin_reorder() -> list[dict[str, str]]:
+        flattened: list[dict[str, str]] = []
+        grouped = RoleManagementService.list_roles_grouped()
+        for item in grouped:
+            category = str(item.get("category") or "Без категории")
+            for role in item.get("roles", []):
+                role_name = str(role.get("name") or "").strip()
+                if role_name:
+                    flattened.append({"role": role_name, "category": category})
+        return flattened
 
     @staticmethod
     def create_category(name: str, position: int = 0) -> bool:
@@ -261,12 +407,11 @@ class RoleManagementService:
         if not db.supabase:
             return {"upserted": 0, "removed": 0}
 
-        auto_category = "Discord сервер (auto)"
         upserted = 0
         removed = 0
         active_ids: set[str] = set()
         try:
-            db.supabase.table("role_categories").upsert({"name": auto_category, "position": 9999}).execute()
+            db.supabase.table("role_categories").upsert({"name": _AUTO_DISCORD_CATEGORY, "position": 9999}).execute()
             existing_managed_resp = (
                 db.supabase.table("roles")
                 .select("name,discord_role_id,category_name,position")
@@ -287,27 +432,26 @@ class RoleManagementService:
                 active_ids.add(role_id)
 
                 existing = existing_by_role_id.get(role_id)
-                preserved_category = RoleManagementService._normalized_category(
-                    (existing or {}).get("category_name")
-                )
-                preserved_position = int((existing or {}).get("position") or 0)
-                target_category = preserved_category if existing else auto_category
-                target_position = preserved_position if existing else int(role.get("position") or 0)
+                if RoleManagementService._upsert_discord_catalog_role(
+                    role_id=role_id,
+                    role_name=role_name,
+                    existing=existing,
+                    default_category=_AUTO_DISCORD_CATEGORY,
+                    default_position=int(role.get("position") or 0),
+                    source="guild_roles",
+                    guild_id=str(role.get("guild_id") or "").strip() or None,
+                ):
+                    upserted += 1
+                    existing_by_role_id[role_id] = {
+                        "name": role_name,
+                        "discord_role_id": role_id,
+                        "category_name": (existing or {}).get("category_name") or _AUTO_DISCORD_CATEGORY,
+                        "position": int((existing or {}).get("position") or int(role.get("position") or 0)),
+                    }
 
-                payload = {
-                    "name": role_name,
-                    "category_name": target_category,
-                    "position": target_position,
-                    "is_discord_managed": True,
-                    "discord_role_id": role_id,
-                    "discord_role_name": role_name,
-                }
-
-                if existing:
-                    db.supabase.table("roles").update(payload).eq("discord_role_id", role_id).execute()
-                else:
-                    db.supabase.table("roles").upsert(payload, on_conflict="name").execute()
-                upserted += 1
+            external_upserted, external_active_ids = RoleManagementService._sync_discord_roles_from_external_bindings(existing_by_role_id)
+            upserted += external_upserted
+            active_ids.update(external_active_ids)
 
             existing_resp = (
                 db.supabase.table("roles")
