@@ -11,7 +11,6 @@ import time
 import random
 import json
 import contextlib
-import re
 from dotenv import load_dotenv
 
 from bot.telegram_bot.config import TELEGRAM_BOT_TOKEN_ENV, get_telegram_bot_token
@@ -49,6 +48,12 @@ from bot.telegram_bot.main import (
     TelegramPollingLockActiveError,
     TelegramPollingPreflightConflictError,
     run_polling as run_telegram_polling,
+)
+from bot.utils.discord_http import (
+    extract_retry_after_seconds,
+    is_cloudflare_rate_limited_http_exception,
+    is_transient_rate_limit_error,
+    log_discord_http_exception,
 )
 
 
@@ -140,35 +145,6 @@ def configure_logging() -> None:
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
 
-def is_cloudflare_rate_limited_http_exception(exc: discord.HTTPException) -> bool:
-    """Detect Cloudflare IP-level bans (1015) returned via Discord edge."""
-    if getattr(exc, "status", None) != 403:
-        return False
-
-    error_text = (getattr(exc, "text", "") or "").lower()
-    if "cloudflare" in error_text and "1015" in error_text:
-        return True
-    if "access denied" in error_text and "rate limited" in error_text:
-        return True
-
-    response = getattr(exc, "response", None)
-    if response is not None:
-        server = (response.headers.get("server") or "").lower()
-        if "cloudflare" in server and "rate limited" in error_text:
-            return True
-
-    return False
-
-
-def is_transient_rate_limit_error(exc: Exception) -> bool:
-    """Identify retryable Discord startup/runtime errors related to rate limiting."""
-    if isinstance(exc, discord.HTTPException):
-        return exc.status == 429 or is_cloudflare_rate_limited_http_exception(exc)
-
-    error_text = str(exc).lower()
-    return "429" in error_text or "rate limit" in error_text or "cloudflare" in error_text
-
-
 async def send_greetings(channel, user_list):
     for user_id in user_list:
         await safe_send(channel, f"Привет, <@{user_id}>!")
@@ -205,8 +181,17 @@ async def on_ready():
             name="Привет! Напиши команду /helpy чтобы увидеть все команды 🧠",
             type=discord.ActivityType.listening
         )
-        await bot.change_presence(activity=activity)
-        presence_initialized = True
+        try:
+            await bot.change_presence(activity=activity)
+            presence_initialized = True
+        except discord.HTTPException as exc:
+            log_discord_http_exception(
+                "discord startup failed to update presence",
+                exc,
+                stage="on_ready.change_presence",
+            )
+        except Exception:
+            logging.exception("discord startup failed to update presence")
 
     if not commands_synced:
         try:
@@ -217,6 +202,13 @@ async def on_ready():
             else:
                 print("⏭️ Синхронизация slash-команд пропущена (слишком рано после прошлого запуска)")
             commands_synced = True
+        except discord.HTTPException as exc:
+            log_discord_http_exception(
+                "discord startup failed to sync slash commands",
+                exc,
+                stage="on_ready.tree_sync",
+                should_sync=should_sync_commands(),
+            )
         except Exception:
             logging.exception("❌ Ошибка синхронизации slash-команд")
     
@@ -516,29 +508,10 @@ def run_discord_main():
         return max(1.0, min(parsed_retry, max_retry_delay))
 
     def get_retry_after(exc: discord.HTTPException, default: float) -> float:
-        retry_after_attr = getattr(exc, "retry_after", None)
-        if isinstance(retry_after_attr, (int, float)):
-            return normalize_retry_after(float(retry_after_attr))
-
-        response = getattr(exc, 'response', None)
-        if response is not None:
-            retry = response.headers.get('Retry-After') or response.headers.get('retry-after')
-            if retry:
-                retry = retry.strip()
-                try:
-                    return normalize_retry_after(float(retry))
-                except ValueError:
-                    pass
-
-        match = re.search(r"retry(?:_|-|\s)after[:]?\s*(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|sec|seconds?)?", exc.text or "", re.I)
-        if match:
-            parsed_retry = float(match.group(1))
-            unit = (match.group(2) or "").lower()
-            if unit.startswith("ms"):
-                parsed_retry /= 1000
-            return normalize_retry_after(parsed_retry)
-
-        return normalize_retry_after(default)
+        parsed_retry = extract_retry_after_seconds(exc)
+        if parsed_retry is None:
+            return normalize_retry_after(default)
+        return normalize_retry_after(parsed_retry)
 
     def wait_before_retry(base_delay: float) -> float:
         """Sleep before reconnecting and return the next backoff value.
@@ -585,20 +558,22 @@ def run_discord_main():
         except discord.HTTPException as e:
             if e.status == 429:
                 retry_after = get_retry_after(e, retry_delay)
-                # Для входа лучше опираться на Retry-After от Discord,
-                # чтобы не раздувать задержку экспоненциально между перезапусками.
-                logging.warning(
-                    "Discord login hit HTTP 429; waiting %.1fs before retry",
-                    retry_after,
+                log_discord_http_exception(
+                    "discord login hit HTTP 429",
+                    e,
+                    stage="run_discord_main.login",
+                    retry_in=retry_after,
                 )
                 retry_delay = wait_before_retry(retry_after)
                 continue
             if is_cloudflare_rate_limited_http_exception(e):
-                retry_after = wait_before_retry(retry_delay)
-                logging.warning(
-                    "Discord login blocked by Cloudflare 1015/IP-level rate limit; retry in %.1fs",
-                    retry_after,
+                log_discord_http_exception(
+                    "discord login blocked by Cloudflare/IP-level rate limit",
+                    e,
+                    stage="run_discord_main.login",
+                    retry_in=retry_delay,
                 )
+                retry_after = wait_before_retry(retry_delay)
                 retry_delay = retry_after
                 continue
 
@@ -631,29 +606,10 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
             return max(1.0, min(float(raw), max_retry_delay))
 
         def _parse_retry_after(exc: discord.HTTPException, default: float) -> float:
-            response = getattr(exc, "response", None)
-            if response is not None:
-                retry = response.headers.get("Retry-After") or response.headers.get("retry-after")
-                if retry:
-                    retry = retry.strip()
-                    try:
-                        return _normalize_retry_after(float(retry))
-                    except ValueError:
-                        pass
-
-            match = re.search(
-                r"retry(?:_|-|\s)after[:]?\s*(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|sec|seconds?)?",
-                exc.text or "",
-                re.I,
-            )
-            if match:
-                parsed_retry = float(match.group(1))
-                unit = (match.group(2) or "").lower()
-                if unit.startswith("ms"):
-                    parsed_retry /= 1000
-                return _normalize_retry_after(parsed_retry)
-
-            return _normalize_retry_after(default)
+            parsed_retry = extract_retry_after_seconds(exc)
+            if parsed_retry is None:
+                return _normalize_retry_after(default)
+            return _normalize_retry_after(parsed_retry)
 
         while True:
             try:
@@ -670,18 +626,18 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
                 if exc.status in {429, 500, 502, 503, 504} or is_cloudflare_rate_limited_http_exception(exc):
                     if exc.status == 429:
                         retry_delay = _parse_retry_after(exc, retry_delay)
-                    elif is_cloudflare_rate_limited_http_exception(exc):
-                        logging.exception(
-                            "discord runtime Cloudflare 1015/IP-level rate limit in both mode; retry in %.1fs",
-                            retry_delay,
-                        )
-                    logging.exception(
-                        "discord runtime transient HTTP error in both mode (status=%s); retry in %.1fs",
-                        exc.status,
-                        retry_delay,
+                    log_discord_http_exception(
+                        "discord runtime transient HTTP error in both mode",
+                        exc,
+                        stage="run_both.discord",
+                        retry_in=retry_delay,
                     )
                 else:
-                    logging.exception("discord runtime unrecoverable HTTP error in both mode")
+                    log_discord_http_exception(
+                        "discord runtime unrecoverable HTTP error in both mode",
+                        exc,
+                        stage="run_both.discord",
+                    )
                     raise
             except discord.DiscordServerError:
                 logging.exception(

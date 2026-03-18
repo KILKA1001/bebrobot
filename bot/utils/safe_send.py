@@ -3,6 +3,7 @@ from discord.errors import HTTPException
 from discord.ext import commands
 from .rate_limiter import rate_limiter
 from bot.services.accounts_service import AccountsService
+from .discord_http import is_cloudflare_rate_limited_http_exception, log_discord_http_exception
 
 
 async def safe_send(destination, *args, delay: float | None = None, **kwargs):
@@ -58,8 +59,12 @@ async def safe_send(destination, *args, delay: float | None = None, **kwargs):
 
         return await destination.send(*args, **kwargs)
     except HTTPException as e:
-        if e.status == 429:
-            logging.warning("safe_send hit rate limit: %s", e.text)
+        if e.status == 429 or is_cloudflare_rate_limited_http_exception(e):
+            log_discord_http_exception(
+                "safe_send hit Discord rate limit",
+                e,
+                destination_type=type(destination).__name__,
+            )
             await rate_limiter.wait(delay)
             return None
         raise
