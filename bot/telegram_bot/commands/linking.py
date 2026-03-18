@@ -8,6 +8,7 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.services import AccountsService
+from bot.telegram_bot.identity import persist_telegram_identity_from_user
 from bot.telegram_bot.systems.commands_logic import (
     get_helpy_text,
     process_link_command,
@@ -34,17 +35,6 @@ _PENDING_EDIT_FIELD: dict[int, str] = {}
 PENDING_PROFILE_EDIT_TTL_SECONDS = 900
 _PENDING_EDIT_FIELD_CREATED_AT: dict[int, float] = {}
 _PENDING_VISIBLE_ROLES: dict[int, dict[str, object]] = {}
-
-
-def _persist_telegram_identity(user) -> None:
-    if not user or getattr(user, "is_bot", False):
-        return
-    AccountsService.persist_identity_lookup_fields(
-        "telegram",
-        str(user.id),
-        username=getattr(user, "username", None),
-        display_name=getattr(user, "full_name", None),
-    )
 
 
 def _has_non_expired_profile_edit(telegram_user_id: int) -> bool:
@@ -177,7 +167,7 @@ async def helpy_command(message: Message) -> None:
 
 @router.message(Command("register"))
 async def register_command(message: Message) -> None:
-    _persist_telegram_identity(message.from_user)
+    persist_telegram_identity_from_user(message.from_user)
     telegram_user_id = message.from_user.id if message.from_user is not None else None
     response = process_register_command(telegram_user_id)
     await message.answer(response)
@@ -185,12 +175,12 @@ async def register_command(message: Message) -> None:
 
 @router.message(Command("profile"))
 async def profile_command(message: Message) -> None:
-    _persist_telegram_identity(message.from_user)
+    persist_telegram_identity_from_user(message.from_user)
     telegram_user_id = message.from_user.id if message.from_user is not None else None
     display_name = message.from_user.full_name if message.from_user is not None else None
 
     target_user = message.reply_to_message.from_user if message.reply_to_message else None
-    _persist_telegram_identity(target_user)
+    persist_telegram_identity_from_user(target_user)
     target_user_id = target_user.id if target_user is not None else telegram_user_id
     target_display_name = target_user.full_name if target_user is not None else display_name
 
@@ -250,7 +240,7 @@ async def profile_command(message: Message) -> None:
 
 @router.message(Command("profile_edit"))
 async def profile_edit_command(message: Message) -> None:
-    _persist_telegram_identity(message.from_user)
+    persist_telegram_identity_from_user(message.from_user)
     telegram_user_id = message.from_user.id if message.from_user is not None else None
     if message.chat.type != "private":
         await message.answer("❌ Редактирование профиля доступно только в личных сообщениях с ботом.")
@@ -270,6 +260,7 @@ async def profile_edit_command(message: Message) -> None:
 @router.callback_query(F.data == "profile_settings")
 async def profile_settings_callback(callback: CallbackQuery) -> None:
     try:
+        persist_telegram_identity_from_user(callback.from_user)
         if callback.message and callback.message.chat.type != "private":
             await callback.answer("Доступно только в ЛС", show_alert=True)
             return
@@ -291,6 +282,7 @@ async def profile_settings_callback(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("profile_edit:"))
 async def profile_edit_field_callback(callback: CallbackQuery) -> None:
     try:
+        persist_telegram_identity_from_user(callback.from_user)
         if callback.from_user is None:
             await callback.answer("Не удалось определить пользователя", show_alert=True)
             return
@@ -355,6 +347,7 @@ async def profile_edit_field_callback(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("profile_visible_roles:"))
 async def profile_visible_roles_callback(callback: CallbackQuery) -> None:
     try:
+        persist_telegram_identity_from_user(callback.from_user)
         if callback.from_user is None:
             await callback.answer("Не удалось определить пользователя", show_alert=True)
             return
@@ -466,6 +459,7 @@ async def profile_visible_roles_callback(callback: CallbackQuery) -> None:
 
 @router.message(F.chat.type == "private", F.from_user, F.from_user.id.func(has_pending_profile_edit))
 async def profile_edit_value_handler(message: Message) -> None:
+    persist_telegram_identity_from_user(message.from_user)
     if not _has_non_expired_profile_edit(message.from_user.id):
         logger.warning(
             "profile_edit handler invoked without pending field user_id=%s chat_id=%s",
@@ -513,11 +507,12 @@ async def profile_edit_value_handler(message: Message) -> None:
 
 @router.message(Command("profile_roles"))
 async def profile_roles_command(message: Message) -> None:
-    _persist_telegram_identity(message.from_user)
+    persist_telegram_identity_from_user(message.from_user)
     telegram_user_id = message.from_user.id if message.from_user is not None else None
     display_name = message.from_user.full_name if message.from_user is not None else None
 
     target_user = message.reply_to_message.from_user if message.reply_to_message else None
+    persist_telegram_identity_from_user(target_user)
     target_user_id = target_user.id if target_user is not None else telegram_user_id
     target_display_name = target_user.full_name if target_user is not None else display_name
 
@@ -532,7 +527,7 @@ async def profile_roles_command(message: Message) -> None:
 
 @router.message(Command("link"))
 async def link_command(message: Message) -> None:
-    _persist_telegram_identity(message.from_user)
+    persist_telegram_identity_from_user(message.from_user)
     telegram_user_id = message.from_user.id if message.from_user is not None else None
     is_private_chat = message.chat.type == "private"
     response = process_link_command(message.text or "", telegram_user_id, is_private_chat=is_private_chat)
@@ -541,7 +536,7 @@ async def link_command(message: Message) -> None:
 
 @router.message(Command("link_discord"))
 async def link_discord_command(message: Message) -> None:
-    _persist_telegram_identity(message.from_user)
+    persist_telegram_identity_from_user(message.from_user)
     telegram_user_id = message.from_user.id if message.from_user is not None else None
     is_private_chat = message.chat.type == "private"
     response = process_link_discord_command(telegram_user_id, is_private_chat=is_private_chat)

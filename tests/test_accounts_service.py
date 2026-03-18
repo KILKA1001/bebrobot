@@ -136,6 +136,32 @@ class _FakeSupabase:
         return _TableOp(self.fake_db, name)
 
 
+class _StrictIdentityTableOp(_TableOp):
+    def execute(self):
+        if self.table_name == "account_identities" and self._action == "upsert":
+            key = (self._payload["provider"], self._payload["provider_user_id"])
+            existing = next(
+                (
+                    row
+                    for row in self.fake_db.tables[self.table_name]
+                    if (row.get("provider"), row.get("provider_user_id")) == key
+                ),
+                None,
+            )
+            if existing is None and not self._payload.get("account_id"):
+                error = Exception('null value in column "account_id" of relation "account_identities" violates not-null constraint')
+                setattr(error, "code", "23502")
+                raise error
+        return super().execute()
+
+
+class _StrictIdentitySupabase(_FakeSupabase):
+    def table(self, name):
+        if name == "account_identities":
+            return _StrictIdentityTableOp(self.fake_db, name)
+        return _TableOp(self.fake_db, name)
+
+
 class _FakeDb:
     def __init__(self):
         self.tables = {
@@ -266,6 +292,18 @@ class AccountsServiceTests(unittest.TestCase):
         self.assertEqual(self.fake_db.tables["account_identities"][0]["username"], "bebrobot")
         self.assertEqual(self.fake_db.tables["account_identities"][0]["display_name"], "Bebra Bot")
         self.assertEqual(self.fake_db.tables["account_identities"][0]["global_username"], "bebra.global")
+
+    def test_persist_identity_lookup_fields_skips_insert_when_account_id_is_required(self):
+        self.fake_db.supabase = _StrictIdentitySupabase(self.fake_db)
+
+        AccountsService.persist_identity_lookup_fields(
+            "telegram",
+            "222",
+            username="lookup_only",
+            display_name="Lookup Only",
+        )
+
+        self.assertEqual(self.fake_db.tables["account_identities"], [])
 
     def test_register_creates_account_and_identity(self):
         ok, message = AccountsService.register_identity("discord", "111")

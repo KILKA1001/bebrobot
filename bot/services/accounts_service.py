@@ -279,31 +279,147 @@ class AccountsService:
         if not db.supabase:
             return
 
+        normalized_provider = str(provider or "").strip()
+        normalized_provider_user_id = str(provider_user_id or "").strip()
+        if not normalized_provider or not normalized_provider_user_id:
+            logger.warning(
+                "persist_identity_lookup_fields skipped invalid identity provider=%s provider_user_id=%s",
+                provider,
+                provider_user_id,
+            )
+            return
+
+        normalized_username = str(username or "").lstrip("@").strip() or None
+        normalized_display_name = str(display_name or "").strip() or None
+        normalized_global_username = str(global_username or "").strip() or None
+
         payload = {
-            "provider": str(provider),
-            "provider_user_id": str(provider_user_id),
+            "provider": normalized_provider,
+            "provider_user_id": normalized_provider_user_id,
         }
-        if username:
-            payload["username"] = str(username).lstrip("@").strip()
-        if display_name:
-            payload["display_name"] = str(display_name).strip()
-        if global_username:
-            payload["global_username"] = str(global_username).strip()
+        optional_fields = {
+            "username": normalized_username,
+            "display_name": normalized_display_name,
+            "global_username": normalized_global_username,
+        }
+        for key, value in optional_fields.items():
+            if value:
+                payload[key] = value
 
         if len(payload) <= 2:
             return
 
-        try:
-            db.supabase.table("account_identities").upsert(payload, on_conflict="provider,provider_user_id").execute()
-        except Exception as error:
+        payload_variants: list[dict[str, str]] = []
+        variant_keys = [
+            ("username", "display_name", "global_username"),
+            ("username", "display_name"),
+            ("username", "global_username"),
+            ("display_name", "global_username"),
+            ("username",),
+            ("display_name",),
+            ("global_username",),
+        ]
+        for keys in variant_keys:
+            variant = {
+                "provider": normalized_provider,
+                "provider_user_id": normalized_provider_user_id,
+            }
+            for key in keys:
+                value = optional_fields.get(key)
+                if value:
+                    variant[key] = value
+            if len(variant) <= 2:
+                continue
+            if variant not in payload_variants:
+                payload_variants.append(variant)
+
+        def _update_existing_identity(variant: dict[str, str]) -> bool:
+            update_payload = {
+                key: value
+                for key, value in variant.items()
+                if key not in {"provider", "provider_user_id"}
+            }
+            if not update_payload:
+                return False
+            try:
+                response = (
+                    db.supabase.table("account_identities")
+                    .update(update_payload)
+                    .eq("provider", normalized_provider)
+                    .eq("provider_user_id", normalized_provider_user_id)
+                    .execute()
+                )
+                updated_rows = list(response.data or [])
+                if updated_rows:
+                    if variant != payload:
+                        logger.info(
+                            "persist_identity_lookup_fields updated existing row with fallback columns provider=%s provider_user_id=%s payload_keys=%s requested_keys=%s",
+                            normalized_provider,
+                            normalized_provider_user_id,
+                            sorted(update_payload.keys()),
+                            sorted(k for k in payload.keys() if k not in {"provider", "provider_user_id"}),
+                        )
+                    return True
+            except Exception as error:
+                logger.warning(
+                    "persist_identity_lookup_fields update failed provider=%s provider_user_id=%s payload_keys=%s error=%s",
+                    normalized_provider,
+                    normalized_provider_user_id,
+                    sorted(update_payload.keys()),
+                    AccountsService._format_db_error(error),
+                )
+            return False
+
+        def _is_missing_account_id_violation(error: Exception) -> bool:
+            lowered = AccountsService._format_db_error(error).lower()
+            return "null value in column \"account_id\"" in lowered and "23502" in lowered
+
+        for variant in payload_variants:
+            if _update_existing_identity(variant):
+                return
+
+        last_error: Exception | None = None
+        for variant in payload_variants:
+            try:
+                db.supabase.table("account_identities").upsert(variant, on_conflict="provider,provider_user_id").execute()
+                if variant != payload:
+                    logger.info(
+                        "persist_identity_lookup_fields saved with fallback columns provider=%s provider_user_id=%s payload_keys=%s requested_keys=%s",
+                        normalized_provider,
+                        normalized_provider_user_id,
+                        sorted(k for k in variant.keys() if k not in {"provider", "provider_user_id"}),
+                        sorted(k for k in payload.keys() if k not in {"provider", "provider_user_id"}),
+                    )
+                return
+            except Exception as error:
+                last_error = error
+                if _is_missing_account_id_violation(error):
+                    logger.warning(
+                        "persist_identity_lookup_fields skipped insert because account_id is required provider=%s provider_user_id=%s username=%s display_name=%s global_username=%s",
+                        normalized_provider,
+                        normalized_provider_user_id,
+                        normalized_username,
+                        normalized_display_name,
+                        normalized_global_username,
+                    )
+                    return
+                logger.warning(
+                    "persist_identity_lookup_fields upsert failed provider=%s provider_user_id=%s payload_keys=%s error=%s",
+                    normalized_provider,
+                    normalized_provider_user_id,
+                    sorted(k for k in variant.keys() if k not in {"provider", "provider_user_id"}),
+                    AccountsService._format_db_error(error),
+                )
+
+        if last_error:
             logger.warning(
-                "persist_identity_lookup_fields failed provider=%s provider_user_id=%s username=%s display_name=%s global_username=%s error=%s",
-                provider,
-                provider_user_id,
-                payload.get("username"),
-                payload.get("display_name"),
-                payload.get("global_username"),
-                AccountsService._format_db_error(error),
+                "persist_identity_lookup_fields exhausted payload variants provider=%s provider_user_id=%s username=%s display_name=%s global_username=%s error=%s",
+                normalized_provider,
+                normalized_provider_user_id,
+                normalized_username,
+                normalized_display_name,
+                normalized_global_username,
+                AccountsService._format_db_error(last_error),
             )
 
     @staticmethod
