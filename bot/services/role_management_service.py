@@ -9,8 +9,29 @@ _AUTO_DISCORD_CATEGORY = "Discord сервер (auto)"
 
 logger = logging.getLogger(__name__)
 
+DELETE_ROLE_REASON_DISCORD_MANAGED = "discord_managed"
+DELETE_ROLE_REASON_NOT_FOUND = "not_found"
+DELETE_ROLE_REASON_ERROR = "error"
+
 
 class RoleManagementService:
+    @staticmethod
+    def _delete_role_result(
+        ok: bool,
+        *,
+        reason: str | None = None,
+        role_name: str | None = None,
+        discord_role_id: str | None = None,
+        is_discord_managed: bool = False,
+    ) -> dict[str, Any]:
+        return {
+            "ok": ok,
+            "reason": reason,
+            "role_name": role_name,
+            "discord_role_id": discord_role_id,
+            "is_discord_managed": is_discord_managed,
+        }
+
     @staticmethod
     def _load_roles_rows() -> list[dict[str, Any]]:
         """Read role rows with backward-compatible column fallback."""
@@ -286,17 +307,75 @@ class RoleManagementService:
             return False
 
     @staticmethod
-    def delete_role(name: str) -> bool:
+    def delete_role(
+        name: str,
+        *,
+        actor_id: str | None = None,
+        guild_id: str | None = None,
+        telegram_user_id: str | None = None,
+    ) -> dict[str, Any]:
         role_name = str(name or "").strip()
         if not role_name or not db.supabase:
-            return False
+            return RoleManagementService._delete_role_result(False, reason=DELETE_ROLE_REASON_ERROR, role_name=role_name or None)
         try:
+            role_row = (
+                db.supabase.table("roles")
+                .select("name,is_discord_managed,discord_role_id")
+                .eq("name", role_name)
+                .limit(1)
+                .execute()
+            )
+            role = (role_row.data or [None])[0]
+            if not role:
+                logger.warning(
+                    "delete_role skipped role missing role_name=%s actor_id=%s guild_id=%s telegram_user_id=%s",
+                    role_name,
+                    actor_id,
+                    guild_id,
+                    telegram_user_id,
+                )
+                return RoleManagementService._delete_role_result(
+                    False,
+                    reason=DELETE_ROLE_REASON_NOT_FOUND,
+                    role_name=role_name,
+                )
+
+            discord_role_id = str(role.get("discord_role_id") or "").strip() or None
+            is_discord_managed = bool(role.get("is_discord_managed"))
+            if is_discord_managed:
+                logger.warning(
+                    "delete_role denied discord-managed role_name=%s discord_role_id=%s actor_id=%s guild_id=%s telegram_user_id=%s",
+                    role_name,
+                    discord_role_id,
+                    actor_id,
+                    guild_id,
+                    telegram_user_id,
+                )
+                return RoleManagementService._delete_role_result(
+                    False,
+                    reason=DELETE_ROLE_REASON_DISCORD_MANAGED,
+                    role_name=role_name,
+                    discord_role_id=discord_role_id,
+                    is_discord_managed=True,
+                )
+
             db.supabase.table("roles").delete().eq("name", role_name).execute()
             db.supabase.table("account_role_assignments").delete().eq("role_name", role_name).execute()
-            return True
+            return RoleManagementService._delete_role_result(
+                True,
+                role_name=role_name,
+                discord_role_id=discord_role_id,
+                is_discord_managed=is_discord_managed,
+            )
         except Exception:
-            logger.exception("delete_role failed role_name=%s", role_name)
-            return False
+            logger.exception(
+                "delete_role failed role_name=%s actor_id=%s guild_id=%s telegram_user_id=%s",
+                role_name,
+                actor_id,
+                guild_id,
+                telegram_user_id,
+            )
+            return RoleManagementService._delete_role_result(False, reason=DELETE_ROLE_REASON_ERROR, role_name=role_name)
 
     @staticmethod
     def move_role(role_name: str, category: str, position: int = 0) -> bool:

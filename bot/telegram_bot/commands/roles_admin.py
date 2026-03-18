@@ -9,6 +9,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from bot.data import db
 from bot.services import AccountsService, AuthorityService, RoleManagementService
+from bot.services.role_management_service import DELETE_ROLE_REASON_DISCORD_MANAGED
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -35,6 +36,20 @@ def _role_catalog_note() -> str:
         "ручная синхронизация доступна через <code>/rolesadmin sync_discord_roles</code> в Discord. "
         "Если роль не видна, значит она ещё не попала в каталог или синхронизация упала — проверь консольные логи."
     )
+
+
+def _delete_role_denied_message() -> str:
+    return (
+        "❌ Эту внешнюю Discord-роль нельзя удалить из каталога.\n"
+        "Её можно переместить в другую категорию или поменять порядок, "
+        "но сама роль управляется внешней синхронизацией Discord."
+    )
+
+
+def _delete_role_result_message(result: dict[str, object]) -> str:
+    if result.get("reason") == DELETE_ROLE_REASON_DISCORD_MANAGED:
+        return _delete_role_denied_message()
+    return "❌ Не удалось удалить роль (смотри логи)."
 
 
 async def _sync_linked_discord_role(provider_user_id: str, role_name: str, *, revoke: bool) -> None:
@@ -243,18 +258,38 @@ def has_pending_roles_admin_action(telegram_user_id: int | None) -> bool:
 
 
 
-def _flatten_roles(grouped: list[dict]) -> list[dict[str, str]]:
-    flattened = RoleManagementService.list_roles_available_for_admin_reorder()
-    if flattened:
-        return flattened
-
-    fallback: list[dict[str, str]] = []
+def _flatten_roles(grouped: list[dict]) -> list[dict[str, object]]:
+    flattened: list[dict[str, object]] = []
     for item in grouped:
         category = str(item.get("category") or "Без категории")
         for role in item.get("roles", []):
             role_name = str(role.get("name") or "").strip()
             if role_name:
-                fallback.append({"role": role_name, "category": category})
+                flattened.append(
+                    {
+                        "role": role_name,
+                        "category": category,
+                        "is_discord_managed": bool(role.get("is_discord_managed")),
+                        "discord_role_id": str(role.get("discord_role_id") or "").strip() or None,
+                    }
+                )
+    if flattened:
+        return flattened
+
+    fallback: list[dict[str, object]] = []
+    for item in grouped:
+        category = str(item.get("category") or "Без категории")
+        for role in item.get("roles", []):
+            role_name = str(role.get("name") or "").strip()
+            if role_name:
+                fallback.append(
+                    {
+                        "role": role_name,
+                        "category": category,
+                        "is_discord_managed": bool(role.get("is_discord_managed")),
+                        "discord_role_id": str(role.get("discord_role_id") or "").strip() or None,
+                    }
+                )
     return fallback
 
 
@@ -273,6 +308,8 @@ def _build_pick_category_keyboard(grouped: list[dict], actor_id: int, operation:
 
 def _build_pick_role_keyboard(grouped: list[dict], actor_id: int, operation: str, page: int = 0) -> InlineKeyboardMarkup:
     flattened = _flatten_roles(grouped)
+    if operation == "role_delete":
+        flattened = [item for item in flattened if not item.get("is_discord_managed")]
     page_size = 8
     safe_page = _normalize_page(page, len(flattened), page_size)
     start = safe_page * page_size
@@ -338,7 +375,7 @@ def _build_category_keyboard(
     actor_id: int,
     page: int,
     category_idx: int,
-    roles_count: int,
+    roles: list[dict],
     *,
     can_manage_categories: bool,
 ) -> InlineKeyboardMarkup:
@@ -349,11 +386,13 @@ def _build_category_keyboard(
         rows.append(
             [InlineKeyboardButton(text="🗑 Удалить категорию", callback_data=f"roles_admin:{actor_id}:delete_category:{page}:{category_idx}")]
         )
-    for role_idx in range(min(roles_count, _MAX_ROLE_BUTTONS)):
+    custom_roles = [role for role in roles[:_MAX_ROLE_BUTTONS] if not bool(role.get("is_discord_managed"))]
+    for role in custom_roles:
+        role_idx = roles.index(role)
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"🗑 Роль #{role_idx + 1}",
+                    text=f"🗑 {str(role.get('name') or f'Роль #{role_idx + 1}')}"[:64],
                     callback_data=f"roles_admin:{actor_id}:delete_role:{page}:{category_idx}:{role_idx}",
                 )
             ]
@@ -386,7 +425,8 @@ def _render_fallback_text() -> str:
         "<code>/roles_admin role_create &lt;name&gt; &lt;category&gt; [discord_role_id] [position]</code>\n"
         "<code>/roles_admin role_move &lt;name&gt; &lt;category&gt; [position]</code>\n"
         "<code>/roles_admin role_order &lt;role_name&gt; &lt;category&gt; &lt;position&gt;</code>\n"
-        "<code>/roles_admin role_delete &lt;name&gt;</code>\n\n"
+        "<code>/roles_admin role_delete &lt;name&gt;</code>\n"
+        "Внешние Discord-роли не удаляются из каталога: их можно только перемещать и сортировать.\n\n"
         "<b>Пользователи</b>\n"
         "<code>/roles_admin user_roles [reply|telegram_id]</code>\n"
         "<code>/roles_admin user_grant &lt;telegram_id&gt; &lt;role_name&gt;</code>\n"
@@ -408,7 +448,7 @@ def _render_help_text() -> str:
         "• <code>role_create &lt;name&gt; &lt;category&gt; [discord_role_id] [position]</code> — добавить роль в каталог.\n"
         "• <code>role_move &lt;name&gt; &lt;category&gt; [position]</code> — переместить роль в другую категорию.\n"
         "• <code>role_order &lt;role_name&gt; &lt;category&gt; &lt;position&gt;</code> — выставить очередь роли в категории.\n"
-        "• <code>role_delete &lt;name&gt;</code> — удалить роль из каталога.\n\n"
+        "• <code>role_delete &lt;name&gt;</code> — удалить роль из каталога. Внешние Discord-роли удалять нельзя: только move/order.\n\n"
         "<b>Роли пользователей</b>\n"
         "• <code>user_roles [reply|telegram_id]</code> — показать роли пользователя.\n"
         "• <code>user_grant &lt;telegram_id&gt; &lt;role_name&gt;</code> — выдать роль в БД.\n"
@@ -577,8 +617,12 @@ async def roles_admin_command(message: Message) -> None:
             return
 
         if subcommand == "role_delete" and len(args) >= 1:
-            ok = RoleManagementService.delete_role(args[0])
-            await message.answer("✅ Роль удалена." if ok else "❌ Не удалось удалить роль (смотри логи).")
+            result = RoleManagementService.delete_role(
+                args[0],
+                actor_id=str(message.from_user.id) if message.from_user else None,
+                telegram_user_id=str(message.from_user.id) if message.from_user else None,
+            )
+            await message.answer("✅ Роль удалена." if result["ok"] else _delete_role_result_message(result))
             return
 
         if subcommand == "role_move" and len(args) >= 2:
@@ -749,6 +793,8 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 return
             if operation in {"role_move", "role_order", "role_delete"}:
                 flattened_roles = _flatten_roles(grouped)
+                if operation == "role_delete":
+                    flattened_roles = [item for item in flattened_roles if not item.get("is_discord_managed")]
                 if not flattened_roles:
                     logger.error(
                         "roles_admin start=%s has no roles to pick actor_id=%s grouped_categories=%s",
@@ -756,7 +802,12 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                         callback.from_user.id,
                         len(grouped),
                     )
-                    await callback.answer("В каталоге ролей пока нет ни одной роли", show_alert=True)
+                    empty_message = (
+                        "Нет кастомных ролей для удаления: внешние Discord-роли можно только перемещать и сортировать."
+                        if operation == "role_delete"
+                        else "В каталоге ролей пока нет ни одной роли"
+                    )
+                    await callback.answer(empty_message, show_alert=True)
                     return
                 await _safe_edit_message_text(callback, 
                     "Выберите роль:",
@@ -772,6 +823,17 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
         if action == "pick_role_page":
             operation = parts[3] if len(parts) > 3 else ""
             page = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 0
+            flattened_roles = _flatten_roles(grouped)
+            if operation == "role_delete":
+                flattened_roles = [item for item in flattened_roles if not item.get("is_discord_managed")]
+            if not flattened_roles:
+                await callback.answer(
+                    "Нет кастомных ролей для удаления: внешние Discord-роли можно только перемещать и сортировать."
+                    if operation == "role_delete"
+                    else "В каталоге ролей пока нет ни одной роли",
+                    show_alert=True,
+                )
+                return
             await _safe_edit_message_text(callback, 
                 "Выберите роль:",
                 reply_markup=_build_pick_role_keyboard(grouped, owner_id, operation, page),
@@ -836,8 +898,15 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 return
             role_name = flattened[item_index]["role"]
             if operation == "role_delete":
-                ok = RoleManagementService.delete_role(role_name)
-                await callback.answer(f"Роль {role_name} удалена" if ok else "Не удалось удалить роль", show_alert=not ok)
+                result = RoleManagementService.delete_role(
+                    role_name,
+                    actor_id=str(callback.from_user.id) if callback.from_user else None,
+                    telegram_user_id=str(callback.from_user.id) if callback.from_user else None,
+                )
+                await callback.answer(
+                    f"Роль {role_name} удалена" if result["ok"] else _delete_role_result_message(result),
+                    show_alert=not result["ok"],
+                )
                 await _safe_edit_message_text(callback, _render_actions_text(), parse_mode="HTML", reply_markup=_build_actions_keyboard(owner_id))
                 return
             if operation in {"role_move", "role_order"}:
@@ -900,7 +969,8 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             else:
                 for idx, role in enumerate(roles[:_MAX_ROLE_BUTTONS], start=1):
                     suffix = f" (Discord ID: {role['discord_role_id']})" if role.get("discord_role_id") else ""
-                    lines.append(f"\n{idx}. {role['name']}{suffix}")
+                    external_note = " — внешняя Discord-роль, удаление скрыто" if role.get("is_discord_managed") else ""
+                    lines.append(f"\n{idx}. {role['name']}{suffix}{external_note}")
                 if len(roles) > _MAX_ROLE_BUTTONS:
                     lines.append(f"\n… и ещё {len(roles) - _MAX_ROLE_BUTTONS} ролей (удаляй через /roles_admin role_delete)")
 
@@ -911,7 +981,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     owner_id,
                     page,
                     category_idx,
-                    len(roles),
+                    roles,
                     can_manage_categories=actor_can_manage_categories,
                 ),
             )
@@ -959,9 +1029,13 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 return
 
             role_name = roles[role_idx]["name"]
-            ok = RoleManagementService.delete_role(role_name)
-            if not ok:
-                await callback.answer("Не удалось удалить роль (смотри логи).", show_alert=True)
+            result = RoleManagementService.delete_role(
+                role_name,
+                actor_id=str(callback.from_user.id) if callback.from_user else None,
+                telegram_user_id=str(callback.from_user.id) if callback.from_user else None,
+            )
+            if not result["ok"]:
+                await callback.answer(_delete_role_result_message(result), show_alert=True)
                 return
 
             grouped_after = RoleManagementService.list_roles_grouped() or []
@@ -974,7 +1048,8 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 else:
                     for idx, role in enumerate(refreshed_roles[:_MAX_ROLE_BUTTONS], start=1):
                         suffix = f" (Discord ID: {role['discord_role_id']})" if role.get("discord_role_id") else ""
-                        lines.append(f"\n{idx}. {role['name']}{suffix}")
+                        external_note = " — внешняя Discord-роль, удаление скрыто" if role.get("is_discord_managed") else ""
+                        lines.append(f"\n{idx}. {role['name']}{suffix}{external_note}")
                 await _safe_edit_message_text(callback, 
                     "\n".join(lines),
                     parse_mode="HTML",
@@ -982,7 +1057,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                         owner_id,
                         page,
                         category_idx,
-                        len(refreshed_roles),
+                        refreshed_roles,
                         can_manage_categories=actor_can_manage_categories,
                     ),
                 )
@@ -1090,8 +1165,12 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
             if not args:
                 await message.answer("❌ Формат: Название роли")
                 return
-            ok = RoleManagementService.delete_role(args[0])
-            await message.answer("✅ Роль удалена." if ok else "❌ Не удалось удалить роль (смотри логи).")
+            result = RoleManagementService.delete_role(
+                args[0],
+                actor_id=str(message.from_user.id) if message.from_user else None,
+                telegram_user_id=str(message.from_user.id) if message.from_user else None,
+            )
+            await message.answer("✅ Роль удалена." if result["ok"] else _delete_role_result_message(result))
         elif op == "user_roles":
             if message.reply_to_message and message.reply_to_message.from_user:
                 target_id = str(message.reply_to_message.from_user.id)
