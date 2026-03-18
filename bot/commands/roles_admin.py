@@ -5,9 +5,14 @@ from discord.ext import commands
 
 from bot.commands.base import bot
 from bot.services import AuthorityService, RoleManagementService
+from bot.services.role_management_service import DELETE_ROLE_REASON_DISCORD_MANAGED
 from bot.utils import send_temp
 
 logger = logging.getLogger(__name__)
+
+
+def _delete_role_denied_message() -> str:
+    return "❌ Эту внешнюю Discord-роль нельзя удалить из каталога. Её можно только переместить или отсортировать."
 
 
 def _render_role_source_note() -> str:
@@ -47,7 +52,8 @@ def _rolesadmin_help_embed() -> discord.Embed:
             "`/rolesadmin role_create <name> <category> [discord_role] [position]` — создать роль\n"
             "`/rolesadmin role_move <role_name> <category> [position]` — переместить роль\n"
             "`/rolesadmin role_order <role_name> <category> <position>` — изменить порядок роли\n"
-            "`/rolesadmin role_delete <name>` — удалить роль"
+            "`/rolesadmin role_delete <name>` — удалить роль\n"
+            "Внешние Discord-роли удалять нельзя: их можно только перемещать и сортировать."
         ),
         inline=False,
     )
@@ -180,8 +186,15 @@ async def rolesadmin_role_create(
 async def rolesadmin_role_delete(ctx: commands.Context, name: str):
     if not await _ensure_roles_admin(ctx):
         return
-    if RoleManagementService.delete_role(name):
+    result = RoleManagementService.delete_role(
+        name,
+        actor_id=str(ctx.author.id),
+        guild_id=str(ctx.guild.id) if ctx.guild else None,
+    )
+    if result["ok"]:
         await send_temp(ctx, f"✅ Роль **{name}** удалена.")
+    elif result["reason"] == DELETE_ROLE_REASON_DISCORD_MANAGED:
+        await send_temp(ctx, _delete_role_denied_message())
     else:
         await send_temp(ctx, "❌ Не удалось удалить роль (смотри логи).")
 
