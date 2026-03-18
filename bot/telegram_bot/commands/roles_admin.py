@@ -28,6 +28,15 @@ class PendingRolesAdminAction:
 _PENDING_ACTIONS: dict[int, PendingRolesAdminAction] = {}
 
 
+def _role_catalog_note() -> str:
+    return (
+        "Для <code>role_move</code> и <code>role_order</code> доступны только роли из канонического каталога "
+        "<code>roles</code>. Перед показом панели Telegram бот запускает синхронизацию Discord-ролей, а "
+        "ручная синхронизация доступна через <code>/rolesadmin sync_discord_roles</code> в Discord. "
+        "Если роль не видна, значит она ещё не попала в каталог или синхронизация упала — проверь консольные логи."
+    )
+
+
 async def _sync_linked_discord_role(provider_user_id: str, role_name: str, *, revoke: bool) -> None:
     try:
         account_id = AccountsService.resolve_account_id("telegram", str(provider_user_id))
@@ -103,6 +112,7 @@ async def _sync_discord_roles_catalog() -> None:
                         "id": str(role.id),
                         "name": role.name,
                         "position": int(role.position),
+                        "guild_id": str(guild.id),
                     }
                     for role in guild.roles
                     if not role.is_default()
@@ -184,7 +194,8 @@ def _render_actions_text() -> str:
         "⚡ <b>Действия кнопками</b>\n\n"
         "Нажми кнопку, затем отправь параметры <b>в следующем сообщении</b>.\n"
         "Разделитель параметров: <code>|</code>.\n"
-        "Для отмены ввода отправь: <code>отмена</code>."
+        "Для отмены ввода отправь: <code>отмена</code>.\n\n"
+        f"{_role_catalog_note()}"
     )
 
 
@@ -233,14 +244,18 @@ def has_pending_roles_admin_action(telegram_user_id: int | None) -> bool:
 
 
 def _flatten_roles(grouped: list[dict]) -> list[dict[str, str]]:
-    flattened: list[dict[str, str]] = []
+    flattened = RoleManagementService.list_roles_available_for_admin_reorder()
+    if flattened:
+        return flattened
+
+    fallback: list[dict[str, str]] = []
     for item in grouped:
         category = str(item.get("category") or "Без категории")
         for role in item.get("roles", []):
             role_name = str(role.get("name") or "").strip()
             if role_name:
-                flattened.append({"role": role_name, "category": category})
-    return flattened
+                fallback.append({"role": role_name, "category": category})
+    return fallback
 
 
 def _build_pick_category_keyboard(grouped: list[dict], actor_id: int, operation: str) -> InlineKeyboardMarkup:
@@ -353,7 +368,8 @@ def _render_home_text() -> str:
         "Все обновления идут в <b>одном сообщении</b> через кнопки.\n\n"
         "Управление через <b>кнопки</b> в разделе <b>⚡ Действия кнопками</b>.\n"
         "Если кнопки не срабатывают, открой <b>🆘 Не работают кнопки?</b> — там резервные команды и примеры.\n"
-        "\nНужны пояснения по функциям? Нажми кнопку <b>ℹ️ Что делает каждая функция</b>."
+        "\nНужны пояснения по функциям? Нажми кнопку <b>ℹ️ Что делает каждая функция</b>.\n\n"
+        f"{_role_catalog_note()}"
     )
 
 
@@ -374,7 +390,8 @@ def _render_fallback_text() -> str:
         "<b>Пользователи</b>\n"
         "<code>/roles_admin user_roles [reply|telegram_id]</code>\n"
         "<code>/roles_admin user_grant &lt;telegram_id&gt; &lt;role_name&gt;</code>\n"
-        "<code>/roles_admin user_revoke &lt;telegram_id&gt; &lt;role_name&gt;</code>"
+        "<code>/roles_admin user_revoke &lt;telegram_id&gt; &lt;role_name&gt;</code>\n\n"
+        f"{_role_catalog_note()}"
     )
 
 
@@ -399,7 +416,8 @@ def _render_help_text() -> str:
         "<b>Кнопки в панели</b>\n"
         "• 'Категории и роли' — просмотр списка и переход по категориям.\n"
         "• Внутри категории доступны кнопки удаления категории/ролей.\n"
-        "• Все экраны обновляются в одном сообщении без спама."
+        "• Все экраны обновляются в одном сообщении без спама.\n\n"
+        f"{_role_catalog_note()}"
     )
 
 
@@ -564,6 +582,15 @@ async def roles_admin_command(message: Message) -> None:
             return
 
         if subcommand == "role_move" and len(args) >= 2:
+            available_roles = {item["role"] for item in RoleManagementService.list_roles_available_for_admin_reorder()}
+            if args[0] not in available_roles:
+                logger.warning(
+                    "roles_admin role_move denied role missing from canonical catalog actor_id=%s role_name=%s",
+                    message.from_user.id if message.from_user else None,
+                    args[0],
+                )
+                await message.answer("❌ Роль не найдена в каталоге `roles`. Дождись синхронизации Discord-ролей и проверь логи.")
+                return
             position = int(args[2]) if len(args) >= 3 and args[2].isdigit() else 0
             ok = RoleManagementService.move_role(args[0], args[1], position)
             await message.answer("✅ Роль перемещена." if ok else "❌ Не удалось переместить роль (смотри логи).")
@@ -573,6 +600,15 @@ async def roles_admin_command(message: Message) -> None:
             role_name = args[0]
             category = args[1]
             position_raw = args[2]
+            available_roles = {item["role"] for item in RoleManagementService.list_roles_available_for_admin_reorder()}
+            if role_name not in available_roles:
+                logger.warning(
+                    "roles_admin role_order denied role missing from canonical catalog actor_id=%s role_name=%s",
+                    message.from_user.id if message.from_user else None,
+                    role_name,
+                )
+                await message.answer("❌ Роль не найдена в каталоге `roles`. Дождись синхронизации Discord-ролей и проверь логи.")
+                return
             if not position_raw.lstrip("-").isdigit():
                 await message.answer("❌ Формат: /roles_admin role_order <role_name> <category> <position>")
                 return

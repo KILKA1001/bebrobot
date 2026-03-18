@@ -9,11 +9,27 @@ from bot.utils import send_temp
 
 logger = logging.getLogger(__name__)
 
+
+def _render_role_source_note() -> str:
+    return (
+        "Для `role_move` и `role_order` доступны только роли из канонического каталога `roles`. "
+        "Перед открытием панели или ручной синхронизацией `/rolesadmin sync_discord_roles` Discord-роли "
+        "подтягиваются в каталог; если роль ещё не появилась, дождитесь синхронизации и проверьте логи."
+    )
+
+
+def _catalog_role_exists(role_name: str) -> bool:
+    role_key = str(role_name or "").strip()
+    if not role_key:
+        return False
+    return any(item["role"] == role_key for item in RoleManagementService.list_roles_available_for_admin_reorder())
+
 def _rolesadmin_help_embed() -> discord.Embed:
     embed = discord.Embed(title="ℹ️ Что делает /rolesadmin", color=discord.Color.blurple())
     embed.description = (
         "Управление каталогом ролей и ролями пользователей.\n"
-        "Все команды доступны только администраторам/модераторам с правами."
+        "Все команды доступны только администраторам/модераторам с правами.\n\n"
+        f"{_render_role_source_note()}"
     )
     embed.add_field(
         name="Категории",
@@ -30,6 +46,7 @@ def _rolesadmin_help_embed() -> discord.Embed:
             "`/rolesadmin list` — показать роли по категориям\n"
             "`/rolesadmin role_create <name> <category> [discord_role] [position]` — создать роль\n"
             "`/rolesadmin role_move <role_name> <category> [position]` — переместить роль\n"
+            "`/rolesadmin role_order <role_name> <category> <position>` — изменить порядок роли\n"
             "`/rolesadmin role_delete <name>` — удалить роль"
         ),
         inline=False,
@@ -173,10 +190,38 @@ async def rolesadmin_role_delete(ctx: commands.Context, name: str):
 async def rolesadmin_role_move(ctx: commands.Context, role_name: str, category: str, position: int = 0):
     if not await _ensure_roles_admin(ctx):
         return
+    if not _catalog_role_exists(role_name):
+        logger.warning(
+            "rolesadmin role_move denied role missing from canonical catalog actor_id=%s guild_id=%s role_name=%s",
+            ctx.author.id,
+            ctx.guild.id if ctx.guild else None,
+            role_name,
+        )
+        await send_temp(ctx, "❌ Роль не найдена в каталоге `roles`. Запусти `/rolesadmin sync_discord_roles` и проверь логи.")
+        return
     if RoleManagementService.move_role(role_name, category, position):
         await send_temp(ctx, f"✅ Роль **{role_name}** перемещена в **{category}**.")
     else:
         await send_temp(ctx, "❌ Не удалось переместить роль (смотри логи).")
+
+
+@rolesadmin.command(name="role_order", description="Изменить порядок роли в категории")
+async def rolesadmin_role_order(ctx: commands.Context, role_name: str, category: str, position: int):
+    if not await _ensure_roles_admin(ctx):
+        return
+    if not _catalog_role_exists(role_name):
+        logger.warning(
+            "rolesadmin role_order denied role missing from canonical catalog actor_id=%s guild_id=%s role_name=%s",
+            ctx.author.id,
+            ctx.guild.id if ctx.guild else None,
+            role_name,
+        )
+        await send_temp(ctx, "❌ Роль не найдена в каталоге `roles`. Запусти `/rolesadmin sync_discord_roles` и проверь логи.")
+        return
+    if RoleManagementService.move_role(role_name, category, position):
+        await send_temp(ctx, f"✅ Порядок роли **{role_name}** обновлён: категория **{category}**, позиция **{position}**.")
+    else:
+        await send_temp(ctx, "❌ Не удалось обновить порядок роли (смотри логи).")
 
 
 @rolesadmin.command(name="user_roles", description="Посмотреть роли пользователя")
@@ -253,7 +298,7 @@ async def rolesadmin_sync_discord_roles(ctx: commands.Context):
         return
     try:
         guild_roles = [
-            {"id": str(role.id), "name": role.name, "position": role.position}
+            {"id": str(role.id), "name": role.name, "position": role.position, "guild_id": str(ctx.guild.id)}
             for role in ctx.guild.roles
             if not role.is_default()
         ]
