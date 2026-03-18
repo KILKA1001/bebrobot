@@ -234,7 +234,7 @@ async def rolesadmin_user_roles(ctx: commands.Context, member: discord.Member):
         await send_temp(ctx, f"📭 У пользователя {member.mention} нет ролей в account_role_assignments.")
         return
 
-    lines = [f"• {role['name']} ({role.get('category') or 'Без категории'})" for role in roles]
+    lines = [f"• {role['name']} ({role['category']})" for role in roles]
     await send_temp(ctx, f"🧾 Роли {member.mention}:\n" + "\n".join(lines))
 
 

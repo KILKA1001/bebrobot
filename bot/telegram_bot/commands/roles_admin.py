@@ -627,7 +627,7 @@ async def roles_admin_command(message: Message) -> None:
                 return
             lines = [f"🧾 Роли пользователя {target_id}:"]
             for role in roles:
-                lines.append(f"• {role['name']} ({role.get('category') or 'Без категории'})")
+                lines.append(f"• {role['name']} ({role['category']})")
             await message.answer("\n".join(lines))
             return
 
@@ -1106,7 +1106,7 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
             else:
                 lines = [f"🧾 Роли пользователя {target_id}:"]
                 for role in roles:
-                    lines.append(f"• {role['name']} ({role.get('category') or 'Без категории'})")
+                    lines.append(f"• {role['name']} ({role['category']})")
                 await message.answer("\n".join(lines))
         elif op in {"user_grant", "user_revoke"}:
             if len(args) < 2 or not args[0].isdigit():

@@ -109,7 +109,7 @@ def _normalize_visible_roles_catalog(roles_by_category: dict[str, list[str]] | N
         role_names = sorted(set(role_names), key=lambda value: value.lower())
         if role_names:
             for role_name in role_names:
-                catalog.append({"category": str(category_name).strip() or "Без категории", "role": role_name})
+                catalog.append({"category": str(category_name).strip(), "role": role_name})
     return catalog
 
 
@@ -125,7 +125,7 @@ def _build_visible_roles_keyboard(catalog: list[dict[str, object]], selected_rol
     rows: list[list[InlineKeyboardButton]] = []
     for idx, item in enumerate(page_items):
         role_name = str(item.get("role") or "").strip()
-        category = str(item.get("category") or "Без категории").strip() or "Без категории"
+        category = str(item.get("category") or "").strip()
         prefix = "✅ " if role_name in selected_roles else ""
         label = f"{prefix}{role_name} [{category}]"[:64]
         row_idx = idx // 2

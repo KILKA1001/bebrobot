@@ -1287,7 +1287,14 @@ class AccountsService:
             role_name = str(role_item.get("name") or "").strip()
             if not role_name:
                 continue
-            category = str(role_item.get("category") or "Без категории").strip() or "Без категории"
+            category = str(role_item.get("category") or "").strip()
+            if not category:
+                logger.warning(
+                    "get_profile_by_account received role without normalized category account_id=%s role_name=%s",
+                    account_id,
+                    role_name,
+                )
+                category = RoleResolver.normalize_category_value(None)
             roles_by_category.setdefault(category, [])
             if role_name not in roles_by_category[category]:
                 roles_by_category[category].append(role_name)
