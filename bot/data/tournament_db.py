@@ -2,6 +2,10 @@ from typing import List, Optional, Dict
 from bot.data.db import db
 import logging
 from postgrest.exceptions import APIError
+from bot.legacy_identity_logging import (
+    log_identity_resolve_error,
+    log_legacy_schema_fallback,
+)
 
 assert db.supabase
 # Обёртки для работы с таблицами турниров в Supabase
@@ -100,6 +104,16 @@ def _normalize_bet_row(row: dict) -> dict:
     if account_id and row.get("user_id") is None:
         resolved = _get_discord_user_for_account(account_id)
         if resolved is not None:
+            log_legacy_schema_fallback(
+                logger,
+                module=__name__,
+                table="tournament_bets",
+                field="user_id",
+                action="replace_with_account_id_column",
+                continue_execution=True,
+                account_id=account_id,
+                fallback_field="user_id",
+            )
             return {**row, "user_id": resolved}
     return row
 
@@ -160,6 +174,15 @@ def add_discord_participant(
     if _has_tp_account_id and account_id:
         payload["account_id"] = account_id
     elif _has_tp_discord_user_id:
+        log_legacy_schema_fallback(
+            logger,
+            module=__name__,
+            table="tournament_participants",
+            field="discord_user_id",
+            action="replace_with_account_id_column",
+            continue_execution=True,
+            tournament_id=tournament_id,
+        )
         payload["discord_user_id"] = discord_user_id
 
     if _has_tp_player_id:
@@ -179,7 +202,15 @@ def add_discord_participant(
                 retry = supabase.table("tournament_participants").insert(payload).execute()
                 return bool(retry.data)
             if _has_tp_account_id and "account_id" in str(e):
-                logger.warning("'account_id' column missing in tournament_participants table; fallback to discord_user_id")
+                log_legacy_schema_fallback(
+                    logger,
+                    module=__name__,
+                    table="tournament_participants",
+                    field="discord_user_id",
+                    action="replace_with_account_id_column",
+                    continue_execution=True,
+                    tournament_id=tournament_id,
+                )
                 _has_tp_account_id = False
                 payload.pop("account_id", None)
                 if _has_tp_discord_user_id:
@@ -217,6 +248,15 @@ def add_player_participant(
     if _has_tp_account_id and account_id:
         payload["account_id"] = account_id
     elif _has_tp_discord_user_id:
+        log_legacy_schema_fallback(
+            logger,
+            module=__name__,
+            table="tournament_participants",
+            field="player_id",
+            action="replace_with_account_id_column",
+            continue_execution=True,
+            tournament_id=tournament_id,
+        )
         payload["discord_user_id"] = player_id
 
     if _has_tp_player_id:
@@ -236,7 +276,15 @@ def add_player_participant(
                 retry = supabase.table("tournament_participants").insert(payload).execute()
                 return bool(retry.data)
             if _has_tp_account_id and "account_id" in str(e):
-                logger.warning("'account_id' column missing in tournament_participants table; fallback to discord_user_id")
+                log_legacy_schema_fallback(
+                    logger,
+                    module=__name__,
+                    table="tournament_participants",
+                    field="discord_user_id",
+                    action="replace_with_account_id_column",
+                    continue_execution=True,
+                    tournament_id=tournament_id,
+                )
                 _has_tp_account_id = False
                 payload.pop("account_id", None)
                 if _has_tp_discord_user_id:
@@ -302,6 +350,15 @@ def list_participants(tournament_id: int) -> List[dict]:
         if row.get("discord_user_id") is None and row.get("account_id"):
             resolved = _get_discord_user_for_account(row.get("account_id"))
             if resolved is not None:
+                log_legacy_schema_fallback(
+                    logger,
+                    module=__name__,
+                    table="tournament_participants",
+                    field="discord_user_id",
+                    action="replace_with_account_id_column",
+                    continue_execution=True,
+                    account_id=row.get("account_id"),
+                )
                 row = {**row, "discord_user_id": resolved}
         normalized.append(row)
     return normalized
@@ -1097,6 +1154,16 @@ def create_bet(
     if _has_tb_account_id and account_id:
         payload["account_id"] = account_id
     elif _has_tb_user_id:
+        log_legacy_schema_fallback(
+            logger,
+            module=__name__,
+            table="tournament_bets",
+            field="user_id",
+            action="replace_with_account_id_column",
+            continue_execution=True,
+            tournament_id=tournament_id,
+            round=round_no,
+        )
         payload["user_id"] = user_id
 
     try:
@@ -1109,7 +1176,16 @@ def create_bet(
     except APIError as e:
         if getattr(e, "code", "") == "PGRST204":
             if _has_tb_account_id and "account_id" in str(e):
-                logger.warning("'account_id' column missing in tournament_bets table; fallback to user_id")
+                log_legacy_schema_fallback(
+                    logger,
+                    module=__name__,
+                    table="tournament_bets",
+                    field="user_id",
+                    action="replace_with_account_id_column",
+                    continue_execution=True,
+                    tournament_id=tournament_id,
+                    round=round_no,
+                )
                 _has_tb_account_id = False
                 payload.pop("account_id", None)
                 if _has_tb_user_id:
@@ -1188,6 +1264,26 @@ def list_user_bets(
     if account_id:
         query = query.eq("account_id", account_id)
     else:
+        log_identity_resolve_error(
+            logger,
+            module=__name__,
+            handler="list_user_bets",
+            field="user_id",
+            action="resolve_account_id",
+            continue_execution=True,
+            tournament_id=tournament_id,
+            user_id=user_id,
+        )
+        log_legacy_schema_fallback(
+            logger,
+            module=__name__,
+            table="tournament_bets",
+            field="user_id",
+            action="replace_with_account_id_column",
+            continue_execution=True,
+            tournament_id=tournament_id,
+            user_id=user_id,
+        )
         query = query.eq("user_id", user_id)
     if open_only:
         query = query.is_("won", None)

@@ -1,6 +1,10 @@
 import logging
 
 from bot.data import db
+from bot.legacy_identity_logging import (
+    log_identity_resolve_error,
+    log_legacy_identity_path_detected,
+)
 from .accounts_service import AccountsService
 
 
@@ -42,16 +46,45 @@ class TicketsService:
         reason: str,
         author_id: int,
     ) -> bool:
+        log_legacy_identity_path_detected(
+            logger,
+            module=__name__,
+            handler="TicketsService.give_ticket_by_identity",
+            field=f"{provider}_user_id" if provider in {"telegram", "discord"} else "provider_user_id",
+            action="resolve_account_id",
+            continue_execution=True,
+            provider=provider,
+        )
         account_id = AccountsService.resolve_account_id(provider, str(provider_user_id))
         if not account_id:
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("identity_resolve_errors")
+            log_identity_resolve_error(
+                logger,
+                module=__name__,
+                handler="TicketsService.give_ticket_by_identity",
+                field=f"{provider}_user_id" if provider in {"telegram", "discord"} else "provider_user_id",
+                action="resolve_account_id",
+                continue_execution=False,
+                provider=provider,
+                provider_user_id=provider_user_id,
+            )
             return False
         author_account_id = AccountsService.resolve_account_id(provider, str(author_id))
         if not author_account_id:
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("identity_resolve_errors")
-            logger.error("give_ticket_by_identity: unresolved author account provider=%s author_id=%s", provider, author_id)
+            log_identity_resolve_error(
+                logger,
+                module=__name__,
+                handler="TicketsService.give_ticket_by_identity",
+                field=f"{provider}_user_id" if provider in {"telegram", "discord"} else "provider_user_id",
+                action="resolve_account_id",
+                continue_execution=False,
+                provider=provider,
+                author_id=author_id,
+                target="author_account_id",
+            )
             return False
         return TicketsService.give_ticket_by_account(account_id, ticket_type, amount, reason, author_account_id)
 
@@ -64,16 +97,45 @@ class TicketsService:
         reason: str,
         author_id: int,
     ) -> bool:
+        log_legacy_identity_path_detected(
+            logger,
+            module=__name__,
+            handler="TicketsService.remove_ticket_by_identity",
+            field=f"{provider}_user_id" if provider in {"telegram", "discord"} else "provider_user_id",
+            action="resolve_account_id",
+            continue_execution=True,
+            provider=provider,
+        )
         account_id = AccountsService.resolve_account_id(provider, str(provider_user_id))
         if not account_id:
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("identity_resolve_errors")
+            log_identity_resolve_error(
+                logger,
+                module=__name__,
+                handler="TicketsService.remove_ticket_by_identity",
+                field=f"{provider}_user_id" if provider in {"telegram", "discord"} else "provider_user_id",
+                action="resolve_account_id",
+                continue_execution=False,
+                provider=provider,
+                provider_user_id=provider_user_id,
+            )
             return False
         author_account_id = AccountsService.resolve_account_id(provider, str(author_id))
         if not author_account_id:
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("identity_resolve_errors")
-            logger.error("remove_ticket_by_identity: unresolved author account provider=%s author_id=%s", provider, author_id)
+            log_identity_resolve_error(
+                logger,
+                module=__name__,
+                handler="TicketsService.remove_ticket_by_identity",
+                field=f"{provider}_user_id" if provider in {"telegram", "discord"} else "provider_user_id",
+                action="resolve_account_id",
+                continue_execution=False,
+                provider=provider,
+                author_id=author_id,
+                target="author_account_id",
+            )
             return False
         return TicketsService.remove_ticket_by_account(account_id, ticket_type, amount, reason, author_account_id)
 

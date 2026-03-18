@@ -10,6 +10,11 @@ from dotenv import load_dotenv
 import traceback
 import asyncio
 import uuid
+from bot.legacy_identity_logging import (
+    log_identity_resolve_error,
+    log_legacy_identity_fallback_used,
+    log_legacy_identity_path_detected,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -451,9 +456,25 @@ class Database:
 
     def update_scores(self, user_id: int, points_change: float):
         """Совместимый wrapper: обновляет баллы по user_id через account_id."""
+        log_legacy_identity_path_detected(
+            logger,
+            module=__name__,
+            handler="Database.update_scores",
+            field="user_id",
+            action="replace_with_account_id",
+            continue_execution=True,
+        )
         account_id = self._get_account_id_for_discord_user(user_id)
         if not account_id:
-            logger.error("❌ update_scores aborted: нет account_id для user_id=%s", user_id)
+            log_identity_resolve_error(
+                logger,
+                module=__name__,
+                handler="Database.update_scores",
+                field="user_id",
+                action="resolve_account_id",
+                continue_execution=False,
+                user_id=user_id,
+            )
             return False
         return self.update_scores_by_account(account_id, points_change, user_id=user_id)
 
@@ -512,9 +533,28 @@ class Database:
         self.ensure_core_data_loaded()
 
         try:
+            if user_id is not None:
+                log_legacy_identity_path_detected(
+                    logger,
+                    module=__name__,
+                    handler="Database.add_action",
+                    field="user_id",
+                    action="replace_with_account_id",
+                    continue_execution=True,
+                    fallback_account_supplied=bool(account_id),
+                )
             resolved_account_id = account_id or (self._get_account_id_for_discord_user(user_id) if user_id is not None else None)
             if not resolved_account_id:
-                logger.error("❌ add_action aborted: не найден account_id user_id=%s reason=%s", user_id, reason)
+                log_identity_resolve_error(
+                    logger,
+                    module=__name__,
+                    handler="Database.add_action",
+                    field="user_id",
+                    action="resolve_account_id",
+                    continue_execution=False,
+                    user_id=user_id,
+                    reason=reason,
+                )
                 return False
             if not self.supabase:
                 logger.warning("Supabase client is not initialized.")
@@ -524,7 +564,17 @@ class Database:
             if not author_account_id:
                 author_account_id = self._get_account_id_for_discord_user(author_id)
             if not author_account_id:
-                logger.error("❌ add_action: не найден author_account_id author_id=%s account_id=%s reason=%s", author_id, resolved_account_id, reason)
+                log_identity_resolve_error(
+                    logger,
+                    module=__name__,
+                    handler="Database.add_action",
+                    field="author_id",
+                    action="resolve_account_id",
+                    continue_execution=False,
+                    author_id=author_id,
+                    account_id=resolved_account_id,
+                    reason=reason,
+                )
                 return False
 
             cache_user_id = user_id if user_id is not None else self._get_discord_user_for_account_id(resolved_account_id)
@@ -571,10 +621,15 @@ class Database:
                         logger.warning("⚠️ add_action op_key=%s уже применён, пропуск дубликата", op_key)
                         return True
             except Exception as rpc_error:
-                logger.error(
-                    "❌ RPC apply_points_action недоступен, fallback на legacy-путь. account_id=%s error=%s",
-                    resolved_account_id,
-                    rpc_error,
+                log_legacy_identity_fallback_used(
+                    logger,
+                    module=__name__,
+                    handler="Database.add_action",
+                    field="rpc_apply_points_action",
+                    action="replace_with_account_first_rpc",
+                    continue_execution=True,
+                    account_id=resolved_account_id,
+                    error=rpc_error,
                 )
 
             if not rpc_applied:
@@ -918,10 +973,29 @@ class Database:
 
     def record_payment(self, user_id: int, fine_id: int, amount: float, author_id: int) -> bool:
         """Совместимый wrapper оплаты штрафа по user_id."""
+        log_legacy_identity_path_detected(
+            logger,
+            module=__name__,
+            handler="Database.record_payment",
+            field="user_id",
+            action="replace_with_account_id",
+            continue_execution=True,
+            fine_id=fine_id,
+        )
         account_id = self._get_account_id_for_discord_user(user_id)
         author_account_id = self._get_account_id_for_discord_user(author_id)
         if not account_id or not author_account_id:
-            logger.error("❌ record_payment aborted: unresolved account_id user_id=%s author_id=%s", user_id, author_id)
+            log_identity_resolve_error(
+                logger,
+                module=__name__,
+                handler="Database.record_payment",
+                field="user_id",
+                action="resolve_account_id",
+                continue_execution=False,
+                user_id=user_id,
+                author_id=author_id,
+                fine_id=fine_id,
+            )
             return False
         return self.record_payment_by_account(account_id, fine_id, amount, author_account_id)
 
@@ -1210,9 +1284,27 @@ class Database:
 
     def update_tickets(self, user_id: int, ticket_type: str, amount: int) -> bool:
         """Совместимый wrapper: обновление билетов по user_id через account_id."""
+        log_legacy_identity_path_detected(
+            logger,
+            module=__name__,
+            handler="Database.update_tickets",
+            field="user_id",
+            action="replace_with_account_id",
+            continue_execution=True,
+            ticket_type=ticket_type,
+        )
         account_id = self._get_account_id_for_discord_user(user_id)
         if not account_id:
-            logger.error("❌ update_tickets aborted: нет account_id для user_id=%s", user_id)
+            log_identity_resolve_error(
+                logger,
+                module=__name__,
+                handler="Database.update_tickets",
+                field="user_id",
+                action="resolve_account_id",
+                continue_execution=False,
+                user_id=user_id,
+                ticket_type=ticket_type,
+            )
             return False
         return self.update_tickets_by_account(account_id, ticket_type, amount)
 
@@ -1244,9 +1336,27 @@ class Database:
 
     def log_ticket_action(self, user_id: int, ticket_type: str, amount: int, reason: str, author_id: int, author_account_id: Optional[str] = None):
         """Совместимый wrapper: лог ticket_actions по user_id."""
+        log_legacy_identity_path_detected(
+            logger,
+            module=__name__,
+            handler="Database.log_ticket_action",
+            field="user_id",
+            action="replace_with_account_id",
+            continue_execution=True,
+            ticket_type=ticket_type,
+        )
         account_id = self._get_account_id_for_discord_user(user_id)
         if not account_id:
-            logger.error("❌ log_ticket_action aborted: нет account_id для user_id=%s", user_id)
+            log_identity_resolve_error(
+                logger,
+                module=__name__,
+                handler="Database.log_ticket_action",
+                field="user_id",
+                action="resolve_account_id",
+                continue_execution=False,
+                user_id=user_id,
+                ticket_type=ticket_type,
+            )
             return
         self.log_ticket_action_by_account(account_id, ticket_type, amount, reason, author_account_id, author_id=author_id)
 
@@ -1279,16 +1389,52 @@ class Database:
             logger.error(f"Ошибка логирования тикета: {e}")
 
     def give_ticket(self, user_id: int, ticket_type: str, amount: int, reason: str, author_id: int, author_account_id: Optional[str] = None) -> bool:
+        log_legacy_identity_path_detected(
+            logger,
+            module=__name__,
+            handler="Database.give_ticket",
+            field="user_id",
+            action="replace_with_account_id",
+            continue_execution=True,
+            ticket_type=ticket_type,
+        )
         account_id = self._get_account_id_for_discord_user(user_id)
         if not account_id:
-            logger.error("❌ give_ticket aborted: нет account_id для user_id=%s", user_id)
+            log_identity_resolve_error(
+                logger,
+                module=__name__,
+                handler="Database.give_ticket",
+                field="user_id",
+                action="resolve_account_id",
+                continue_execution=False,
+                user_id=user_id,
+                ticket_type=ticket_type,
+            )
             return False
         return self.give_ticket_by_account(account_id, ticket_type, amount, reason, author_account_id, author_id=author_id)
 
     def remove_ticket(self, user_id: int, ticket_type: str, amount: int, reason: str, author_id: int, author_account_id: Optional[str] = None) -> bool:
+        log_legacy_identity_path_detected(
+            logger,
+            module=__name__,
+            handler="Database.remove_ticket",
+            field="user_id",
+            action="replace_with_account_id",
+            continue_execution=True,
+            ticket_type=ticket_type,
+        )
         account_id = self._get_account_id_for_discord_user(user_id)
         if not account_id:
-            logger.error("❌ remove_ticket aborted: нет account_id для user_id=%s", user_id)
+            log_identity_resolve_error(
+                logger,
+                module=__name__,
+                handler="Database.remove_ticket",
+                field="user_id",
+                action="resolve_account_id",
+                continue_execution=False,
+                user_id=user_id,
+                ticket_type=ticket_type,
+            )
             return False
         return self.remove_ticket_by_account(account_id, ticket_type, amount, reason, author_account_id, author_id=author_id)
 
