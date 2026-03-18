@@ -33,10 +33,19 @@ class DiscordHttpTests(unittest.TestCase):
 
         self.assertEqual(extract_retry_after_seconds(exc), 17.5)
 
+    def test_extract_retry_after_ignores_cloudflare_html_noise(self):
+        exc = discord.HTTPException(
+            _FakeResponse(headers={"server": "cloudflare", "cf-ray": "ray-123"}),
+            """<!doctype html><html><body><script>var retryAfter=1555;</script>
+            <h1>Error 1015</h1><p>You are being rate limited</p></body></html>""",
+        )
+
+        self.assertIsNone(extract_retry_after_seconds(exc))
+
     def test_build_log_context_sanitizes_html(self):
         exc = discord.HTTPException(
             _FakeResponse(headers={"server": "cloudflare", "cf-ray": "ray-999"}),
-            "<html><body>Error 1015 <strong>Access denied</strong></body></html>",
+            "<html><body>Error 1015 <strong>Access denied</strong><script>var x=1</script></body></html>",
         )
 
         context = build_http_exception_log_context(exc, stage="unit-test")
@@ -45,6 +54,7 @@ class DiscordHttpTests(unittest.TestCase):
         self.assertEqual(context["stage"], "unit-test")
         self.assertIn("Error 1015 Access denied", context["error_excerpt"])
         self.assertNotIn("<strong>", context["error_excerpt"])
+        self.assertNotIn("var x=1", context["error_excerpt"])
 
 
 if __name__ == "__main__":

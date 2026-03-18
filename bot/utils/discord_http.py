@@ -6,11 +6,13 @@ import discord
 
 _CLOUDFLARE_RAY_RE = re.compile(r"ray id:\s*([a-z0-9-]+)", re.IGNORECASE)
 _RETRY_AFTER_RE = re.compile(
-    r"retry(?:_|-|\s)after[:]?\s*(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|sec|seconds?)?",
+    r"\bretry(?:_|-|\s)after\b\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|sec|seconds?)?",
     re.IGNORECASE,
 )
+_SCRIPT_STYLE_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
 _TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
+_HTML_MARKER_RE = re.compile(r"</?(?:html|head|body|script|style|title|div|span|p|section|header|footer|iframe)\b", re.IGNORECASE)
 
 
 def _response_header(exc: discord.HTTPException, name: str) -> str | None:
@@ -19,6 +21,19 @@ def _response_header(exc: discord.HTTPException, name: str) -> str | None:
         return None
     value = response.headers.get(name) or response.headers.get(name.lower())
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _looks_like_html(text: str) -> bool:
+    return bool(text and (_HTML_MARKER_RE.search(text) or "<!doctype html" in text.lower()))
+
+
+def _normalize_plain_text(text: str | None) -> str:
+    if not text:
+        return ""
+    cleaned = _SCRIPT_STYLE_RE.sub(" ", text)
+    cleaned = _TAG_RE.sub(" ", cleaned)
+    cleaned = cleaned.replace("\\n", " ").replace("\n", " ")
+    return _WHITESPACE_RE.sub(" ", cleaned).strip()
 
 
 def extract_retry_after_seconds(exc: discord.HTTPException) -> float | None:
@@ -34,7 +49,10 @@ def extract_retry_after_seconds(exc: discord.HTTPException) -> float | None:
             pass
 
     text = getattr(exc, "text", "") or ""
-    match = _RETRY_AFTER_RE.search(text)
+    if _looks_like_html(text):
+        return None
+
+    match = _RETRY_AFTER_RE.search(_normalize_plain_text(text))
     if not match:
         return None
 
@@ -46,11 +64,9 @@ def extract_retry_after_seconds(exc: discord.HTTPException) -> float | None:
 
 
 def summarize_http_error_text(text: str | None, *, limit: int = 220) -> str:
-    if not text:
+    cleaned = _normalize_plain_text(text)
+    if not cleaned:
         return ""
-    cleaned = _TAG_RE.sub(" ", text)
-    cleaned = cleaned.replace("\\n", " ").replace("\n", " ")
-    cleaned = _WHITESPACE_RE.sub(" ", cleaned).strip()
     if len(cleaned) <= limit:
         return cleaned
     return f"{cleaned[: limit - 1]}…"
