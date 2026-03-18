@@ -10,8 +10,8 @@ class RateLimiter:
     def __init__(self):
         self._lock = asyncio.Lock()
         self._next_time = 0.0
-        self._base_delay = max(0.5, float(os.getenv("BOT_API_DELAY_SECONDS", "3.0")))
-        self._jitter = max(0.0, float(os.getenv("BOT_API_DELAY_JITTER", "0.8")))
+        self._base_delay = max(0.5, float(os.getenv("BOT_API_DELAY_SECONDS", "5.0")))
+        self._jitter = max(0.0, float(os.getenv("BOT_API_DELAY_JITTER", "1.2")))
 
     def _normalize_delay(self, delay: float | None) -> float:
         """Return an effective delay with optional jitter.
