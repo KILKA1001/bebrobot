@@ -10,6 +10,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from bot.data import db
 from bot.services import AccountsService, AuthorityService, PointsService, TicketsService
+from bot.telegram_bot.identity import persist_telegram_identity_from_user
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -113,6 +114,7 @@ async def _respond_in_flow(
 
 
 async def _guard_callback_actor(callback: CallbackQuery, owner_id: str | None) -> bool:
+    persist_telegram_identity_from_user(callback.from_user)
     if callback.from_user is None:
         await callback.answer("Ошибка пользователя", show_alert=True)
         return False
@@ -221,6 +223,7 @@ def _get_score_snapshot(account_id: str) -> tuple[float, int, int]:
 @router.message(Command("balance"))
 async def balance_command(message: Message) -> None:
     try:
+        persist_telegram_identity_from_user(message.from_user)
         if not message.from_user:
             await message.answer("❌ Не удалось определить пользователя Telegram.")
             return
@@ -256,6 +259,7 @@ async def balance_command(message: Message) -> None:
 @router.message(Command("points"))
 async def points_menu_command(message: Message) -> None:
     try:
+        persist_telegram_identity_from_user(message.from_user)
         if not message.from_user:
             await message.answer("❌ Не удалось определить пользователя Telegram.")
             return
@@ -302,6 +306,7 @@ async def points_menu_command(message: Message) -> None:
 @router.message(Command("tickets"))
 async def tickets_menu_command(message: Message) -> None:
     try:
+        persist_telegram_identity_from_user(message.from_user)
         if not message.from_user:
             await message.answer("❌ Не удалось определить пользователя Telegram.")
             return
@@ -348,6 +353,7 @@ async def tickets_menu_command(message: Message) -> None:
 @router.callback_query(F.data.startswith("points:"))
 async def points_callback(callback: CallbackQuery) -> None:
     try:
+        persist_telegram_identity_from_user(callback.from_user)
         if not callback.from_user:
             await callback.answer("Ошибка пользователя", show_alert=True)
             return
@@ -418,6 +424,7 @@ async def points_callback(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("tickets:"))
 async def tickets_callback(callback: CallbackQuery) -> None:
     try:
+        persist_telegram_identity_from_user(callback.from_user)
         if not callback.from_user:
             await callback.answer("Ошибка пользователя", show_alert=True)
             return
@@ -487,6 +494,7 @@ async def tickets_callback(callback: CallbackQuery) -> None:
 
 @router.message(F.from_user, F.from_user.id.func(has_pending_action))
 async def pending_action_handler(message: Message) -> None:
+    persist_telegram_identity_from_user(message.from_user)
     if not has_pending_action(message.from_user.id):
         logger.warning(
             "pending action handler invoked without pending state user_id=%s chat_id=%s",

@@ -10,6 +10,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from bot.data import db
 from bot.services import AccountsService, AuthorityService, RoleManagementService
+from bot.telegram_bot.identity import persist_telegram_identity_from_user
 from bot.services.role_management_service import (
     DELETE_ROLE_REASON_DISCORD_MANAGED,
     DELETE_ROLE_REASON_NOT_FOUND,
@@ -200,17 +201,6 @@ async def _sync_discord_roles_catalog() -> None:
     except Exception:
         logger.exception("telegram roles_admin discord catalog sync crashed")
 
-def _persist_telegram_identity_from_user(user: Any | None) -> None:
-    if not user or getattr(user, "is_bot", False):
-        return
-    AccountsService.persist_identity_lookup_fields(
-        "telegram",
-        str(user.id),
-        username=getattr(user, "username", None),
-        display_name=getattr(user, "full_name", None),
-    )
-
-
 def _format_telegram_lookup_candidate(candidate: dict[str, Any]) -> str:
     provider = str(candidate.get("provider") or "").strip()
     username = candidate.get("username")
@@ -233,10 +223,70 @@ def _format_telegram_lookup_candidate(candidate: dict[str, Any]) -> str:
 
 def _user_not_found_message() -> str:
     return (
-        "❌ Пользователь не найден в локальном реестре. "
-        "Пусть он хотя бы раз взаимодействует с ботом: /register, /link, /profile или просто сообщение боту. "
+        "❌ Пользователь ещё не появлялся в локальном реестре identity lookup. "
+        "Пусть он один раз напишет боту или выполнит /register, /link или /profile. "
         + _telegram_user_lookup_hint()
     )
+
+
+def _user_without_account_message() -> str:
+    return (
+        "❌ Пользователь найден в локальном реестре, но у него ещё нет общего аккаунта. "
+        "Пусть он завершит /register или /link, после чего попробуйте снова."
+    )
+
+
+def _roles_admin_lookup_log(
+    *,
+    actor_id: int | None,
+    lookup_value: str | None,
+    provider: str | None,
+    provider_user_id: str | None,
+    account_id: str | None,
+    operation: str,
+    reason: str,
+    candidates_count: int,
+    source: str,
+) -> None:
+    logger.info(
+        "roles_admin lookup actor_id=%s lookup_value=%s provider=%s provider_user_id=%s account_id=%s operation=%s reason=%s candidates=%s source=%s",
+        actor_id,
+        str(lookup_value or "").strip() or None,
+        provider,
+        provider_user_id,
+        account_id,
+        operation,
+        reason,
+        candidates_count,
+        source,
+    )
+
+
+def _build_resolved_target(
+    *,
+    account_id: str | None,
+    provider: str,
+    provider_user_id: str,
+    username: str | None,
+    display_name: str | None,
+    matched_by: str,
+) -> dict[str, str | None]:
+    normalized_username = str(username or "").strip().lstrip("@") or None
+    normalized_display_name = str(display_name or "").strip() or None
+    label = (
+        f"@{normalized_username}"
+        if normalized_username
+        else f"{normalized_display_name} ({provider}:{provider_user_id})"
+        if normalized_display_name
+        else f"{provider}:{provider_user_id}"
+    )
+    return {
+        "account_id": str(account_id or "").strip() or None,
+        "provider": provider,
+        "provider_user_id": provider_user_id,
+        "label": label,
+        "matched_by": matched_by,
+    }
 
 
 def _resolve_telegram_target(
@@ -246,116 +296,137 @@ def _resolve_telegram_target(
     reply_user: Any | None = None,
     operation: str,
     source: str,
-) -> dict[str, str] | None:
-    if reply_user and not getattr(reply_user, "is_bot", False):
-        _persist_telegram_identity_from_user(reply_user)
-        username = getattr(reply_user, "username", None)
-        display = getattr(reply_user, "full_name", None)
-        label = f"@{username}" if username else (display or str(reply_user.id))
-        account_id = AccountsService.resolve_account_id("telegram", str(reply_user.id))
-        return {
-            "account_id": str(account_id or "") or None,
-            "provider": "telegram",
-            "provider_user_id": str(reply_user.id),
-            "label": label,
-            "matched_by": "reply",
-        }
-
+) -> dict[str, str | None] | None:
     token = str(raw_target or "").strip()
-    if not token:
-        logger.warning(
-            "roles_admin user lookup failed actor_id=%s telegram_user_id=%s operation=%s source=%s lookup_value=%s role_name=%s category=%s provider=%s provider_user_id=%s reason=%s candidates=%s",
-            actor_id,
-            actor_id,
-            operation,
-            source,
-            token,
-            None,
-            None,
-            "telegram",
-            None,
-            "empty_target",
-            0,
-        )
-        return None
-
-    lookup = AccountsService.resolve_user_lookup(token, default_provider="telegram")
-    candidates = list(lookup.get("candidates") or [])
-    if lookup.get("status") == "ok":
-        resolved = dict(lookup.get("result") or {})
-        provider = str(resolved.get("provider") or "").strip()
-        provider_user_id = str(resolved.get("provider_user_id") or "").strip()
-        username = str(resolved.get("username") or "").strip()
-        display_name = str(resolved.get("display_name") or "").strip()
-        label = (
-            f"@{username}"
-            if username
-            else f"{display_name} ({provider}:{provider_user_id})"
-            if display_name
-            else f"{provider}:{provider_user_id}"
-        )
-        return {
-            "account_id": str(resolved.get("account_id") or "") or None,
-            "provider": provider,
-            "provider_user_id": provider_user_id,
-            "label": label,
-            "matched_by": str(resolved.get("matched_by") or ""),
-        }
-
     location = "telegram_group" if source == "group" else "telegram_dm"
-    if lookup.get("status") == "multiple":
-        logger.warning(
-            "roles_admin user lookup ambiguous actor_id=%s location=%s operation=%s source=%s lookup_value=%s role_name=%s category=%s provider=%s provider_user_id=%s reason=%s candidates=%s",
-            actor_id,
-            location,
-            operation,
-            source,
-            token,
-            None,
-            None,
-            "telegram",
-            None,
-            "multiple_matches",
-            len(candidates),
+
+    if token and not token.isdigit():
+        lookup = AccountsService.resolve_user_lookup(token, default_provider="telegram")
+        candidates = list(lookup.get("candidates") or [])
+        if lookup.get("status") == "ok":
+            resolved = dict(lookup.get("result") or {})
+            provider = str(resolved.get("provider") or "").strip()
+            provider_user_id = str(resolved.get("provider_user_id") or "").strip()
+            account_id = str(resolved.get("account_id") or "").strip() or AccountsService.resolve_account_id(provider, provider_user_id)
+            result = _build_resolved_target(
+                account_id=account_id,
+                provider=provider,
+                provider_user_id=provider_user_id,
+                username=resolved.get("username"),
+                display_name=resolved.get("display_name"),
+                matched_by=str(resolved.get("matched_by") or "identity_lookup"),
+            )
+            _roles_admin_lookup_log(
+                actor_id=actor_id,
+                lookup_value=token,
+                provider=provider,
+                provider_user_id=provider_user_id,
+                account_id=result.get("account_id"),
+                operation=operation,
+                reason="resolved_username_lookup",
+                candidates_count=len(candidates) or 1,
+                source=location,
+            )
+            return result
+
+        if lookup.get("status") == "multiple":
+            _roles_admin_lookup_log(
+                actor_id=actor_id,
+                lookup_value=token,
+                provider="telegram",
+                provider_user_id=None,
+                account_id=None,
+                operation=operation,
+                reason="multiple_matches",
+                candidates_count=len(candidates),
+                source=location,
+            )
+            return {
+                "error": "multiple",
+                "message": (
+                    "❌ Найдено несколько кандидатов в локальном реестре. "
+                    "Уточни username точнее или укажи провайдер tg:/ds:. Кандидаты:\n"
+                    + "\n".join(f"• {_format_telegram_lookup_candidate(candidate)}" for candidate in candidates[:5])
+                    + "\n\n"
+                    + _telegram_user_lookup_hint()
+                ),
+            }
+
+        _roles_admin_lookup_log(
+            actor_id=actor_id,
+            lookup_value=token,
+            provider="telegram",
+            provider_user_id=None,
+            account_id=None,
+            operation=operation,
+            reason=str(lookup.get("reason") or "not_found"),
+            candidates_count=len(candidates),
+            source=location,
         )
         return {
-            "error": "multiple",
-            "message": (
-                "❌ Найдено несколько пользователей. Уточни username / provider / reply. Кандидаты:\n"
-                + "\n".join(f"• {_format_telegram_lookup_candidate(candidate)}" for candidate in candidates[:5])
-                + "\n\n"
-                + _telegram_user_lookup_hint()
-            ),
+            "error": "not_found" if lookup.get("status") == "not_found" else "invalid_format",
+            "message": _user_not_found_message(),
         }
+
+    if reply_user and not getattr(reply_user, "is_bot", False):
+        persist_telegram_identity_from_user(reply_user)
+        account_id = AccountsService.resolve_account_id("telegram", str(reply_user.id))
+        result = _build_resolved_target(
+            account_id=account_id,
+            provider="telegram",
+            provider_user_id=str(reply_user.id),
+            username=getattr(reply_user, "username", None),
+            display_name=getattr(reply_user, "full_name", None),
+            matched_by="reply",
+        )
+        _roles_admin_lookup_log(
+            actor_id=actor_id,
+            lookup_value=token or f"reply:{reply_user.id}",
+            provider="telegram",
+            provider_user_id=str(reply_user.id),
+            account_id=result.get("account_id"),
+            operation=operation,
+            reason="resolved_reply_target",
+            candidates_count=1,
+            source=location,
+        )
+        return result
 
     if token.isdigit():
-        return {
-            "account_id": None,
-            "provider": "telegram",
-            "provider_user_id": token,
-            "label": f"telegram:{token}",
-            "matched_by": "exact_id_fallback",
-        }
+        account_id = AccountsService.resolve_account_id("telegram", token)
+        result = _build_resolved_target(
+            account_id=account_id,
+            provider="telegram",
+            provider_user_id=token,
+            username=None,
+            display_name=None,
+            matched_by="exact_id_fallback",
+        )
+        _roles_admin_lookup_log(
+            actor_id=actor_id,
+            lookup_value=token,
+            provider="telegram",
+            provider_user_id=token,
+            account_id=result.get("account_id"),
+            operation=operation,
+            reason="resolved_id_fallback" if account_id else "id_fallback_without_account",
+            candidates_count=1 if account_id else 0,
+            source=location,
+        )
+        return result
 
-    logger.warning(
-        "roles_admin user lookup failed actor_id=%s location=%s operation=%s source=%s lookup_value=%s role_name=%s category=%s provider=%s provider_user_id=%s reason=%s candidates=%s",
-        actor_id,
-        location,
-        operation,
-        source,
-        token,
-        None,
-        None,
-        "telegram",
-        None,
-        str(lookup.get("reason") or "not_found"),
-        len(candidates),
+    _roles_admin_lookup_log(
+        actor_id=actor_id,
+        lookup_value=token,
+        provider="telegram",
+        provider_user_id=None,
+        account_id=None,
+        operation=operation,
+        reason="empty_target",
+        candidates_count=0,
+        source=location,
     )
-    return {
-        "error": "not_found" if lookup.get("status") == "not_found" else "invalid_format",
-        "message": _user_not_found_message(),
-    }
-
+    return None
 
 def _normalize_page(page: int, total_items: int, page_size: int) -> int:
     if total_items <= 0:
@@ -742,9 +813,9 @@ def _can_manage_categories(provider: str, provider_user_id: str) -> bool:
 @router.message(Command("roles_admin"))
 async def roles_admin_command(message: Message) -> None:
     try:
-        _persist_telegram_identity_from_user(message.from_user)
+        persist_telegram_identity_from_user(message.from_user)
         if message.reply_to_message:
-            _persist_telegram_identity_from_user(message.reply_to_message.from_user)
+            persist_telegram_identity_from_user(message.reply_to_message.from_user)
         if not await _ensure_roles_admin(message):
             return
 
@@ -909,7 +980,11 @@ async def roles_admin_command(message: Message) -> None:
             if resolved.get("error"):
                 await message.answer(str(resolved.get("message") or "❌ Не удалось найти пользователя."))
                 return
-            roles = RoleManagementService.get_user_roles(str(resolved["provider"]), str(resolved["provider_user_id"]))
+            account_id = str(resolved.get("account_id") or "").strip()
+            if not account_id:
+                await message.answer(_user_without_account_message())
+                return
+            roles = RoleManagementService.get_user_roles_by_account(account_id)
             if not roles:
                 await message.answer("📭 У пользователя нет ролей.")
                 return
@@ -936,12 +1011,15 @@ async def roles_admin_command(message: Message) -> None:
             if resolved.get("error"):
                 await message.answer(str(resolved.get("message") or "❌ Не удалось найти пользователя."))
                 return
+            account_id = str(resolved.get("account_id") or "").strip()
+            if not account_id:
+                await message.answer(_user_without_account_message())
+                return
             if subcommand == "user_grant":
                 role_info = RoleManagementService.get_role(role_name)
                 category = role_info.get("category_name") if role_info else None
-                ok = RoleManagementService.assign_user_role(
-                    str(resolved["provider"]),
-                    str(resolved["provider_user_id"]),
+                ok = RoleManagementService.assign_user_role_by_account(
+                    account_id,
                     role_name,
                     category=category,
                 )
@@ -953,9 +1031,8 @@ async def roles_admin_command(message: Message) -> None:
                     else f"❌ Не удалось выдать роль. {_telegram_user_lookup_hint()}"
                 )
             else:
-                ok = RoleManagementService.revoke_user_role(
-                    str(resolved["provider"]),
-                    str(resolved["provider_user_id"]),
+                ok = RoleManagementService.revoke_user_role_by_account(
+                    account_id,
                     role_name,
                 )
                 if ok:
@@ -980,6 +1057,7 @@ async def roles_admin_command(message: Message) -> None:
 @router.callback_query(F.data.startswith("roles_admin:"))
 async def roles_admin_callback(callback: CallbackQuery) -> None:
     try:
+        persist_telegram_identity_from_user(callback.from_user)
         if not callback.data or not callback.from_user or not callback.message:
             await callback.answer("Некорректный callback", show_alert=True)
             return
@@ -1432,9 +1510,9 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
 async def roles_admin_pending_action_handler(message: Message) -> None:
     if not message.from_user:
         return
-    _persist_telegram_identity_from_user(message.from_user)
+    persist_telegram_identity_from_user(message.from_user)
     if message.reply_to_message:
-        _persist_telegram_identity_from_user(message.reply_to_message.from_user)
+        persist_telegram_identity_from_user(message.reply_to_message.from_user)
     pending = _PENDING_ACTIONS.get(message.from_user.id)
     if not pending:
         logger.warning(
@@ -1577,7 +1655,11 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
             if resolved.get("error"):
                 await message.answer(str(resolved.get("message") or "❌ Не удалось найти пользователя."))
                 return
-            roles = RoleManagementService.get_user_roles(str(resolved["provider"]), str(resolved["provider_user_id"]))
+            account_id = str(resolved.get("account_id") or "").strip()
+            if not account_id:
+                await message.answer(_user_without_account_message())
+                return
+            roles = RoleManagementService.get_user_roles_by_account(account_id)
             if not roles:
                 await message.answer("📭 У пользователя нет ролей.")
             else:
@@ -1605,12 +1687,15 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
             if resolved.get("error"):
                 await message.answer(str(resolved.get("message") or "❌ Не удалось найти пользователя."))
                 return
+            account_id = str(resolved.get("account_id") or "").strip()
+            if not account_id:
+                await message.answer(_user_without_account_message())
+                return
             if op == "user_grant":
                 role_info = RoleManagementService.get_role(role_name)
                 category = role_info.get("category_name") if role_info else None
-                ok = RoleManagementService.assign_user_role(
-                    str(resolved["provider"]),
-                    str(resolved["provider_user_id"]),
+                ok = RoleManagementService.assign_user_role_by_account(
+                    account_id,
                     role_name,
                     category=category,
                 )
@@ -1622,9 +1707,8 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                     else f"❌ Не удалось выдать роль. {_telegram_user_lookup_hint()}"
                 )
             else:
-                ok = RoleManagementService.revoke_user_role(
-                    str(resolved["provider"]),
-                    str(resolved["provider_user_id"]),
+                ok = RoleManagementService.revoke_user_role_by_account(
+                    account_id,
                     role_name,
                 )
                 if ok:

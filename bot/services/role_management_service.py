@@ -446,29 +446,54 @@ class RoleManagementService:
             account_id = AccountsService.resolve_account_id(provider, str(provider_user_id))
             if not account_id:
                 return []
-            resolved = RoleResolver.resolve_for_account(account_id)
-            return resolved.roles
+            return RoleManagementService.get_user_roles_by_account(str(account_id))
         except Exception:
             logger.exception("get_user_roles failed provider=%s user_id=%s", provider, provider_user_id)
             return []
 
     @staticmethod
-    def assign_user_role(provider: str, provider_user_id: str, role_name: str, category: str | None = None) -> bool:
-        if not db.supabase:
-            return False
-        role_key = str(role_name or "").strip()
-        if not role_key:
-            return False
+    def get_user_roles_by_account(account_id: str) -> list[dict[str, str | None]]:
+        account_key = str(account_id or "").strip()
+        if not account_key:
+            return []
+        try:
+            resolved = RoleResolver.resolve_for_account(account_key)
+            return resolved.roles
+        except Exception:
+            logger.exception("get_user_roles_by_account failed account_id=%s", account_key)
+            return []
 
+    @staticmethod
+    def assign_user_role(provider: str, provider_user_id: str, role_name: str, category: str | None = None) -> bool:
         try:
             account_id = AccountsService.resolve_account_id(provider, str(provider_user_id))
             if not account_id:
                 logger.warning("assign_user_role skipped: account not found provider=%s user_id=%s", provider, provider_user_id)
                 return False
+            return RoleManagementService.assign_user_role_by_account(str(account_id), role_name, category=category)
+        except Exception:
+            logger.exception(
+                "assign_user_role failed provider=%s user_id=%s role=%s",
+                provider,
+                provider_user_id,
+                role_name,
+            )
+            return False
+
+    @staticmethod
+    def assign_user_role_by_account(account_id: str, role_name: str, category: str | None = None) -> bool:
+        if not db.supabase:
+            return False
+        account_key = str(account_id or "").strip()
+        role_key = str(role_name or "").strip()
+        if not account_key or not role_key:
+            return False
+
+        try:
             metadata = {"category": RoleManagementService._normalized_category(category)} if category else {}
             db.supabase.table("account_role_assignments").upsert(
                 {
-                    "account_id": str(account_id),
+                    "account_id": account_key,
                     "role_name": role_key,
                     "source": "custom",
                     "metadata": metadata,
@@ -479,32 +504,44 @@ class RoleManagementService:
             return True
         except Exception:
             logger.exception(
-                "assign_user_role failed provider=%s user_id=%s role=%s",
-                provider,
-                provider_user_id,
+                "assign_user_role_by_account failed account_id=%s role=%s",
+                account_key,
                 role_key,
             )
             return False
 
     @staticmethod
     def revoke_user_role(provider: str, provider_user_id: str, role_name: str) -> bool:
-        if not db.supabase:
-            return False
-        role_key = str(role_name or "").strip()
-        if not role_key:
-            return False
-
         try:
             account_id = AccountsService.resolve_account_id(provider, str(provider_user_id))
             if not account_id:
                 return False
-            db.supabase.table("account_role_assignments").delete().eq("account_id", str(account_id)).eq("role_name", role_key).execute()
-            return True
+            return RoleManagementService.revoke_user_role_by_account(str(account_id), role_name)
         except Exception:
             logger.exception(
                 "revoke_user_role failed provider=%s user_id=%s role=%s",
                 provider,
                 provider_user_id,
+                role_name,
+            )
+            return False
+
+    @staticmethod
+    def revoke_user_role_by_account(account_id: str, role_name: str) -> bool:
+        if not db.supabase:
+            return False
+        account_key = str(account_id or "").strip()
+        role_key = str(role_name or "").strip()
+        if not account_key or not role_key:
+            return False
+
+        try:
+            db.supabase.table("account_role_assignments").delete().eq("account_id", account_key).eq("role_name", role_key).execute()
+            return True
+        except Exception:
+            logger.exception(
+                "revoke_user_role_by_account failed account_id=%s role=%s",
+                account_key,
                 role_key,
             )
             return False
