@@ -198,6 +198,31 @@ class RoleResolverTests(unittest.TestCase):
             captured.output,
         )
 
+    def test_external_binding_matches_catalog_by_external_role_id(self):
+        now = datetime.now(timezone.utc)
+        self.fake_db.tables["external_role_bindings"] = [
+            {
+                "account_id": "acc-1",
+                "source": "telegram",
+                "external_role_id": "tg-777",
+                "external_role_name": "Телеграм роль",
+                "last_synced_at": now.isoformat(),
+                "deleted_at": None,
+            }
+        ]
+        self.fake_db.tables["roles"] = [
+            {
+                "name": "Каталожная телеграм роль",
+                "category_name": "Telegram роли",
+                "external_role_id": "tg-777",
+            }
+        ]
+
+        result = RoleResolver.resolve_for_account("acc-1")
+
+        self.assertEqual(result.roles[0]["name"], "Каталожная телеграм роль")
+        self.assertEqual(result.roles[0]["category"], "Telegram роли")
+
     def test_external_binding_logs_multiple_catalog_matches(self):
         now = datetime.now(timezone.utc)
         self.fake_db.tables["external_role_bindings"] = [
@@ -243,6 +268,10 @@ class RoleResolverTests(unittest.TestCase):
         self.assertEqual(result.roles[0]["category"], "Внешние роли")
         self.assertTrue(
             any("external role binding not found in catalog" in message for message in captured.output),
+            captured.output,
+        )
+        self.assertTrue(
+            any("using fallback external category" in message for message in captured.output),
             captured.output,
         )
 
