@@ -162,6 +162,20 @@ class RoleResolver:
                 external_role_name=role_name,
                 catalog_roles=catalog_roles,
             )
+            resolved_category = RoleResolver.normalize_category_value(
+                (catalog_match or {}).get("category_name"),
+                fallback=RoleResolver.EXTERNAL_CATEGORY_FALLBACK,
+            )
+            if not catalog_match:
+                logger.warning(
+                    "role resolver: using fallback external category account_id=%s source=%s external_role_id=%s external_role_name=%s fallback_category=%s catalog_roles_loaded=%s",
+                    account_id,
+                    source,
+                    external_id,
+                    role_name,
+                    resolved_category,
+                    len(catalog_roles),
+                )
             result.append(
                 UserRoleAssignment(
                     role_name=str((catalog_match or {}).get("name") or role_name).strip() or role_name,
@@ -170,10 +184,7 @@ class RoleResolver:
                     expires_at=None,
                     metadata={
                         "source": "external_role_bindings",
-                        "category": RoleResolver.normalize_category_value(
-                            (catalog_match or {}).get("category_name"),
-                            fallback=RoleResolver.EXTERNAL_CATEGORY_FALLBACK,
-                        ),
+                        "category": resolved_category,
                     },
                     origin_label="legacy external_role_bindings",
                     synced_at=RoleResolver._parse_datetime(row.get("last_synced_at")),
@@ -187,6 +198,40 @@ class RoleResolver:
         if normalized:
             return normalized
         return str(fallback or RoleResolver.DEFAULT_CATEGORY)
+
+    @staticmethod
+    def group_roles_by_category(
+        roles: list[dict[str, object]] | None,
+        *,
+        account_id: str | None = None,
+    ) -> dict[str, list[str]]:
+        grouped: dict[str, list[str]] = {}
+        for role_item in roles or []:
+            role_name = str((role_item or {}).get("name") or "").strip()
+            if not role_name:
+                continue
+            category = str((role_item or {}).get("category") or "").strip()
+            if not category:
+                logger.warning(
+                    "role resolver: role without normalized category during grouping account_id=%s role_name=%s role=%s",
+                    account_id,
+                    role_name,
+                    role_item,
+                )
+                category = RoleResolver.normalize_category_value(None)
+            grouped.setdefault(category, [])
+            if role_name not in grouped[category]:
+                grouped[category].append(role_name)
+        return grouped
+
+    @staticmethod
+    def _describe_catalog_role(row: dict[str, Any]) -> dict[str, str | None]:
+        return {
+            "name": str(row.get("name") or "").strip() or None,
+            "discord_role_id": str(row.get("discord_role_id") or "").strip() or None,
+            "external_role_id": str(row.get("external_role_id") or "").strip() or None,
+            "category_name": RoleResolver.normalize_category_value(row.get("category_name")),
+        }
 
     @staticmethod
     def _load_catalog_roles_for_external_bindings() -> list[dict[str, Any]]:
@@ -245,20 +290,13 @@ class RoleResolver:
 
         if len(id_matches) > 1:
             logger.warning(
-                "role resolver: multiple catalog matches by external id account_id=%s source=%s external_role_id=%s external_role_name=%s matches=%s",
+                "role resolver: multiple catalog matches by external id account_id=%s source=%s external_role_id=%s external_role_name=%s matches=%s selected=%s",
                 account_id,
                 source,
                 external_id_key,
                 external_role_name,
-                [
-                    {
-                        "name": str(match.get("name") or "").strip(),
-                        "discord_role_id": str(match.get("discord_role_id") or "").strip() or None,
-                        "external_role_id": str(match.get("external_role_id") or "").strip() or None,
-                        "category_name": RoleResolver.normalize_category_value(match.get("category_name")),
-                    }
-                    for match in id_matches
-                ],
+                [RoleResolver._describe_catalog_role(match) for match in id_matches],
+                RoleResolver._describe_catalog_role(sorted(id_matches, key=lambda item: str(item.get("name") or "").lower())[0]),
             )
             return sorted(id_matches, key=lambda item: str(item.get("name") or "").lower())[0]
 
@@ -284,20 +322,13 @@ class RoleResolver:
         ]
         if len(name_matches) > 1:
             logger.warning(
-                "role resolver: multiple catalog matches by name account_id=%s source=%s external_role_id=%s external_role_name=%s matches=%s",
+                "role resolver: multiple catalog matches by name account_id=%s source=%s external_role_id=%s external_role_name=%s matches=%s selected=%s",
                 account_id,
                 source,
                 external_id_key or None,
                 external_role_name,
-                [
-                    {
-                        "name": str(match.get("name") or "").strip(),
-                        "discord_role_id": str(match.get("discord_role_id") or "").strip() or None,
-                        "external_role_id": str(match.get("external_role_id") or "").strip() or None,
-                        "category_name": RoleResolver.normalize_category_value(match.get("category_name")),
-                    }
-                    for match in name_matches
-                ],
+                [RoleResolver._describe_catalog_role(match) for match in name_matches],
+                RoleResolver._describe_catalog_role(sorted(name_matches, key=lambda item: str(item.get("discord_role_id") or "").lower())[0]),
             )
             return sorted(name_matches, key=lambda item: str(item.get("discord_role_id") or "").lower())[0]
 
@@ -308,32 +339,31 @@ class RoleResolver:
             matched_catalog_id = matched_discord_role_id or matched_external_role_id
             if external_id_key and matched_catalog_id and matched_catalog_id != external_id_key:
                 logger.warning(
-                    "role resolver: catalog name matched but external id mismatched account_id=%s source=%s external_role_name=%s external_role_id=%s catalog_role_name=%s catalog_discord_role_id=%s catalog_external_role_id=%s",
+                    "role resolver: catalog name matched but external id mismatched account_id=%s source=%s external_role_name=%s external_role_id=%s catalog_match=%s",
                     account_id,
                     source,
                     external_role_name,
                     external_id_key,
-                    str(name_match.get("name") or "").strip(),
-                    matched_discord_role_id or None,
-                    matched_external_role_id or None,
+                    RoleResolver._describe_catalog_role(name_match),
                 )
             else:
                 logger.info(
-                    "role resolver: catalog role matched by name fallback account_id=%s source=%s external_role_name=%s external_role_id=%s catalog_role_name=%s",
+                    "role resolver: catalog role matched by name fallback account_id=%s source=%s external_role_name=%s external_role_id=%s catalog_match=%s",
                     account_id,
                     source,
                     external_role_name,
                     external_id_key or None,
-                    str(name_match.get("name") or "").strip(),
+                    RoleResolver._describe_catalog_role(name_match),
                 )
             return name_match
 
         logger.warning(
-            "role resolver: external role binding not found in catalog account_id=%s source=%s external_role_id=%s external_role_name=%s",
+            "role resolver: external role binding not found in catalog account_id=%s source=%s external_role_id=%s external_role_name=%s catalog_roles_checked=%s",
             account_id,
             source,
             external_id_key or None,
             external_role_name,
+            len(catalog_roles),
         )
         return None
 
