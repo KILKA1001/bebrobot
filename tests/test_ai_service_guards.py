@@ -89,6 +89,14 @@ class GuiyAIGuardsTests(unittest.TestCase):
         self.assertIn("не угрожает реальным насилием", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
         self.assertIn("словесный подзатыльник", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
 
+    def test_default_prompt_describes_young_ambitious_defensive_persona(self):
+        self.assertIn("очень молодой, амбициозный", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
+        self.assertIn("умеет постоять за себя и за своего отца словом", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
+
+    def test_default_prompt_allows_rare_spanish_russian_slang_joke(self):
+        self.assertIn("Очень редко, только ради короткой шутки", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
+        self.assertIn("русский сленговый оборот, переданный по-испански", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
+
     def test_is_command_text_for_regular_text(self):
         self.assertFalse(_is_command_text("Гуй, привет"))
 
