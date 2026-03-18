@@ -1,8 +1,19 @@
 from __future__ import annotations
 
+import logging
 import math
+
 from bot.data import db
 from bot.data import tournament_db
+from bot.legacy_identity_logging import (
+    log_identity_resolve_error,
+    log_legacy_identity_path_detected,
+    log_legacy_schema_fallback,
+)
+from bot.services.accounts_service import AccountsService
+
+
+logger = logging.getLogger(__name__)
 
 
 def _is_test(tournament_id: int) -> bool:
@@ -31,6 +42,88 @@ def _get_stage(round_no: int, total_rounds: int) -> int:
     return 3
 
 
+def _resolve_account_id_from_transport(discord_user_id: int, handler: str) -> str | None:
+    log_legacy_identity_path_detected(
+        logger,
+        module=__name__,
+        handler=handler,
+        field="discord_user_id",
+        action="resolve_account_id",
+        continue_execution=True,
+        provider="discord",
+    )
+    account_id = AccountsService.resolve_account_id("discord", str(discord_user_id))
+    if account_id:
+        return str(account_id)
+    if hasattr(db, "_inc_metric"):
+        db._inc_metric("identity_resolve_errors")
+    log_identity_resolve_error(
+        logger,
+        module=__name__,
+        handler=handler,
+        field="discord_user_id",
+        action="resolve_account_id",
+        continue_execution=False,
+        provider="discord",
+        provider_user_id=discord_user_id,
+    )
+    return None
+
+
+def _resolve_account_id_from_bet(bet: dict, handler: str) -> str | None:
+    account_id = bet.get("account_id")
+    if account_id:
+        return str(account_id)
+    legacy_user_id = bet.get("user_id")
+    if legacy_user_id is None:
+        if hasattr(db, "_inc_metric"):
+            db._inc_metric("identity_resolve_errors")
+        log_identity_resolve_error(
+            logger,
+            module=__name__,
+            handler=handler,
+            field="account_id",
+            action="resolve_bet_owner_account_id",
+            continue_execution=False,
+            bet_id=bet.get("id"),
+            tournament_id=bet.get("tournament_id"),
+        )
+        return None
+    log_legacy_schema_fallback(
+        logger,
+        module=__name__,
+        table="tournament_bets",
+        field="user_id",
+        action="replace_with_account_id_column",
+        continue_execution=True,
+        bet_id=bet.get("id"),
+        tournament_id=bet.get("tournament_id"),
+        recommended_field="account_id",
+    )
+    return _resolve_account_id_from_transport(int(legacy_user_id), handler)
+
+
+def _get_account_balance(account_id: str) -> float:
+    if not account_id:
+        return 0.0
+    if db.supabase:
+        try:
+            response = (
+                db.supabase.table("scores")
+                .select("points")
+                .eq("account_id", str(account_id))
+                .limit(1)
+                .execute()
+            )
+            rows = response.data or []
+            if rows:
+                return float(rows[0].get("points") or 0)
+        except Exception:
+            logger.exception("bet balance lookup failed account_id=%s", account_id)
+    points_from_actions = AccountsService._load_points_from_actions(str(account_id), None)
+    return float(points_from_actions or 0)
+
+
 def get_min_bet(round_no: int, total_rounds: int) -> int:
     stage = _get_stage(round_no, total_rounds)
     return ROUND_COEFFICIENTS.get(stage, (1, 0.25))[0]
@@ -54,21 +147,32 @@ def place_bet(
     if amount < min_bet:
         return False, f"Минимальная ставка для этого раунда: {min_bet}"
 
+    account_id = _resolve_account_id_from_transport(user_id, "place_bet")
+    if not account_id:
+        return False, "Не удалось определить аккаунт для ставки"
+
     test = _is_test(tournament_id)
 
     if not test:
-        balance = db.scores.get(user_id, 0)
+        balance = _get_account_balance(account_id)
         if balance < amount:
             return False, "Недостаточно баллов"
 
-    bet_id = tournament_db.create_bet(
-        tournament_id, round_no, pair_index, user_id, bet_on, amount
+    bet_id = tournament_db.create_bet_by_account(
+        tournament_id,
+        round_no,
+        pair_index,
+        account_id,
+        bet_on,
+        amount,
+        discord_user_id=user_id,
     )
     if bet_id is None:
         return False, "Не удалось создать ставку"
 
     if not test:
-        if not db.update_scores(user_id, -amount):
+        if not db.update_scores_by_account(account_id, -amount, user_id=user_id):
+            tournament_db.delete_bet(bet_id)
             return False, "Не удалось списать баллы"
         tournament_db.update_bet_bank(tournament_id, amount)
 
@@ -89,8 +193,10 @@ def payout_bets(tournament_id: int, round_no: int, pair_index: int, winner_id: i
         multiplier = get_multiplier(round_no, total_rounds)
         payout = math.floor(float(bet.get("amount")) * (1 + multiplier)) if won else 0
         if payout and not test:
-            tournament_db.update_bet_bank(tournament_id, -payout)
-            db.update_scores(int(bet["user_id"]), payout)
+            account_id = _resolve_account_id_from_bet(bet, "payout_bets")
+            if account_id:
+                tournament_db.update_bet_bank(tournament_id, -payout)
+                db.update_scores_by_account(account_id, payout, user_id=bet.get("user_id"))
         tournament_db.close_bet(int(bet["id"]), won, payout if not test else 0)
 
 
@@ -102,7 +208,10 @@ def calculate_payout(round_no: int, total_rounds: int, amount: float) -> int:
 
 def get_user_bets(tournament_id: int, user_id: int) -> list[dict]:
     """Список активных ставок пользователя."""
-    return tournament_db.list_user_bets(tournament_id, user_id, open_only=True)
+    account_id = _resolve_account_id_from_transport(user_id, "get_user_bets")
+    if not account_id:
+        return []
+    return tournament_db.list_user_bets_by_account(tournament_id, account_id, open_only=True)
 
 
 def cancel_bet(bet_id: int) -> tuple[bool, str]:
@@ -113,7 +222,10 @@ def cancel_bet(bet_id: int) -> tuple[bool, str]:
         return False, "Не удалось удалить ставку"
     test = _is_test(int(bet["tournament_id"]))
     if not test:
-        db.update_scores(int(bet["user_id"]), float(bet["amount"]))
+        account_id = _resolve_account_id_from_bet(bet, "cancel_bet")
+        if not account_id:
+            return False, "Не удалось определить аккаунт для возврата"
+        db.update_scores_by_account(account_id, float(bet["amount"]), user_id=bet.get("user_id"))
         tournament_db.update_bet_bank(int(bet["tournament_id"]), -float(bet["amount"]))
         return True, "Ставка удалена и баллы возвращены"
     return True, "Ставка удалена (тестовый режим)"
@@ -128,11 +240,30 @@ def modify_bet(bet_id: int, bet_on: int, amount: float, user_id: int, total_roun
         return False, f"Минимальная ставка для этого раунда: {min_bet}"
     diff = amount - float(bet["amount"])
     test = _is_test(int(bet["tournament_id"]))
+    caller_account_id = _resolve_account_id_from_transport(user_id, "modify_bet")
+    if not caller_account_id:
+        return False, "Не удалось определить аккаунт пользователя"
+    bet_account_id = _resolve_account_id_from_bet(bet, "modify_bet")
+    if not bet_account_id:
+        return False, "Не удалось определить владельца ставки"
+    if caller_account_id != bet_account_id:
+        log_identity_resolve_error(
+            logger,
+            module=__name__,
+            handler="modify_bet",
+            field="discord_user_id",
+            action="bet_owner_account_mismatch",
+            continue_execution=False,
+            bet_id=bet_id,
+            caller_account_id=caller_account_id,
+            bet_account_id=bet_account_id,
+        )
+        return False, "Нельзя изменить чужую ставку"
     if not test:
-        balance = db.scores.get(user_id, 0)
+        balance = _get_account_balance(caller_account_id)
         if diff > 0 and balance < diff:
             return False, "Недостаточно баллов"
-        if diff != 0 and not db.update_scores(user_id, -diff):
+        if diff != 0 and not db.update_scores_by_account(caller_account_id, -diff, user_id=user_id):
             return False, "Не удалось обновить баланс"
     if not tournament_db.update_bet(bet_id, bet_on, amount):
         return False, "Не удалось изменить ставку"

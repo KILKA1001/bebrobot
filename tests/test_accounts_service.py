@@ -194,6 +194,27 @@ class AccountsServiceTests(unittest.TestCase):
         telegram_account = AccountsService.resolve_account_id("telegram", "222")
         self.assertEqual(discord_account, telegram_account)
 
+    def test_link_flow_keeps_identity_and_linking_tables_usable(self):
+        AccountsService.register_identity("discord", "111")
+
+        ok, code = AccountsService.issue_discord_telegram_link_code(111)
+        self.assertTrue(ok)
+        ok, message = AccountsService.consume_telegram_link_code(222, code)
+        self.assertTrue(ok)
+        self.assertEqual(message, "Аккаунт успешно привязан")
+
+        identity_rows = self.fake_db.tables["account_identities"]
+        registry_row = self.fake_db.tables["account_links_registry"][0]
+        code_row = self.fake_db.tables["account_link_codes"][0]
+
+        self.assertEqual({row["provider"] for row in identity_rows}, {"discord", "telegram"})
+        self.assertEqual({row["provider_user_id"] for row in identity_rows}, {"111", "222"})
+        self.assertEqual(code_row["source_provider_user_id"], "111")
+        self.assertEqual(code_row["used_by_provider_user_id"], "222")
+        self.assertEqual(registry_row["account_id"], AccountsService.resolve_account_id("discord", "111"))
+        self.assertEqual(registry_row["last_link_code_used"], code)
+        self.assertTrue(registry_row["has_used_link_code"])
+
     def test_telegram_to_discord_link_flow(self):
         AccountsService.register_identity("telegram", "333")
 

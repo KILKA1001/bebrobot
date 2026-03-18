@@ -1133,17 +1133,17 @@ def mark_reminder_sent(tournament_id: int) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def create_bet(
+def create_bet_by_account(
     tournament_id: int,
     round_no: int,
     pair_index: int,
-    user_id: int,
+    account_id: str,
     bet_on: int,
     amount: float,
+    discord_user_id: int | None = None,
 ) -> int | None:
     """Creates a bet record and returns its ID."""
     global _has_tb_account_id, _has_tb_user_id
-    account_id = _get_account_id_for_discord_user(user_id)
     payload = {
         "tournament_id": tournament_id,
         "round": round_no,
@@ -1153,7 +1153,7 @@ def create_bet(
     }
     if _has_tb_account_id and account_id:
         payload["account_id"] = account_id
-    elif _has_tb_user_id:
+    elif _has_tb_user_id and discord_user_id is not None:
         log_legacy_schema_fallback(
             logger,
             module=__name__,
@@ -1163,8 +1163,9 @@ def create_bet(
             continue_execution=True,
             tournament_id=tournament_id,
             round=round_no,
+            recommended_field="account_id",
         )
-        payload["user_id"] = user_id
+        payload["user_id"] = discord_user_id
 
     try:
         res = (
@@ -1185,11 +1186,12 @@ def create_bet(
                     continue_execution=True,
                     tournament_id=tournament_id,
                     round=round_no,
+                    recommended_field="account_id",
                 )
                 _has_tb_account_id = False
                 payload.pop("account_id", None)
-                if _has_tb_user_id:
-                    payload["user_id"] = user_id
+                if _has_tb_user_id and discord_user_id is not None:
+                    payload["user_id"] = discord_user_id
                 retry = supabase.table("tournament_bets").insert(payload, returning="representation").execute()
                 return retry.data[0]["id"] if retry.data else None
             if _has_tb_user_id and "user_id" in str(e):
@@ -1203,6 +1205,26 @@ def create_bet(
     except Exception as e:
         logger.exception("Failed to create bet: %s", e)
         return None
+
+
+def create_bet(
+    tournament_id: int,
+    round_no: int,
+    pair_index: int,
+    user_id: int,
+    bet_on: int,
+    amount: float,
+) -> int | None:
+    account_id = _get_account_id_for_discord_user(user_id)
+    return create_bet_by_account(
+        tournament_id,
+        round_no,
+        pair_index,
+        account_id or "",
+        bet_on,
+        amount,
+        discord_user_id=user_id,
+    )
 
 
 def list_bets(tournament_id: int, round_no: int | None = None) -> list[dict]:
@@ -1251,40 +1273,60 @@ def get_bet(bet_id: int) -> dict | None:
         return None
 
 
+def list_user_bets_by_account(
+    tournament_id: int, account_id: str, open_only: bool = True
+) -> list[dict]:
+    """Возвращает ставки пользователя на турнир по account_id."""
+    query = (
+        supabase.table("tournament_bets")
+        .select("*")
+        .eq("tournament_id", tournament_id)
+        .eq("account_id", str(account_id))
+    )
+    if open_only:
+        query = query.is_("won", None)
+    try:
+        res = query.execute()
+        return _normalize_bet_rows(res.data or [])
+    except Exception as e:
+        logger.error("Failed to list user bets by account: %s", e)
+        return []
+
+
 def list_user_bets(
     tournament_id: int, user_id: int, open_only: bool = True
 ) -> list[dict]:
     """Возвращает ставки пользователя на турнир."""
     account_id = _get_account_id_for_discord_user(user_id)
+    if account_id:
+        return list_user_bets_by_account(tournament_id, account_id, open_only=open_only)
+    log_identity_resolve_error(
+        logger,
+        module=__name__,
+        handler="list_user_bets",
+        field="user_id",
+        action="resolve_account_id",
+        continue_execution=True,
+        tournament_id=tournament_id,
+        user_id=user_id,
+    )
+    log_legacy_schema_fallback(
+        logger,
+        module=__name__,
+        table="tournament_bets",
+        field="user_id",
+        action="replace_with_account_id_column",
+        continue_execution=True,
+        tournament_id=tournament_id,
+        user_id=user_id,
+        recommended_field="account_id",
+    )
     query = (
         supabase.table("tournament_bets")
         .select("*")
         .eq("tournament_id", tournament_id)
+        .eq("user_id", user_id)
     )
-    if account_id:
-        query = query.eq("account_id", account_id)
-    else:
-        log_identity_resolve_error(
-            logger,
-            module=__name__,
-            handler="list_user_bets",
-            field="user_id",
-            action="resolve_account_id",
-            continue_execution=True,
-            tournament_id=tournament_id,
-            user_id=user_id,
-        )
-        log_legacy_schema_fallback(
-            logger,
-            module=__name__,
-            table="tournament_bets",
-            field="user_id",
-            action="replace_with_account_id_column",
-            continue_execution=True,
-            tournament_id=tournament_id,
-            user_id=user_id,
-        )
-        query = query.eq("user_id", user_id)
     if open_only:
         query = query.is_("won", None)
     try:

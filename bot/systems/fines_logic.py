@@ -11,6 +11,11 @@ from bot.utils import (
 from datetime import datetime, timezone, timedelta
 from typing import List
 from bot.data import db
+from bot.legacy_identity_logging import (
+    log_identity_resolve_error,
+    log_legacy_identity_path_detected,
+)
+from bot.services.accounts_service import AccountsService
 from collections import defaultdict
 import asyncio
 import os
@@ -62,6 +67,55 @@ def build_fine_detail_embed(fine: dict) -> discord.Embed:
     return embed
 
 
+def _resolve_payment_account_id(discord_user_id: int, *, handler: str) -> str | None:
+    log_legacy_identity_path_detected(
+        logger,
+        module=__name__,
+        handler=handler,
+        field="discord_user_id",
+        action="resolve_account_id",
+        continue_execution=True,
+        provider="discord",
+    )
+    account_id = AccountsService.resolve_account_id("discord", str(discord_user_id))
+    if account_id:
+        return str(account_id)
+    if hasattr(db, "_inc_metric"):
+        db._inc_metric("identity_resolve_errors")
+    log_identity_resolve_error(
+        logger,
+        module=__name__,
+        handler=handler,
+        field="discord_user_id",
+        action="resolve_account_id",
+        continue_execution=False,
+        provider="discord",
+        provider_user_id=discord_user_id,
+    )
+    return None
+
+
+def _load_points_by_account(account_id: str) -> float:
+    if not account_id:
+        return 0.0
+    if db.supabase:
+        try:
+            response = (
+                db.supabase.table("scores")
+                .select("points")
+                .eq("account_id", str(account_id))
+                .limit(1)
+                .execute()
+            )
+            rows = response.data or []
+            if rows:
+                return float(rows[0].get("points") or 0)
+        except Exception as exc:
+            logger.exception("payment balance lookup failed account_id=%s error=%s", account_id, exc)
+    points_from_actions = AccountsService._load_points_from_actions(str(account_id), None)
+    return float(points_from_actions or 0)
+
+
 class FineView(SafeView):
     def __init__(self, fine: dict):
         super().__init__(timeout=120)
@@ -100,12 +154,12 @@ class FineView(SafeView):
 
 async def process_payment(interaction: discord.Interaction, fine: dict, percent: float):
     user_id = interaction.user.id
-    account_id = db._get_account_id_for_discord_user(user_id)
+    account_id = _resolve_payment_account_id(user_id, handler="process_payment")
     if not account_id:
-        logger.error("process_payment: unresolved account_id for user_id=%s", user_id)
+        logger.error("process_payment: unresolved account_id for discord_user_id=%s", user_id)
         await safe_followup_send(interaction, "❌ Не удалось определить ваш аккаунт.", ephemeral=True)
         return
-    user_points = db.scores.get(user_id, 0)
+    user_points = _load_points_by_account(account_id)
     amount_remaining = fine['amount'] - fine.get('paid_amount', 0)
     to_pay = round(amount_remaining * percent, 2)
 
@@ -172,15 +226,15 @@ class PaymentMenuView(SafeView):
                 await safe_followup_send(interaction, f"❌ От 0 до {remaining:.2f} баллов", ephemeral=True)
                 return
 
-            if db.scores.get(interaction.user.id, 0) < amount:
+            caller_account_id = _resolve_payment_account_id(interaction.user.id, handler="PaymentMenuView.pay_custom")
+            if not caller_account_id:
+                logger.error("custom payment: unresolved account_id discord_user_id=%s", interaction.user.id)
+                await safe_followup_send(interaction, "❌ Не удалось определить ваш аккаунт.", ephemeral=True)
+                return
+            if _load_points_by_account(caller_account_id) < amount:
                 await safe_followup_send(interaction, "❌ Недостаточно баллов", ephemeral=True)
                 return
 
-            caller_account_id = db._get_account_id_for_discord_user(interaction.user.id)
-            if not caller_account_id:
-                logger.error("custom payment: unresolved account_id user_id=%s", interaction.user.id)
-                await safe_followup_send(interaction, "❌ Не удалось определить ваш аккаунт.", ephemeral=True)
-                return
             success = db.record_payment_by_account(caller_account_id, self.fine["id"], amount, caller_account_id)
             if success:
                 updated = db.get_fine_by_id(self.fine["id"])
