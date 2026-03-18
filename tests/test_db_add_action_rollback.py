@@ -75,6 +75,19 @@ class AddActionRollbackTests(unittest.TestCase):
             ],
         )
 
+    def test_update_scores_logs_legacy_wrapper_usage(self):
+        fake_db = _FakeDbForAddAction()
+
+        with self.assertLogs("bot.data.db", level="WARNING") as captured:
+            result = Database.update_scores(fake_db, 1001, 1.0)
+
+        self.assertTrue(result)
+        combined = "\n".join(captured.output)
+        self.assertIn("legacy identity path detected", combined)
+        self.assertIn("handler=Database.update_scores", combined)
+        self.assertIn("field=user_id", combined)
+        self.assertIn("action=replace_with_account_id", combined)
+
 
 if __name__ == "__main__":
     unittest.main()

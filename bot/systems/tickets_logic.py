@@ -13,7 +13,7 @@ async def give_ticket_logic(user_id: int, ticket_type: str, amount: int, reason:
     if not is_valid_ticket_type(ticket_type):
         return discord.Embed(title="❌ Неверный тип билета", description="Допустимые: `normal`, `gold`", color=discord.Color.red())
 
-    success = TicketsService.give_ticket(user_id, ticket_type, amount, reason, author_id)
+    success = TicketsService.give_ticket_by_identity("discord", str(user_id), ticket_type, amount, reason, author_id)
     if not success:
         return discord.Embed(title="❌ Ошибка при начислении", color=discord.Color.red())
 
@@ -23,7 +23,7 @@ async def remove_ticket_logic(user_id: int, ticket_type: str, amount: int, reaso
     if not is_valid_ticket_type(ticket_type):
         return discord.Embed(title="❌ Неверный тип билета", description="Допустимые: `normal`, `gold`", color=discord.Color.red())
 
-    success = TicketsService.remove_ticket(user_id, ticket_type, amount, reason, author_id)
+    success = TicketsService.remove_ticket_by_identity("discord", str(user_id), ticket_type, amount, reason, author_id)
     if not success:
         return discord.Embed(title="❌ Ошибка при списании", color=discord.Color.red())
 

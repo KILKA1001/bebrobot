@@ -1,6 +1,14 @@
+import logging
 from html import escape
 
 from bot.services import AccountsService
+from bot.legacy_identity_logging import (
+    log_identity_resolve_error,
+    log_transport_identity_error,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 HELPY_TEXT = (
@@ -26,6 +34,14 @@ def get_helpy_text() -> str:
 
 def process_register_command(telegram_user_id: int | None) -> str:
     if telegram_user_id is None:
+        log_transport_identity_error(
+            logger,
+            module=__name__,
+            handler="process_register_command",
+            field="telegram_user_id",
+            action="extract_platform_user_id",
+            continue_execution=False,
+        )
         return "Не удалось определить пользователя Telegram."
 
     from bot.systems.linking_logic import register_telegram_account
@@ -45,9 +61,31 @@ def process_profile_command(
     lookup_display_name = target_display_name or display_name
 
     if lookup_user_id is None:
+        log_transport_identity_error(
+            logger,
+            module=__name__,
+            handler="process_profile_command",
+            field="telegram_user_id",
+            action="extract_platform_user_id",
+            continue_execution=False,
+        )
         return "❌ Не удалось определить пользователя Telegram."
 
-    data = AccountsService.get_profile("telegram", str(lookup_user_id), display_name=lookup_display_name)
+    account_id = AccountsService.resolve_account_id("telegram", str(lookup_user_id))
+    if not account_id:
+        log_identity_resolve_error(
+            logger,
+            module=__name__,
+            handler="process_profile_command",
+            field="telegram_user_id",
+            action="resolve_account_id",
+            continue_execution=False,
+            provider="telegram",
+            provider_user_id=lookup_user_id,
+        )
+        return "❌ Профиль не найден. Сначала выполните /register"
+
+    data = AccountsService.get_profile_by_account(account_id, display_name=lookup_display_name)
     if not data:
         return "❌ Профиль не найден. Сначала выполните /register"
 
@@ -107,6 +145,14 @@ def process_link_command(
         return "Использование: /link <код>"
 
     if telegram_user_id is None:
+        log_transport_identity_error(
+            logger,
+            module=__name__,
+            handler="process_link_command",
+            field="telegram_user_id",
+            action="extract_platform_user_id",
+            continue_execution=False,
+        )
         return "Не удалось определить пользователя Telegram."
 
     code = parts[1].strip()
@@ -125,6 +171,14 @@ def process_link_discord_command(
         return "❌ Команда привязки доступна только в личных сообщениях с ботом."
 
     if telegram_user_id is None:
+        log_transport_identity_error(
+            logger,
+            module=__name__,
+            handler="process_link_discord_command",
+            field="telegram_user_id",
+            action="extract_platform_user_id",
+            continue_execution=False,
+        )
         return "Не удалось определить пользователя Telegram."
 
     from bot.systems.linking_logic import issue_telegram_discord_link_code
@@ -151,9 +205,31 @@ def process_profile_roles_command(
     lookup_display_name = target_display_name or display_name
 
     if lookup_user_id is None:
+        log_transport_identity_error(
+            logger,
+            module=__name__,
+            handler="process_profile_roles_command",
+            field="telegram_user_id",
+            action="extract_platform_user_id",
+            continue_execution=False,
+        )
         return "❌ Не удалось определить пользователя Telegram."
 
-    data = AccountsService.get_profile("telegram", str(lookup_user_id), display_name=lookup_display_name)
+    account_id = AccountsService.resolve_account_id("telegram", str(lookup_user_id))
+    if not account_id:
+        log_identity_resolve_error(
+            logger,
+            module=__name__,
+            handler="process_profile_roles_command",
+            field="telegram_user_id",
+            action="resolve_account_id",
+            continue_execution=False,
+            provider="telegram",
+            provider_user_id=lookup_user_id,
+        )
+        return "❌ Профиль не найден. Сначала выполните /register"
+
+    data = AccountsService.get_profile_by_account(account_id, display_name=lookup_display_name)
     if not data:
         return "❌ Профиль не найден. Сначала выполните /register"
 

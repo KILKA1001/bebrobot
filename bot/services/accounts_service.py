@@ -1126,6 +1126,12 @@ class AccountsService:
         account_id = AccountsService.resolve_account_id(provider, provider_user_id)
         if not account_id or not db.supabase:
             return None
+        return AccountsService.get_profile_by_account(str(account_id), display_name=display_name)
+
+    @staticmethod
+    def get_profile_by_account(account_id: str, display_name: Optional[str] = None) -> Optional[dict]:
+        if not account_id or not db.supabase:
+            return None
 
         identities = []
         try:
@@ -1169,10 +1175,8 @@ class AccountsService:
                     profile_visible_roles = [str(item).strip() for item in visible_roles_value if str(item).strip()]
         except Exception as e:
             logger.exception(
-                "get_profile account fields read failed account_id=%s provider=%s provider_user_id=%s error=%s",
+                "get_profile_by_account account fields read failed account_id=%s error=%s",
                 account_id,
-                provider,
-                provider_user_id,
                 AccountsService._format_db_error(e),
             )
         nulls_status = "Не подтвержден (заглушка)"
@@ -1184,7 +1188,7 @@ class AccountsService:
             else "Привяжите Discord и/или подтвердите скрином свое звание администрации клуба для получения звания (временно)"
         )
         if not titles:
-            logger.info("get_profile no titles yet account_id=%s provider=%s", account_id, provider)
+            logger.info("get_profile_by_account no titles yet account_id=%s", account_id)
 
         points_from_actions = AccountsService._load_points_from_actions(str(account_id), discord_identity)
         points_from_scores: Optional[float] = None
@@ -1211,10 +1215,8 @@ class AccountsService:
                 points_from_scores = float(points_rows[0].get("points") or 0)
         except Exception as e:
             logger.exception(
-                "get_profile points failed account_id=%s provider=%s provider_user_id=%s error=%s",
+                "get_profile_by_account points failed account_id=%s error=%s",
                 account_id,
-                provider,
-                provider_user_id,
                 AccountsService._format_db_error(e),
             )
 
@@ -1250,10 +1252,8 @@ class AccountsService:
             resolved_permissions = access.permissions
         except Exception as e:
             logger.exception(
-                "get_profile role resolution failed account_id=%s provider=%s provider_user_id=%s error=%s",
+                "get_profile_by_account role resolution failed account_id=%s error=%s",
                 account_id,
-                provider,
-                provider_user_id,
                 AccountsService._format_db_error(e),
             )
 
@@ -1285,10 +1285,8 @@ class AccountsService:
             external_roles_last_synced_at = ExternalRolesSyncService.get_last_sync_at(str(account_id))
         except Exception as e:
             logger.exception(
-                "get_profile external roles sync timestamp failed account_id=%s provider=%s provider_user_id=%s error=%s",
+                "get_profile_by_account external roles sync timestamp failed account_id=%s error=%s",
                 account_id,
-                provider,
-                provider_user_id,
                 AccountsService._format_db_error(e),
             )
 
