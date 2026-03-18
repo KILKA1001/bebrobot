@@ -5,17 +5,39 @@ from postgrest.exceptions import APIError
 from bot.legacy_identity_logging import (
     log_identity_resolve_error,
     log_legacy_schema_fallback,
+    log_runtime_dependency_missing,
 )
 
-assert db.supabase
-# Обёртки для работы с таблицами турниров в Supabase
-# Гарантируем, что клиент Supabase инициализирован
-supabase = db.supabase
-
-if supabase is None:
-    raise RuntimeError("Supabase client is not initialized")
-
 logger = logging.getLogger(__name__)
+
+
+class _LazySupabaseProxy:
+    """Ленивая прокси-обёртка для безопасного импорта tournament_db."""
+
+    def _require_client(self, handler: str):
+        client = getattr(db, "supabase", None)
+        if client is not None:
+            return client
+        log_runtime_dependency_missing(
+            logger,
+            module=__name__,
+            handler=handler,
+            field="db.supabase",
+            action="initialize_supabase_client_before_tournament_db_call",
+            continue_execution=False,
+            developer_hint="module import is intentionally allowed without Supabase; initialize db.supabase before calling tournament_db functions",
+        )
+        raise RuntimeError("Supabase client is not initialized")
+
+    def table(self, *args, **kwargs):
+        return self._require_client("supabase.table").table(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._require_client(f"supabase.{name}"), name)
+
+
+# Обёртки для работы с таблицами турниров в Supabase
+supabase = _LazySupabaseProxy()
 
 # Флаг наличия столбца team_auto в таблице tournaments
 _has_team_auto = True
