@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import logging
 from unittest.mock import patch
 
 import pytest
@@ -9,11 +11,13 @@ from bot.telegram_bot.main import (
 )
 
 
-def test_run_polling_raises_when_same_process_already_owns_lock() -> None:
+def test_run_polling_raises_when_same_process_already_owns_lock(caplog: pytest.LogCaptureFixture) -> None:
     token = "dummy-token"
     current_pid = 1234
     current_hostname = "host-a"
     owner_line = f"pid={current_pid} hostname={current_hostname} started_at=2026-03-16T23:19:42.670673+00:00"
+
+    caplog.set_level(logging.INFO)
 
     with (
         patch("bot.telegram_bot.main.os.getpid", return_value=current_pid),
@@ -28,3 +32,8 @@ def test_run_polling_raises_when_same_process_already_owns_lock() -> None:
             asyncio.run(run_polling(token))
 
     close_mock.assert_called_once_with(99)
+
+
+    log_text = caplog.text
+    assert "BOT_RUNTIME" not in log_text
+    assert hashlib.sha256(token.encode("utf-8")).hexdigest()[:12] in log_text

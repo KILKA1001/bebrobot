@@ -110,24 +110,16 @@ python bot/main.py
 
 ## 🤖 Telegram (подготовка)
 - Матрица паритета команд Discord/Telegram: [docs/command_parity_matrix.md](docs/command_parity_matrix.md) (обновляется вместе с новыми user-facing командами).
-- Переменная токена для Render: `TELEGRAM_BOT_TOKEN`.
 - Единая точка запуска: `python bot/main.py`.
-- Рекомендуемое управление рантаймами через отдельные флаги:
-  - `DISCORD_RUNTIME=true` — запуск только Discord.
-  - `TELEGRAM_RUNTIME=true` — запуск только Telegram.
-  - Оба флага `true` — одновременный запуск Discord + Telegram.
-  - Если оба флага заданы как `false`, запуск не произойдёт (ошибка в логах).
-- Legacy-режим через `BOT_RUNTIME` сохранён для совместимости:
-  - `BOT_RUNTIME=discord`
-  - `BOT_RUNTIME=telegram`
-  - `BOT_RUNTIME=both`
-- Если ни новые флаги, ни `BOT_RUNTIME` не заданы, лаунчер выбирает режим автоматически по токенам:
-  - есть оба токена (`DISCORD_TOKEN` + `TELEGRAM_BOT_TOKEN`) → `both`;
-  - есть только `DISCORD_TOKEN` → `discord`;
-  - есть только `TELEGRAM_BOT_TOKEN` → `telegram`.
-- `bot/telegram_bot/main.py` — Telegram runtime-модуль, вызывается из `bot/main.py` в Telegram-режиме.
-- В Telegram-режиме поднимается polling-loop (aiogram) и в лог пишется `telegram bot started`.
-- В Telegram-режиме доступны команды `/start`, `/link`, `/helpy` (список команд обновляется через Telegram API при запуске).
+- Для Discord укажите `DISCORD_TOKEN`.
+- Для Telegram укажите `TELEGRAM_BOT_TOKEN`.
+- Если задан только `DISCORD_TOKEN`, стартует только Discord runtime.
+- Если задан только `TELEGRAM_BOT_TOKEN`, стартует только Telegram runtime.
+- Если заданы `DISCORD_TOKEN` и `TELEGRAM_BOT_TOKEN`, оба бота стартуют автоматически в одном процессе-launcher без дополнительных флагов.
+- Если не задан ни один токен, launcher завершает старт с ошибкой в логах.
+- `bot/telegram_bot/main.py` — Telegram runtime-модуль, который `bot/main.py` запускает автоматически, когда найден `TELEGRAM_BOT_TOKEN`.
+- Telegram polling-loop (aiogram) стартует автоматически и пишет в лог фактические диагностические сообщения по токену и состоянию блокировки.
+- В Telegram доступны команды `/start`, `/link`, `/helpy` (список команд обновляется через Telegram API при запуске).
 - AI-ответы персонажа Гуй работают и в Discord, и в Telegram (паритет): бот отвечает только если его явно позвали словом `Гуй` или если сообщение является ответом на сообщение бота.
 - AI не вмешивается в выполнение команд: в Discord при валидной команде сообщение обрабатывается только как команда, в Telegram AI-ответы пропускаются для командных сообщений и активных сценариев меню (`/points`, `/tickets`, `/profile_edit`).
 - Добавлена усиленная защита роли: при попытке выхода модели из образа выполняется повторная генерация со строгим role-lock, а при повторном нарушении используется безопасный fallback-ответ Гуя.

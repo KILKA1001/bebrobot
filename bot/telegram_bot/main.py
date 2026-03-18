@@ -152,7 +152,7 @@ def _patch_aiogram_conflict_behavior() -> None:
 
 
 async def run_polling(token: str) -> None:
-    # Important for BOT_RUNTIME=both where unified launcher calls run_polling()
+    # Important when the unified launcher calls run_polling()
     # directly and bypasses telegram main().
     _patch_aiogram_conflict_behavior()
 
@@ -161,23 +161,24 @@ async def run_polling(token: str) -> None:
         "correlation_id": f"tg-run-{os.getpid()}-{id(current_task)}",
         "pid": os.getpid(),
         "hostname": socket.gethostname(),
-        "bot_runtime": (os.getenv("BOT_RUNTIME") or "").strip() or "discord(default)",
         "task_name": current_task.get_name() if current_task else "unknown",
         "stack": " | ".join(
             line.strip() for line in traceback.format_stack(limit=8) if line.strip()
         ),
     }
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+    startup_context["token_hash"] = token_hash
+
     logger.info(
-        "telegram polling startup context: correlation_id=%s pid=%s hostname=%s BOT_RUNTIME=%s task=%s stack=%s",
+        "telegram polling startup context: correlation_id=%s pid=%s hostname=%s token_hash=%s task=%s stack=%s",
         startup_context["correlation_id"],
         startup_context["pid"],
         startup_context["hostname"],
-        startup_context["bot_runtime"],
+        startup_context["token_hash"],
         startup_context["task_name"],
         startup_context["stack"],
     )
 
-    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
     lock_path = Path(f"/tmp/bebrobot_telegram_polling_{token_hash}.lock")
     lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
 
@@ -212,14 +213,14 @@ async def run_polling(token: str) -> None:
         if owner_pid == current_pid and owner_hostname == current_hostname:
             logger.error(
                 "telegram polling duplicate startup detected in current process "
-                "(lock=%s, owner=%s, correlation_id=%s, pid=%s, hostname=%s, BOT_RUNTIME=%s, task=%s, stack=%s); "
+                "(lock=%s, owner=%s, correlation_id=%s, pid=%s, hostname=%s, token_hash=%s, task=%s, stack=%s); "
                 "stopping duplicate loop",
                 lock_path,
                 existing_owner,
                 startup_context["correlation_id"],
                 startup_context["pid"],
                 startup_context["hostname"],
-                startup_context["bot_runtime"],
+                startup_context["token_hash"],
                 startup_context["task_name"],
                 startup_context["stack"],
             )
@@ -235,13 +236,13 @@ async def run_polling(token: str) -> None:
         )
         logger.error(
             "telegram lock diagnostic: current_pid=%s current_hostname=%s owner_pid=%s "
-            "owner_hostname=%s owner_alive=%s BOT_RUNTIME=%s",
+            "owner_hostname=%s owner_alive=%s token_hash=%s",
             current_pid,
             current_hostname,
             owner_pid if owner_pid > 0 else "unknown",
             owner_hostname,
             owner_alive if owner_alive is not None else "unknown",
-            (os.getenv("BOT_RUNTIME") or "").strip() or "discord(default)",
+            startup_context["token_hash"],
         )
         os.close(lock_fd)
 
@@ -294,8 +295,7 @@ async def run_polling(token: str) -> None:
         except TelegramConflictError as exc:
             logger.error(
                 "telegram polling preflight failed: another getUpdates consumer is active. "
-                "Ensure only one Telegram runtime is running for this token "
-                "(for example, only one process with BOT_RUNTIME=telegram/both)."
+                "Ensure only one Telegram runtime is running for this token."
             )
             raise TelegramPollingPreflightConflictError(
                 "telegram polling preflight conflict: another getUpdates consumer is already active"

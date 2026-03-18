@@ -10,6 +10,7 @@ import logging
 import time
 import json
 import contextlib
+import hashlib
 from dotenv import load_dotenv
 
 from bot.telegram_bot.config import TELEGRAM_BOT_TOKEN_ENV, get_telegram_bot_token
@@ -83,6 +84,10 @@ STARTUP_RETRY_STATE_FILE = os.getenv(
 
 bot = command_bot
 db.bot = bot
+
+
+def _token_fingerprint(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
 
 
 def _reset_discord_http_client_state(reason: str) -> None:
@@ -477,9 +482,10 @@ def run_discord_main(token: str) -> None:
 
     try:
         logging.info(
-            "discord runtime starting pid=%s hostname=%s",
+            "discord runtime started pid=%s hostname=%s token_hash=%s",
             os.getpid(),
             os.uname().nodename,
+            _token_fingerprint(token),
         )
         bot.run(token)
     except discord.LoginFailure:
@@ -518,18 +524,21 @@ def run_discord_main(token: str) -> None:
 async def _run_both_async(discord_token: str, telegram_token: str) -> None:
     async def _run_discord_once() -> None:
         try:
-            logging.info("discord runtime starting (both mode)")
+            logging.info(
+                "discord runtime started pid=%s hostname=%s token_hash=%s",
+                os.getpid(),
+                os.uname().nodename,
+                _token_fingerprint(discord_token),
+            )
             await bot.start(discord_token)
             logging.error(
-                "discord runtime stopped unexpectedly in both mode; stopping Discord without auto-retry. "
-                "Telegram runtime will stay active if it is running. "
+                "discord runtime stopped unexpectedly while telegram remains active; stopping Discord without auto-retry. "
                 "A full dashboard restart is required to start Discord again"
             )
-            raise RuntimeError("discord runtime stopped unexpectedly in both mode")
+            raise RuntimeError("discord runtime stopped unexpectedly while telegram remains active")
         except discord.LoginFailure:
             logging.exception(
-                "discord login failure in both mode; stopping Discord without auto-retry. "
-                "Telegram runtime will stay active if it is already running"
+                "discord login failure; discord runtime stopped while telegram remains active."
             )
             raise
         except asyncio.CancelledError:
@@ -537,7 +546,7 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
             raise
         except discord.HTTPException as exc:
             log_discord_http_exception(
-                "discord runtime failed in both mode; stopping Discord without auto-retry while keeping Telegram active",
+                "discord runtime failed; discord runtime stopped while telegram remains active",
                 exc,
                 stage="run_both.discord",
                 restart_required=True,
@@ -545,8 +554,7 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
             raise
         except discord.DiscordServerError:
             logging.exception(
-                "discord runtime server error in both mode; stopping Discord without auto-retry. "
-                "Telegram runtime will stay active if it is running. "
+                "discord runtime server error; discord runtime stopped while telegram remains active. "
                 "A full dashboard restart is required"
             )
             raise
@@ -555,21 +563,21 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
             if "Session is closed" in error_text:
                 _reset_discord_http_client_state("run_both.discord.session_closed")
                 logging.exception(
-                    "discord runtime failed because HTTP session was closed in both mode; "
-                    "stopping Discord without auto-retry while keeping Telegram active. "
+                    "discord runtime failed because HTTP session was closed; "
+                    "discord runtime stopped while telegram remains active. "
                     "A full dashboard restart is required"
                 )
                 raise
             if is_transient_rate_limit_error(exc):
                 _reset_discord_http_client_state("run_both.discord.rate_limited")
                 logging.exception(
-                    "discord runtime hit transient/rate-limit error in both mode; "
-                    "stopping Discord without auto-retry while keeping Telegram active. "
+                    "discord runtime hit transient/rate-limit error; "
+                    "discord runtime stopped while telegram remains active. "
                     "A full dashboard restart is required"
                 )
                 raise
             logging.exception(
-                "discord runtime fatal error in both mode; stopping Discord without auto-retry while keeping Telegram active. "
+                "discord runtime fatal error; discord runtime stopped while telegram remains active. "
                 "A full dashboard restart is required"
             )
             raise
@@ -588,30 +596,28 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
             async with telegram_runtime_guard:
                 if telegram_runtime_started:
                     logging.warning(
-                        "telegram runtime duplicate startup prevented in both mode; "
-                        "another in-process telegram loop is already active"
+                        "telegram runtime duplicate startup detected; another in-process telegram loop is already active"
                     )
                     return
                 telegram_runtime_started = True
 
             try:
-                logging.info("telegram runtime starting (both mode)")
+                logging.info("telegram runtime started token_hash=%s", _token_fingerprint(telegram_token))
                 await run_telegram_polling(telegram_token)
                 logging.warning(
-                    "telegram runtime exited without exception in both mode; "
+                    "telegram runtime stopped without exception; "
                     "treating as graceful stop and restarting in %.1fs",
                     crash_retry_delay,
                 )
             except TelegramPollingAlreadyRunningInProcessError as exc:
                 logging.warning(
-                    "telegram runtime duplicate in-process startup detected in both mode; no restart. details=%s",
+                    "telegram runtime duplicate startup detected; no restart. details=%s",
                     exc,
                 )
                 return
             except TelegramPollingLockActiveError as exc:
                 logging.error(
-                    "telegram runtime duplicate cross-process polling detected in both mode; "
-                    "another process already owns the polling lock. details=%s retry_in=%.1fs",
+                    "telegram runtime duplicate startup detected; another process already owns the polling lock. details=%s retry_in=%.1fs",
                     exc,
                     conflict_retry_delay,
                 )
@@ -620,7 +626,7 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
                 continue
             except TelegramPollingPreflightConflictError as exc:
                 logging.warning(
-                    "telegram runtime conflict (preflight getUpdates) in both mode; "
+                    "telegram runtime duplicate startup detected during preflight getUpdates; "
                     "another consumer is active. details=%s retry_in=%.1fs",
                     exc,
                     conflict_retry_delay,
@@ -630,7 +636,7 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
                 continue
             except TelegramPollingConflictDetectedError as exc:
                 logging.error(
-                    "telegram runtime conflict (active polling) in both mode; "
+                    "telegram runtime duplicate startup detected during active polling; "
                     "lost getUpdates ownership. details=%s retry_in=%.1fs",
                     exc,
                     conflict_retry_delay,
@@ -643,7 +649,7 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
                 raise
             except Exception:
                 logging.exception(
-                    "telegram runtime crash in both mode; retry_in=%.1fs",
+                    "telegram runtime crashed; retry_in=%.1fs",
                     crash_retry_delay,
                 )
                 await asyncio.sleep(crash_retry_delay)
@@ -671,12 +677,12 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
             try:
                 exc = task.exception()
             except asyncio.CancelledError:
-                logging.info("%s cancelled in both mode supervisor", task_name)
+                logging.info("%s cancelled in runtime supervisor", task_name)
                 continue
 
             if exc is None:
                 logging.warning(
-                    "%s stopped in both mode; remaining_runtimes=%s",
+                    "%s stopped; remaining_runtimes=%s",
                     task_name,
                     ", ".join(sorted(other.get_name() for other in pending)) or "none",
                 )
@@ -687,7 +693,7 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
 
             if task_name == "discord-runtime":
                 logging.error(
-                    "discord runtime stopped in both mode; telegram runtime remains active. "
+                    "discord runtime stopped while telegram remains active. "
                     "Full dashboard restart is required to start Discord again. remaining_runtimes=%s error=%s",
                     remaining,
                     exc,
@@ -695,7 +701,7 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
                 continue
 
             logging.error(
-                "%s stopped in both mode; remaining_runtimes=%s error=%s",
+                "%s stopped; remaining_runtimes=%s error=%s",
                 task_name,
                 remaining,
                 exc,
