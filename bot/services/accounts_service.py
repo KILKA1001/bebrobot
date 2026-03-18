@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 
 from bot.data import db
+from bot.legacy_identity_logging import log_legacy_schema_fallback
 from bot.services.auth import RoleResolver
 
 logger = logging.getLogger(__name__)
@@ -1203,6 +1204,18 @@ class AccountsService:
             points_rows = points_response.data or []
             if not points_rows and discord_identity:
                 discord_user_id = discord_identity.get("provider_user_id")
+                log_legacy_schema_fallback(
+                    logger,
+                    module=__name__,
+                    table="scores",
+                    field="user_id",
+                    action="migrate_scores_lookup_to_account_id",
+                    continue_execution=True,
+                    account_id=account_id,
+                    discord_user_id=discord_user_id,
+                    recommended_field="account_id",
+                    developer_hint="temporary compatibility path; migrate scores rows to scores.account_id",
+                )
                 points_response = (
                     db.supabase.table("scores")
                     .select("points")
