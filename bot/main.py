@@ -461,51 +461,33 @@ def save_next_startup_retry_at(next_retry_at: float) -> None:
     save_startup_retry_state(next_retry_at, retry_delay)
 # Основной запуск
 
-def run_telegram_main() -> None:
-    configure_logging()
-    token = get_telegram_bot_token()
-    if not token:
-        logging.error(
-            "Не задана переменная окружения %s. Добавьте её в Render перед запуском Telegram-процесса.",
-            TELEGRAM_BOT_TOKEN_ENV,
-        )
-        return
-
+def run_telegram_main(token: str) -> None:
     try:
         asyncio.run(run_telegram_polling(token))
     except TelegramPollingAlreadyRunningInProcessError as exc:
-        logging.warning("telegram runtime duplicate startup detected in telegram-only mode; details=%s", exc)
+        logging.warning("telegram runtime duplicate startup detected; details=%s", exc)
         return
     except Exception:
-        logging.exception("telegram runtime failed in telegram-only mode")
+        logging.exception("telegram polling failed")
         raise
 
 
-def run_discord_main():
+def run_discord_main(token: str) -> None:
     global bot
-    load_dotenv()
-    configure_logging()
-
-    keep_alive()
-    token = (os.getenv('DISCORD_TOKEN') or '').strip()
-
-    if not token:
-        logging.error("❌ Переменная DISCORD_TOKEN не задана.")
-        return
 
     try:
         logging.info(
-            "discord runtime starting in discord-only mode pid=%s hostname=%s",
+            "discord runtime starting pid=%s hostname=%s",
             os.getpid(),
             os.uname().nodename,
         )
         bot.run(token)
     except discord.LoginFailure:
-        logging.error("❌ Неверный токен DISCORD_TOKEN. Проверьте переменную окружения на Render.")
+        logging.error("discord login failed: invalid DISCORD_TOKEN")
         return
     except discord.HTTPException as exc:
         log_discord_http_exception(
-            "discord runtime failed during startup/login; stopping without auto-retry",
+            "discord runtime failed during login/start",
             exc,
             stage="run_discord_main.login",
             restart_required=True,
@@ -528,7 +510,7 @@ def run_discord_main():
             )
             raise
         logging.exception(
-            "❌ Ошибка при запуске Discord-бота; runtime stopped without auto-retry. "
+            "discord runtime failed during startup; runtime stopped without auto-retry. "
             "Для нового запуска нужен полный рестарт дешборда"
         )
         raise
@@ -723,118 +705,39 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
         raise runtime_errors["telegram-runtime"]
 
 
-def run_both_main() -> None:
+def run_both_main(discord_token: str, telegram_token: str) -> None:
+    asyncio.run(_run_both_async(discord_token, telegram_token))
+
+
+def main() -> None:
+    """Launcher for Discord/Telegram runtimes based on available tokens."""
+
     load_dotenv()
     configure_logging()
     keep_alive()
 
     discord_token = (os.getenv('DISCORD_TOKEN') or '').strip()
     telegram_token = get_telegram_bot_token()
-    if not discord_token or not telegram_token:
-        logging.error(
-            "Не заданы токены для одновременного запуска: DISCORD_TOKEN=%s TELEGRAM_BOT_TOKEN=%s",
-            bool(discord_token),
-            bool(telegram_token),
-        )
-        return
 
-    asyncio.run(_run_both_async(discord_token, telegram_token))
-
-
-def _parse_runtime_flag(raw: str | None) -> bool | None:
-    """Parse runtime toggle env var and return True/False/None (unset or invalid)."""
-
-    if raw is None:
-        return None
-
-    normalized = raw.strip().lower()
-    if not normalized:
-        return None
-
-    if normalized in {"1", "true", "yes", "on", "enable", "enabled"}:
-        return True
-    if normalized in {"0", "false", "no", "off", "disable", "disabled"}:
-        return False
-
-    logging.error(
-        "Некорректное значение runtime-флага %r. Используйте true/false, 1/0, on/off.",
-        raw,
-    )
-    return None
-
-
-def _resolve_runtime_mode() -> str:
-    """Resolve launcher mode based on dedicated runtime flags and legacy BOT_RUNTIME."""
-
-    telegram_runtime = _parse_runtime_flag(os.getenv("TELEGRAM_RUNTIME"))
-    discord_runtime = _parse_runtime_flag(os.getenv("DISCORD_RUNTIME"))
-
-    # Dedicated flags have priority when at least one was explicitly set.
-    if telegram_runtime is not None or discord_runtime is not None:
-        telegram_enabled = bool(telegram_runtime) if telegram_runtime is not None else False
-        discord_enabled = bool(discord_runtime) if discord_runtime is not None else False
-
-        if telegram_enabled and discord_enabled:
-            return "both"
-        if telegram_enabled:
-            return "telegram"
-        if discord_enabled:
-            return "discord"
-
-        logging.error(
-            "И Telegram, и Discord runtime выключены (TELEGRAM_RUNTIME=%r, DISCORD_RUNTIME=%r). "
-            "Включите хотя бы один рантайм.",
-            os.getenv("TELEGRAM_RUNTIME"),
-            os.getenv("DISCORD_RUNTIME"),
-        )
-        return "none"
-
-    runtime_hint = (os.getenv("BOT_RUNTIME") or "").strip().lower()
-    if runtime_hint in {"discord", "telegram", "both"}:
-        return runtime_hint
-    if runtime_hint:
-        logging.warning(
-            "Неизвестный BOT_RUNTIME=%r. Допустимо: discord/telegram/both. Применяю auto-режим.",
-            runtime_hint,
-        )
-
-    discord_token = (os.getenv('DISCORD_TOKEN') or '').strip()
-    telegram_token = get_telegram_bot_token()
-    if discord_token and telegram_token:
-        return "both"
-    if discord_token:
-        return "discord"
-    if telegram_token:
-        return "telegram"
-    return "none"
-
-
-def main():
-    """Launcher for Discord/Telegram runtimes with explicit per-runtime toggles."""
-
-    configure_logging()
-    mode = _resolve_runtime_mode()
     logging.info(
-        "resolved runtime mode=%s (TELEGRAM_RUNTIME=%r DISCORD_RUNTIME=%r BOT_RUNTIME=%r)",
-        mode,
-        os.getenv("TELEGRAM_RUNTIME"),
-        os.getenv("DISCORD_RUNTIME"),
-        os.getenv("BOT_RUNTIME"),
+        "startup token detection: discord_token_present=%s telegram_token_present=%s",
+        bool(discord_token),
+        bool(telegram_token),
     )
 
-    if mode == "both":
-        run_both_main()
+    if discord_token and telegram_token:
+        run_both_main(discord_token, telegram_token)
         return
-    if mode == "discord":
-        run_discord_main()
+    if discord_token:
+        run_discord_main(discord_token)
         return
-    if mode == "telegram":
-        run_telegram_main()
+    if telegram_token:
+        run_telegram_main(telegram_token)
         return
 
     logging.error(
-        "Не удалось определить режим запуска. Проверьте токены DISCORD_TOKEN / TELEGRAM_BOT_TOKEN "
-        "или задайте TELEGRAM_RUNTIME / DISCORD_RUNTIME.",
+        "No bot tokens configured. Expected environment variables: DISCORD_TOKEN and/or %s",
+        TELEGRAM_BOT_TOKEN_ENV,
     )
 
 
