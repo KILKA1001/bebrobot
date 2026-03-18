@@ -80,6 +80,15 @@ class GuiyAIGuardsTests(unittest.TestCase):
         self.assertIn("Хохохо", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
         self.assertIn("Фимоза Бебр", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
 
+    def test_default_prompt_describes_guiy_appearance_from_photo(self):
+        self.assertIn("белый призрачный качок", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
+        self.assertIn("мощными накачанными руками", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
+        self.assertIn("цепью на шее", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
+
+    def test_default_prompt_keeps_stepfather_conflict_nonviolent(self):
+        self.assertIn("не угрожает реальным насилием", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
+        self.assertIn("словесный подзатыльник", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
+
     def test_is_command_text_for_regular_text(self):
         self.assertFalse(_is_command_text("Гуй, привет"))
 
