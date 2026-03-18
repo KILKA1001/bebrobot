@@ -8,7 +8,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import asyncio
 import logging
 import time
-import random
 import json
 import contextlib
 from dotenv import load_dotenv
@@ -488,176 +487,113 @@ def run_discord_main():
     configure_logging()
 
     keep_alive()
-    TOKEN = (os.getenv('DISCORD_TOKEN') or '').strip()
+    token = (os.getenv('DISCORD_TOKEN') or '').strip()
 
-    if not TOKEN:
+    if not token:
         logging.error("❌ Переменная DISCORD_TOKEN не задана.")
         return
 
-    max_retry_delay = float(os.getenv("STARTUP_MAX_RETRY_DELAY", "300"))
-    next_retry_at, retry_delay = load_startup_retry_state()
-    retry_delay = max(1.0, min(retry_delay, max_retry_delay))
+    try:
+        logging.info(
+            "discord runtime starting in discord-only mode pid=%s hostname=%s",
+            os.getpid(),
+            os.uname().nodename,
+        )
+        bot.run(token)
+    except discord.LoginFailure:
+        logging.error("❌ Неверный токен DISCORD_TOKEN. Проверьте переменную окружения на Render.")
+        return
+    except discord.HTTPException as exc:
+        log_discord_http_exception(
+            "discord runtime failed during startup/login; stopping without auto-retry",
+            exc,
+            stage="run_discord_main.login",
+            restart_required=True,
+        )
+        raise
+    except Exception as exc:
+        error_text = str(exc)
+        if "Session is closed" in error_text:
+            _reset_discord_http_client_state("run_discord_main.session_closed")
+            logging.exception(
+                "discord runtime failed because HTTP session was closed; stopping without auto-retry. "
+                "Manual dashboard restart is required"
+            )
+            raise
+        if is_transient_rate_limit_error(exc):
+            _reset_discord_http_client_state("run_discord_main.rate_limited")
+            logging.exception(
+                "discord runtime hit transient/rate-limit error during startup; stopping without auto-retry. "
+                "Manual dashboard restart is required"
+            )
+            raise
+        logging.exception(
+            "❌ Ошибка при запуске Discord-бота; runtime stopped without auto-retry. "
+            "Для нового запуска нужен полный рестарт дешборда"
+        )
+        raise
 
-
-
-    def normalize_retry_after(parsed_retry: float) -> float:
-        """Normalize retry-after to seconds and clamp to configured bounds."""
-        # Платформы/прокси иногда возвращают Retry-After в миллисекундах.
-        if parsed_retry > max_retry_delay and parsed_retry / 1000 <= max_retry_delay:
-            parsed_retry /= 1000
-        return max(1.0, min(parsed_retry, max_retry_delay))
-
-    def get_retry_after(exc: discord.HTTPException, default: float) -> float:
-        parsed_retry = extract_retry_after_seconds(exc)
-        if parsed_retry is None:
-            return normalize_retry_after(default)
-        return normalize_retry_after(parsed_retry)
-
-    def wait_before_retry(base_delay: float) -> float:
-        """Sleep before reconnecting and return the next backoff value.
-
-        A small jitter helps avoid synchronized reconnect storms when hosting
-        platforms restart multiple workers around the same moment.
-        """
-
-        delay = max(1.0, min(base_delay, max_retry_delay))
-        next_delay = min(delay * 2, max_retry_delay)
-        jittered = delay + random.uniform(0.0, min(5.0, delay * 0.1))
-        nonlocal next_retry_at
-        next_retry_at = time.time() + jittered
-        save_startup_retry_state(next_retry_at, next_delay)
-        time.sleep(jittered)
-        next_retry_at = 0.0
-        save_startup_retry_state(next_retry_at, next_delay)
-        return next_delay
-
-    def sleep_if_cooldown_active() -> None:
-        nonlocal next_retry_at
-        if next_retry_at <= 0:
-            return
-        remaining = next_retry_at - time.time()
-        if remaining <= 0:
-            next_retry_at = 0.0
-            save_startup_retry_state(next_retry_at, retry_delay)
-            return
-        remaining = min(remaining, max_retry_delay)
-        jittered = remaining + random.uniform(0.0, min(5.0, remaining * 0.1))
-        time.sleep(jittered)
-        next_retry_at = 0.0
-        save_startup_retry_state(next_retry_at, retry_delay)
-
-    while True:
+async def _run_both_async(discord_token: str, telegram_token: str) -> None:
+    async def _run_discord_once() -> None:
         try:
-            sleep_if_cooldown_active()
-            bot.run(TOKEN)
-            save_startup_retry_state(0.0, 60.0)
-            break
+            logging.info("discord runtime starting (both mode)")
+            await bot.start(discord_token)
+            logging.error(
+                "discord runtime stopped unexpectedly in both mode; stopping Discord without auto-retry. "
+                "Telegram runtime will stay active if it is running. "
+                "A full dashboard restart is required to start Discord again"
+            )
+            raise RuntimeError("discord runtime stopped unexpectedly in both mode")
         except discord.LoginFailure:
-            logging.error("❌ Неверный токен DISCORD_TOKEN. Проверьте переменную окружения на Render.")
-            break
-        except discord.HTTPException as e:
-            if e.status == 429:
-                retry_after = get_retry_after(e, retry_delay)
-                log_discord_http_exception(
-                    "discord login hit HTTP 429",
-                    e,
-                    stage="run_discord_main.login",
-                    retry_in=retry_after,
-                )
-                retry_delay = wait_before_retry(retry_after)
-                continue
-            if is_cloudflare_rate_limited_http_exception(e):
-                log_discord_http_exception(
-                    "discord login blocked by Cloudflare/IP-level rate limit",
-                    e,
-                    stage="run_discord_main.login",
-                    retry_in=retry_delay,
-                )
-                retry_after = wait_before_retry(retry_delay)
-                retry_delay = retry_after
-                continue
-
+            logging.exception(
+                "discord login failure in both mode; stopping Discord without auto-retry. "
+                "Telegram runtime will stay active if it is already running"
+            )
+            raise
+        except asyncio.CancelledError:
+            logging.info("discord runtime cancelled")
+            raise
+        except discord.HTTPException as exc:
+            log_discord_http_exception(
+                "discord runtime failed in both mode; stopping Discord without auto-retry while keeping Telegram active",
+                exc,
+                stage="run_both.discord",
+                restart_required=True,
+            )
+            raise
+        except discord.DiscordServerError:
+            logging.exception(
+                "discord runtime server error in both mode; stopping Discord without auto-retry. "
+                "Telegram runtime will stay active if it is running. "
+                "A full dashboard restart is required"
+            )
             raise
         except Exception as exc:
             error_text = str(exc)
             if "Session is closed" in error_text:
-                _reset_discord_http_client_state("start_bot.session_closed")
-                retry_delay = wait_before_retry(retry_delay)
-                continue
+                _reset_discord_http_client_state("run_both.discord.session_closed")
+                logging.exception(
+                    "discord runtime failed because HTTP session was closed in both mode; "
+                    "stopping Discord without auto-retry while keeping Telegram active. "
+                    "A full dashboard restart is required"
+                )
+                raise
             if is_transient_rate_limit_error(exc):
-                _reset_discord_http_client_state("start_bot.rate_limited")
+                _reset_discord_http_client_state("run_both.discord.rate_limited")
                 logging.exception(
-                    "Discord login transient rate-limit failure; retry in %.1fs",
-                    retry_delay,
+                    "discord runtime hit transient/rate-limit error in both mode; "
+                    "stopping Discord without auto-retry while keeping Telegram active. "
+                    "A full dashboard restart is required"
                 )
-                retry_delay = wait_before_retry(retry_delay)
-                continue
-            logging.exception("❌ Ошибка при запуске Discord-бота")
-            break
-
-async def _run_both_async(discord_token: str, telegram_token: str) -> None:
-    async def _run_discord_with_retries() -> None:
-        retry_delay = 5.0
-        max_retry_delay = float(os.getenv("BOTH_RUNTIME_MAX_RETRY_DELAY", "300"))
-
-        def _normalize_retry_after(raw: float) -> float:
-            if raw <= 0:
-                return 1.0
-            return max(1.0, min(float(raw), max_retry_delay))
-
-        def _parse_retry_after(exc: discord.HTTPException, default: float) -> float:
-            parsed_retry = extract_retry_after_seconds(exc)
-            if parsed_retry is None:
-                return _normalize_retry_after(default)
-            return _normalize_retry_after(parsed_retry)
-
-        while True:
-            try:
-                logging.info("discord runtime starting (both mode)")
-                await bot.start(discord_token)
-                logging.warning("discord runtime stopped unexpectedly; restarting")
-            except discord.LoginFailure:
-                logging.exception("discord login failure in both mode; stopping both runtimes")
                 raise
-            except asyncio.CancelledError:
-                logging.info("discord runtime cancelled")
-                raise
-            except discord.HTTPException as exc:
-                if exc.status in {429, 500, 502, 503, 504} or is_cloudflare_rate_limited_http_exception(exc):
-                    if exc.status == 429:
-                        retry_delay = _parse_retry_after(exc, retry_delay)
-                    log_discord_http_exception(
-                        "discord runtime transient HTTP error in both mode",
-                        exc,
-                        stage="run_both.discord",
-                        retry_in=retry_delay,
-                    )
-                else:
-                    log_discord_http_exception(
-                        "discord runtime unrecoverable HTTP error in both mode",
-                        exc,
-                        stage="run_both.discord",
-                    )
-                    raise
-            except discord.DiscordServerError:
-                logging.exception(
-                    "discord runtime server error in both mode; retry in %.1fs",
-                    retry_delay,
-                )
-            except Exception as exc:
-                error_text = str(exc)
-                if "Session is closed" in error_text or is_transient_rate_limit_error(exc):
-                    logging.exception("discord runtime transient error in both mode; retry in %.1fs", retry_delay)
-                else:
-                    logging.exception("discord runtime fatal error in both mode")
-                    raise
-
+            logging.exception(
+                "discord runtime fatal error in both mode; stopping Discord without auto-retry while keeping Telegram active. "
+                "A full dashboard restart is required"
+            )
+            raise
+        finally:
             with contextlib.suppress(Exception):
                 await bot.close()
-            _reset_discord_http_client_state("both_mode.retry_after_failure")
-
-            await asyncio.sleep(retry_delay)
-            retry_delay = min(retry_delay * 2, max_retry_delay)
 
     async def _run_telegram_with_retries() -> None:
         global telegram_runtime_started
@@ -738,29 +674,53 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
             await asyncio.sleep(crash_retry_delay)
             crash_retry_delay = min(crash_retry_delay * 2, max_retry_delay)
 
-    discord_task = asyncio.create_task(_run_discord_with_retries(), name="discord-runtime")
+    discord_task = asyncio.create_task(_run_discord_once(), name="discord-runtime")
     telegram_task = asyncio.create_task(_run_telegram_with_retries(), name="telegram-runtime")
 
-    done, pending = await asyncio.wait(
-        {discord_task, telegram_task},
-        return_when=asyncio.FIRST_EXCEPTION,
-    )
+    pending = {discord_task, telegram_task}
+    runtime_errors: dict[str, BaseException] = {}
 
-    first_exc = None
-    for task in done:
-        exc = task.exception()
-        if exc is not None:
-            first_exc = exc
-            break
+    while pending:
+        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
 
-    for task in pending:
-        task.cancel()
+        for task in done:
+            task_name = task.get_name()
 
-    if pending:
-        await asyncio.gather(*pending, return_exceptions=True)
+            try:
+                exc = task.exception()
+            except asyncio.CancelledError:
+                logging.info("%s cancelled in both mode supervisor", task_name)
+                continue
 
-    if first_exc is not None:
-        raise first_exc
+            if exc is None:
+                logging.warning(
+                    "%s stopped in both mode; remaining_runtimes=%s",
+                    task_name,
+                    ", ".join(sorted(other.get_name() for other in pending)) or "none",
+                )
+                continue
+
+            runtime_errors[task_name] = exc
+            remaining = ", ".join(sorted(other.get_name() for other in pending)) or "none"
+
+            if task_name == "discord-runtime":
+                logging.error(
+                    "discord runtime stopped in both mode; telegram runtime remains active. "
+                    "Full dashboard restart is required to start Discord again. remaining_runtimes=%s error=%s",
+                    remaining,
+                    exc,
+                )
+                continue
+
+            logging.error(
+                "%s stopped in both mode; remaining_runtimes=%s error=%s",
+                task_name,
+                remaining,
+                exc,
+            )
+
+    if runtime_errors and "telegram-runtime" in runtime_errors:
+        raise runtime_errors["telegram-runtime"]
 
 
 def run_both_main() -> None:
