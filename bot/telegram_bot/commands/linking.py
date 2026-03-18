@@ -36,6 +36,17 @@ _PENDING_EDIT_FIELD_CREATED_AT: dict[int, float] = {}
 _PENDING_VISIBLE_ROLES: dict[int, dict[str, object]] = {}
 
 
+def _persist_telegram_identity(user) -> None:
+    if not user or getattr(user, "is_bot", False):
+        return
+    AccountsService.persist_identity_lookup_fields(
+        "telegram",
+        str(user.id),
+        username=getattr(user, "username", None),
+        display_name=getattr(user, "full_name", None),
+    )
+
+
 def _has_non_expired_profile_edit(telegram_user_id: int) -> bool:
     field_name = _PENDING_EDIT_FIELD.get(telegram_user_id)
     created_at = _PENDING_EDIT_FIELD_CREATED_AT.get(telegram_user_id)
@@ -166,6 +177,7 @@ async def helpy_command(message: Message) -> None:
 
 @router.message(Command("register"))
 async def register_command(message: Message) -> None:
+    _persist_telegram_identity(message.from_user)
     telegram_user_id = message.from_user.id if message.from_user is not None else None
     response = process_register_command(telegram_user_id)
     await message.answer(response)
@@ -173,10 +185,12 @@ async def register_command(message: Message) -> None:
 
 @router.message(Command("profile"))
 async def profile_command(message: Message) -> None:
+    _persist_telegram_identity(message.from_user)
     telegram_user_id = message.from_user.id if message.from_user is not None else None
     display_name = message.from_user.full_name if message.from_user is not None else None
 
     target_user = message.reply_to_message.from_user if message.reply_to_message else None
+    _persist_telegram_identity(target_user)
     target_user_id = target_user.id if target_user is not None else telegram_user_id
     target_display_name = target_user.full_name if target_user is not None else display_name
 
@@ -236,6 +250,7 @@ async def profile_command(message: Message) -> None:
 
 @router.message(Command("profile_edit"))
 async def profile_edit_command(message: Message) -> None:
+    _persist_telegram_identity(message.from_user)
     telegram_user_id = message.from_user.id if message.from_user is not None else None
     if message.chat.type != "private":
         await message.answer("❌ Редактирование профиля доступно только в личных сообщениях с ботом.")
@@ -498,6 +513,7 @@ async def profile_edit_value_handler(message: Message) -> None:
 
 @router.message(Command("profile_roles"))
 async def profile_roles_command(message: Message) -> None:
+    _persist_telegram_identity(message.from_user)
     telegram_user_id = message.from_user.id if message.from_user is not None else None
     display_name = message.from_user.full_name if message.from_user is not None else None
 
@@ -516,6 +532,7 @@ async def profile_roles_command(message: Message) -> None:
 
 @router.message(Command("link"))
 async def link_command(message: Message) -> None:
+    _persist_telegram_identity(message.from_user)
     telegram_user_id = message.from_user.id if message.from_user is not None else None
     is_private_chat = message.chat.type == "private"
     response = process_link_command(message.text or "", telegram_user_id, is_private_chat=is_private_chat)
@@ -524,6 +541,7 @@ async def link_command(message: Message) -> None:
 
 @router.message(Command("link_discord"))
 async def link_discord_command(message: Message) -> None:
+    _persist_telegram_identity(message.from_user)
     telegram_user_id = message.from_user.id if message.from_user is not None else None
     is_private_chat = message.chat.type == "private"
     response = process_link_discord_command(telegram_user_id, is_private_chat=is_private_chat)

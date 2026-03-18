@@ -32,8 +32,9 @@ def _canonical_role_missing_message() -> str:
 
 def _render_user_lookup_hint() -> str:
     return (
-        "Используй mention или username. Если не сработало — попробуй точный `@username`, "
-        "mention пользователя или уточни запрос."
+        "Используй mention или username/display_name. "
+        "Если нужен явный провайдер, укажи `ds:username` или `tg:@username`. "
+        "ID используй только как резерв."
     )
 
 
@@ -107,32 +108,62 @@ def _format_discord_candidate(member: discord.Member) -> str:
     return " | ".join(pieces)
 
 
+def _format_identity_lookup_candidate(candidate: dict[str, Any]) -> str:
+    provider = str(candidate.get("provider") or "").strip()
+    username = str(candidate.get("username") or "").strip()
+    display_name = str(candidate.get("display_name") or "").strip()
+    provider_user_id = str(candidate.get("provider_user_id") or "").strip()
+    matched_by = str(candidate.get("matched_by") or "").strip()
+    pieces = [provider] if provider else []
+    if username:
+        pieces.append(f"@{username}")
+    if display_name:
+        pieces.append(display_name)
+    if provider_user_id:
+        pieces.append(f"id={provider_user_id}")
+    if matched_by:
+        pieces.append(f"via={matched_by}")
+    return " | ".join(pieces)
+
+
 async def _resolve_discord_target(ctx: commands.Context, raw_target: str, *, operation: str) -> dict[str, Any] | None:
     token = str(raw_target or "").strip()
     actor_id = str(ctx.author.id)
     guild_id = str(ctx.guild.id) if ctx.guild else None
+    location = "discord_guild" if ctx.guild else "discord_dm"
+    AccountsService.persist_identity_lookup_fields(
+        "discord",
+        actor_id,
+        username=getattr(ctx.author, "name", None),
+        display_name=getattr(ctx.author, "display_name", None),
+        global_username=getattr(ctx.author, "global_name", None),
+    )
     if not token:
         logger.warning(
-            "rolesadmin user lookup failed provider=discord actor_id=%s guild_id=%s operation=%s username=%s candidates=%s reason=%s",
+            "rolesadmin user lookup failed actor_id=%s location=%s guild_id=%s operation=%s lookup_value=%s candidates=%s provider=%s reason=%s",
             actor_id,
+            location,
             guild_id,
             operation,
             token,
             0,
+            "discord",
             "empty_target",
         )
-        await send_temp(ctx, f"❌ Укажи mention или username. {_render_user_lookup_hint()}")
+        await send_temp(ctx, f"❌ Укажи mention, username или display_name. {_render_user_lookup_hint()}")
         return None
 
     member_candidates = _match_discord_member_candidates(ctx.guild, token)
     if len(member_candidates) > 1:
         logger.warning(
-            "rolesadmin user lookup ambiguous provider=discord actor_id=%s guild_id=%s operation=%s username=%s candidates=%s reason=%s",
+            "rolesadmin user lookup ambiguous actor_id=%s location=%s guild_id=%s operation=%s lookup_value=%s candidates=%s provider=%s reason=%s",
             actor_id,
+            location,
             guild_id,
             operation,
             token,
             len(member_candidates),
+            "discord",
             "guild_member_ambiguous",
         )
         formatted = "\n".join(f"• {_format_discord_candidate(item)}" for item in member_candidates[:5])
@@ -149,50 +180,66 @@ async def _resolve_discord_target(ctx: commands.Context, raw_target: str, *, ope
             global_username=getattr(member, "global_name", None),
         )
         return {
+            "account_id": AccountsService.resolve_account_id("discord", str(member.id)),
+            "provider": "discord",
             "provider_user_id": str(member.id),
             "member": member,
             "label": member.mention,
+            "matched_by": "guild_member",
         }
 
-    identity_candidates = AccountsService.find_accounts_by_identity_username("discord", token)
-    if len(identity_candidates) > 1:
+    lookup = AccountsService.resolve_user_lookup(token, default_provider="discord")
+    identity_candidates = list(lookup.get("candidates") or [])
+    if lookup.get("status") == "multiple":
         logger.warning(
-            "rolesadmin user lookup ambiguous provider=discord actor_id=%s guild_id=%s operation=%s username=%s candidates=%s reason=%s",
+            "rolesadmin user lookup ambiguous actor_id=%s location=%s guild_id=%s operation=%s lookup_value=%s candidates=%s provider=%s reason=%s",
             actor_id,
+            location,
             guild_id,
             operation,
             token,
             len(identity_candidates),
-            "identity_username_ambiguous",
+            "discord",
+            "identity_lookup_ambiguous",
         )
         formatted = "\n".join(
-            f"• {item.get('username') or item.get('display_name') or item.get('provider_user_id')}"
+            f"• {_format_identity_lookup_candidate(item)}"
             for item in identity_candidates[:5]
         )
-        await send_temp(ctx, f"❌ Найдено несколько пользователей в базе. Уточни через mention или точный username:\n{formatted}")
+        await send_temp(ctx, f"❌ Найдено несколько пользователей. Уточни mention, provider или более точный username:\n{formatted}")
         return None
 
-    if len(identity_candidates) == 1 and identity_candidates[0].get("provider_user_id"):
-        candidate = identity_candidates[0]
+    if lookup.get("status") == "ok":
+        candidate = dict(lookup.get("result") or {})
         provider_user_id = str(candidate["provider_user_id"])
         member = ctx.guild.get_member(int(provider_user_id)) if ctx.guild and provider_user_id.isdigit() else None
-        label = member.mention if member else (candidate.get("username") or candidate.get("display_name") or provider_user_id)
+        label = member.mention if member else (candidate.get("username") or candidate.get("display_name") or f"{candidate.get('provider')}:{provider_user_id}")
         return {
+            "account_id": candidate.get("account_id"),
+            "provider": candidate.get("provider"),
             "provider_user_id": provider_user_id,
             "member": member,
             "label": label,
+            "matched_by": candidate.get("matched_by"),
         }
 
     logger.warning(
-        "rolesadmin user lookup failed provider=discord actor_id=%s guild_id=%s operation=%s username=%s candidates=%s reason=%s",
+        "rolesadmin user lookup failed actor_id=%s location=%s guild_id=%s operation=%s lookup_value=%s candidates=%s provider=%s reason=%s",
         actor_id,
+        location,
         guild_id,
         operation,
         token,
         len(identity_candidates),
-        "not_found",
+        "discord",
+        str(lookup.get("reason") or "not_found"),
     )
-    await send_temp(ctx, f"❌ Пользователь не найден. {_render_user_lookup_hint()}")
+    await send_temp(
+        ctx,
+        "❌ Пользователь не найден в локальном реестре. "
+        "Пусть он хотя бы раз напишет боту, выполнит `/register_account`, `/link` или `/profile`, затем попробуйте снова. "
+        + _render_user_lookup_hint(),
+    )
     return None
 
 
@@ -227,10 +274,10 @@ def _rolesadmin_help_embed() -> discord.Embed:
     embed.add_field(
         name="Роли пользователей",
         value=(
-            "`/rolesadmin user_roles <mention|username>` — посмотреть роли пользователя\n"
-            "`/rolesadmin user_grant <mention|username> <role_name>` — выдать роль\n"
-            "`/rolesadmin user_revoke <mention|username> <role_name>` — снять роль\n"
-            "Если mention не сработал, укажи username. При неоднозначности бот попросит уточнение."
+            "`/rolesadmin user_roles <mention|username|display_name>` — посмотреть роли пользователя\n"
+            "`/rolesadmin user_grant <mention|username|display_name> <role_name>` — выдать роль\n"
+            "`/rolesadmin user_revoke <mention|username|display_name> <role_name>` — снять роль\n"
+            "Приоритет: mention/member, затем username/display_name, затем id. Можно уточнить через `ds:username` или `tg:@username`."
         ),
         inline=False,
     )
@@ -442,7 +489,7 @@ async def rolesadmin_user_roles(ctx: commands.Context, target: str):
     if not resolved:
         return
 
-    roles = RoleManagementService.get_user_roles("discord", str(resolved["provider_user_id"]))
+    roles = RoleManagementService.get_user_roles(str(resolved["provider"]), str(resolved["provider_user_id"]))
     if not roles:
         await send_temp(ctx, f"📭 У пользователя {resolved['label']} нет ролей.")
         return
@@ -462,7 +509,12 @@ async def rolesadmin_user_grant(ctx: commands.Context, target: str, role_name: s
 
     role_info = RoleManagementService.get_role(role_name)
     category = role_info.get("category_name") if role_info else None
-    ok = RoleManagementService.assign_user_role("discord", str(resolved["provider_user_id"]), role_name, category=category)
+    ok = RoleManagementService.assign_user_role(
+        str(resolved["provider"]),
+        str(resolved["provider_user_id"]),
+        role_name,
+        category=category,
+    )
     if not ok:
         await send_temp(ctx, "❌ Не удалось выдать роль в БД (смотри логи).")
         return
@@ -503,7 +555,11 @@ async def rolesadmin_user_revoke(ctx: commands.Context, target: str, role_name: 
         return
 
     role_info = RoleManagementService.get_role(role_name)
-    ok = RoleManagementService.revoke_user_role("discord", str(resolved["provider_user_id"]), role_name)
+    ok = RoleManagementService.revoke_user_role(
+        str(resolved["provider"]),
+        str(resolved["provider_user_id"]),
+        role_name,
+    )
     if not ok:
         await send_temp(ctx, "❌ Не удалось забрать роль в БД (смотри логи).")
         return

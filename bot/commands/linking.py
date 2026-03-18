@@ -19,6 +19,18 @@ def _is_private_context(ctx) -> bool:
     return getattr(ctx, "guild", None) is None
 
 
+def _persist_discord_identity(user: discord.abc.User | None) -> None:
+    if not user or getattr(user, "bot", False):
+        return
+    AccountsService.persist_identity_lookup_fields(
+        "discord",
+        str(user.id),
+        username=getattr(user, "name", None),
+        display_name=getattr(user, "display_name", None),
+        global_username=getattr(user, "global_name", None),
+    )
+
+
 class ProfileEditModal(discord.ui.Modal):
     def __init__(
         self,
@@ -43,6 +55,7 @@ class ProfileEditModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
+            _persist_discord_identity(interaction.user)
             value = str(self.value_input.value or "").strip()
             success, payload = AccountsService.update_profile_field(
                 "discord",
@@ -263,6 +276,7 @@ class ProfileEditView(discord.ui.View):
 
 @bot.hybrid_command(name="register_account", description="Зарегистрировать общий аккаунт")
 async def register_account(ctx):
+    _persist_discord_identity(ctx.author)
     success, payload = register_discord_account(ctx.author.id)
     prefix = "✅" if success else "❌"
     await send_temp(ctx, f"{prefix} {payload}", delete_after=None)
@@ -270,6 +284,7 @@ async def register_account(ctx):
 
 @bot.hybrid_command(name="link_telegram", description="Сгенерировать код для привязки Telegram аккаунта")
 async def link_telegram(ctx):
+    _persist_discord_identity(ctx.author)
     if not _is_private_context(ctx):
         await send_temp(ctx, "❌ Команда привязки доступна только в личных сообщениях с ботом.", delete_after=None)
         return
@@ -293,6 +308,7 @@ async def link_telegram(ctx):
 
 @bot.hybrid_command(name="link", description="Привязать Discord к аккаунту по коду из Telegram")
 async def link(ctx, code: str):
+    _persist_discord_identity(ctx.author)
     if not _is_private_context(ctx):
         await send_temp(ctx, "❌ Команда привязки доступна только в личных сообщениях с ботом.", delete_after=None)
         return
@@ -304,6 +320,7 @@ async def link(ctx, code: str):
 
 @bot.hybrid_command(name="profile", description="Показать профиль общего аккаунта")
 async def profile(ctx):
+    _persist_discord_identity(ctx.author)
     target_user = ctx.author
     reference = getattr(ctx.message, "reference", None)
     if reference and reference.message_id and ctx.guild:
@@ -315,6 +332,7 @@ async def profile(ctx):
             pass
 
     display_name = getattr(target_user, "display_name", None) or getattr(target_user, "name", None)
+    _persist_discord_identity(target_user)
     data = AccountsService.get_profile("discord", str(target_user.id), display_name=display_name)
     if not data:
         await send_temp(ctx, "❌ Профиль не найден. Сначала выполните `/register_account`.", delete_after=None)
@@ -360,6 +378,7 @@ async def profile(ctx):
 
 @bot.hybrid_command(name="profile_roles", description="Показать все роли профиля по категориям")
 async def profile_roles(ctx):
+    _persist_discord_identity(ctx.author)
     target_user = ctx.author
     reference = getattr(ctx.message, "reference", None)
     if reference and reference.message_id and ctx.guild:
@@ -371,6 +390,7 @@ async def profile_roles(ctx):
             pass
 
     display_name = getattr(target_user, "display_name", None) or getattr(target_user, "name", None)
+    _persist_discord_identity(target_user)
     data = AccountsService.get_profile("discord", str(target_user.id), display_name=display_name)
     if not data:
         await send_temp(ctx, "❌ Профиль не найден. Сначала выполните `/register_account`.", delete_after=None)
@@ -392,6 +412,7 @@ async def profile_roles(ctx):
 
 @bot.hybrid_command(name="profile_edit", description="Настройки и редактирование своего профиля")
 async def profile_edit(ctx):
+    _persist_discord_identity(ctx.author)
     if not _is_private_context(ctx):
         await send_temp(ctx, "❌ Редактирование профиля доступно только в личных сообщениях с ботом.", delete_after=None)
         return

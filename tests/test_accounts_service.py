@@ -208,6 +208,48 @@ class AccountsServiceTests(unittest.TestCase):
 
         self.assertEqual(matches, [])
 
+    def test_resolve_user_lookup_prefers_default_provider_but_allows_cross_provider_prefix(self):
+        self.fake_db.tables["account_identities"] = [
+            {
+                "account_id": "acc-1",
+                "provider": "telegram",
+                "provider_user_id": "222",
+                "username": "tg_user",
+                "display_name": "Telegram User",
+            },
+            {
+                "account_id": "acc-2",
+                "provider": "discord",
+                "provider_user_id": "333",
+                "username": "ds_user",
+                "display_name": "Discord User",
+            },
+        ]
+
+        telegram_lookup = AccountsService.resolve_user_lookup("@tg_user", default_provider="telegram")
+        discord_lookup = AccountsService.resolve_user_lookup("ds:ds_user", default_provider="telegram")
+
+        self.assertEqual(telegram_lookup["status"], "ok")
+        self.assertEqual(telegram_lookup["result"]["provider"], "telegram")
+        self.assertEqual(telegram_lookup["result"]["provider_user_id"], "222")
+        self.assertEqual(discord_lookup["status"], "ok")
+        self.assertEqual(discord_lookup["result"]["provider"], "discord")
+        self.assertEqual(discord_lookup["result"]["provider_user_id"], "333")
+
+    def test_resolve_user_lookup_supports_account_id_fallback(self):
+        account_id = "123e4567-e89b-42d3-a456-426614174000"
+        self.fake_db.tables["account_identities"] = [
+            {"account_id": account_id, "provider": "telegram", "provider_user_id": "222", "username": "tg_user"},
+            {"account_id": account_id, "provider": "discord", "provider_user_id": "333", "username": "ds_user"},
+        ]
+
+        lookup = AccountsService.resolve_user_lookup(account_id, default_provider="discord")
+
+        self.assertEqual(lookup["status"], "ok")
+        self.assertEqual(lookup["result"]["account_id"], account_id)
+        self.assertEqual(lookup["result"]["provider"], "discord")
+        self.assertEqual(lookup["result"]["provider_user_id"], "333")
+
     def test_persist_identity_lookup_fields_updates_existing_identity(self):
         self.fake_db.tables["account_identities"] = [
             {"account_id": "acc-1", "provider": "discord", "provider_user_id": "111"}

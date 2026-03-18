@@ -1,5 +1,4 @@
 import logging
-import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -15,7 +14,6 @@ from bot.services.role_management_service import DELETE_ROLE_REASON_DISCORD_MANA
 
 logger = logging.getLogger(__name__)
 router = Router()
-_TELEGRAM_USERNAME_RE = re.compile(r"^@?([A-Za-z0-9_]{3,})$")
 
 _ROLES_PAGE_SIZE = 5
 _MAX_ROLE_BUTTONS = 8
@@ -63,12 +61,18 @@ def _canonical_role_missing_message() -> str:
 
 
 def _telegram_user_lookup_hint() -> str:
-    return "Попробуй @username, reply на сообщение пользователя или telegram_id как резервный вариант."
+    return (
+        "В ЛС используй @username или username. "
+        "Для Telegram можно указать tg:@username, для Discord — ds:username. "
+        "В группе удобнее всего reply. ID оставь как резерв."
+    )
 
 
-async def _sync_linked_discord_role(provider_user_id: str, role_name: str, *, revoke: bool) -> None:
+async def _sync_linked_discord_role(target: dict[str, str], role_name: str, *, revoke: bool) -> None:
     try:
-        account_id = AccountsService.resolve_account_id("telegram", str(provider_user_id))
+        provider = str(target.get("provider") or "").strip()
+        provider_user_id = str(target.get("provider_user_id") or "").strip()
+        account_id = str(target.get("account_id") or "").strip() or AccountsService.resolve_account_id(provider, provider_user_id)
         if not account_id or not db.supabase:
             return
         role_info = RoleManagementService.get_role(role_name)
@@ -92,7 +96,12 @@ async def _sync_linked_discord_role(provider_user_id: str, role_name: str, *, re
         from bot.commands.base import bot as discord_bot
 
         if not getattr(discord_bot, "guilds", None):
-            logger.warning("discord sync skipped: bot guilds unavailable target_telegram_id=%s", provider_user_id)
+            logger.warning(
+                "discord sync skipped: bot guilds unavailable account_id=%s provider=%s provider_user_id=%s",
+                account_id,
+                provider,
+                provider_user_id,
+            )
             return
         for guild in discord_bot.guilds:
             member = guild.get_member(discord_user_id)
@@ -101,12 +110,15 @@ async def _sync_linked_discord_role(provider_user_id: str, role_name: str, *, re
                 continue
             try:
                 if revoke:
-                    await member.remove_roles(guild_role, reason=f"telegram roles_admin revoke by {provider_user_id}")
+                    await member.remove_roles(guild_role, reason=f"telegram roles_admin revoke by {provider}:{provider_user_id}")
                 else:
-                    await member.add_roles(guild_role, reason=f"telegram roles_admin grant by {provider_user_id}")
+                    await member.add_roles(guild_role, reason=f"telegram roles_admin grant by {provider}:{provider_user_id}")
             except Exception:
                 logger.exception(
-                    "telegram roles_admin discord sync failed discord_user_id=%s role_id=%s revoke=%s guild_id=%s",
+                    "telegram roles_admin discord sync failed account_id=%s provider=%s provider_user_id=%s discord_user_id=%s role_id=%s revoke=%s guild_id=%s",
+                    account_id,
+                    provider,
+                    provider_user_id,
                     discord_user_id,
                     discord_role_id,
                     revoke,
@@ -114,13 +126,23 @@ async def _sync_linked_discord_role(provider_user_id: str, role_name: str, *, re
                 )
             return
         logger.warning(
-            "telegram roles_admin discord sync target not found discord_user_id=%s role_id=%s revoke=%s",
+            "telegram roles_admin discord sync target not found account_id=%s provider=%s provider_user_id=%s discord_user_id=%s role_id=%s revoke=%s",
+            account_id,
+            provider,
+            provider_user_id,
             discord_user_id,
             discord_role_id,
             revoke,
         )
     except Exception:
-        logger.exception("telegram roles_admin discord sync crashed target_telegram_id=%s role=%s revoke=%s", provider_user_id, role_name, revoke)
+        logger.exception(
+            "telegram roles_admin discord sync crashed provider=%s provider_user_id=%s account_id=%s role=%s revoke=%s",
+            target.get("provider"),
+            target.get("provider_user_id"),
+            target.get("account_id"),
+            role_name,
+            revoke,
+        )
 
 
 async def _sync_discord_roles_catalog() -> None:
@@ -181,21 +203,23 @@ def _persist_telegram_identity_from_user(user: Any | None) -> None:
     )
 
 
-def _normalize_telegram_username(raw_value: str | None) -> str:
-    return str(raw_value or "").strip().lstrip("@")
-
-
 def _format_telegram_lookup_candidate(candidate: dict[str, Any]) -> str:
+    provider = str(candidate.get("provider") or "").strip()
     username = candidate.get("username")
     display_name = candidate.get("display_name")
     provider_user_id = candidate.get("provider_user_id")
+    matched_by = candidate.get("matched_by")
     parts = []
+    if provider:
+        parts.append(provider)
     if username:
         parts.append(f"@{str(username).lstrip('@')}")
     if display_name:
         parts.append(str(display_name))
     if provider_user_id:
         parts.append(f"id={provider_user_id}")
+    if matched_by:
+        parts.append(f"via={matched_by}")
     return " | ".join(parts) or "неизвестный пользователь"
 
 
@@ -212,7 +236,14 @@ def _resolve_telegram_target(
         username = getattr(reply_user, "username", None)
         display = getattr(reply_user, "full_name", None)
         label = f"@{username}" if username else (display or str(reply_user.id))
-        return {"provider_user_id": str(reply_user.id), "label": label}
+        account_id = AccountsService.resolve_account_id("telegram", str(reply_user.id))
+        return {
+            "account_id": str(account_id or "") or None,
+            "provider": "telegram",
+            "provider_user_id": str(reply_user.id),
+            "label": label,
+            "matched_by": "reply",
+        }
 
     token = str(raw_target or "").strip()
     if not token:
@@ -228,62 +259,75 @@ def _resolve_telegram_target(
         )
         return None
 
-    normalized_username = _normalize_telegram_username(token)
-    username_match = _TELEGRAM_USERNAME_RE.match(token)
-    if username_match:
-        candidates = AccountsService.find_accounts_by_identity_username("telegram", normalized_username)
-        if len(candidates) == 1 and candidates[0].get("provider_user_id"):
-            return {
-                "provider_user_id": str(candidates[0]["provider_user_id"]),
-                "label": f"@{normalized_username}",
-            }
-        if len(candidates) > 1:
-            logger.warning(
-                "roles_admin user lookup ambiguous provider=telegram actor_id=%s telegram_user_id=%s operation=%s source=%s username=%s candidates=%s reason=%s",
-                actor_id,
-                actor_id,
-                operation,
-                source,
-                normalized_username,
-                len(candidates),
-                "identity_username_ambiguous",
-            )
-            return {
-                "error": "multiple",
-                "message": "❌ Найдено несколько пользователей: "
-                + "; ".join(_format_telegram_lookup_candidate(candidate) for candidate in candidates[:5]),
-            }
-        logger.warning(
-            "roles_admin user lookup failed provider=telegram actor_id=%s telegram_user_id=%s operation=%s source=%s username=%s candidates=%s reason=%s",
-            actor_id,
-            actor_id,
-            operation,
-            source,
-            normalized_username,
-            len(candidates),
-            "not_found",
+    lookup = AccountsService.resolve_user_lookup(token, default_provider="telegram")
+    candidates = list(lookup.get("candidates") or [])
+    if lookup.get("status") == "ok":
+        resolved = dict(lookup.get("result") or {})
+        provider = str(resolved.get("provider") or "").strip()
+        provider_user_id = str(resolved.get("provider_user_id") or "").strip()
+        username = str(resolved.get("username") or "").strip()
+        display_name = str(resolved.get("display_name") or "").strip()
+        label = (
+            f"@{username}"
+            if username
+            else f"{display_name} ({provider}:{provider_user_id})"
+            if display_name
+            else f"{provider}:{provider_user_id}"
         )
         return {
-            "error": "not_found",
-            "message": f"❌ Пользователь не найден. {_telegram_user_lookup_hint()}",
+            "account_id": str(resolved.get("account_id") or "") or None,
+            "provider": provider,
+            "provider_user_id": provider_user_id,
+            "label": label,
+            "matched_by": str(resolved.get("matched_by") or ""),
+        }
+
+    location = "telegram_group" if source == "group" else "telegram_dm"
+    if lookup.get("status") == "multiple":
+        logger.warning(
+            "roles_admin user lookup ambiguous actor_id=%s location=%s operation=%s source=%s lookup_value=%s candidates=%s provider=%s reason=%s",
+            actor_id,
+            location,
+            operation,
+            source,
+            token,
+            len(candidates),
+            "telegram",
+            "multiple_matches",
+        )
+        return {
+            "error": "multiple",
+            "message": "❌ Найдено несколько пользователей. Уточни provider или username: "
+            + "; ".join(_format_telegram_lookup_candidate(candidate) for candidate in candidates[:5]),
         }
 
     if token.isdigit():
-        return {"provider_user_id": token, "label": token}
+        return {
+            "account_id": None,
+            "provider": "telegram",
+            "provider_user_id": token,
+            "label": f"telegram:{token}",
+            "matched_by": "exact_id_fallback",
+        }
 
     logger.warning(
-        "roles_admin user lookup failed provider=telegram actor_id=%s telegram_user_id=%s operation=%s source=%s username=%s candidates=%s reason=%s",
+        "roles_admin user lookup failed actor_id=%s location=%s operation=%s source=%s lookup_value=%s candidates=%s provider=%s reason=%s",
         actor_id,
-        actor_id,
+        location,
         operation,
         source,
         token,
-        0,
-        "invalid_format",
+        len(candidates),
+        "telegram",
+        str(lookup.get("reason") or "not_found"),
     )
     return {
-        "error": "invalid_format",
-        "message": f"❌ Не удалось распознать пользователя. {_telegram_user_lookup_hint()}",
+        "error": "not_found" if lookup.get("status") == "not_found" else "invalid_format",
+        "message": (
+            "❌ Пользователь не найден в локальном реестре. "
+            "Пусть он хотя бы один раз напишет боту или выполнит /register, /link, /profile. "
+            + _telegram_user_lookup_hint()
+        ),
     }
 
 
@@ -343,9 +387,9 @@ def _operation_hint(operation: str) -> str:
         "role_move": "Отправь: <code>Название роли | Категория | position(опц)</code>",
         "role_order": "Отправь: <code>Название роли | Категория | position</code>",
         "role_delete": "Отправь: <code>Название роли</code>",
-        "user_roles": "Отправь: <code>@username</code> или сделай reply на сообщение пользователя. Telegram ID — только резерв.",
-        "user_grant": "Отправь: <code>@username | Название роли</code> или сделай reply и пришли <code>Название роли</code>",
-        "user_revoke": "Отправь: <code>@username | Название роли</code> или сделай reply и пришли <code>Название роли</code>",
+        "user_roles": "Отправь: <code>@username</code>, <code>username</code>, <code>tg:@username</code> или <code>ds:username</code>. В группе удобнее reply.",
+        "user_grant": "Отправь: <code>@username | Название роли</code> или reply + <code>Название роли</code>. Можно и <code>ds:username | Роль</code>.",
+        "user_revoke": "Отправь: <code>@username | Название роли</code> или reply + <code>Название роли</code>. Можно и <code>ds:username | Роль</code>.",
     }
     return hints.get(operation, "Неизвестная операция")
 
@@ -548,10 +592,10 @@ def _render_fallback_text() -> str:
         "<code>/roles_admin role_delete &lt;name&gt;</code>\n"
         "Внешние Discord-роли не удаляются из каталога: их можно только перемещать и сортировать.\n\n"
         "<b>Пользователи</b>\n"
-        "<code>/roles_admin user_roles [reply|@username|telegram_id]</code>\n"
-        "<code>/roles_admin user_grant &lt;@username&gt; &lt;role_name&gt;</code>\n"
-        "<code>/roles_admin user_revoke &lt;@username&gt; &lt;role_name&gt;</code>\n"
-        "Самый удобный путь — reply на сообщение пользователя. Telegram ID оставлен только как резерв для админов.\n\n"
+        "<code>/roles_admin user_roles [reply|@username|username|tg:@username|ds:username|id]</code>\n"
+        "<code>/roles_admin user_grant &lt;@username|ds:username&gt; &lt;role_name&gt;</code>\n"
+        "<code>/roles_admin user_revoke &lt;@username|ds:username&gt; &lt;role_name&gt;</code>\n"
+        "В ЛС удобнее всего @username, в группе — reply. ID оставлен только как резерв для админов.\n\n"
         f"{_role_catalog_note()}"
     )
 
@@ -571,11 +615,12 @@ def _render_help_text() -> str:
         "• <code>role_order &lt;role_name&gt; &lt;category&gt; &lt;position&gt;</code> — выставить очередь роли в категории.\n"
         "• <code>role_delete &lt;name&gt;</code> — удалить роль из каталога. Внешние Discord-роли удалять нельзя: только move/order.\n\n"
         "<b>Роли пользователей</b>\n"
-        "• <code>user_roles [reply|@username|telegram_id]</code> — показать роли пользователя.\n"
-        "• <code>user_grant &lt;@username&gt; &lt;role_name&gt;</code> — выдать роль в БД.\n"
-        "• <code>user_revoke &lt;@username&gt; &lt;role_name&gt;</code> — снять роль в БД.\n"
-        "• Reply на сообщение пользователя — самый простой и точный путь.\n"
-        "• Если найдено несколько username-совпадений, бот попросит уточнение, а не выберет первого молча.\n\n"
+        "• <code>user_roles [reply|@username|username|tg:@username|ds:username|id]</code> — показать роли пользователя.\n"
+        "• <code>user_grant &lt;@username|ds:username&gt; &lt;role_name&gt;</code> — выдать роль в БД.\n"
+        "• <code>user_revoke &lt;@username|ds:username&gt; &lt;role_name&gt;</code> — снять роль в БД.\n"
+        "• В ЛС удобнее всего использовать <code>@username</code>, в группе — reply на сообщение пользователя.\n"
+        "• Если нужен Discord fallback, укажи <code>ds:username</code>; для Telegram можно явно написать <code>tg:@username</code>.\n"
+        "• Если найдено несколько совпадений, бот попросит уточнение, а не выберет первого молча.\n\n"
         "<b>Кнопки в панели</b>\n"
         "• 'Категории и роли' — просмотр списка и переход по категориям.\n"
         "• Внутри категории доступны кнопки удаления категории/ролей.\n"
@@ -668,6 +713,9 @@ def _can_manage_categories(provider: str, provider_user_id: str) -> bool:
 @router.message(Command("roles_admin"))
 async def roles_admin_command(message: Message) -> None:
     try:
+        _persist_telegram_identity_from_user(message.from_user)
+        if message.reply_to_message:
+            _persist_telegram_identity_from_user(message.reply_to_message.from_user)
         if not await _ensure_roles_admin(message):
             return
 
@@ -832,7 +880,7 @@ async def roles_admin_command(message: Message) -> None:
             if resolved.get("error"):
                 await message.answer(str(resolved.get("message") or "❌ Не удалось найти пользователя."))
                 return
-            roles = RoleManagementService.get_user_roles("telegram", str(resolved["provider_user_id"]))
+            roles = RoleManagementService.get_user_roles(str(resolved["provider"]), str(resolved["provider_user_id"]))
             if not roles:
                 await message.answer("📭 У пользователя нет ролей.")
                 return
@@ -859,22 +907,30 @@ async def roles_admin_command(message: Message) -> None:
             if resolved.get("error"):
                 await message.answer(str(resolved.get("message") or "❌ Не удалось найти пользователя."))
                 return
-            target_id = str(resolved["provider_user_id"])
             if subcommand == "user_grant":
                 role_info = RoleManagementService.get_role(role_name)
                 category = role_info.get("category_name") if role_info else None
-                ok = RoleManagementService.assign_user_role("telegram", target_id, role_name, category=category)
+                ok = RoleManagementService.assign_user_role(
+                    str(resolved["provider"]),
+                    str(resolved["provider_user_id"]),
+                    role_name,
+                    category=category,
+                )
                 if ok:
-                    await _sync_linked_discord_role(target_id, role_name, revoke=False)
+                    await _sync_linked_discord_role(resolved, role_name, revoke=False)
                 await message.answer(
                     f"✅ Роль выдана пользователю {resolved['label']}."
                     if ok
                     else f"❌ Не удалось выдать роль. {_telegram_user_lookup_hint()}"
                 )
             else:
-                ok = RoleManagementService.revoke_user_role("telegram", target_id, role_name)
+                ok = RoleManagementService.revoke_user_role(
+                    str(resolved["provider"]),
+                    str(resolved["provider_user_id"]),
+                    role_name,
+                )
                 if ok:
-                    await _sync_linked_discord_role(target_id, role_name, revoke=True)
+                    await _sync_linked_discord_role(resolved, role_name, revoke=True)
                 await message.answer(
                     f"✅ Роль снята у пользователя {resolved['label']}."
                     if ok
@@ -1347,6 +1403,9 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
 async def roles_admin_pending_action_handler(message: Message) -> None:
     if not message.from_user:
         return
+    _persist_telegram_identity_from_user(message.from_user)
+    if message.reply_to_message:
+        _persist_telegram_identity_from_user(message.reply_to_message.from_user)
     pending = _PENDING_ACTIONS.get(message.from_user.id)
     if not pending:
         logger.warning(
@@ -1489,8 +1548,7 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
             if resolved.get("error"):
                 await message.answer(str(resolved.get("message") or "❌ Не удалось найти пользователя."))
                 return
-            target_id = str(resolved["provider_user_id"])
-            roles = RoleManagementService.get_user_roles("telegram", target_id)
+            roles = RoleManagementService.get_user_roles(str(resolved["provider"]), str(resolved["provider_user_id"]))
             if not roles:
                 await message.answer("📭 У пользователя нет ролей.")
             else:
@@ -1518,22 +1576,30 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
             if resolved.get("error"):
                 await message.answer(str(resolved.get("message") or "❌ Не удалось найти пользователя."))
                 return
-            target_id = str(resolved["provider_user_id"])
             if op == "user_grant":
                 role_info = RoleManagementService.get_role(role_name)
                 category = role_info.get("category_name") if role_info else None
-                ok = RoleManagementService.assign_user_role("telegram", target_id, role_name, category=category)
+                ok = RoleManagementService.assign_user_role(
+                    str(resolved["provider"]),
+                    str(resolved["provider_user_id"]),
+                    role_name,
+                    category=category,
+                )
                 if ok:
-                    await _sync_linked_discord_role(target_id, role_name, revoke=False)
+                    await _sync_linked_discord_role(resolved, role_name, revoke=False)
                 await message.answer(
                     f"✅ Роль выдана пользователю {resolved['label']}."
                     if ok
                     else f"❌ Не удалось выдать роль. {_telegram_user_lookup_hint()}"
                 )
             else:
-                ok = RoleManagementService.revoke_user_role("telegram", target_id, role_name)
+                ok = RoleManagementService.revoke_user_role(
+                    str(resolved["provider"]),
+                    str(resolved["provider_user_id"]),
+                    role_name,
+                )
                 if ok:
-                    await _sync_linked_discord_role(target_id, role_name, revoke=True)
+                    await _sync_linked_discord_role(resolved, role_name, revoke=True)
                 await message.answer(
                     f"✅ Роль снята у пользователя {resolved['label']}."
                     if ok
