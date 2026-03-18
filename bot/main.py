@@ -267,6 +267,15 @@ async def on_message(message: discord.Message):
         return
 
     try:
+        from bot.services import AccountsService
+
+        AccountsService.persist_identity_lookup_fields(
+            "discord",
+            str(message.author.id),
+            username=getattr(message.author, "name", None),
+            display_name=getattr(message.author, "display_name", None),
+            global_username=getattr(message.author, "global_name", None),
+        )
         ctx = await bot.get_context(message)
         if getattr(ctx, "valid", False):
             await bot.process_commands(message)

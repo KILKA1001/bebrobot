@@ -5,6 +5,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
 from bot.services.ai_service import generate_guiy_reply
+from bot.services import AccountsService
 from bot.telegram_bot.commands.engagement import has_pending_action
 from bot.telegram_bot.commands.linking import has_pending_profile_edit
 from bot.utils.guiy_trigger import is_guiy_name_trigger
@@ -43,6 +44,18 @@ def _is_command_text(text: str) -> bool:
 
 def _is_name_trigger(text: str) -> bool:
     return is_guiy_name_trigger(text)
+
+
+def _persist_telegram_identity(message: Message) -> None:
+    user = message.from_user
+    if not user or getattr(user, "is_bot", False):
+        return
+    AccountsService.persist_identity_lookup_fields(
+        "telegram",
+        str(user.id),
+        username=getattr(user, "username", None),
+        display_name=getattr(user, "full_name", None),
+    )
 
 
 async def _generate_and_send_reply(message: Message, text: str) -> None:
@@ -109,6 +122,7 @@ async def _generate_and_send_reply(message: Message, text: str) -> None:
 
 @router.message(Command("guiy"))
 async def guiy_command(message: Message, command: CommandObject) -> None:
+    _persist_telegram_identity(message)
     sender_id = message.from_user.id if message.from_user else None
     if has_pending_action(sender_id) or has_pending_profile_edit(sender_id):
         logger.info(
@@ -158,6 +172,7 @@ def _is_bot_mentioned(message: Message, bot_id: int | None, bot_username: str | 
 
 @router.message(F.text)
 async def handle_guiy_chat(message: Message) -> None:
+    _persist_telegram_identity(message)
     text = (message.text or "").strip()
     if not text:
         return

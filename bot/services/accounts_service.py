@@ -3,6 +3,7 @@ import os
 import secrets
 import string
 import uuid
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 
@@ -11,6 +12,9 @@ from bot.legacy_identity_logging import log_legacy_schema_fallback
 from bot.services.auth import RoleResolver
 
 logger = logging.getLogger(__name__)
+_ACCOUNT_ID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+)
 
 
 class AccountsService:
@@ -123,6 +127,145 @@ class AccountsService:
                 }
             )
         return matches
+
+    @staticmethod
+    def _preferred_identity_for_account(
+        account_id: str,
+        rows: list[dict],
+        *,
+        provider_hint: str | None = None,
+        default_provider: str | None = None,
+    ) -> dict[str, str | None] | None:
+        account_key = str(account_id or "").strip()
+        if not account_key:
+            return None
+
+        identities = [row for row in rows if str(row.get("account_id") or "").strip() == account_key]
+        if not identities:
+            return None
+
+        preferred_order = [provider_hint, default_provider, "telegram", "discord"]
+        for preferred_provider in preferred_order:
+            if not preferred_provider:
+                continue
+            matched = next((row for row in identities if str(row.get("provider") or "").strip() == preferred_provider), None)
+            if matched:
+                return matched
+        return identities[0]
+
+    @staticmethod
+    def _candidate_display_name(row: dict[str, object]) -> str | None:
+        for key in ("display_name", "provider_display_name", "global_username", "username", "provider_username"):
+            value = str(row.get(key) or "").strip()
+            if value:
+                return value
+        return None
+
+    @staticmethod
+    def _candidate_username(row: dict[str, object]) -> str | None:
+        for key in ("username", "provider_username", "global_username"):
+            value = str(row.get(key) or "").strip()
+            if value:
+                return value.lstrip("@")
+        return None
+
+    @staticmethod
+    def resolve_user_lookup(
+        lookup_value: str | None,
+        *,
+        default_provider: str | None = None,
+    ) -> dict[str, object]:
+        token = str(lookup_value or "").strip()
+        if not token:
+            return {"status": "invalid", "reason": "empty_lookup", "lookup_value": token, "candidates": []}
+
+        provider_hint: str | None = None
+        token_without_prefix = token
+        lowered = token.casefold()
+        if lowered.startswith("tg:") or lowered.startswith("telegram:"):
+            provider_hint = "telegram"
+            token_without_prefix = token.split(":", 1)[1].strip()
+        elif lowered.startswith("ds:") or lowered.startswith("discord:"):
+            provider_hint = "discord"
+            token_without_prefix = token.split(":", 1)[1].strip()
+
+        effective_provider = provider_hint or (str(default_provider or "").strip().lower() or None)
+        providers = [effective_provider] if effective_provider in {"telegram", "discord"} else ["telegram", "discord"]
+
+        rows: list[dict] = []
+        for provider in providers:
+            provider_rows = AccountsService._load_identity_rows_for_lookup(provider)
+            for row in provider_rows:
+                rows.append({**row, "provider": provider})
+
+        normalized = token_without_prefix.strip()
+        normalized_username = normalized.lstrip("@")
+        normalized_casefold = normalized.casefold()
+        normalized_username_casefold = normalized_username.casefold()
+
+        candidates: list[dict[str, str | None]] = []
+        seen: set[tuple[str | None, str | None, str | None]] = set()
+
+        def _append_candidate(row: dict, matched_by: str) -> None:
+            candidate = {
+                "account_id": str(row.get("account_id") or "").strip() or None,
+                "provider": str(row.get("provider") or "").strip() or None,
+                "provider_user_id": str(row.get("provider_user_id") or "").strip() or None,
+                "display_name": AccountsService._candidate_display_name(row),
+                "username": AccountsService._candidate_username(row),
+                "matched_by": matched_by,
+            }
+            key = (candidate["account_id"], candidate["provider"], candidate["provider_user_id"])
+            if key in seen:
+                return
+            seen.add(key)
+            candidates.append(candidate)
+
+        for row in rows:
+            provider = str(row.get("provider") or "").strip()
+            fields = [
+                ("telegram_username" if provider == "telegram" else "discord_username", row.get("username")),
+                ("provider_username", row.get("provider_username")),
+                ("display_name", row.get("display_name")),
+                ("provider_display_name", row.get("provider_display_name")),
+                ("global_username", row.get("global_username")),
+            ]
+            for matched_by, raw_value in fields:
+                value = str(raw_value or "").strip()
+                if not value:
+                    continue
+                value_casefold = value.casefold()
+                value_no_at_casefold = value.lstrip("@").casefold()
+                if value_casefold == normalized_casefold or value_no_at_casefold == normalized_username_casefold:
+                    _append_candidate(row, matched_by)
+                    break
+
+        if candidates:
+            if len(candidates) == 1:
+                return {"status": "ok", "lookup_value": token, "candidates": candidates, "result": candidates[0]}
+            return {"status": "multiple", "lookup_value": token, "candidates": candidates}
+
+        if normalized.isdigit():
+            for row in rows:
+                if str(row.get("provider_user_id") or "").strip() == normalized:
+                    _append_candidate(row, "exact_id")
+            if candidates:
+                if len(candidates) == 1:
+                    return {"status": "ok", "lookup_value": token, "candidates": candidates, "result": candidates[0]}
+                return {"status": "multiple", "lookup_value": token, "candidates": candidates}
+
+        if _ACCOUNT_ID_RE.match(normalized):
+            preferred_identity = AccountsService._preferred_identity_for_account(
+                normalized,
+                rows,
+                provider_hint=provider_hint,
+                default_provider=default_provider,
+            )
+            if preferred_identity:
+                _append_candidate(preferred_identity, "account_id")
+                return {"status": "ok", "lookup_value": token, "candidates": candidates, "result": candidates[0]}
+
+        return {"status": "not_found", "lookup_value": token, "candidates": [], "reason": "not_found"}
 
     @staticmethod
     def persist_identity_lookup_fields(
