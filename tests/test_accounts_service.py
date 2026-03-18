@@ -170,6 +170,61 @@ class AccountsServiceTests(unittest.TestCase):
     def tearDown(self):
         self.patcher.stop()
 
+    def test_find_accounts_by_identity_username_matches_telegram_with_or_without_at(self):
+        self.fake_db.tables["account_identities"] = [
+            {
+                "account_id": "acc-1",
+                "provider": "telegram",
+                "provider_user_id": "222",
+                "username": "bebra_admin",
+                "display_name": "Bebra Admin",
+            }
+        ]
+
+        direct = AccountsService.find_accounts_by_identity_username("telegram", "@bebra_admin")
+        plain = AccountsService.find_accounts_by_identity_username("telegram", "bebra_admin")
+
+        self.assertEqual(len(direct), 1)
+        self.assertEqual(direct[0]["provider_user_id"], "222")
+        self.assertEqual(plain[0]["provider_user_id"], "222")
+
+    def test_find_accounts_by_identity_username_returns_multiple_candidates(self):
+        self.fake_db.tables["account_identities"] = [
+            {"account_id": "acc-1", "provider": "telegram", "provider_user_id": "222", "username": "bebra_admin"},
+            {"account_id": "acc-2", "provider": "telegram", "provider_user_id": "333", "username": "bebra_admin"},
+        ]
+
+        matches = AccountsService.find_accounts_by_identity_username("telegram", "@bebra_admin")
+
+        self.assertEqual(len(matches), 2)
+        self.assertEqual({item["provider_user_id"] for item in matches}, {"222", "333"})
+
+    def test_find_accounts_by_identity_username_returns_empty_for_unknown_username(self):
+        self.fake_db.tables["account_identities"] = [
+            {"account_id": "acc-1", "provider": "telegram", "provider_user_id": "222", "username": "bebra_admin"}
+        ]
+
+        matches = AccountsService.find_accounts_by_identity_username("telegram", "@missing_user")
+
+        self.assertEqual(matches, [])
+
+    def test_persist_identity_lookup_fields_updates_existing_identity(self):
+        self.fake_db.tables["account_identities"] = [
+            {"account_id": "acc-1", "provider": "discord", "provider_user_id": "111"}
+        ]
+
+        AccountsService.persist_identity_lookup_fields(
+            "discord",
+            "111",
+            username="bebrobot",
+            display_name="Bebra Bot",
+            global_username="bebra.global",
+        )
+
+        self.assertEqual(self.fake_db.tables["account_identities"][0]["username"], "bebrobot")
+        self.assertEqual(self.fake_db.tables["account_identities"][0]["display_name"], "Bebra Bot")
+        self.assertEqual(self.fake_db.tables["account_identities"][0]["global_username"], "bebra.global")
+
     def test_register_creates_account_and_identity(self):
         ok, message = AccountsService.register_identity("discord", "111")
         self.assertTrue(ok)

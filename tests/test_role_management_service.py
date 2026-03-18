@@ -19,6 +19,7 @@ class _TableOp:
         self._filters = []
         self._limit = None
         self._action = "select"
+        self._payload = None
 
     def select(self, _fields):
         self._action = "select"
@@ -26,6 +27,10 @@ class _TableOp:
 
     def eq(self, key, value):
         self._filters.append((key, value))
+        return self
+
+    def is_(self, key, value):
+        self._filters.append((key, None if str(value).lower() == "null" else value))
         return self
 
     def limit(self, n):
@@ -36,6 +41,19 @@ class _TableOp:
         self._action = "delete"
         return self
 
+    def update(self, payload):
+        self._action = "update"
+        self._payload = dict(payload)
+        return self
+
+    def upsert(self, payload, **_kwargs):
+        self._action = "upsert"
+        self._payload = dict(payload)
+        return self
+
+    def _matches(self, row):
+        return all(row.get(k) == v for k, v in self._filters)
+
     def execute(self):
         rows = self.fake_db.tables[self.table_name]
 
@@ -43,16 +61,40 @@ class _TableOp:
             kept = []
             deleted = []
             for row in rows:
-                if all(str(row.get(k)) == str(v) for k, v in self._filters):
+                if self._matches(row):
                     deleted.append(dict(row))
                 else:
                     kept.append(row)
             self.fake_db.tables[self.table_name] = kept
             return _Resp(deleted)
 
+        if self._action == "update":
+            updated = []
+            for row in rows:
+                if self._matches(row):
+                    row.update(self._payload)
+                    updated.append(dict(row))
+            return _Resp(updated)
+
+        if self._action == "upsert":
+            if self.table_name == "roles":
+                key_fields = ["discord_role_id", "name"]
+            elif self.table_name == "role_categories":
+                key_fields = ["name"]
+            else:
+                key_fields = ["name"]
+            for row in rows:
+                for key_field in key_fields:
+                    key_value = self._payload.get(key_field)
+                    if key_value and row.get(key_field) == key_value:
+                        row.update(self._payload)
+                        return _Resp([dict(row)])
+            rows.append(dict(self._payload))
+            return _Resp([dict(self._payload)])
+
         selected = []
         for row in rows:
-            if all(str(row.get(k)) == str(v) for k, v in self._filters):
+            if self._matches(row):
                 selected.append(dict(row))
         if self._limit is not None:
             selected = selected[: self._limit]
@@ -72,11 +114,13 @@ class _FakeDb:
         self.tables = {
             "roles": [],
             "account_role_assignments": [],
+            "external_role_bindings": [],
+            "role_categories": [],
         }
         self.supabase = _FakeSupabase(self)
 
 
-class RoleManagementServiceDeleteRoleTests(unittest.TestCase):
+class RoleManagementServiceTests(unittest.TestCase):
     def setUp(self):
         self.fake_db = _FakeDb()
         self.patcher = patch("bot.services.role_management_service.db", self.fake_db)
@@ -130,3 +174,48 @@ class RoleManagementServiceDeleteRoleTests(unittest.TestCase):
             self.fake_db.tables["account_role_assignments"],
             [{"account_id": "acc-2", "role_name": "Other", "source": "custom"}],
         )
+
+    def test_list_roles_grouped_auto_upserts_external_bindings_into_catalog(self):
+        self.fake_db.tables["external_role_bindings"] = [
+            {
+                "account_id": "acc-1",
+                "source": "discord",
+                "external_role_id": "role-1",
+                "external_role_name": "External role",
+                "deleted_at": None,
+            }
+        ]
+
+        grouped = RoleManagementService.list_roles_grouped()
+
+        self.assertEqual(grouped[0]["roles"][0]["name"], "External role")
+        self.assertEqual(grouped[0]["roles"][0]["discord_role_id"], "role-1")
+        self.assertTrue(self.fake_db.tables["roles"])
+
+    def test_move_role_returns_false_when_role_missing_from_catalog(self):
+        with self.assertLogs("bot.services.role_management_service", level="WARNING") as captured:
+            ok = RoleManagementService.move_role("Missing", "Категория", 1)
+
+        self.assertFalse(ok)
+        self.assertTrue(any("move_role denied role missing from canonical catalog" in line for line in captured.output))
+
+    def test_move_role_updates_category_for_external_role(self):
+        self.fake_db.tables["roles"] = [
+            {
+                "name": "External role",
+                "category_name": "Discord сервер (auto)",
+                "position": 0,
+                "is_discord_managed": True,
+                "discord_role_id": "role-1",
+            }
+        ]
+
+        ok = RoleManagementService.move_role("External role", "Новая категория", 3)
+
+        self.assertTrue(ok)
+        self.assertEqual(self.fake_db.tables["roles"][0]["category_name"], "Новая категория")
+        self.assertEqual(self.fake_db.tables["roles"][0]["position"], 3)
+
+
+if __name__ == "__main__":
+    unittest.main()

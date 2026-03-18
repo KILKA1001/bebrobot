@@ -275,6 +275,30 @@ class RoleResolverTests(unittest.TestCase):
             captured.output,
         )
 
+    def test_external_binding_uses_updated_catalog_category_after_move(self):
+        now = datetime.now(timezone.utc)
+        self.fake_db.tables["external_role_bindings"] = [
+            {
+                "account_id": "acc-1",
+                "source": "discord",
+                "external_role_id": "123",
+                "external_role_name": "Сладкая бебра",
+                "last_synced_at": now.isoformat(),
+                "deleted_at": None,
+            }
+        ]
+        self.fake_db.tables["roles"] = [
+            {
+                "name": "Сладкая бебра",
+                "category_name": "Новая категория",
+                "discord_role_id": "123",
+            }
+        ]
+
+        result = RoleResolver.resolve_for_account("acc-1")
+
+        self.assertEqual(result.roles[0]["category"], "Новая категория")
+
 
 if __name__ == "__main__":
     unittest.main()

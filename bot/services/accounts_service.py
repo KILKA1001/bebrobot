@@ -31,6 +31,139 @@ class AccountsService:
     MAX_VISIBLE_PROFILE_ROLES = 3
 
     @staticmethod
+    def _load_identity_rows_for_lookup(provider: str) -> list[dict]:
+        if not db.supabase:
+            return []
+
+        select_variants = (
+            "account_id,provider_user_id,username,provider_username,display_name,provider_display_name,global_username",
+            "account_id,provider_user_id,username,display_name",
+            "account_id,provider_user_id",
+        )
+        last_error: Exception | None = None
+        for select_clause in select_variants:
+            try:
+                response = (
+                    db.supabase.table("account_identities")
+                    .select(select_clause)
+                    .eq("provider", str(provider))
+                    .execute()
+                )
+                return response.data or []
+            except Exception as error:
+                last_error = error
+                logger.warning(
+                    "identity lookup select failed provider=%s select=%s error=%s",
+                    provider,
+                    select_clause,
+                    AccountsService._format_db_error(error),
+                )
+
+        if last_error:
+            logger.warning(
+                "identity lookup exhausted select variants provider=%s error=%s",
+                provider,
+                AccountsService._format_db_error(last_error),
+            )
+        return []
+
+    @staticmethod
+    def find_accounts_by_identity_username(provider: str, username: str) -> list[dict[str, str | None]]:
+        normalized = str(username or "").strip()
+        if provider == "telegram":
+            normalized = normalized.lstrip("@")
+        if not normalized:
+            return []
+
+        rows = AccountsService._load_identity_rows_for_lookup(provider)
+        matches: list[dict[str, str | None]] = []
+        seen: set[tuple[str | None, str | None]] = set()
+        normalized_lower = normalized.casefold()
+        for row in rows:
+            fields = [
+                row.get("username"),
+                row.get("provider_username"),
+                row.get("display_name"),
+                row.get("provider_display_name"),
+                row.get("global_username"),
+            ]
+            matched_by: str | None = None
+            for field_name, raw_value in zip(
+                ("username", "provider_username", "display_name", "provider_display_name", "global_username"),
+                fields,
+            ):
+                value = str(raw_value or "").strip()
+                if not value:
+                    continue
+                candidate = value.lstrip("@") if provider == "telegram" else value
+                if candidate.casefold() == normalized_lower:
+                    matched_by = field_name
+                    break
+
+            if not matched_by and normalized.isdigit() and str(row.get("provider_user_id") or "").strip() == normalized:
+                matched_by = "provider_user_id"
+
+            if not matched_by:
+                continue
+
+            key = (str(row.get("account_id") or "").strip() or None, str(row.get("provider_user_id") or "").strip() or None)
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append(
+                {
+                    "account_id": key[0],
+                    "provider_user_id": key[1],
+                    "matched_by": matched_by,
+                    "username": str(row.get("username") or row.get("provider_username") or "").strip() or None,
+                    "display_name": str(
+                        row.get("display_name") or row.get("provider_display_name") or row.get("global_username") or ""
+                    ).strip()
+                    or None,
+                }
+            )
+        return matches
+
+    @staticmethod
+    def persist_identity_lookup_fields(
+        provider: str,
+        provider_user_id: str,
+        *,
+        username: str | None = None,
+        display_name: str | None = None,
+        global_username: str | None = None,
+    ) -> None:
+        if not db.supabase:
+            return
+
+        payload = {
+            "provider": str(provider),
+            "provider_user_id": str(provider_user_id),
+        }
+        if username:
+            payload["username"] = str(username).lstrip("@").strip()
+        if display_name:
+            payload["display_name"] = str(display_name).strip()
+        if global_username:
+            payload["global_username"] = str(global_username).strip()
+
+        if len(payload) <= 2:
+            return
+
+        try:
+            db.supabase.table("account_identities").upsert(payload, on_conflict="provider,provider_user_id").execute()
+        except Exception as error:
+            logger.warning(
+                "persist_identity_lookup_fields failed provider=%s provider_user_id=%s username=%s display_name=%s global_username=%s error=%s",
+                provider,
+                provider_user_id,
+                payload.get("username"),
+                payload.get("display_name"),
+                payload.get("global_username"),
+                AccountsService._format_db_error(error),
+            )
+
+    @staticmethod
     def resolve_account_id(provider: str, provider_user_id: str) -> Optional[str]:
         if not db.supabase:
             return None

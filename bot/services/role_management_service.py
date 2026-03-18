@@ -199,12 +199,39 @@ class RoleManagementService:
         return upserted, synced_ids
 
     @staticmethod
+    def ensure_external_discord_roles_in_catalog() -> dict[str, int]:
+        if not db.supabase:
+            return {"upserted": 0}
+
+        try:
+            existing_managed_resp = (
+                db.supabase.table("roles")
+                .select("name,discord_role_id,category_name,position")
+                .eq("is_discord_managed", True)
+                .execute()
+            )
+            existing_by_role_id: dict[str, dict[str, Any]] = {}
+            for row in existing_managed_resp.data or []:
+                existing_role_id = str(row.get("discord_role_id") or "").strip()
+                if existing_role_id and existing_role_id not in existing_by_role_id:
+                    existing_by_role_id[existing_role_id] = row
+
+            upserted, _ = RoleManagementService._sync_discord_roles_from_external_bindings(existing_by_role_id)
+            if upserted:
+                logger.info("ensure_external_discord_roles_in_catalog completed upserted=%s", upserted)
+            return {"upserted": upserted}
+        except Exception:
+            logger.exception("ensure_external_discord_roles_in_catalog failed")
+            return {"upserted": 0}
+
+    @staticmethod
     def list_roles_grouped() -> list[dict[str, Any]]:
         if not db.supabase:
             logger.warning("list_roles_grouped skipped: supabase is not configured")
             return []
 
         try:
+            RoleManagementService.ensure_external_discord_roles_in_catalog()
             categories_resp = db.supabase.table("role_categories").select("name,position").execute()
             roles_rows = RoleManagementService._load_roles_rows()
         except Exception:
@@ -384,8 +411,30 @@ class RoleManagementService:
         if not name or not db.supabase:
             return False
         try:
+            existing_role = RoleManagementService.get_role(name)
+            if not existing_role:
+                logger.warning(
+                    "move_role denied role missing from canonical catalog role_name=%s category=%s position=%s",
+                    name,
+                    normalized_category,
+                    position,
+                )
+                return False
             db.supabase.table("role_categories").upsert({"name": normalized_category, "position": 0}).execute()
-            db.supabase.table("roles").update({"category_name": normalized_category, "position": int(position)}).eq("name", name).execute()
+            response = (
+                db.supabase.table("roles")
+                .update({"category_name": normalized_category, "position": int(position)})
+                .eq("name", name)
+                .execute()
+            )
+            if existing_role and response is not None and hasattr(response, "data") and response.data == []:
+                logger.warning(
+                    "move_role update returned no rows role_name=%s category=%s position=%s",
+                    name,
+                    normalized_category,
+                    position,
+                )
+                return False
             return True
         except Exception:
             logger.exception("move_role failed role_name=%s category=%s position=%s", name, normalized_category, position)
