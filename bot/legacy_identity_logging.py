@@ -130,3 +130,26 @@ def log_legacy_schema_fallback(
         continue_execution=continue_execution,
         **context,
     )
+
+
+def log_runtime_dependency_missing(
+    logger: logging.Logger,
+    *,
+    module: str,
+    handler: str,
+    field: str,
+    action: str,
+    continue_execution: bool,
+    **context: Any,
+) -> None:
+    _emit(
+        logger,
+        "error",
+        "runtime dependency missing",
+        module=module,
+        handler=handler,
+        field=field,
+        action=action,
+        continue_execution=continue_execution,
+        **context,
+    )

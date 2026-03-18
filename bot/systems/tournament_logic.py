@@ -41,6 +41,8 @@ from bot.data.tournament_db import (
 )
 from bot.systems import tournament_rewards_logic as rewards
 from bot.systems.tournament_bank_logic import validate_and_save_bank
+from bot.systems.core_logic import _get_balance_snapshot, _resolve_account_id_from_discord
+from bot.legacy_identity_logging import log_legacy_identity_fallback_used
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,30 @@ expired_notified: set[int] = set()
 # Настройки автоматических команд турниров
 # {tournament_id: {"auto": bool, "team_names": {team_id: name}}}
 AUTO_TEAM_DATA: Dict[int, dict] = {}
+
+
+def _get_user_balance_for_tournament(discord_user_id: int, *, handler: str) -> float:
+    account_id = _resolve_account_id_from_discord(discord_user_id, handler=handler)
+    if account_id:
+        balance, _score_row = _get_balance_snapshot(
+            account_id,
+            discord_user_id=discord_user_id,
+            handler=handler,
+        )
+        return float(balance)
+
+    log_legacy_identity_fallback_used(
+        logger,
+        module=__name__,
+        handler=handler,
+        field="discord_user_id",
+        action="fallback_to_legacy_scores_cache",
+        continue_execution=True,
+        discord_user_id=discord_user_id,
+        recommended_field="account_id",
+        developer_hint="temporary compatibility path; resolve account_id before tournament balance reads",
+    )
+    return float(db.scores.get(discord_user_id, 0.0))
 
 
 def create_auto_teams(tournament_id: int, team_count: int) -> None:
@@ -1244,7 +1270,10 @@ async def end_tournament(
     bank_type = info.get("bank_type", 1)
     manual_amount = info.get("manual_amount") or 20.0
 
-    user_balance = db.scores.get(ctx.author.id, 0.0)
+    user_balance = _get_user_balance_for_tournament(
+        ctx.author.id,
+        handler="end_tournament",
+    )
 
     try:
         bank_total, user_part, bank_part = rewards.calculate_bank(
@@ -1468,7 +1497,10 @@ async def finalize_tournament_logic(
     info = get_tournament_info(tournament_id) or {}
     bank_type = info.get("bank_type", 1)
     manual = info.get("manual_amount") or 20.0
-    user_balance = db.scores.get(admin_id, 0.0)
+    user_balance = _get_user_balance_for_tournament(
+        admin_id,
+        handler="finalize_tournament_logic",
+    )
 
     try:
         bank_total, user_part, bank_part = rewards.calculate_bank(

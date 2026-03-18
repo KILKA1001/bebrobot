@@ -12,6 +12,8 @@ from bot.utils.roles_and_activities import (
 )
 from bot.systems import render_history, log_action_cancellation, tophistory
 from bot.systems.core_logic import (
+    _get_action_rows_for_account,
+    _resolve_account_id_from_discord,
     update_roles,
     run_monthly_top,
     get_help_embed,
@@ -19,6 +21,7 @@ from bot.systems.core_logic import (
     LeaderboardView,
     build_balance_embed,
 )
+from bot.legacy_identity_logging import log_legacy_identity_fallback_used
 from bot.utils import send_temp
 from bot.utils.api_monitor import monitor
 from bot.services import AuthorityService
@@ -170,7 +173,26 @@ async def undo(ctx, member: discord.Member, count: int = 1):
     if not await _check_command_authority(ctx, "undo_manage", member):
         return
     user_id = member.id
-    user_history = db.history.get(user_id, [])
+    account_id = _resolve_account_id_from_discord(user_id, handler="undo")
+    if account_id:
+        user_history = _get_action_rows_for_account(
+            account_id,
+            discord_user_id=user_id,
+            handler="undo",
+        )
+    else:
+        log_legacy_identity_fallback_used(
+            logger,
+            module=__name__,
+            handler="undo",
+            field="discord_user_id",
+            action="fallback_to_legacy_history_cache",
+            continue_execution=True,
+            discord_user_id=user_id,
+            recommended_field="account_id",
+            developer_hint="temporary compatibility path; resolve account_id before using undo history",
+        )
+        user_history = list(db.history.get(user_id, []))
     if len(user_history) < count:
         await send_temp(
             ctx,
@@ -198,8 +220,12 @@ async def undo(ctx, member: discord.Member, count: int = 1):
             is_undo=True,
         )
 
-    if not user_history:
-        del db.history[user_id]
+    if user_id in db.history:
+        legacy_history = list(db.history.get(user_id, []))
+        if legacy_history:
+            db.history[user_id] = legacy_history[:-count]
+            if not db.history[user_id]:
+                del db.history[user_id]
 
     await update_roles(member)
 

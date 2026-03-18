@@ -1,8 +1,10 @@
 import asyncio
+import importlib
+import sys
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from bot.services.fines_service import FinesService
 from bot.systems import bets_logic, fines_logic
@@ -209,6 +211,152 @@ class _FakeTable:
 class _FakeSupabase:
     def table(self, name):
         return _FakeTable(name)
+
+
+class TournamentDbSafeImportTests(unittest.TestCase):
+    def test_import_is_safe_without_supabase_and_logs_on_real_call(self):
+        from bot.data.db import db as shared_db
+
+        original_supabase = shared_db.supabase
+        original_module = sys.modules.get("bot.data.tournament_db")
+        try:
+            shared_db.supabase = None
+            sys.modules.pop("bot.data.tournament_db", None)
+
+            tournament_db = importlib.import_module("bot.data.tournament_db")
+
+            with self.assertLogs("bot.data.tournament_db", level="ERROR") as captured:
+                info = tournament_db.get_tournament_info(10)
+
+            self.assertIsNone(info)
+            combined = "\n".join(captured.output)
+            self.assertIn("runtime dependency missing", combined)
+            self.assertIn("field=db.supabase", combined)
+            self.assertIn("action=initialize_supabase_client_before_tournament_db_call", combined)
+        finally:
+            shared_db.supabase = original_supabase
+            if original_module is not None:
+                sys.modules["bot.data.tournament_db"] = original_module
+            else:
+                sys.modules.pop("bot.data.tournament_db", None)
+
+
+class UndoAccountFirstTests(unittest.TestCase):
+    def test_undo_reads_history_via_account_first_helper(self):
+        from bot.data.db import db as shared_db
+
+        original_supabase = shared_db.supabase
+        shared_db.supabase = object()
+        try:
+            base_commands = importlib.import_module("bot.commands.base")
+
+            ctx = SimpleNamespace(author=SimpleNamespace(id=999))
+            member = SimpleNamespace(id=111, display_name="Tester")
+
+            fake_db = SimpleNamespace(
+                history={},
+                add_action=unittest.mock.Mock(),
+            )
+
+            history_rows = [{"points": 5, "reason": "bonus"}]
+
+            with patch.object(base_commands, "db", fake_db):
+                with patch.object(base_commands, "_check_command_authority", AsyncMock(return_value=True)):
+                    with patch.object(base_commands, "_resolve_account_id_from_discord", return_value="acc-1"):
+                        with patch.object(base_commands, "_get_action_rows_for_account", return_value=list(history_rows)) as mock_history:
+                            with patch.object(base_commands, "send_temp", AsyncMock()) as mock_send:
+                                with patch.object(base_commands, "update_roles", AsyncMock()) as mock_update_roles:
+                                    with patch.object(base_commands, "log_action_cancellation", AsyncMock()) as mock_cancel_log:
+                                        asyncio.run(base_commands.undo.callback(ctx, member, 1))
+
+            mock_history.assert_called_once_with("acc-1", discord_user_id=111, handler="undo")
+            fake_db.add_action.assert_called_once_with(
+                user_id=111,
+                points=-5,
+                reason="Отмена действия: bonus",
+                author_id=999,
+                is_undo=True,
+            )
+            mock_send.assert_awaited()
+            mock_update_roles.assert_awaited_once_with(member)
+            mock_cancel_log.assert_awaited_once()
+        finally:
+            shared_db.supabase = original_supabase
+
+    def test_undo_logs_legacy_fallback_when_account_cannot_be_resolved(self):
+        from bot.data.db import db as shared_db
+
+        original_supabase = shared_db.supabase
+        shared_db.supabase = object()
+        try:
+            base_commands = importlib.import_module("bot.commands.base")
+
+            ctx = SimpleNamespace(author=SimpleNamespace(id=999))
+            member = SimpleNamespace(id=111, display_name="Tester")
+            fake_db = SimpleNamespace(
+                history={111: [{"points": 7, "reason": "legacy"}]},
+                add_action=unittest.mock.Mock(),
+            )
+
+            with patch.object(base_commands, "db", fake_db):
+                with patch.object(base_commands, "_check_command_authority", AsyncMock(return_value=True)):
+                    with patch.object(base_commands, "_resolve_account_id_from_discord", return_value=None):
+                        with patch.object(base_commands, "send_temp", AsyncMock()):
+                            with patch.object(base_commands, "update_roles", AsyncMock()):
+                                with patch.object(base_commands, "log_action_cancellation", AsyncMock()):
+                                    with self.assertLogs("bot.commands.base", level="WARNING") as captured:
+                                        asyncio.run(base_commands.undo.callback(ctx, member, 1))
+
+            combined = "\n".join(captured.output)
+            self.assertIn("legacy identity fallback used", combined)
+            self.assertIn("handler=undo", combined)
+            self.assertIn("action=fallback_to_legacy_history_cache", combined)
+        finally:
+            shared_db.supabase = original_supabase
+
+
+class TournamentLogicAccountFirstTests(unittest.TestCase):
+    def test_end_tournament_reads_balance_via_account_first_snapshot(self):
+        from bot.data.db import db as shared_db
+
+        original_supabase = shared_db.supabase
+        shared_db.supabase = object()
+        from bot.systems import tournament_logic
+        try:
+            ctx = SimpleNamespace(author=SimpleNamespace(id=111))
+
+            with patch.object(tournament_logic, "get_tournament_info", return_value={"bank_type": 1, "manual_amount": 20.0}):
+                with patch.object(tournament_logic, "_get_user_balance_for_tournament", return_value=42.0) as mock_balance:
+                    with patch.object(tournament_logic.rewards, "calculate_bank", side_effect=ValueError("stop"), create=True) as mock_calc:
+                        with patch.object(tournament_logic, "send_temp", AsyncMock()):
+                            asyncio.run(tournament_logic.end_tournament(ctx, tournament_id=5, first=1, second=2))
+
+            mock_balance.assert_called_once_with(111, handler="end_tournament")
+            self.assertEqual(mock_calc.call_args.args[1], 42.0)
+        finally:
+            shared_db.supabase = original_supabase
+
+    def test_balance_helper_logs_legacy_scores_fallback_when_identity_missing(self):
+        from bot.data.db import db as shared_db
+
+        original_supabase = shared_db.supabase
+        shared_db.supabase = object()
+        from bot.systems import tournament_logic
+        try:
+            fake_db = SimpleNamespace(scores={555: 9.5})
+
+            with patch.object(tournament_logic, "db", fake_db):
+                with patch.object(tournament_logic, "_resolve_account_id_from_discord", return_value=None):
+                    with self.assertLogs("bot.systems.tournament_logic", level="WARNING") as captured:
+                        balance = tournament_logic._get_user_balance_for_tournament(555, handler="finalize_tournament_logic")
+
+            self.assertEqual(balance, 9.5)
+            combined = "\n".join(captured.output)
+            self.assertIn("legacy identity fallback used", combined)
+            self.assertIn("action=fallback_to_legacy_scores_cache", combined)
+            self.assertIn("discord_user_id=555", combined)
+        finally:
+            shared_db.supabase = original_supabase
 
 
 if __name__ == "__main__":
