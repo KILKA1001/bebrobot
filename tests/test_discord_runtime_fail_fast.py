@@ -38,7 +38,11 @@ def load_bot_main():
         patch.dict(os.environ, {"SUPABASE_URL": "https://example.supabase.co", "SUPABASE_KEY": "test-key"}, clear=False),
         patch("supabase.create_client", return_value=_FakeSupabase()),
     ):
+        db_module = importlib.import_module("bot.data.db")
+
+        db_module.db.supabase = _FakeSupabase()
         sys.modules.pop("bot.main", None)
+        sys.modules.pop("bot.data.tournament_db", None)
         import bot.main as bot_main
         return importlib.reload(bot_main)
 
@@ -63,7 +67,7 @@ def test_run_discord_main_does_not_retry_after_http_exception():
         patch("bot.main.log_discord_http_exception") as log_mock,
     ):
         with pytest.raises(discord.HTTPException):
-            bot_main.run_discord_main()
+            bot_main.run_discord_main("test-token")
 
     assert run_mock.call_count == 1
     log_mock.assert_called_once()
