@@ -155,12 +155,96 @@ class RoleResolverTests(unittest.TestCase):
                 "deleted_at": None,
             }
         ]
+        self.fake_db.tables["roles"] = [
+            {
+                "name": "Сладкая бебра",
+                "category_name": "Клубные роли",
+                "discord_role_id": "123",
+            }
+        ]
 
         result = RoleResolver.resolve_for_account("acc-1")
 
         self.assertEqual(len(result.roles), 1)
         self.assertEqual(result.roles[0]["name"], "Сладкая бебра")
+        self.assertEqual(result.roles[0]["category"], "Клубные роли")
+
+    def test_external_binding_uses_name_fallback_category_and_logs_id_mismatch(self):
+        now = datetime.now(timezone.utc)
+        self.fake_db.tables["external_role_bindings"] = [
+            {
+                "account_id": "acc-1",
+                "source": "discord",
+                "external_role_id": "999",
+                "external_role_name": "Сладкая бебра",
+                "last_synced_at": now.isoformat(),
+                "deleted_at": None,
+            }
+        ]
+        self.fake_db.tables["roles"] = [
+            {
+                "name": "Сладкая бебра",
+                "category_name": "Клубные роли",
+                "discord_role_id": "123",
+            }
+        ]
+
+        with self.assertLogs("bot.services.auth.role_resolver", level="WARNING") as captured:
+            result = RoleResolver.resolve_for_account("acc-1")
+
+        self.assertEqual(result.roles[0]["category"], "Клубные роли")
+        self.assertTrue(
+            any("catalog name matched but external id mismatched" in message for message in captured.output),
+            captured.output,
+        )
+
+    def test_external_binding_logs_multiple_catalog_matches(self):
+        now = datetime.now(timezone.utc)
+        self.fake_db.tables["external_role_bindings"] = [
+            {
+                "account_id": "acc-1",
+                "source": "discord",
+                "external_role_id": "123",
+                "external_role_name": "Сладкая бебра",
+                "last_synced_at": now.isoformat(),
+                "deleted_at": None,
+            }
+        ]
+        self.fake_db.tables["roles"] = [
+            {"name": "Сладкая бебра", "category_name": "Клубные роли", "discord_role_id": "123"},
+            {"name": "Сладкая бебра 2", "category_name": "Редкие роли", "discord_role_id": "123"},
+        ]
+
+        with self.assertLogs("bot.services.auth.role_resolver", level="WARNING") as captured:
+            result = RoleResolver.resolve_for_account("acc-1")
+
+        self.assertEqual(result.roles[0]["category"], "Клубные роли")
+        self.assertTrue(
+            any("multiple catalog matches by external id" in message for message in captured.output),
+            captured.output,
+        )
+
+    def test_external_binding_logs_when_catalog_role_missing(self):
+        now = datetime.now(timezone.utc)
+        self.fake_db.tables["external_role_bindings"] = [
+            {
+                "account_id": "acc-1",
+                "source": "discord",
+                "external_role_id": "404",
+                "external_role_name": "Неизвестная роль",
+                "last_synced_at": now.isoformat(),
+                "deleted_at": None,
+            }
+        ]
+
+        with self.assertLogs("bot.services.auth.role_resolver", level="WARNING") as captured:
+            result = RoleResolver.resolve_for_account("acc-1")
+
         self.assertEqual(result.roles[0]["category"], "Внешние роли")
+        self.assertTrue(
+            any("external role binding not found in catalog" in message for message in captured.output),
+            captured.output,
+        )
 
 
 if __name__ == "__main__":

@@ -117,7 +117,7 @@ class VisibleRolesPickerView(discord.ui.View):
         page, total_pages, page_items = self._get_page_items()
         for idx, item in enumerate(page_items):
             role_name = str(item.get("role") or "").strip()
-            category_name = str(item.get("category") or "Без категории").strip() or "Без категории"
+            category_name = str(item.get("category") or "").strip()
             self.add_item(VisibleRoleToggleButton(role_name, category_name, role_name in self.selected_roles, idx))
 
         if page > 0:
@@ -241,7 +241,7 @@ class ProfileEditView(discord.ui.View):
                     key=lambda value: value.lower(),
                 )
                 for role_name in role_names:
-                    role_catalog.append({"category": str(category_name).strip() or "Без категории", "role": role_name})
+                    role_catalog.append({"category": str(category_name).strip(), "role": role_name})
             visible_roles = [str(name).strip() for name in profile.get("visible_roles", []) if str(name).strip()]
             if not role_catalog:
                 await interaction.response.send_message(

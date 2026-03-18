@@ -20,6 +20,9 @@ class ResolvedAccess:
 class RoleResolver:
     """Единая политика резолва ролей/прав для Discord и Telegram."""
 
+    EXTERNAL_CATEGORY_FALLBACK = "Внешние роли"
+    DEFAULT_CATEGORY = "Без категории"
+
     SOURCE_PRIORITY: dict[AssignmentSource, int] = {
         "custom": 0,
         "system": 1,
@@ -43,7 +46,7 @@ class RoleResolver:
                 "source": assignment.source,
                 "origin_label": assignment.origin_label,
                 "synced_at": assignment.synced_at.isoformat() if assignment.synced_at else None,
-                "category": str(assignment.metadata.get("category") or "Без категории"),
+                "category": RoleResolver.normalize_category_value(assignment.metadata.get("category")),
             }
             for assignment in assignments
         ]
@@ -126,6 +129,8 @@ class RoleResolver:
     def _load_external_bindings_assignments(account_id: str) -> list[UserRoleAssignment]:
         if not db.supabase:
             return []
+
+        catalog_roles = RoleResolver._load_catalog_roles_for_external_bindings()
         try:
             response = (
                 db.supabase.table("external_role_bindings")
@@ -150,18 +155,187 @@ class RoleResolver:
             external_id = str(row.get("external_role_id") or "").strip() or None
             if not role_name:
                 continue
+            catalog_match = RoleResolver._match_catalog_role_for_external_binding(
+                account_id=account_id,
+                source=source,
+                external_id=external_id,
+                external_role_name=role_name,
+                catalog_roles=catalog_roles,
+            )
             result.append(
                 UserRoleAssignment(
-                    role_name=role_name,
+                    role_name=str((catalog_match or {}).get("name") or role_name).strip() or role_name,
                     source=source,
                     external_id=external_id,
                     expires_at=None,
-                    metadata={"source": "external_role_bindings", "category": "Внешние роли"},
+                    metadata={
+                        "source": "external_role_bindings",
+                        "category": RoleResolver.normalize_category_value(
+                            (catalog_match or {}).get("category_name"),
+                            fallback=RoleResolver.EXTERNAL_CATEGORY_FALLBACK,
+                        ),
+                    },
                     origin_label="legacy external_role_bindings",
                     synced_at=RoleResolver._parse_datetime(row.get("last_synced_at")),
                 )
             )
         return result
+
+    @staticmethod
+    def normalize_category_value(value: object, fallback: str | None = None) -> str:
+        normalized = str(value or "").strip()
+        if normalized:
+            return normalized
+        return str(fallback or RoleResolver.DEFAULT_CATEGORY)
+
+    @staticmethod
+    def _load_catalog_roles_for_external_bindings() -> list[dict[str, Any]]:
+        if not db.supabase:
+            return []
+
+        select_variants = (
+            "name,category_name,discord_role_id,external_role_id",
+            "name,category_name,discord_role_id",
+            "name,category_name",
+        )
+        last_error: Exception | None = None
+        for select_clause in select_variants:
+            try:
+                response = db.supabase.table("roles").select(select_clause).execute()
+                rows = response.data or []
+                logger.info(
+                    "role resolver: loaded catalog roles for external bindings count=%s select=%s",
+                    len(rows),
+                    select_clause,
+                )
+                return rows
+            except Exception as error:
+                last_error = error
+                logger.warning(
+                    "role resolver: roles catalog select failed for external binding resolution select=%s error=%s",
+                    select_clause,
+                    error,
+                )
+
+        if last_error:
+            logger.warning(
+                "role resolver: unable to load roles catalog for external binding resolution error=%s",
+                last_error,
+            )
+        return []
+
+    @staticmethod
+    def _match_catalog_role_for_external_binding(
+        *,
+        account_id: str,
+        source: AssignmentSource,
+        external_id: str | None,
+        external_role_name: str,
+        catalog_roles: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        role_name_key = external_role_name.strip().lower()
+        external_id_key = str(external_id or "").strip()
+        id_matches: list[dict[str, Any]] = []
+        if external_id_key:
+            for row in catalog_roles:
+                discord_role_id = str(row.get("discord_role_id") or "").strip()
+                catalog_external_role_id = str(row.get("external_role_id") or "").strip()
+                if external_id_key and external_id_key in {discord_role_id, catalog_external_role_id}:
+                    id_matches.append(row)
+
+        if len(id_matches) > 1:
+            logger.warning(
+                "role resolver: multiple catalog matches by external id account_id=%s source=%s external_role_id=%s external_role_name=%s matches=%s",
+                account_id,
+                source,
+                external_id_key,
+                external_role_name,
+                [
+                    {
+                        "name": str(match.get("name") or "").strip(),
+                        "discord_role_id": str(match.get("discord_role_id") or "").strip() or None,
+                        "external_role_id": str(match.get("external_role_id") or "").strip() or None,
+                        "category_name": RoleResolver.normalize_category_value(match.get("category_name")),
+                    }
+                    for match in id_matches
+                ],
+            )
+            return sorted(id_matches, key=lambda item: str(item.get("name") or "").lower())[0]
+
+        if len(id_matches) == 1:
+            id_match = id_matches[0]
+            if role_name_key:
+                catalog_name_key = str(id_match.get("name") or "").strip().lower()
+                if catalog_name_key and catalog_name_key != role_name_key:
+                    logger.info(
+                        "role resolver: external binding matched by id with different name account_id=%s source=%s external_role_id=%s external_role_name=%s catalog_role_name=%s",
+                        account_id,
+                        source,
+                        external_id_key,
+                        external_role_name,
+                        str(id_match.get("name") or "").strip(),
+                    )
+            return id_match
+
+        name_matches = [
+            row
+            for row in catalog_roles
+            if role_name_key and str(row.get("name") or "").strip().lower() == role_name_key
+        ]
+        if len(name_matches) > 1:
+            logger.warning(
+                "role resolver: multiple catalog matches by name account_id=%s source=%s external_role_id=%s external_role_name=%s matches=%s",
+                account_id,
+                source,
+                external_id_key or None,
+                external_role_name,
+                [
+                    {
+                        "name": str(match.get("name") or "").strip(),
+                        "discord_role_id": str(match.get("discord_role_id") or "").strip() or None,
+                        "external_role_id": str(match.get("external_role_id") or "").strip() or None,
+                        "category_name": RoleResolver.normalize_category_value(match.get("category_name")),
+                    }
+                    for match in name_matches
+                ],
+            )
+            return sorted(name_matches, key=lambda item: str(item.get("discord_role_id") or "").lower())[0]
+
+        if len(name_matches) == 1:
+            name_match = name_matches[0]
+            matched_discord_role_id = str(name_match.get("discord_role_id") or "").strip()
+            matched_external_role_id = str(name_match.get("external_role_id") or "").strip()
+            matched_catalog_id = matched_discord_role_id or matched_external_role_id
+            if external_id_key and matched_catalog_id and matched_catalog_id != external_id_key:
+                logger.warning(
+                    "role resolver: catalog name matched but external id mismatched account_id=%s source=%s external_role_name=%s external_role_id=%s catalog_role_name=%s catalog_discord_role_id=%s catalog_external_role_id=%s",
+                    account_id,
+                    source,
+                    external_role_name,
+                    external_id_key,
+                    str(name_match.get("name") or "").strip(),
+                    matched_discord_role_id or None,
+                    matched_external_role_id or None,
+                )
+            else:
+                logger.info(
+                    "role resolver: catalog role matched by name fallback account_id=%s source=%s external_role_name=%s external_role_id=%s catalog_role_name=%s",
+                    account_id,
+                    source,
+                    external_role_name,
+                    external_id_key or None,
+                    str(name_match.get("name") or "").strip(),
+                )
+            return name_match
+
+        logger.warning(
+            "role resolver: external role binding not found in catalog account_id=%s source=%s external_role_id=%s external_role_name=%s",
+            account_id,
+            source,
+            external_id_key or None,
+            external_role_name,
+        )
+        return None
 
     @staticmethod
     def _load_title_assignments(account_id: str) -> list[UserRoleAssignment]:
