@@ -539,19 +539,23 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
             logging.info("discord runtime starting (both mode)")
             await bot.start(discord_token)
             logging.error(
-                "discord runtime stopped unexpectedly in both mode; stopping both runtimes without auto-retry. "
+                "discord runtime stopped unexpectedly in both mode; stopping Discord without auto-retry. "
+                "Telegram runtime will stay active if it is running. "
                 "A full dashboard restart is required to start Discord again"
             )
             raise RuntimeError("discord runtime stopped unexpectedly in both mode")
         except discord.LoginFailure:
-            logging.exception("discord login failure in both mode; stopping both runtimes")
+            logging.exception(
+                "discord login failure in both mode; stopping Discord without auto-retry. "
+                "Telegram runtime will stay active if it is already running"
+            )
             raise
         except asyncio.CancelledError:
             logging.info("discord runtime cancelled")
             raise
         except discord.HTTPException as exc:
             log_discord_http_exception(
-                "discord runtime failed in both mode; stopping both runtimes without auto-retry",
+                "discord runtime failed in both mode; stopping Discord without auto-retry while keeping Telegram active",
                 exc,
                 stage="run_both.discord",
                 restart_required=True,
@@ -559,7 +563,8 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
             raise
         except discord.DiscordServerError:
             logging.exception(
-                "discord runtime server error in both mode; stopping both runtimes without auto-retry. "
+                "discord runtime server error in both mode; stopping Discord without auto-retry. "
+                "Telegram runtime will stay active if it is running. "
                 "A full dashboard restart is required"
             )
             raise
@@ -569,18 +574,20 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
                 _reset_discord_http_client_state("run_both.discord.session_closed")
                 logging.exception(
                     "discord runtime failed because HTTP session was closed in both mode; "
-                    "stopping both runtimes without auto-retry. A full dashboard restart is required"
+                    "stopping Discord without auto-retry while keeping Telegram active. "
+                    "A full dashboard restart is required"
                 )
                 raise
             if is_transient_rate_limit_error(exc):
                 _reset_discord_http_client_state("run_both.discord.rate_limited")
                 logging.exception(
                     "discord runtime hit transient/rate-limit error in both mode; "
-                    "stopping both runtimes without auto-retry. A full dashboard restart is required"
+                    "stopping Discord without auto-retry while keeping Telegram active. "
+                    "A full dashboard restart is required"
                 )
                 raise
             logging.exception(
-                "discord runtime fatal error in both mode; stopping both runtimes without auto-retry. "
+                "discord runtime fatal error in both mode; stopping Discord without auto-retry while keeping Telegram active. "
                 "A full dashboard restart is required"
             )
             raise
@@ -670,26 +677,50 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
     discord_task = asyncio.create_task(_run_discord_once(), name="discord-runtime")
     telegram_task = asyncio.create_task(_run_telegram_with_retries(), name="telegram-runtime")
 
-    done, pending = await asyncio.wait(
-        {discord_task, telegram_task},
-        return_when=asyncio.FIRST_EXCEPTION,
-    )
+    pending = {discord_task, telegram_task}
+    runtime_errors: dict[str, BaseException] = {}
 
-    first_exc = None
-    for task in done:
-        exc = task.exception()
-        if exc is not None:
-            first_exc = exc
-            break
+    while pending:
+        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
 
-    for task in pending:
-        task.cancel()
+        for task in done:
+            task_name = task.get_name()
 
-    if pending:
-        await asyncio.gather(*pending, return_exceptions=True)
+            try:
+                exc = task.exception()
+            except asyncio.CancelledError:
+                logging.info("%s cancelled in both mode supervisor", task_name)
+                continue
 
-    if first_exc is not None:
-        raise first_exc
+            if exc is None:
+                logging.warning(
+                    "%s stopped in both mode; remaining_runtimes=%s",
+                    task_name,
+                    ", ".join(sorted(other.get_name() for other in pending)) or "none",
+                )
+                continue
+
+            runtime_errors[task_name] = exc
+            remaining = ", ".join(sorted(other.get_name() for other in pending)) or "none"
+
+            if task_name == "discord-runtime":
+                logging.error(
+                    "discord runtime stopped in both mode; telegram runtime remains active. "
+                    "Full dashboard restart is required to start Discord again. remaining_runtimes=%s error=%s",
+                    remaining,
+                    exc,
+                )
+                continue
+
+            logging.error(
+                "%s stopped in both mode; remaining_runtimes=%s error=%s",
+                task_name,
+                remaining,
+                exc,
+            )
+
+    if runtime_errors and "telegram-runtime" in runtime_errors:
+        raise runtime_errors["telegram-runtime"]
 
 
 def run_both_main() -> None:

@@ -69,18 +69,28 @@ def test_run_discord_main_does_not_retry_after_http_exception():
     log_mock.assert_called_once()
 
 
-def test_run_both_async_stops_after_single_discord_failure():
+def test_run_both_async_keeps_telegram_running_after_discord_failure():
     bot_main = load_bot_main()
     exc = RuntimeError("discord boom")
 
-    with (
-        patch("bot.main.run_telegram_polling", new_callable=AsyncMock) as run_telegram_polling_mock,
-        patch.object(bot_main.bot, "start", AsyncMock(side_effect=exc)) as start_mock,
-        patch.object(bot_main.bot, "close", AsyncMock()) as close_mock,
-    ):
-        with pytest.raises(RuntimeError, match="discord boom"):
-            asyncio.run(bot_main._run_both_async("discord-token", "telegram-token"))
+    async def _exercise() -> None:
+        telegram_started = asyncio.Event()
 
-    assert start_mock.await_count == 1
-    assert close_mock.await_count >= 1
-    assert run_telegram_polling_mock.await_count <= 1
+        async def fake_run_telegram_polling(_token: str) -> None:
+            telegram_started.set()
+            await asyncio.Event().wait()
+
+        with (
+            patch("bot.main.run_telegram_polling", side_effect=fake_run_telegram_polling) as run_telegram_polling_mock,
+            patch.object(bot_main.bot, "start", AsyncMock(side_effect=exc)) as start_mock,
+            patch.object(bot_main.bot, "close", AsyncMock()) as close_mock,
+        ):
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(bot_main._run_both_async("discord-token", "telegram-token"), timeout=0.05)
+
+            assert telegram_started.is_set()
+            assert start_mock.await_count == 1
+            assert close_mock.await_count >= 1
+            assert run_telegram_polling_mock.call_count >= 1
+
+    asyncio.run(_exercise())
