@@ -109,8 +109,16 @@ def is_transient_rate_limit_error(exc: Exception) -> bool:
     return "429" in error_text or "rate limit" in error_text or "cloudflare" in error_text
 
 
-def build_http_exception_log_context(exc: discord.HTTPException, **extra: Any) -> dict[str, Any]:
+def build_http_exception_log_context(
+    exc: discord.HTTPException,
+    *,
+    stage: str,
+    operation_id: str | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
     context: dict[str, Any] = {
+        "stage": stage,
+        "operation_id": operation_id,
         "status": getattr(exc, "status", None),
         "code": getattr(exc, "code", None),
         "cloudflare_1015": is_cloudflare_rate_limited_http_exception(exc),
@@ -123,5 +131,16 @@ def build_http_exception_log_context(exc: discord.HTTPException, **extra: Any) -
     return context
 
 
-def log_discord_http_exception(message: str, exc: discord.HTTPException, **extra: Any) -> None:
-    logging.error("%s | %s", message, build_http_exception_log_context(exc, **extra))
+def log_discord_http_exception(
+    message: str,
+    exc: discord.HTTPException,
+    *,
+    stage: str,
+    operation_id: str | None = None,
+    **extra: Any,
+) -> None:
+    logging.error(
+        "%s | %s",
+        message,
+        build_http_exception_log_context(exc, stage=stage, operation_id=operation_id, **extra),
+    )
