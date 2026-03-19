@@ -1,15 +1,15 @@
 import unittest
 from unittest.mock import patch
 
-from keep_alive import app
+from bot.admin_api.app import admin_app
 
 
 class AdminApiTests(unittest.TestCase):
     def setUp(self):
-        self.client = app.test_client()
+        self.client = admin_app.test_client()
 
-    @patch("keep_alive._build_user_payload")
-    @patch("keep_alive._resolve_account_id")
+    @patch("bot.admin_api.app._build_user_payload")
+    @patch("bot.admin_api.app._resolve_account_id")
     def test_user_view_endpoint(self, mock_resolve_account, mock_payload):
         mock_resolve_account.return_value = "acc-1"
         mock_payload.return_value = {
@@ -27,9 +27,9 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(body["provider"], "discord")
         self.assertEqual(body["account_id"], "acc-1")
 
-    @patch("keep_alive.db.supabase", None)
-    @patch("keep_alive.AuthorityService.can_manage_role")
-    @patch("keep_alive._resolve_account_id")
+    @patch("bot.admin_api.app.db.supabase", None)
+    @patch("bot.admin_api.app.AuthorityService.can_manage_role")
+    @patch("bot.admin_api.app._resolve_account_id")
     def test_custom_role_change_returns_db_not_configured(self, mock_resolve_account, mock_can_manage):
         mock_can_manage.return_value = True
         mock_resolve_account.return_value = "acc-2"
@@ -47,8 +47,8 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 500)
         self.assertEqual(response.get_json()["error"], "db_not_configured")
 
-    @patch("keep_alive._build_user_payload")
-    @patch("keep_alive._resolve_account_id")
+    @patch("bot.admin_api.app._build_user_payload")
+    @patch("bot.admin_api.app._resolve_account_id")
     def test_roles_ui_contains_required_sections(self, mock_resolve_account, mock_payload):
         mock_resolve_account.return_value = "acc-5"
         mock_payload.return_value = {
