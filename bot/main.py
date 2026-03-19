@@ -11,6 +11,7 @@ import time
 import json
 import contextlib
 import hashlib
+import uuid
 from dotenv import load_dotenv
 
 from bot.telegram_bot.config import TELEGRAM_BOT_TOKEN_ENV, get_telegram_bot_token
@@ -85,9 +86,93 @@ STARTUP_RETRY_STATE_FILE = os.getenv(
 bot = command_bot
 db.bot = bot
 
+startup_run_id = uuid.uuid4().hex[:12]
+startup_token_hash = "unknown"
+
 
 def _token_fingerprint(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+
+
+def _startup_context(
+    *,
+    step: str,
+    operation_id: str | None = None,
+    include_operation_id: bool = True,
+    **extra,
+) -> dict:
+    context = {
+        "startup_run_id": startup_run_id,
+        "pid": os.getpid(),
+        "guild_count": len(getattr(bot, "guilds", []) or []),
+        "token_hash": startup_token_hash,
+        "step": step,
+    }
+    if operation_id and include_operation_id:
+        context["operation_id"] = operation_id
+    context.update(extra)
+    return context
+
+
+def _log_startup_step(level: int, message: str, *, step: str, operation_id: str | None = None, **extra) -> None:
+    logging.log(level, "%s | %s", message, _startup_context(step=step, operation_id=operation_id, **extra))
+
+
+def _create_task_with_startup_logging(
+    coro,
+    *,
+    step: str,
+    operation_id: str | None = None,
+    startup_burst: bool = False,
+):
+    async def _runner():
+        _log_startup_step(
+            logging.INFO,
+            "startup background loop entered first pass",
+            step=step,
+            operation_id=operation_id,
+            startup_burst=startup_burst,
+        )
+        try:
+            return await coro
+        except discord.HTTPException as exc:
+            log_discord_http_exception(
+                "startup background loop failed with discord http exception",
+                exc,
+                stage=step,
+                operation_id=operation_id,
+                **_startup_context(
+                    step=step,
+                    operation_id=operation_id,
+                    include_operation_id=False,
+                    startup_burst=startup_burst,
+                ),
+            )
+            raise
+        except Exception:
+            logging.exception(
+                "startup background loop failed | %s",
+                _startup_context(step=step, operation_id=operation_id, startup_burst=startup_burst),
+            )
+            raise
+
+    _log_startup_step(
+        logging.INFO,
+        "startup background loop scheduling",
+        step=step,
+        operation_id=operation_id,
+        startup_burst=startup_burst,
+    )
+    task = asyncio.create_task(_runner(), name=step)
+    _log_startup_step(
+        logging.INFO,
+        "startup background loop scheduled",
+        step=step,
+        operation_id=operation_id,
+        startup_burst=startup_burst,
+        task_name=task.get_name(),
+    )
+    return task
 
 
 def _reset_discord_http_client_state(reason: str) -> None:
@@ -169,16 +254,55 @@ async def on_ready():
     if not tasks_started:
         tasks_started = True
 
-
-        asyncio.create_task(fines_logic.check_overdue_fines(bot))
-        asyncio.create_task(fines_logic.debt_repayment_loop(bot))
-        asyncio.create_task(fines_logic.reminder_loop(bot))
-        asyncio.create_task(fines_logic.fines_summary_loop(bot))
+        _create_task_with_startup_logging(
+            fines_logic.check_overdue_fines(bot),
+            step="check_overdue_fines_loop",
+            operation_id="startup-loop-1",
+            startup_burst=True,
+        )
+        _create_task_with_startup_logging(
+            fines_logic.debt_repayment_loop(bot),
+            step="debt_repayment_loop",
+            operation_id="startup-loop-2",
+            startup_burst=True,
+        )
+        _create_task_with_startup_logging(
+            fines_logic.reminder_loop(bot),
+            step="reminder_loop",
+            operation_id="startup-loop-3",
+            startup_burst=True,
+        )
+        _create_task_with_startup_logging(
+            fines_logic.fines_summary_loop(bot),
+            step="fines_summary_loop",
+            operation_id="startup-loop-4",
+            startup_burst=True,
+        )
         from bot.systems.tournament_logic import tournament_reminder_loop, registration_deadline_loop
-        asyncio.create_task(tournament_reminder_loop(bot))
-        asyncio.create_task(registration_deadline_loop(bot))
-        asyncio.create_task(profile_titles_sync_loop(bot))
-        asyncio.create_task(external_roles_sync_loop(bot))
+        _create_task_with_startup_logging(
+            tournament_reminder_loop(bot),
+            step="tournament_reminder_loop",
+            operation_id="startup-loop-5",
+            startup_burst=True,
+        )
+        _create_task_with_startup_logging(
+            registration_deadline_loop(bot),
+            step="registration_deadline_loop",
+            operation_id="startup-loop-6",
+            startup_burst=True,
+        )
+        _create_task_with_startup_logging(
+            profile_titles_sync_loop(bot),
+            step="profile_titles_sync_loop",
+            operation_id="startup-loop-7",
+            startup_burst=True,
+        )
+        _create_task_with_startup_logging(
+            external_roles_sync_loop(bot),
+            step="external_roles_sync_loop",
+            operation_id="startup-loop-8",
+            startup_burst=True,
+        )
 
     if not presence_initialized:
         activity = discord.Activity(
@@ -186,24 +310,31 @@ async def on_ready():
             type=discord.ActivityType.listening
         )
         try:
+            _log_startup_step(logging.INFO, "startup step begin", step="change_presence")
             await bot.change_presence(activity=activity)
             presence_initialized = True
+            _log_startup_step(logging.INFO, "startup step complete", step="change_presence")
         except discord.HTTPException as exc:
             log_discord_http_exception(
                 "discord startup failed to update presence",
                 exc,
                 stage="on_ready.change_presence",
+                **_startup_context(step="change_presence"),
             )
         except Exception:
-            logging.exception("discord startup failed to update presence")
+            logging.exception("discord startup failed to update presence | %s", _startup_context(step="change_presence"))
 
     if not commands_synced:
+        should_sync = should_sync_commands()
         try:
-            if should_sync_commands():
+            if should_sync:
+                _log_startup_step(logging.INFO, "startup step begin", step="tree_sync", should_sync=should_sync)
                 await bot.tree.sync()
                 mark_commands_synced()
+                _log_startup_step(logging.INFO, "startup step complete", step="tree_sync", should_sync=should_sync)
                 print("🔁 Slash-команды синхронизированы")
             else:
+                _log_startup_step(logging.INFO, "startup step skipped", step="tree_sync", should_sync=should_sync)
                 print("⏭️ Синхронизация slash-команд пропущена (слишком рано после прошлого запуска)")
             commands_synced = True
         except discord.HTTPException as exc:
@@ -211,10 +342,11 @@ async def on_ready():
                 "discord startup failed to sync slash commands",
                 exc,
                 stage="on_ready.tree_sync",
-                should_sync=should_sync_commands(),
+                should_sync=should_sync,
+                **_startup_context(step="tree_sync", should_sync=should_sync),
             )
         except Exception:
-            logging.exception("❌ Ошибка синхронизации slash-команд")
+            logging.exception("❌ Ошибка синхронизации slash-команд | %s", _startup_context(step="tree_sync", should_sync=should_sync))
     
     active_tournaments = tournament_db.get_active_tournaments()
     for tour in active_tournaments:
@@ -225,12 +357,36 @@ async def on_ready():
         try:
             # Регистрируем кнопку ставок, чтобы она работала после перезапуска
             bet_view = BettingView(tour["id"])
+            logging.info(
+                "discord view registration begin tour_id=%s announcement_message_id=%s | %s",
+                tour["id"],
+                tour["announcement_message_id"],
+                _startup_context(step="betting_view_register", operation_id=f"tournament:{tour['id']}"),
+            )
             bot.add_view(bet_view, message_id=tour["announcement_message_id"])
+            logging.info(
+                "discord view registration complete tour_id=%s announcement_message_id=%s | %s",
+                tour["id"],
+                tour["announcement_message_id"],
+                _startup_context(step="betting_view_register", operation_id=f"tournament:{tour['id']}"),
+            )
 
             # если есть отдельное сообщение со статусом — добавляем кнопку и туда
             status_msg_id = tournament_db.get_status_message_id(tour["id"])
             if status_msg_id:
+                logging.info(
+                    "discord view registration begin tour_id=%s status_message_id=%s | %s",
+                    tour["id"],
+                    status_msg_id,
+                    _startup_context(step="betting_status_view_register", operation_id=f"tournament:{tour['id']}"),
+                )
                 bot.add_view(BettingView(tour["id"]), message_id=status_msg_id)
+                logging.info(
+                    "discord view registration complete tour_id=%s status_message_id=%s | %s",
+                    tour["id"],
+                    status_msg_id,
+                    _startup_context(step="betting_status_view_register", operation_id=f"tournament:{tour['id']}"),
+                )
         except Exception as e:
             print(f"Ошибка при регистрации кнопок турнира {tour.get('id')}: {e}")
 
@@ -249,13 +405,35 @@ async def on_ready():
                 participants, team_size=team_size, shuffle=False
             )
             round_management_view = RoundManagementView(tour["id"], tournament_logic)
+            logging.info(
+                "discord view registration begin tour_id=%s participants_count=%s | %s",
+                tour["id"],
+                len(participants),
+                _startup_context(step="round_management_view_register", operation_id=f"tournament:{tour['id']}"),
+            )
             bot.add_view(round_management_view)
+            logging.info(
+                "discord view registration complete tour_id=%s participants_count=%s | %s",
+                tour["id"],
+                len(participants),
+                _startup_context(step="round_management_view_register", operation_id=f"tournament:{tour['id']}"),
+            )
 
     # Не дублируем фоновые задачи при повторном on_ready (reconnect)
     if not startup_tasks_started:
         startup_tasks_started = True
-        asyncio.create_task(autosave_task())
-        asyncio.create_task(monthly_top_task())
+        _create_task_with_startup_logging(
+            autosave_task(),
+            step="autosave_task",
+            operation_id="startup-loop-9",
+            startup_burst=True,
+        )
+        _create_task_with_startup_logging(
+            monthly_top_task(),
+            step="monthly_top_task",
+            operation_id="startup-loop-10",
+            startup_burst=True,
+        )
 
     print('--- Ленивый режим загрузки данных активирован ---')
     print("📡 Задачи активированы.")
@@ -276,7 +454,20 @@ async def on_message(message: discord.Message):
             display_name=getattr(message.author, "display_name", None),
             global_username=getattr(message.author, "global_name", None),
         )
+        logging.info(
+            "discord get_context begin channel_id=%s message_id=%s author_id=%s",
+            getattr(message.channel, "id", None),
+            getattr(message, "id", None),
+            getattr(message.author, "id", None),
+        )
         ctx = await bot.get_context(message)
+        logging.info(
+            "discord get_context complete channel_id=%s message_id=%s author_id=%s valid=%s",
+            getattr(message.channel, "id", None),
+            getattr(message, "id", None),
+            getattr(message.author, "id", None),
+            getattr(ctx, "valid", False),
+        )
         if getattr(ctx, "valid", False):
             await bot.process_commands(message)
             return
@@ -288,7 +479,18 @@ async def on_message(message: discord.Message):
             ref_msg = message.reference.resolved
             if ref_msg is None and message.channel:
                 try:
+                    logging.info(
+                        "discord fetch_message begin channel_id=%s reference_message_id=%s",
+                        getattr(message.channel, "id", None),
+                        message.reference.message_id,
+                    )
                     ref_msg = await message.channel.fetch_message(message.reference.message_id)
+                    logging.info(
+                        "discord fetch_message complete channel_id=%s reference_message_id=%s fetched=%s",
+                        getattr(message.channel, "id", None),
+                        message.reference.message_id,
+                        bool(ref_msg),
+                    )
                 except Exception:
                     logging.exception(
                         "failed to fetch referenced message channel_id=%s message_id=%s",
@@ -326,8 +528,20 @@ async def on_message(message: discord.Message):
                     len(reply),
                 )
                 try:
+                    logging.info(
+                        "discord typing begin channel_id=%s author_id=%s message_id=%s",
+                        getattr(message.channel, "id", None),
+                        getattr(message.author, "id", None),
+                        getattr(message, "id", None),
+                    )
                     async with message.channel.typing():
                         await asyncio.sleep(typing_delay)
+                    logging.info(
+                        "discord typing complete channel_id=%s author_id=%s message_id=%s",
+                        getattr(message.channel, "id", None),
+                        getattr(message.author, "id", None),
+                        getattr(message, "id", None),
+                    )
                 except Exception:
                     logging.exception(
                         "discord typing simulation failed channel_id=%s author_id=%s",
@@ -347,7 +561,20 @@ async def on_message(message: discord.Message):
                 )
                 try:
                     if use_reply_mark:
+                        logging.info(
+                            "discord reply begin channel_id=%s author_id=%s message_id=%s mention_author=%s",
+                            getattr(message.channel, "id", None),
+                            getattr(message.author, "id", None),
+                            getattr(message, "id", None),
+                            False,
+                        )
                         await message.reply(reply, mention_author=False)
+                        logging.info(
+                            "discord reply complete channel_id=%s author_id=%s message_id=%s",
+                            getattr(message.channel, "id", None),
+                            getattr(message.author, "id", None),
+                            getattr(message, "id", None),
+                        )
                     else:
                         await safe_send(message.channel, reply)
                 except Exception:
@@ -386,13 +613,29 @@ async def monthly_top_task():
                         await asyncio.sleep(3600)
                         continue
 
+                logging.info("discord get_channel begin channel_id=%s", TOP_CHANNEL_ID)
                 channel = bot.get_channel(TOP_CHANNEL_ID)
+                logging.info(
+                    "discord get_channel complete channel_id=%s found=%s",
+                    TOP_CHANNEL_ID,
+                    isinstance(channel, discord.TextChannel),
+                )
                 if isinstance(channel, discord.TextChannel):
                     msg = await safe_send(
                         channel,
                         "🔁 Запускаем автоматический топ месяца...",
                     )
+                    logging.info(
+                        "discord get_context begin channel_id=%s source=monthly_top_task message_exists=%s",
+                        getattr(channel, "id", None),
+                        bool(msg or channel.last_message),
+                    )
                     ctx = await bot.get_context(msg or channel.last_message)
+                    logging.info(
+                        "discord get_context complete channel_id=%s source=monthly_top_task valid=%s",
+                        getattr(channel, "id", None),
+                        getattr(ctx, "valid", False),
+                    )
 
                     from bot.systems.core_logic import run_monthly_top
                     await run_monthly_top(ctx, now.month, now.year)
@@ -487,18 +730,26 @@ def run_telegram_main(token: str) -> None:
 
 
 def run_discord_main(token: str) -> None:
-    global bot
+    global bot, startup_token_hash
+
+    startup_token_hash = _token_fingerprint(token)
 
     try:
-        logging.info(
-            "discord runtime started pid=%s hostname=%s token_hash=%s",
-            os.getpid(),
-            os.uname().nodename,
-            _token_fingerprint(token),
+        _log_startup_step(
+            logging.INFO,
+            "startup step begin",
+            step="bot.run",
+            hostname=os.uname().nodename,
         )
         bot.run(token)
+        _log_startup_step(
+            logging.INFO,
+            "startup step complete",
+            step="bot.run",
+            hostname=os.uname().nodename,
+        )
     except discord.LoginFailure:
-        logging.error("discord login failed: invalid DISCORD_TOKEN")
+        logging.error("discord login failed: invalid DISCORD_TOKEN | %s", _startup_context(step="bot.run"))
         return
     except discord.HTTPException as exc:
         log_discord_http_exception(
@@ -506,6 +757,7 @@ def run_discord_main(token: str) -> None:
             exc,
             stage="run_discord_main.login",
             restart_required=True,
+            **_startup_context(step="bot.run"),
         )
         raise
     except Exception as exc:
@@ -514,32 +766,43 @@ def run_discord_main(token: str) -> None:
             _reset_discord_http_client_state("run_discord_main.session_closed")
             logging.exception(
                 "discord runtime failed because HTTP session was closed; stopping without auto-retry. "
-                "Manual dashboard restart is required"
+                "Manual dashboard restart is required | %s",
+                _startup_context(step="bot.run"),
             )
             raise
         if is_transient_rate_limit_error(exc):
             _reset_discord_http_client_state("run_discord_main.rate_limited")
             logging.exception(
                 "discord runtime hit transient/rate-limit error during startup; stopping without auto-retry. "
-                "Manual dashboard restart is required"
+                "Manual dashboard restart is required | %s",
+                _startup_context(step="bot.run"),
             )
             raise
         logging.exception(
             "discord runtime failed during startup; runtime stopped without auto-retry. "
-            "Для нового запуска нужен полный рестарт дешборда"
+            "Для нового запуска нужен полный рестарт дешборда | %s",
+            _startup_context(step="bot.run"),
         )
         raise
 
 async def _run_both_async(discord_token: str, telegram_token: str) -> None:
     async def _run_discord_once() -> None:
+        global startup_token_hash
+        startup_token_hash = _token_fingerprint(discord_token)
         try:
-            logging.info(
-                "discord runtime started pid=%s hostname=%s token_hash=%s",
-                os.getpid(),
-                os.uname().nodename,
-                _token_fingerprint(discord_token),
+            _log_startup_step(
+                logging.INFO,
+                "startup step begin",
+                step="bot.start",
+                hostname=os.uname().nodename,
             )
             await bot.start(discord_token)
+            _log_startup_step(
+                logging.INFO,
+                "startup step complete",
+                step="bot.start",
+                hostname=os.uname().nodename,
+            )
             logging.error(
                 "discord runtime stopped unexpectedly while telegram remains active; stopping Discord without auto-retry. "
                 "A full dashboard restart is required to start Discord again"
@@ -559,6 +822,7 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
                 exc,
                 stage="run_both.discord",
                 restart_required=True,
+                **_startup_context(step="bot.start"),
             )
             raise
         except discord.DiscordServerError:
@@ -574,7 +838,8 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
                 logging.exception(
                     "discord runtime failed because HTTP session was closed; "
                     "discord runtime stopped while telegram remains active. "
-                    "A full dashboard restart is required"
+                    "A full dashboard restart is required | %s",
+                    _startup_context(step="bot.start"),
                 )
                 raise
             if is_transient_rate_limit_error(exc):
@@ -582,12 +847,14 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
                 logging.exception(
                     "discord runtime hit transient/rate-limit error; "
                     "discord runtime stopped while telegram remains active. "
-                    "A full dashboard restart is required"
+                    "A full dashboard restart is required | %s",
+                    _startup_context(step="bot.start"),
                 )
                 raise
             logging.exception(
                 "discord runtime fatal error; discord runtime stopped while telegram remains active. "
-                "A full dashboard restart is required"
+                "A full dashboard restart is required | %s",
+                _startup_context(step="bot.start"),
             )
             raise
         finally:

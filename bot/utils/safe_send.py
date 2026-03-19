@@ -63,6 +63,8 @@ async def safe_send(destination, *args, delay: float | None = None, **kwargs):
             log_discord_http_exception(
                 "safe_send hit Discord rate limit",
                 e,
+                stage="safe_send.send",
+                operation_id=str(getattr(destination, "id", None) or getattr(getattr(destination, "channel", None), "id", None) or "unknown"),
                 destination_type=type(destination).__name__,
             )
             await rate_limiter.wait(delay)
