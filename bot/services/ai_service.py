@@ -29,7 +29,7 @@ _AI_HARD_QUOTA_UNTIL = 0.0
 
 USER_DIALOG_TTL_SECONDS = 300
 MAX_TRACKED_USERS_PER_DIALOG = 8
-_DIALOG_ACTIVE_USERS: dict[str, dict[str, float]] = {}
+_DIALOG_ACTIVE_USERS: dict[str, dict[str, dict[str, str | float | None]]] = {}
 
 CONVERSATION_MEMORY_TTL_SECONDS = 1800
 MAX_MEMORY_TURNS_PER_DIALOG = 12
@@ -179,50 +179,7 @@ def _parse_env_id_set(var_name: str) -> set[str]:
 
 
 def _is_father_user(provider: str | None, user_id: str | int | None) -> bool:
-    normalized_provider = (provider or "").strip().lower()
-    normalized_user_id = str(user_id).strip() if user_id is not None else ""
-    if normalized_provider not in {"telegram", "discord"} or not normalized_user_id:
-        return False
-
-    provider_suffix = normalized_provider.upper()
-    direct_id_envs = (
-        f"GUIY_FATHER_{provider_suffix}_IDS",
-        f"GUIY_EMOCHKA_{provider_suffix}_IDS",
-    )
-    for direct_env in direct_id_envs:
-        if normalized_user_id in _parse_env_id_set(direct_env):
-            logger.info(
-                "guiy father recognized by provider id provider=%s user_id=%s env=%s",
-                normalized_provider,
-                normalized_user_id,
-                direct_env,
-            )
-            return True
-
-    father_account_ids = _parse_env_id_set("GUIY_FATHER_ACCOUNT_IDS")
-    father_account_ids.update(_parse_env_id_set("GUIY_EMOCHKA_ACCOUNT_IDS"))
-    if not father_account_ids:
-        return False
-
-    try:
-        account_id = AccountsService.resolve_account_id(normalized_provider, normalized_user_id)
-    except Exception:
-        logger.exception(
-            "guiy father account resolve failed provider=%s user_id=%s",
-            normalized_provider,
-            normalized_user_id,
-        )
-        return False
-
-    if account_id and str(account_id) in father_account_ids:
-        logger.info(
-            "guiy father recognized by shared account provider=%s user_id=%s account_id=%s",
-            normalized_provider,
-            normalized_user_id,
-            account_id,
-        )
-        return True
-    return False
+    return _is_lore_character_user("emochka", provider=provider, user_id=user_id)
 
 
 def _inject_user_context(base_prompt: str, *, provider: str | None, user_id: str | int | None) -> str:
@@ -240,6 +197,36 @@ def _inject_user_context(base_prompt: str, *, provider: str | None, user_id: str
     )
 
 
+def _inject_public_identity_context(base_prompt: str, *, provider: str | None, user_id: str | int | None) -> str:
+    identity_context = AccountsService.get_public_identity_context(provider, user_id)
+
+    public_fields: list[str] = []
+    custom_nick = str(identity_context.get("custom_nick") or "").strip()
+    display_name = str(identity_context.get("display_name") or "").strip()
+    username = str(identity_context.get("username") or "").strip()
+    global_username = str(identity_context.get("global_username") or "").strip()
+    best_public_name = str(identity_context.get("best_public_name") or "").strip()
+
+    if custom_nick:
+        public_fields.append(f"предпочитаемый ник: {custom_nick}")
+    if display_name:
+        public_fields.append(f"display_name: {display_name}")
+    if username:
+        public_fields.append(f"username: @{username}")
+    if global_username:
+        public_fields.append(f"global_username: {global_username}")
+
+    if not public_fields:
+        return base_prompt
+
+    return (
+        f"{base_prompt}\n\n"
+        f"Публичный контекст текущего собеседника: обращайся к нему как к '{best_public_name or 'собеседнику'}', если это уместно. "
+        f"Известные публичные данные: {'; '.join(public_fields)}. "
+        "Используй только эти публичные имена и не придумывай скрытые данные."
+    )
+
+
 def _build_dialog_key(provider: str | None, conversation_id: str | int | None) -> str | None:
     normalized_provider = (provider or "").strip().lower()
     normalized_conversation_id = str(conversation_id).strip() if conversation_id is not None else ""
@@ -250,6 +237,7 @@ def _build_dialog_key(provider: str | None, conversation_id: str | int | None) -
 
 def _register_recent_dialog_user(*, provider: str | None, conversation_id: str | int | None, user_id: str | int | None) -> list[str]:
     dialog_key = _build_dialog_key(provider, conversation_id)
+    normalized_provider = (provider or "").strip().lower()
     normalized_user_id = str(user_id).strip() if user_id is not None else ""
     now = time.time()
     if not dialog_key or not normalized_user_id:
@@ -257,21 +245,36 @@ def _register_recent_dialog_user(*, provider: str | None, conversation_id: str |
 
     active_users = _DIALOG_ACTIVE_USERS.get(dialog_key, {})
     ttl_threshold = now - USER_DIALOG_TTL_SECONDS
-    active_users = {uid: ts for uid, ts in active_users.items() if ts >= ttl_threshold}
-    active_users[normalized_user_id] = now
+    active_users = {
+        uid: meta
+        for uid, meta in active_users.items()
+        if float(meta.get("ts", 0.0)) >= ttl_threshold
+    }
 
-    sorted_by_recency = sorted(active_users.items(), key=lambda item: item[1], reverse=True)
+    identity_context = AccountsService.get_public_identity_context(normalized_provider, normalized_user_id)
+    active_users[normalized_user_id] = {
+        "ts": now,
+        "name": str(identity_context.get("best_public_name") or "").strip() or None,
+        "account_id": str(identity_context.get("account_id") or "").strip() or None,
+        "name_source": str(identity_context.get("name_source") or "").strip() or None,
+    }
+
+    sorted_by_recency = sorted(active_users.items(), key=lambda item: float(item[1].get("ts", 0.0)), reverse=True)
     if len(sorted_by_recency) > MAX_TRACKED_USERS_PER_DIALOG:
         sorted_by_recency = sorted_by_recency[:MAX_TRACKED_USERS_PER_DIALOG]
 
-    compact_users = {uid: ts for uid, ts in sorted_by_recency}
+    compact_users = {uid: meta for uid, meta in sorted_by_recency}
     _DIALOG_ACTIVE_USERS[dialog_key] = compact_users
 
     ordered_user_ids = list(compact_users.keys())
     logger.info(
-        "guiy dialog participants updated dialog_key=%s current_user_id=%s active_user_count=%s",
+        "guiy dialog participants updated dialog_key=%s provider=%s user_id=%s account_id=%s nickname_source_found=%s name_source=%s active_user_count=%s",
         dialog_key,
+        normalized_provider,
         normalized_user_id,
+        identity_context.get("account_id"),
+        identity_context.get("nickname_source_found"),
+        identity_context.get("name_source"),
         len(ordered_user_ids),
     )
     return ordered_user_ids
@@ -293,12 +296,25 @@ def _inject_dialog_participants_context(
     if not active_user_ids or not normalized_user_id:
         return base_prompt
 
-    anonymized_users = [f"U{idx + 1}" for idx, _ in enumerate(active_user_ids)]
-    current_alias = f"U{active_user_ids.index(normalized_user_id) + 1}"
+    dialog_key = _build_dialog_key(provider, conversation_id)
+    active_users = _DIALOG_ACTIVE_USERS.get(dialog_key or "", {})
+
+    used_labels: dict[str, int] = {}
+    participant_labels: list[str] = []
+    current_alias = "текущий собеседник"
+    for user_key in active_user_ids:
+        meta = active_users.get(user_key, {})
+        base_label = str(meta.get("name") or "").strip() or "безымянный собеседник"
+        label_index = used_labels.get(base_label, 0) + 1
+        used_labels[base_label] = label_index
+        final_label = base_label if label_index == 1 else f"{base_label} #{label_index}"
+        participant_labels.append(final_label)
+        if user_key == normalized_user_id:
+            current_alias = final_label
 
     return (
         f"{base_prompt}\n\n"
-        f"Контекст чата: в последние {USER_DIALOG_TTL_SECONDS} секунд(ы) активны пользователи: {', '.join(anonymized_users)}. "
+        f"Контекст чата: в последние {USER_DIALOG_TTL_SECONDS} секунд(ы) активны пользователи: {', '.join(participant_labels)}. "
         f"Сейчас отвечает пользователю {current_alias}. "
         "Не путай собеседников между собой и отвечай только текущему пользователю."
     )
@@ -329,21 +345,45 @@ def _is_lore_character_user(
         return False
 
     provider_suffix = normalized_provider.upper()
+    account_id: str | None = None
+    account_ids: set[str] = set()
+    for env_prefix in character["env_prefixes"]:
+        account_ids.update(_parse_env_id_set(f"{env_prefix}_ACCOUNT_IDS"))
+
+    if account_ids:
+        try:
+            account_id = AccountsService.resolve_account_id(normalized_provider, normalized_user_id)
+        except Exception:
+            logger.exception(
+                "guiy lore character account resolve failed character=%s provider=%s user_id=%s",
+                character_key,
+                normalized_provider,
+                normalized_user_id,
+            )
+            return False
+
+        if account_id and str(account_id) in account_ids:
+            logger.info(
+                "guiy lore character recognized by shared account character=%s provider=%s user_id=%s account_id=%s",
+                character_key,
+                normalized_provider,
+                normalized_user_id,
+                account_id,
+            )
+            return True
+
     for env_prefix in character["env_prefixes"]:
         direct_env = f"{env_prefix}_{provider_suffix}_IDS"
         if normalized_user_id in _parse_env_id_set(direct_env):
             logger.info(
-                "guiy lore character recognized by provider id character=%s provider=%s user_id=%s env=%s",
+                "guiy lore character recognized by provider id character=%s provider=%s user_id=%s account_id=%s",
                 character_key,
                 normalized_provider,
                 normalized_user_id,
-                direct_env,
+                account_id,
             )
             return True
 
-    account_ids: set[str] = set()
-    for env_prefix in character["env_prefixes"]:
-        account_ids.update(_parse_env_id_set(f"{env_prefix}_ACCOUNT_IDS"))
     if not account_ids:
         logger.warning(
             "guiy lore character ids not configured character=%s provider=%s expected_envs=%s",
@@ -351,28 +391,6 @@ def _is_lore_character_user(
             normalized_provider,
             ",".join(f"{env_prefix}_{provider_suffix}_IDS/{env_prefix}_ACCOUNT_IDS" for env_prefix in character["env_prefixes"]),
         )
-        return False
-
-    try:
-        account_id = AccountsService.resolve_account_id(normalized_provider, normalized_user_id)
-    except Exception:
-        logger.exception(
-            "guiy lore character account resolve failed character=%s provider=%s user_id=%s",
-            character_key,
-            normalized_provider,
-            normalized_user_id,
-        )
-        return False
-
-    if account_id and str(account_id) in account_ids:
-        logger.info(
-            "guiy lore character recognized by shared account character=%s provider=%s user_id=%s account_id=%s",
-            character_key,
-            normalized_provider,
-            normalized_user_id,
-            account_id,
-        )
-        return True
     return False
 
 
@@ -850,6 +868,7 @@ async def generate_guiy_reply(
         return _build_cooldown_reply()
 
     base_prompt = _inject_user_context(_build_system_prompt(), provider=provider, user_id=user_id)
+    base_prompt = _inject_public_identity_context(base_prompt, provider=provider, user_id=user_id)
     base_prompt = _inject_identity_claim_context(
         base_prompt,
         provider=provider,
@@ -873,7 +892,7 @@ async def generate_guiy_reply(
     _register_dialog_memory_turn(
         provider=provider,
         conversation_id=conversation_id,
-        speaker=f"Пользователь {str(user_id).strip() if user_id is not None else 'unknown'}",
+        speaker=AccountsService.get_best_public_name(provider, user_id) or "Пользователь",
         text=user_text,
     )
 

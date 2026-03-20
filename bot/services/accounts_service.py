@@ -35,6 +35,225 @@ class AccountsService:
     MAX_VISIBLE_PROFILE_ROLES = 3
 
     @staticmethod
+    def _load_account_identity_rows(account_id: str) -> list[dict]:
+        account_key = str(account_id or "").strip()
+        if not db.supabase or not account_key:
+            return []
+
+        select_variants = (
+            "account_id,provider,provider_user_id,username,provider_username,display_name,provider_display_name,global_username",
+            "account_id,provider,provider_user_id,username,display_name,global_username",
+            "account_id,provider,provider_user_id,username,display_name",
+            "account_id,provider,provider_user_id",
+        )
+        last_error: Exception | None = None
+        for select_clause in select_variants:
+            try:
+                response = (
+                    db.supabase.table("account_identities")
+                    .select(select_clause)
+                    .eq("account_id", account_key)
+                    .execute()
+                )
+                return response.data or []
+            except Exception as error:
+                last_error = error
+                logger.warning(
+                    "account identity rows select failed account_id=%s select=%s error=%s",
+                    account_key,
+                    select_clause,
+                    AccountsService._format_db_error(error),
+                )
+
+        if last_error:
+            logger.warning(
+                "account identity rows exhausted select variants account_id=%s error=%s",
+                account_key,
+                AccountsService._format_db_error(last_error),
+            )
+        return []
+
+    @staticmethod
+    def _load_identity_row(provider: str, provider_user_id: str) -> dict[str, object] | None:
+        normalized_provider = str(provider or "").strip().lower()
+        normalized_user_id = str(provider_user_id or "").strip()
+        if not db.supabase or normalized_provider not in {"telegram", "discord"} or not normalized_user_id:
+            return None
+
+        select_variants = (
+            "account_id,provider,provider_user_id,username,provider_username,display_name,provider_display_name,global_username",
+            "account_id,provider,provider_user_id,username,display_name,global_username",
+            "account_id,provider,provider_user_id,username,display_name",
+            "account_id,provider,provider_user_id",
+        )
+        last_error: Exception | None = None
+        for select_clause in select_variants:
+            try:
+                response = (
+                    db.supabase.table("account_identities")
+                    .select(select_clause)
+                    .eq("provider", normalized_provider)
+                    .eq("provider_user_id", normalized_user_id)
+                    .limit(1)
+                    .execute()
+                )
+                rows = response.data or []
+                if rows:
+                    return dict(rows[0])
+                return None
+            except Exception as error:
+                last_error = error
+                logger.warning(
+                    "identity row lookup failed provider=%s user_id=%s select=%s error=%s",
+                    normalized_provider,
+                    normalized_user_id,
+                    select_clause,
+                    AccountsService._format_db_error(error),
+                )
+
+        if last_error:
+            logger.warning(
+                "identity row lookup exhausted select variants provider=%s user_id=%s error=%s",
+                normalized_provider,
+                normalized_user_id,
+                AccountsService._format_db_error(last_error),
+            )
+        return None
+
+    @staticmethod
+    def _load_account_custom_nick(account_id: str) -> str | None:
+        account_key = str(account_id or "").strip()
+        if not db.supabase or not account_key:
+            return None
+
+        try:
+            response = (
+                db.supabase.table("accounts")
+                .select("custom_nick")
+                .eq("id", account_key)
+                .limit(1)
+                .execute()
+            )
+            rows = response.data or []
+            if not rows:
+                return None
+            raw_custom_nick = str(rows[0].get("custom_nick") or "").strip()
+            default_nick = str(AccountsService.PROFILE_FIELDS_CONFIG["custom_nick"]["default"]).strip()
+            if raw_custom_nick and raw_custom_nick != default_nick:
+                return raw_custom_nick
+        except Exception as error:
+            logger.exception(
+                "account custom nick lookup failed account_id=%s error=%s",
+                account_key,
+                AccountsService._format_db_error(error),
+            )
+        return None
+
+    @staticmethod
+    def get_public_identity_context(
+        provider: str | None,
+        provider_user_id: str | int | None,
+        *,
+        account_id: str | None = None,
+    ) -> dict[str, str | bool | None]:
+        normalized_provider = str(provider or "").strip().lower() or None
+        normalized_user_id = str(provider_user_id).strip() if provider_user_id is not None else ""
+        resolved_account_id = str(account_id or "").strip() or None
+
+        identity_row: dict[str, object] | None = None
+        identity_rows: list[dict] = []
+        if resolved_account_id:
+            identity_rows = AccountsService._load_account_identity_rows(resolved_account_id)
+            if normalized_provider and normalized_user_id:
+                identity_row = next(
+                    (
+                        row
+                        for row in identity_rows
+                        if str(row.get("provider") or "").strip() == normalized_provider
+                        and str(row.get("provider_user_id") or "").strip() == normalized_user_id
+                    ),
+                    None,
+                )
+            if not identity_row:
+                identity_row = AccountsService._preferred_identity_for_account(
+                    resolved_account_id,
+                    identity_rows,
+                    provider_hint=normalized_provider,
+                    default_provider=normalized_provider,
+                )
+        elif normalized_provider and normalized_user_id:
+            identity_row = AccountsService._load_identity_row(normalized_provider, normalized_user_id)
+            resolved_account_id = str(identity_row.get("account_id") or "").strip() or None if identity_row else None
+            if resolved_account_id:
+                identity_rows = AccountsService._load_account_identity_rows(resolved_account_id)
+                if not identity_row:
+                    identity_row = AccountsService._preferred_identity_for_account(
+                        resolved_account_id,
+                        identity_rows,
+                        provider_hint=normalized_provider,
+                        default_provider=normalized_provider,
+                    )
+
+        custom_nick = AccountsService._load_account_custom_nick(resolved_account_id or "") if resolved_account_id else None
+        username = None
+        display_name = None
+        global_username = None
+        if identity_row:
+            username = AccountsService._candidate_username(identity_row)
+            display_name = str(identity_row.get("display_name") or identity_row.get("provider_display_name") or "").strip() or None
+            global_username = str(identity_row.get("global_username") or "").strip() or None
+
+        best_public_name = None
+        name_source = None
+        if custom_nick:
+            best_public_name = custom_nick
+            name_source = "custom_nick"
+        elif display_name:
+            best_public_name = display_name
+            name_source = "display_name"
+        elif username:
+            best_public_name = username
+            name_source = "username"
+        elif global_username:
+            best_public_name = global_username
+            name_source = "global_username"
+
+        logger.info(
+            "public identity context resolved provider=%s user_id=%s account_id=%s nickname_source_found=%s name_source=%s",
+            normalized_provider,
+            normalized_user_id or None,
+            resolved_account_id,
+            bool(name_source),
+            name_source,
+        )
+        return {
+            "provider": normalized_provider,
+            "user_id": normalized_user_id or None,
+            "account_id": resolved_account_id,
+            "username": username,
+            "display_name": display_name,
+            "global_username": global_username,
+            "custom_nick": custom_nick,
+            "best_public_name": best_public_name,
+            "name_source": name_source,
+            "nickname_source_found": bool(name_source),
+        }
+
+    @staticmethod
+    def get_best_public_name(
+        provider: str | None,
+        provider_user_id: str | int | None,
+        *,
+        account_id: str | None = None,
+    ) -> str | None:
+        context = AccountsService.get_public_identity_context(
+            provider,
+            provider_user_id,
+            account_id=account_id,
+        )
+        return str(context.get("best_public_name") or "").strip() or None
+
+    @staticmethod
     def _load_identity_rows_for_lookup(provider: str) -> list[dict]:
         if not db.supabase:
             return []

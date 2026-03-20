@@ -214,6 +214,47 @@ class AccountsServiceTests(unittest.TestCase):
         self.assertEqual(direct[0]["provider_user_id"], "222")
         self.assertEqual(plain[0]["provider_user_id"], "222")
 
+    def test_get_public_identity_context_prefers_custom_nick_over_identity_fields(self):
+        self.fake_db.tables["accounts"] = [{"id": "acc-1", "custom_nick": "Капитан Бебра"}]
+        self.fake_db.tables["account_identities"] = [
+            {
+                "account_id": "acc-1",
+                "provider": "telegram",
+                "provider_user_id": "222",
+                "username": "captain_bebra",
+                "display_name": "Captain Bebra",
+                "global_username": "captain.global",
+            }
+        ]
+
+        context = AccountsService.get_public_identity_context("telegram", "222")
+
+        self.assertEqual(context["account_id"], "acc-1")
+        self.assertEqual(context["custom_nick"], "Капитан Бебра")
+        self.assertEqual(context["display_name"], "Captain Bebra")
+        self.assertEqual(context["username"], "captain_bebra")
+        self.assertEqual(context["global_username"], "captain.global")
+        self.assertEqual(context["best_public_name"], "Капитан Бебра")
+        self.assertEqual(context["name_source"], "custom_nick")
+
+    def test_get_public_identity_context_falls_back_to_display_name(self):
+        self.fake_db.tables["accounts"] = [{"id": "acc-2", "custom_nick": "Игрок"}]
+        self.fake_db.tables["account_identities"] = [
+            {
+                "account_id": "acc-2",
+                "provider": "discord",
+                "provider_user_id": "333",
+                "username": "bebr_user",
+                "display_name": "Обычный пользователь",
+                "global_username": "bebr.global",
+            }
+        ]
+
+        context = AccountsService.get_public_identity_context("discord", "333")
+
+        self.assertEqual(context["best_public_name"], "Обычный пользователь")
+        self.assertEqual(context["name_source"], "display_name")
+
     def test_find_accounts_by_identity_username_returns_multiple_candidates(self):
         self.fake_db.tables["account_identities"] = [
             {"account_id": "acc-1", "provider": "telegram", "provider_user_id": "222", "username": "bebra_admin"},
