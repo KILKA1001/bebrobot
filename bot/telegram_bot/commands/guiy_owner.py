@@ -1,116 +1,753 @@
 import logging
+import time
+from dataclasses import dataclass
 
-from aiogram import Router
+from aiogram import F, Router
 from aiogram.filters import Command, CommandObject
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from bot.services import AccountsService
 from bot.services.guiy_admin_service import (
     GUIY_OWNER_DENIED_MESSAGE,
     GUIY_OWNER_REPLY_REQUIRED_MESSAGE,
     GUIY_OWNER_USAGE_TEXT,
-    authorize_guiy_owner_action,
-    parse_guiy_owner_profile_payload,
-    resolve_guiy_target_account,
+)
+from bot.services.guiy_owner_flow_service import (
+    GUIY_OWNER_ACTION_SPECS,
+    GUIY_OWNER_PROFILE_FIELDS,
+    execute_guiy_owner_flow,
+    get_guiy_owner_action_spec,
+    get_guiy_owner_profile_field_spec,
+    parse_guiy_owner_text_command,
+    resolve_guiy_profile_catalog,
 )
 from bot.telegram_bot.identity import persist_telegram_identity_from_user
 
 logger = logging.getLogger(__name__)
 router = Router()
 
-
-def _parse_action_and_payload(raw_args: str | None) -> tuple[str, str]:
-    cleaned = str(raw_args or "").strip()
-    if not cleaned:
-        return "", ""
-    parts = cleaned.split(maxsplit=1)
-    action = parts[0].strip().lower()
-    payload = parts[1].strip() if len(parts) > 1 else ""
-    return action, payload
+PENDING_GUIY_OWNER_TTL_SECONDS = 900
+_VISIBLE_ROLES_PAGE_SIZE = 10
 
 
-@router.message(Command("guiy_owner"))
-async def guiy_owner_command(message: Message, command: CommandObject) -> None:
-    persist_telegram_identity_from_user(message.from_user)
-    persist_telegram_identity_from_user(message.reply_to_message.from_user if message.reply_to_message else None)
+@dataclass(slots=True)
+class PendingGuiyOwnerAction:
+    selected_action: str
+    bot_user_id: str
+    target_message_id: int | None
+    reply_author_user_id: str | None
+    created_at: float
+    target_chat_or_guild: str
+    selected_field: str | None = None
+
+
+_PENDING_GUIY_OWNER_ACTIONS: dict[int, PendingGuiyOwnerAction] = {}
+_PENDING_GUIY_OWNER_VISIBLE_ROLES: dict[int, dict[str, object]] = {}
+
+
+def _log_guiy_owner_info(
+    *,
+    provider: str,
+    actor_user_id: int | str | None,
+    selected_action: str,
+    target_chat_or_guild: int | str | None,
+    target_message_id: int | str | None,
+    guiy_account_id: str | None,
+    message: str,
+) -> None:
+    logger.info(
+        "%s provider=%s actor_user_id=%s selected_action=%s target_chat_or_guild=%s target_message_id=%s guiy_account_id=%s",
+        message,
+        provider,
+        actor_user_id,
+        selected_action,
+        target_chat_or_guild,
+        target_message_id,
+        guiy_account_id,
+    )
+
+
+def _log_guiy_owner_warning(
+    *,
+    provider: str,
+    actor_user_id: int | str | None,
+    selected_action: str,
+    target_chat_or_guild: int | str | None,
+    target_message_id: int | str | None,
+    guiy_account_id: str | None,
+    message: str,
+) -> None:
+    logger.warning(
+        "%s provider=%s actor_user_id=%s selected_action=%s target_chat_or_guild=%s target_message_id=%s guiy_account_id=%s",
+        message,
+        provider,
+        actor_user_id,
+        selected_action,
+        target_chat_or_guild,
+        target_message_id,
+        guiy_account_id,
+    )
+
+
+def _clear_pending_state(actor_user_id: int | None) -> None:
+    if actor_user_id is None:
+        return
+    _PENDING_GUIY_OWNER_ACTIONS.pop(actor_user_id, None)
+    _PENDING_GUIY_OWNER_VISIBLE_ROLES.pop(actor_user_id, None)
+
+
+def _get_non_expired_pending_action(actor_user_id: int | None) -> PendingGuiyOwnerAction | None:
+    if actor_user_id is None:
+        return None
+    pending = _PENDING_GUIY_OWNER_ACTIONS.get(actor_user_id)
+    if not pending:
+        return None
+    if (time.time() - pending.created_at) > PENDING_GUIY_OWNER_TTL_SECONDS:
+        _log_guiy_owner_info(
+            provider="telegram",
+            actor_user_id=actor_user_id,
+            selected_action=pending.selected_action,
+            target_chat_or_guild=pending.target_chat_or_guild,
+            target_message_id=pending.target_message_id,
+            guiy_account_id=None,
+            message="telegram guiy owner pending state expired",
+        )
+        _clear_pending_state(actor_user_id)
+        return None
+    return pending
+
+
+def has_pending_guiy_owner_action(actor_user_id: int | None) -> bool:
+    return _get_non_expired_pending_action(actor_user_id) is not None
+
+
+def _owner_action_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=GUIY_OWNER_ACTION_SPECS["say"].title, callback_data="guiy_owner:action:say")],
+            [InlineKeyboardButton(text=GUIY_OWNER_ACTION_SPECS["reply"].title, callback_data="guiy_owner:action:reply")],
+            [InlineKeyboardButton(text=GUIY_OWNER_ACTION_SPECS["profile"].title, callback_data="guiy_owner:action:profile")],
+            [InlineKeyboardButton(text=GUIY_OWNER_ACTION_SPECS["register_profile"].title, callback_data="guiy_owner:action:register_profile")],
+            [InlineKeyboardButton(text=GUIY_OWNER_ACTION_SPECS["cancel"].title, callback_data="guiy_owner:action:cancel")],
+        ]
+    )
+
+
+def _owner_profile_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=GUIY_OWNER_PROFILE_FIELDS["custom_nick"].title, callback_data="guiy_owner:field:custom_nick")],
+            [InlineKeyboardButton(text=GUIY_OWNER_PROFILE_FIELDS["description"].title, callback_data="guiy_owner:field:description")],
+            [InlineKeyboardButton(text=GUIY_OWNER_PROFILE_FIELDS["nulls_brawl_id"].title, callback_data="guiy_owner:field:nulls_brawl_id")],
+            [InlineKeyboardButton(text=GUIY_OWNER_PROFILE_FIELDS["visible_roles"].title, callback_data="guiy_owner:field:visible_roles")],
+            [InlineKeyboardButton(text=GUIY_OWNER_ACTION_SPECS["cancel"].title, callback_data="guiy_owner:action:cancel")],
+        ]
+    )
+
+
+def _owner_menu_text() -> str:
+    return (
+        "🛠️ <b>Owner-управление Гуем</b>\n"
+        "Выберите действие ниже. После каждого выбора бот коротко объяснит следующий шаг и что изменится после подтверждения.\n\n"
+        "• <b>Написать от Гуя</b> — отправить новое сообщение в текущий чат.\n"
+        "• <b>Ответить от Гуя</b> — ответить именно на сообщение Гуя, если команда открыта reply-сообщением.\n"
+        "• <b>Профиль Гуя</b> — изменить поля общего профиля Гуя.\n"
+        "• <b>Зарегистрировать профиль Гуя</b> — создать общий аккаунт, если его ещё нет."
+    )
+
+
+def _owner_profile_text() -> str:
+    spec = GUIY_OWNER_ACTION_SPECS["profile"]
+    return f"👤 <b>{spec.title}</b>\n{spec.instruction}\n\nВыберите поле, которое хотите изменить."
+
+
+def _build_visible_roles_keyboard(catalog: list[dict[str, str]], selected_roles: list[str], page: int) -> InlineKeyboardMarkup:
+    total_pages = max((len(catalog) - 1) // _VISIBLE_ROLES_PAGE_SIZE + 1, 1)
+    safe_page = min(max(page, 0), total_pages - 1)
+    start = safe_page * _VISIBLE_ROLES_PAGE_SIZE
+    page_items = catalog[start : start + _VISIBLE_ROLES_PAGE_SIZE]
+    rows: list[list[InlineKeyboardButton]] = []
+    for idx, item in enumerate(page_items):
+        role_name = str(item.get("role") or "").strip()
+        category = str(item.get("category") or "").strip()
+        label = f"{'✅ ' if role_name in selected_roles else ''}{role_name} [{category}]"[:64]
+        row_idx = idx // 2
+        if len(rows) <= row_idx:
+            rows.append([])
+        rows[row_idx].append(
+            InlineKeyboardButton(text=label, callback_data=f"guiy_owner_visible_roles:toggle:{safe_page}:{idx}")
+        )
+
+    nav: list[InlineKeyboardButton] = []
+    if safe_page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"guiy_owner_visible_roles:page:{safe_page - 1}"))
+    nav.append(InlineKeyboardButton(text=f"{safe_page + 1}/{total_pages}", callback_data="guiy_owner_visible_roles:noop"))
+    if safe_page + 1 < total_pages:
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"guiy_owner_visible_roles:page:{safe_page + 1}"))
+    rows.append(nav)
+    rows.append(
+        [
+            InlineKeyboardButton(text="💾 Сохранить", callback_data="guiy_owner_visible_roles:save"),
+            InlineKeyboardButton(text="🧹 Очистить", callback_data="guiy_owner_visible_roles:clear"),
+        ]
+    )
+    rows.append([InlineKeyboardButton(text=GUIY_OWNER_ACTION_SPECS["cancel"].title, callback_data="guiy_owner:action:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _build_visible_roles_text(selected_roles: list[str], page: int, total_pages: int) -> str:
+    selected_text = ", ".join(f"<code>{item}</code>" for item in selected_roles) if selected_roles else "—"
+    return (
+        "🏅 <b>Отображаемые роли</b>\n"
+        f"{GUIY_OWNER_PROFILE_FIELDS['visible_roles'].instruction}\n"
+        "Нажимайте на роли ниже, затем подтвердите сохранение.\n"
+        f"Страница: <b>{page + 1}/{total_pages}</b>\n"
+        f"Выбрано ({len(selected_roles)}/3): {selected_text}"
+    )
+
+
+async def _show_owner_menu(message: Message) -> None:
+    await message.answer(_owner_menu_text(), parse_mode="HTML", reply_markup=_owner_action_keyboard())
+
+
+async def _run_text_fallback(message: Message, action: str, payload: str) -> None:
     actor_user_id = message.from_user.id if message.from_user else None
     target_message_id = message.reply_to_message.message_id if message.reply_to_message else None
-    action, payload = _parse_action_and_payload(command.args)
+    reply_author_user_id = message.reply_to_message.from_user.id if message.reply_to_message and message.reply_to_message.from_user else None
 
-    if action not in {"say", "reply", "profile"}:
-        await message.answer(GUIY_OWNER_USAGE_TEXT)
-        return
-    if action in {"say", "reply"} and not payload:
-        await message.answer(GUIY_OWNER_USAGE_TEXT)
-        return
-    if action == "reply" and not message.reply_to_message:
+    if action == "reply" and not target_message_id:
         await message.answer(GUIY_OWNER_REPLY_REQUIRED_MESSAGE)
-        return
-
-    access = authorize_guiy_owner_action(
-        actor_provider="telegram",
-        actor_user_id=actor_user_id,
-        requested_action=action,
-        target_message_id=target_message_id,
-    )
-    if not access.allowed:
-        await message.answer(GUIY_OWNER_DENIED_MESSAGE)
         return
 
     try:
         bot_user = await message.bot.get_me()
     except Exception:
         logger.exception(
-            "telegram guiy owner failed to resolve bot identity chat_id=%s actor_user_id=%s action=%s",
-            message.chat.id if message.chat else None,
+            "telegram guiy owner failed to resolve bot identity provider=%s actor_user_id=%s selected_action=%s target_chat_or_guild=%s target_message_id=%s guiy_account_id=%s",
+            "telegram",
             actor_user_id,
             action,
+            message.chat.id if message.chat else None,
+            target_message_id,
+            None,
         )
         await message.answer(GUIY_OWNER_DENIED_MESSAGE)
         return
 
-    reply_author_user_id = message.reply_to_message.from_user.id if message.reply_to_message and message.reply_to_message.from_user else None
-    target_resolution = resolve_guiy_target_account(
+    if action == "profile":
+        await message.answer(GUIY_OWNER_USAGE_TEXT)
+        return
+
+    result = execute_guiy_owner_flow(
         provider="telegram",
+        actor_user_id=actor_user_id,
         bot_user_id=bot_user.id,
+        selected_action=action,
+        payload=payload,
         reply_author_user_id=reply_author_user_id,
+        target_message_id=target_message_id,
         explicit_owner_command=True,
     )
-    if not target_resolution.ok:
-        await message.answer(target_resolution.message or GUIY_OWNER_DENIED_MESSAGE)
+    _log_guiy_owner_info(
+        provider="telegram",
+        actor_user_id=actor_user_id,
+        selected_action=action,
+        target_chat_or_guild=message.chat.id if message.chat else None,
+        target_message_id=target_message_id,
+        guiy_account_id=result.guiy_account_id,
+        message="telegram guiy owner fallback handled",
+    )
+    if not result.ok:
+        await message.answer(result.message)
         return
 
     try:
         if action == "say":
-            await message.answer(payload)
+            await message.answer(result.outbound_text)
             return
-
         if action == "reply":
-            await message.answer(payload, reply_to_message_id=message.reply_to_message.message_id)
+            await message.answer(result.outbound_text, reply_to_message_id=result.reply_to_message_id)
             return
-
-        field_name, field_value = parse_guiy_owner_profile_payload(payload)
-        if not field_name:
-            await message.answer(GUIY_OWNER_USAGE_TEXT)
-            return
-
-        success, response = AccountsService.update_profile_field(
-            "telegram",
-            str(bot_user.id),
-            field_name,
-            field_value or "",
-        )
-        prefix = "✅" if success else "❌"
-        await message.answer(
-            f"{prefix} {response}\n"
-            "Подсказка: чтобы проверить результат, ответьте /profile на сообщение Гуя или откройте профиль его общего аккаунта."
-        )
     except Exception:
         logger.exception(
-            "telegram guiy owner command failed chat_id=%s actor_user_id=%s action=%s target_message_id=%s",
-            message.chat.id if message.chat else None,
+            "telegram guiy owner fallback send failed provider=%s actor_user_id=%s selected_action=%s target_chat_or_guild=%s target_message_id=%s guiy_account_id=%s",
+            "telegram",
             actor_user_id,
             action,
+            message.chat.id if message.chat else None,
             target_message_id,
+            result.guiy_account_id,
         )
+        await message.answer("❌ Не удалось выполнить действие. Попробуйте позже.")
+
+
+@router.message(Command("guiy_owner"))
+async def guiy_owner_command(message: Message, command: CommandObject) -> None:
+    persist_telegram_identity_from_user(message.from_user)
+    persist_telegram_identity_from_user(message.reply_to_message.from_user if message.reply_to_message else None)
+    action, payload = parse_guiy_owner_text_command(command.args)
+
+    if action in {"say", "reply"}:
+        await _run_text_fallback(message, action, payload)
+        return
+
+    if action == "profile":
+        await message.answer(GUIY_OWNER_USAGE_TEXT)
+        return
+
+    await _show_owner_menu(message)
+
+
+@router.callback_query(F.data == "guiy_owner:action:cancel")
+async def guiy_owner_cancel_callback(callback: CallbackQuery) -> None:
+    try:
+        actor_user_id = callback.from_user.id if callback.from_user else None
+        _clear_pending_state(actor_user_id)
+        _log_guiy_owner_info(
+            provider="telegram",
+            actor_user_id=actor_user_id,
+            selected_action="cancel",
+            target_chat_or_guild=callback.message.chat.id if callback.message and callback.message.chat else None,
+            target_message_id=None,
+            guiy_account_id=None,
+            message="telegram guiy owner flow canceled",
+        )
+        if callback.message:
+            await callback.message.answer(
+                "✅ <b>Owner-сценарий отменён</b>\nНичего не изменилось. При необходимости снова откройте /guiy_owner.",
+                parse_mode="HTML",
+            )
+        await callback.answer()
+    except Exception:
+        logger.exception(
+            "telegram guiy owner cancel failed provider=%s actor_user_id=%s selected_action=%s target_chat_or_guild=%s target_message_id=%s guiy_account_id=%s",
+            "telegram",
+            getattr(callback.from_user, "id", None),
+            "cancel",
+            callback.message.chat.id if callback.message and callback.message.chat else None,
+            None,
+            None,
+        )
+        await callback.answer("Ошибка отмены", show_alert=True)
+
+
+@router.callback_query(F.data == "guiy_owner:action:profile")
+async def guiy_owner_profile_menu_callback(callback: CallbackQuery) -> None:
+    try:
+        _clear_pending_state(callback.from_user.id if callback.from_user else None)
+        _log_guiy_owner_info(
+            provider="telegram",
+            actor_user_id=getattr(callback.from_user, "id", None),
+            selected_action="profile",
+            target_chat_or_guild=callback.message.chat.id if callback.message and callback.message.chat else None,
+            target_message_id=getattr(callback.message.reply_to_message, "message_id", None) if callback.message else None,
+            guiy_account_id=None,
+            message="telegram guiy owner profile menu opened",
+        )
+        if callback.message:
+            await callback.message.answer(_owner_profile_text(), parse_mode="HTML", reply_markup=_owner_profile_keyboard())
+        await callback.answer()
+    except Exception:
+        logger.exception(
+            "telegram guiy owner profile menu failed provider=%s actor_user_id=%s selected_action=%s target_chat_or_guild=%s target_message_id=%s guiy_account_id=%s",
+            "telegram",
+            getattr(callback.from_user, "id", None),
+            "profile",
+            callback.message.chat.id if callback.message and callback.message.chat else None,
+            None,
+            None,
+        )
+        await callback.answer("Ошибка открытия профиля", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("guiy_owner:action:"), F.data != "guiy_owner:action:cancel", F.data != "guiy_owner:action:profile")
+async def guiy_owner_action_callback(callback: CallbackQuery) -> None:
+    actor_user_id = callback.from_user.id if callback.from_user else None
+    selected_action = str(callback.data or "").split(":")[-1]
+    target_chat_or_guild = callback.message.chat.id if callback.message and callback.message.chat else None
+    target_message_id = getattr(callback.message.reply_to_message, "message_id", None) if callback.message else None
+    reply_author_user_id = (
+        str(callback.message.reply_to_message.from_user.id)
+        if callback.message and callback.message.reply_to_message and callback.message.reply_to_message.from_user
+        else None
+    )
+
+    try:
+        if callback.from_user is None or callback.message is None:
+            await callback.answer("Не удалось определить контекст", show_alert=True)
+            return
+
+        try:
+            bot_user = await callback.message.bot.get_me()
+        except Exception:
+            logger.exception(
+                "telegram guiy owner bot identity resolve failed provider=%s actor_user_id=%s selected_action=%s target_chat_or_guild=%s target_message_id=%s guiy_account_id=%s",
+                "telegram",
+                actor_user_id,
+                selected_action,
+                target_chat_or_guild,
+                target_message_id,
+                None,
+            )
+            await callback.answer("Не удалось получить профиль бота", show_alert=True)
+            return
+
+        if selected_action == "register_profile":
+            result = execute_guiy_owner_flow(
+                provider="telegram",
+                actor_user_id=actor_user_id,
+                bot_user_id=bot_user.id,
+                selected_action="register_profile",
+                target_message_id=target_message_id,
+                reply_author_user_id=reply_author_user_id,
+            )
+            _log_guiy_owner_info(
+                provider="telegram",
+                actor_user_id=actor_user_id,
+                selected_action=selected_action,
+                target_chat_or_guild=target_chat_or_guild,
+                target_message_id=target_message_id,
+                guiy_account_id=result.guiy_account_id,
+                message="telegram guiy owner register action handled",
+            )
+            if callback.message:
+                await callback.message.answer(result.message)
+            await callback.answer("Готово" if result.ok else "Ошибка", show_alert=not result.ok)
+            return
+
+        spec = get_guiy_owner_action_spec(selected_action)
+        if not spec:
+            await callback.answer("Неизвестное действие", show_alert=True)
+            return
+
+        if spec.requires_reply_context and target_message_id is None:
+            _log_guiy_owner_warning(
+                provider="telegram",
+                actor_user_id=actor_user_id,
+                selected_action=selected_action,
+                target_chat_or_guild=target_chat_or_guild,
+                target_message_id=target_message_id,
+                guiy_account_id=None,
+                message="telegram guiy owner reply action requested without reply context",
+            )
+            await callback.message.answer(
+                f"ℹ️ <b>{spec.title}</b>\n{spec.instruction}\n\nСейчас ничего не изменится: откройте /guiy_owner ответом на сообщение Гуя и повторите действие.",
+                parse_mode="HTML",
+            )
+            await callback.answer("Нужно открыть меню ответом на сообщение Гуя", show_alert=True)
+            return
+
+        _PENDING_GUIY_OWNER_ACTIONS[callback.from_user.id] = PendingGuiyOwnerAction(
+            selected_action=selected_action,
+            bot_user_id=str(bot_user.id),
+            target_message_id=target_message_id,
+            reply_author_user_id=reply_author_user_id,
+            created_at=time.time(),
+            target_chat_or_guild=str(target_chat_or_guild),
+        )
+        _PENDING_GUIY_OWNER_VISIBLE_ROLES.pop(callback.from_user.id, None)
+        _log_guiy_owner_info(
+            provider="telegram",
+            actor_user_id=actor_user_id,
+            selected_action=selected_action,
+            target_chat_or_guild=target_chat_or_guild,
+            target_message_id=target_message_id,
+            guiy_account_id=None,
+            message="telegram guiy owner action selected",
+        )
+        await callback.message.answer(
+            f"ℹ️ <b>{spec.title}</b>\n{spec.instruction}\n\nСледующий шаг: отправьте одним сообщением текст для подтверждения действия.",
+            parse_mode="HTML",
+        )
+        await callback.answer()
+    except Exception:
+        logger.exception(
+            "telegram guiy owner action callback failed provider=%s actor_user_id=%s selected_action=%s target_chat_or_guild=%s target_message_id=%s guiy_account_id=%s",
+            "telegram",
+            actor_user_id,
+            selected_action,
+            target_chat_or_guild,
+            target_message_id,
+            None,
+        )
+        await callback.answer("Ошибка выбора действия", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("guiy_owner:field:"))
+async def guiy_owner_field_callback(callback: CallbackQuery) -> None:
+    actor_user_id = callback.from_user.id if callback.from_user else None
+    field_name = str(callback.data or "").split(":")[-1]
+    target_chat_or_guild = callback.message.chat.id if callback.message and callback.message.chat else None
+    try:
+        if callback.from_user is None or callback.message is None:
+            await callback.answer("Не удалось определить контекст", show_alert=True)
+            return
+        spec = get_guiy_owner_profile_field_spec(field_name)
+        if not spec:
+            await callback.answer("Неизвестное поле", show_alert=True)
+            return
+
+        bot_user = await callback.message.bot.get_me()
+        pending = PendingGuiyOwnerAction(
+            selected_action="profile_update",
+            bot_user_id=str(bot_user.id),
+            target_message_id=getattr(callback.message.reply_to_message, "message_id", None),
+            reply_author_user_id=(
+                str(callback.message.reply_to_message.from_user.id)
+                if callback.message.reply_to_message and callback.message.reply_to_message.from_user
+                else None
+            ),
+            created_at=time.time(),
+            target_chat_or_guild=str(target_chat_or_guild),
+            selected_field=field_name,
+        )
+        _PENDING_GUIY_OWNER_ACTIONS[callback.from_user.id] = pending
+
+        if field_name == "visible_roles":
+            profile, catalog, selected_roles = resolve_guiy_profile_catalog(
+                provider="telegram",
+                bot_user_id=bot_user.id,
+                display_name=getattr(bot_user, "full_name", None),
+            )
+            guiy_account_id = profile.get("account_id") if isinstance(profile, dict) else None
+            if not catalog:
+                _log_guiy_owner_warning(
+                    provider="telegram",
+                    actor_user_id=actor_user_id,
+                    selected_action="profile_update",
+                    target_chat_or_guild=target_chat_or_guild,
+                    target_message_id=pending.target_message_id,
+                    guiy_account_id=str(guiy_account_id) if guiy_account_id else None,
+                    message="telegram guiy owner visible roles catalog is empty",
+                )
+                await callback.message.answer(
+                    "❌ Для Гуя пока нет доступных ролей. Сначала зарегистрируйте профиль и проверьте /profile_roles."
+                )
+                await callback.answer()
+                return
+            _PENDING_GUIY_OWNER_VISIBLE_ROLES[callback.from_user.id] = {
+                "catalog": catalog,
+                "selected_roles": selected_roles,
+                "page": 0,
+                "created_at": time.time(),
+                "bot_user_id": str(bot_user.id),
+                "target_message_id": pending.target_message_id,
+                "reply_author_user_id": pending.reply_author_user_id,
+            }
+            total_pages = max((len(catalog) - 1) // _VISIBLE_ROLES_PAGE_SIZE + 1, 1)
+            await callback.message.answer(
+                _build_visible_roles_text(selected_roles, 0, total_pages),
+                parse_mode="HTML",
+                reply_markup=_build_visible_roles_keyboard(catalog, selected_roles, 0),
+            )
+            await callback.answer()
+            return
+
+        _log_guiy_owner_info(
+            provider="telegram",
+            actor_user_id=actor_user_id,
+            selected_action="profile_update",
+            target_chat_or_guild=target_chat_or_guild,
+            target_message_id=pending.target_message_id,
+            guiy_account_id=None,
+            message="telegram guiy owner profile field selected",
+        )
+        await callback.message.answer(
+            f"ℹ️ <b>{spec.title}</b>\n{spec.instruction}\n\nСледующий шаг: отправьте новое значение одним сообщением. Чтобы очистить поле, отправьте <code>-</code>.",
+            parse_mode="HTML",
+        )
+        await callback.answer()
+    except Exception:
+        logger.exception(
+            "telegram guiy owner field callback failed provider=%s actor_user_id=%s selected_action=%s target_chat_or_guild=%s target_message_id=%s guiy_account_id=%s",
+            "telegram",
+            actor_user_id,
+            "profile_update",
+            target_chat_or_guild,
+            None,
+            None,
+        )
+        await callback.answer("Ошибка выбора поля", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("guiy_owner_visible_roles:"))
+async def guiy_owner_visible_roles_callback(callback: CallbackQuery) -> None:
+    actor_user_id = callback.from_user.id if callback.from_user else None
+    target_chat_or_guild = callback.message.chat.id if callback.message and callback.message.chat else None
+    selected_action = "profile_update"
+    try:
+        if callback.from_user is None:
+            await callback.answer("Не удалось определить пользователя", show_alert=True)
+            return
+        state = _PENDING_GUIY_OWNER_VISIBLE_ROLES.get(callback.from_user.id)
+        pending = _get_non_expired_pending_action(callback.from_user.id)
+        if not state or not pending:
+            _log_guiy_owner_warning(
+                provider="telegram",
+                actor_user_id=actor_user_id,
+                selected_action=selected_action,
+                target_chat_or_guild=target_chat_or_guild,
+                target_message_id=None,
+                guiy_account_id=None,
+                message="telegram guiy owner visible roles state missing",
+            )
+            await callback.answer("Меню ролей устарело. Откройте /guiy_owner заново.", show_alert=True)
+            return
+        if (time.time() - float(state.get("created_at") or 0)) > PENDING_GUIY_OWNER_TTL_SECONDS:
+            _clear_pending_state(callback.from_user.id)
+            await callback.answer("Меню ролей устарело. Откройте /guiy_owner заново.", show_alert=True)
+            return
+
+        catalog = [item for item in state.get("catalog", []) if isinstance(item, dict)]
+        selected_roles = [str(item) for item in state.get("selected_roles", []) if str(item).strip()]
+        page = int(state.get("page") or 0)
+        action = str(callback.data or "").split(":", 1)[1]
+
+        if action == "noop":
+            await callback.answer()
+            return
+        if action == "clear":
+            selected_roles = []
+        elif action.startswith("page:"):
+            raw_page = action.split(":", 1)[1]
+            page = int(raw_page) if raw_page.lstrip("-").isdigit() else page
+        elif action.startswith("toggle:"):
+            _, page_raw, idx_raw = action.split(":")
+            current_page = int(page_raw)
+            idx = int(idx_raw)
+            total_pages = max((len(catalog) - 1) // _VISIBLE_ROLES_PAGE_SIZE + 1, 1)
+            safe_page = min(max(current_page, 0), total_pages - 1)
+            start = safe_page * _VISIBLE_ROLES_PAGE_SIZE
+            page_items = catalog[start : start + _VISIBLE_ROLES_PAGE_SIZE]
+            if idx < 0 or idx >= len(page_items):
+                await callback.answer("Роль не найдена", show_alert=True)
+                return
+            role_name = str(page_items[idx].get("role") or "").strip()
+            if role_name in selected_roles:
+                selected_roles = [item for item in selected_roles if item != role_name]
+            else:
+                if len(selected_roles) >= 3:
+                    await callback.answer("Можно выбрать не более 3 ролей", show_alert=True)
+                    return
+                selected_roles.append(role_name)
+            page = safe_page
+        elif action == "save":
+            result = execute_guiy_owner_flow(
+                provider="telegram",
+                actor_user_id=actor_user_id,
+                bot_user_id=state.get("bot_user_id"),
+                selected_action="profile_update",
+                field_name="visible_roles",
+                payload=", ".join(selected_roles),
+                reply_author_user_id=state.get("reply_author_user_id"),
+                target_message_id=state.get("target_message_id"),
+            )
+            _log_guiy_owner_info(
+                provider="telegram",
+                actor_user_id=actor_user_id,
+                selected_action=selected_action,
+                target_chat_or_guild=target_chat_or_guild,
+                target_message_id=state.get("target_message_id"),
+                guiy_account_id=result.guiy_account_id,
+                message="telegram guiy owner visible roles saved",
+            )
+            _clear_pending_state(callback.from_user.id)
+            if callback.message:
+                await callback.message.edit_text(result.message, reply_markup=None)
+            await callback.answer("Сохранено" if result.ok else "Ошибка", show_alert=not result.ok)
+            return
+        else:
+            await callback.answer("Неизвестное действие", show_alert=True)
+            return
+
+        state["selected_roles"] = selected_roles
+        state["page"] = page
+        _PENDING_GUIY_OWNER_VISIBLE_ROLES[callback.from_user.id] = state
+        total_pages = max((len(catalog) - 1) // _VISIBLE_ROLES_PAGE_SIZE + 1, 1)
+        safe_page = min(max(page, 0), total_pages - 1)
+        if callback.message:
+            await callback.message.edit_text(
+                _build_visible_roles_text(selected_roles, safe_page, total_pages),
+                parse_mode="HTML",
+                reply_markup=_build_visible_roles_keyboard(catalog, selected_roles, safe_page),
+            )
+        await callback.answer()
+    except Exception:
+        logger.exception(
+            "telegram guiy owner visible roles callback failed provider=%s actor_user_id=%s selected_action=%s target_chat_or_guild=%s target_message_id=%s guiy_account_id=%s",
+            "telegram",
+            actor_user_id,
+            selected_action,
+            target_chat_or_guild,
+            None,
+            None,
+        )
+        await callback.answer("Ошибка выбора ролей", show_alert=True)
+
+
+@router.message(F.from_user, F.from_user.id.func(has_pending_guiy_owner_action))
+async def guiy_owner_pending_input_handler(message: Message) -> None:
+    persist_telegram_identity_from_user(message.from_user)
+    actor_user_id = message.from_user.id if message.from_user else None
+    target_chat_or_guild = message.chat.id if message.chat else None
+    pending = _get_non_expired_pending_action(actor_user_id)
+    if not pending:
+        _log_guiy_owner_warning(
+            provider="telegram",
+            actor_user_id=actor_user_id,
+            selected_action="pending_input",
+            target_chat_or_guild=target_chat_or_guild,
+            target_message_id=None,
+            guiy_account_id=None,
+            message="telegram guiy owner pending handler invoked without state",
+        )
+        return
+
+    payload = (message.text or "").strip()
+    if payload == "-":
+        payload = ""
+
+    try:
+        result = execute_guiy_owner_flow(
+            provider="telegram",
+            actor_user_id=actor_user_id,
+            bot_user_id=pending.bot_user_id,
+            selected_action=pending.selected_action,
+            field_name=pending.selected_field,
+            payload=payload,
+            reply_author_user_id=pending.reply_author_user_id,
+            target_message_id=pending.target_message_id,
+        )
+        _log_guiy_owner_info(
+            provider="telegram",
+            actor_user_id=actor_user_id,
+            selected_action=pending.selected_action,
+            target_chat_or_guild=target_chat_or_guild,
+            target_message_id=pending.target_message_id,
+            guiy_account_id=result.guiy_account_id,
+            message="telegram guiy owner pending input processed",
+        )
+        _clear_pending_state(actor_user_id)
+        if not result.ok:
+            await message.answer(result.message)
+            return
+        if pending.selected_action == "say":
+            await message.answer(result.outbound_text)
+            await message.answer("ℹ️ Сообщение отправлено. Изменение уже видно в текущем чате.")
+            return
+        if pending.selected_action == "reply":
+            await message.answer(result.outbound_text, reply_to_message_id=result.reply_to_message_id)
+            await message.answer("ℹ️ Ответ отправлен. Изменение уже видно в выбранной ветке диалога.")
+            return
+        await message.answer(result.message)
+    except Exception:
+        logger.exception(
+            "telegram guiy owner pending input failed provider=%s actor_user_id=%s selected_action=%s target_chat_or_guild=%s target_message_id=%s guiy_account_id=%s",
+            "telegram",
+            actor_user_id,
+            pending.selected_action,
+            target_chat_or_guild,
+            pending.target_message_id,
+            None,
+        )
+        _clear_pending_state(actor_user_id)
         await message.answer("❌ Не удалось выполнить действие. Попробуйте позже.")
