@@ -38,6 +38,9 @@ class DiscordRolesCatalogRenderTests(IsolatedAsyncioTestCase):
 
         embed = send_temp.await_args.kwargs["embed"]
         assert embed.title == "🏅 Каталог ролей"
+        assert "Что это" in embed.description
+        assert "Где смотреть способ получения" in embed.description
+        assert "выдаются вручную" in embed.description
         assert embed.fields[0].name == "Турниры"
         assert "Победитель сезона" in embed.fields[0].value
         assert "выдаёт администратор" in embed.fields[0].value

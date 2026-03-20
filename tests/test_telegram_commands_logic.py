@@ -90,6 +90,9 @@ class TelegramCommandsLogicTests(unittest.TestCase):
         result = process_roles_catalog_command()
 
         self.assertIn("Каталог ролей", result)
+        self.assertIn("Что это", result)
+        self.assertIn("Где смотреть способ получения", result)
+        self.assertIn("выдаются вручную", result)
         self.assertIn("Чемпион", result)
         self.assertIn("Победитель сезона", result)
         self.assertIn("выдаёт администратор", result)

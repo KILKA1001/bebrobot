@@ -108,11 +108,17 @@ class DiscordUserRoleFlowState:
 
 
 def _delete_role_denied_message() -> str:
-    return "❌ Эту внешнюю Discord-роль нельзя удалить из каталога. Её можно только переместить или отсортировать."
+    return (
+        "❌ Эту внешнюю Discord-роль нельзя удалить из каталога. "
+        "Попробуй `role_move` или `role_order`, если нужно поменять её место в каталоге."
+    )
 
 
 def _delete_role_not_found_message() -> str:
-    return "❌ Роль не найдена в каноническом каталоге `roles`. Обнови список или дождись автосинхронизации Discord-ролей."
+    return (
+        "❌ Роль не найдена в каноническом каталоге `roles`. "
+        "Обнови список или дождись автосинхронизации Discord-ролей, затем повтори команду."
+    )
 
 
 def _delete_role_result_message(result: dict[str, Any]) -> str:
@@ -120,7 +126,7 @@ def _delete_role_result_message(result: dict[str, Any]) -> str:
         return _delete_role_denied_message()
     if result.get("reason") == DELETE_ROLE_REASON_NOT_FOUND:
         return _delete_role_not_found_message()
-    return "❌ Не удалось удалить роль. Проверь синхронизацию каталога и логи."
+    return "❌ Не удалось удалить роль. Проверь синхронизацию каталога и логи, затем попробуй ещё раз."
 
 
 def _render_role_source_note() -> str:
@@ -593,13 +599,19 @@ def _rolesadmin_help_embed(
     embed.description = (
         "Управление каталогом ролей и ролями пользователей.\n"
         "Навигация разделена на Категории, Роли и Пользователи — как и в Telegram-панели.\n"
-        "Внутри каждого раздела показываются только относящиеся к нему действия.\n\n"
+        "Порядок старта везде одинаковый: сначала настрой каталог, а потом переходи к выдаче или снятию роли у пользователя.\n\n"
         f"{_render_hidden_sections_note(visibility.hidden_sections)}"
         f"{_render_role_source_note()}"
     )
     section_fields = {
+        "start": (
+            "С чего начать",
+            "Подход 1 — настрой каталог: создай категорию, затем роль и сразу заполни описание со способом получения.\n"
+            "Подход 2 — работай с пользователем: когда каталог готов, открывай выдачу или снятие роли."
+        ),
         "categories": (
             "Категории",
+            "С чего начать: сначала создай категорию, чтобы роли сразу попадали в понятный раздел каталога.\n"
             "`/rolesadmin category_create <name> [position]` — создать/обновить категорию\n"
             "`/rolesadmin category_order <name> <position>` — изменить порядок категории\n"
             "`/rolesadmin category_delete <name>` — удалить категорию\n"
@@ -607,6 +619,7 @@ def _rolesadmin_help_embed(
         ),
         "roles": (
             "Роли",
+            "С чего начать: после категории создай роль, затем сразу заполни описание и способ получения.\n"
             "`/rolesadmin list` — показать роли по категориям (с автосинхронизацией Discord-каталога)\n"
             "`/rolesadmin role_create <category> <name> [description] [acquire_hint] [discord_role] [position]` — создать роль\n"
             "`/rolesadmin role_edit_description <name> <description>` — обновить описание роли\n"
@@ -622,6 +635,7 @@ def _rolesadmin_help_embed(
         ),
         "users": (
             "Пользователи",
+            "С чего начать: когда категория и роль готовы, переходи к выдаче или снятию роли у пользователя.\n"
             "`/rolesadmin user_roles <mention|username|display_name>` — посмотреть роли пользователя\n"
             "`/rolesadmin user_grant <mention|username|display_name> [role_name]` — выдать роль или открыть пакетный flow\n"
             "`/rolesadmin user_revoke <mention|username|display_name> [role_name]` — снять роль или открыть пакетный flow\n"
@@ -630,8 +644,12 @@ def _rolesadmin_help_embed(
             "Если найдено несколько совпадений, бот покажет кандидатов с provider, username, display и matched_by."
         ),
     }
-    sections_to_render = [section] if section in section_fields else ["categories", "roles", "users"]
+    sections_to_render = [section] if section in section_fields else ["start", "categories", "roles", "users"]
     for section_key in sections_to_render:
+        if section_key == "start":
+            title, value = section_fields[section_key]
+            embed.add_field(name=title, value=value, inline=False)
+            continue
         if section_key == "categories" and not visibility.can_manage_categories:
             continue
         if section_key in {"roles", "users"} and not visibility.can_manage_roles:
