@@ -265,13 +265,29 @@ class DiscordRolesAdminTests(unittest.IsolatedAsyncioTestCase):
             patch.object(roles_admin.RoleManagementService, "create_role", return_value=True),
             patch.object(roles_admin, "send_temp", AsyncMock()) as send_mock,
         ):
-            await roles_admin.rolesadmin_role_create(ctx, "New", "General", "Описание", "Через турнир", None, None)
+            await roles_admin.rolesadmin_role_create(ctx, "General", "New", "Описание", "Через турнир", None, None)
 
         first_embed = send_mock.await_args_list[0].kwargs["embed"]
         self.assertEqual(first_embed.title, "🧭 Предпросмотр создания роли")
         self.assertIn("Если позицию не указывать", first_embed.description)
         self.assertIn("Описание", first_embed.description)
         self.assertIn("Как получить", first_embed.description)
+
+    async def test_role_category_autocomplete_returns_matching_categories(self):
+        interaction = SimpleNamespace()
+
+        with patch.object(
+            roles_admin.RoleManagementService,
+            "list_roles_grouped",
+            return_value=[
+                {"category": "General", "roles": []},
+                {"category": "Events", "roles": []},
+                {"category": "Gaming", "roles": []},
+            ],
+        ):
+            result = await roles_admin._role_category_autocomplete(interaction, "ge")
+
+        self.assertEqual([item.value for item in result], ["General"])
 
     async def test_rolesadmin_role_edit_description_calls_service(self):
         ctx = self._build_ctx()

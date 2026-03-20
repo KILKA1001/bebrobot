@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from bot.commands.base import bot
@@ -213,6 +214,50 @@ def _catalog_role_exists(role_name: str) -> bool:
     if not role_key:
         return False
     return any(item["role"] == role_key for item in RoleManagementService.list_roles_available_for_admin_reorder())
+
+
+def _role_category_names() -> list[str]:
+    return [
+        str(item.get("category") or "").strip()
+        for item in RoleManagementService.list_roles_grouped()
+        if str(item.get("category") or "").strip()
+    ]
+
+
+async def _role_category_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    query = str(current or "").strip().lower()
+    categories = []
+    seen: set[str] = set()
+    for category in _role_category_names():
+        category_key = category.casefold()
+        if category_key in seen:
+            continue
+        if query and query not in category_key:
+            continue
+        seen.add(category_key)
+        categories.append(app_commands.Choice(name=category[:100], value=category))
+        if len(categories) >= 25:
+            break
+    return categories
+
+
+def _log_role_create_category_selection(
+    *,
+    actor_id: int | None,
+    guild_id: int | None,
+    category: str,
+    source: str,
+) -> None:
+    logger.info(
+        "rolesadmin role_create category selected actor_id=%s guild_id=%s category=%s source=%s",
+        actor_id,
+        guild_id,
+        category,
+        source,
+    )
 
 
 def _build_user_role_flow_embed(state: DiscordUserRoleFlowState) -> discord.Embed:
@@ -563,12 +608,13 @@ def _rolesadmin_help_embed(
         "roles": (
             "Роли",
             "`/rolesadmin list` — показать роли по категориям (с автосинхронизацией Discord-каталога)\n"
-            "`/rolesadmin role_create <name> <category> [description] [acquire_hint] [discord_role] [position]` — создать роль\n"
+            "`/rolesadmin role_create <category> <name> [description] [acquire_hint] [discord_role] [position]` — создать роль\n"
             "`/rolesadmin role_edit_description <name> <description>` — обновить описание роли\n"
             "`/rolesadmin role_edit_acquire_hint <name> <acquire_hint>` — обновить способ получения роли\n"
             "`/rolesadmin role_move <role_name> <category> [position]` — переместить роль\n"
             "`/rolesadmin role_order <role_name> <category> <position>` — изменить порядок роли\n"
             "`/rolesadmin role_delete <name>` — удалить роль\n"
+            "Для `role_create` сначала выбери категорию: в slash-команде у поля category есть autocomplete, а дальше заполняй уже параметры роли.\n"
             "Перед `role_create` / `role_move` / `role_order` бот показывает embed со списком ролей категории и рассчитанной позицией вставки.\n"
             "Описание и способ получения помогают админам и пользователям быстрее понять роль прямо в карточке.\n"
             "Если позицию не указывать в `role_create` или `role_move`, роль добавится последней.\n"
@@ -982,10 +1028,19 @@ async def rolesadmin_category_order(ctx: commands.Context, name: str, position: 
 
 
 @rolesadmin.command(name="role_create", description="Создать роль в каталоге")
+@app_commands.describe(
+    category="Сначала выберите категорию роли",
+    name="Название новой роли",
+    description="Пояснение для пользователей, что делает роль",
+    acquire_hint="Как получить роль: турнир, заявка, выдача админа и т.д.",
+    discord_role="Связанная Discord-роль, если нужна",
+    position="Позиция в категории; если пусто, роль будет добавлена последней",
+)
+@app_commands.autocomplete(category=_role_category_autocomplete)
 async def rolesadmin_role_create(
     ctx: commands.Context,
-    name: str,
     category: str,
+    name: str,
     description: str | None = None,
     acquire_hint: str | None = None,
     discord_role: discord.Role | None = None,
@@ -993,6 +1048,12 @@ async def rolesadmin_role_create(
 ):
     if not await _ensure_roles_admin(ctx):
         return
+    _log_role_create_category_selection(
+        actor_id=ctx.author.id,
+        guild_id=ctx.guild.id if ctx.guild else None,
+        category=category,
+        source="discord_command",
+    )
     preview = RoleManagementService.get_category_role_positioning(category, requested_position=position)
     await send_temp(
         ctx,
