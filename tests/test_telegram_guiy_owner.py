@@ -6,6 +6,7 @@ from bot.telegram_bot.commands import guiy_owner as guiy_owner_module
 from bot.telegram_bot.commands.guiy_owner import (
     _PENDING_GUIY_OWNER_ACTIONS,
     _PENDING_GUIY_OWNER_DESTINATIONS,
+    _is_pending_guiy_owner_input_message,
     PendingGuiyOwnerAction,
     guiy_owner_destination_callback,
     guiy_owner_action_callback,
@@ -30,7 +31,10 @@ class TelegramGuiyOwnerCommandTests(unittest.IsolatedAsyncioTestCase):
         )
         command = SimpleNamespace(args=None)
 
-        with patch("bot.telegram_bot.commands.guiy_owner.persist_telegram_identity_from_user"):
+        with (
+            patch("bot.telegram_bot.commands.guiy_owner.persist_telegram_identity_from_user"),
+            patch("bot.telegram_bot.commands.guiy_owner.time.time", return_value=1_001.0),
+        ):
             await guiy_owner_command(message, command)
 
         self.assertEqual(message.answer.await_count, 1)
@@ -70,6 +74,36 @@ class TelegramGuiyOwnerCommandTests(unittest.IsolatedAsyncioTestCase):
 
         execute_mock.assert_called_once()
         message.answer.assert_awaited_once_with("привет от гуя")
+
+    async def test_text_cancel_clears_pending_owner_state(self):
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=42, is_bot=False),
+            reply_to_message=None,
+            bot=SimpleNamespace(get_me=AsyncMock()),
+            answer=AsyncMock(),
+            chat=SimpleNamespace(id=100),
+        )
+        command = SimpleNamespace(args="cancel")
+        _PENDING_GUIY_OWNER_ACTIONS[42] = PendingGuiyOwnerAction(
+            selected_action="say",
+            bot_user_id="999",
+            target_message_id=None,
+            reply_author_user_id=None,
+            created_at=1_000.0,
+            target_chat_or_guild="-1001",
+            control_chat_id="100",
+            target_destination_id="-1001",
+        )
+
+        with (
+            patch("bot.telegram_bot.commands.guiy_owner.persist_telegram_identity_from_user"),
+            patch("bot.telegram_bot.commands.guiy_owner.time.time", return_value=1_001.0),
+        ):
+            await guiy_owner_command(message, command)
+
+        self.assertNotIn(42, _PENDING_GUIY_OWNER_ACTIONS)
+        message.answer.assert_awaited_once()
+        self.assertIn("отключён вручную", message.answer.await_args.args[0].lower())
 
 
     async def test_profile_menu_auto_bootstraps_and_opens_field_buttons(self):
@@ -179,6 +213,7 @@ class TelegramGuiyOwnerCommandTests(unittest.IsolatedAsyncioTestCase):
             reply_author_user_id=None,
             created_at=1_000.0,
             target_chat_or_guild="100",
+            control_chat_id="100",
             selected_field="custom_nick",
         )
 
@@ -256,6 +291,7 @@ class TelegramGuiyOwnerCommandTests(unittest.IsolatedAsyncioTestCase):
         pending = _PENDING_GUIY_OWNER_ACTIONS[42]
         self.assertEqual(pending.target_destination_id, "-1001")
         self.assertIn("Тестовая группа", pending.target_destination_label)
+        self.assertEqual(pending.control_chat_id, "100")
         callback_message.edit_text.assert_awaited_once()
 
     async def test_pending_say_sends_to_selected_destination(self):
@@ -277,6 +313,7 @@ class TelegramGuiyOwnerCommandTests(unittest.IsolatedAsyncioTestCase):
             reply_author_user_id=None,
             created_at=1_000.0,
             target_chat_or_guild="-1001",
+            control_chat_id="100",
             target_destination_id="-1001",
             target_destination_label="Тестовая группа — supergroup",
         )
@@ -298,6 +335,46 @@ class TelegramGuiyOwnerCommandTests(unittest.IsolatedAsyncioTestCase):
         message.bot.send_message.assert_awaited_once_with(-1001, "Текст для группы")
         message.answer.assert_awaited_once()
         self.assertIn("Гуй отправил сообщение сюда", message.answer.await_args.args[0])
+
+    def test_pending_input_filter_ignores_commands(self):
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=42, is_bot=False),
+            text="/points",
+            chat=SimpleNamespace(id=100),
+        )
+        _PENDING_GUIY_OWNER_ACTIONS[42] = PendingGuiyOwnerAction(
+            selected_action="say",
+            bot_user_id="999",
+            target_message_id=None,
+            reply_author_user_id=None,
+            created_at=1_000.0,
+            target_chat_or_guild="-1001",
+            control_chat_id="100",
+            target_destination_id="-1001",
+        )
+
+        with patch("bot.telegram_bot.commands.guiy_owner.time.time", return_value=1_001.0):
+            self.assertFalse(_is_pending_guiy_owner_input_message(message))
+
+    def test_pending_input_filter_ignores_other_chats(self):
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=42, is_bot=False),
+            text="обычный текст",
+            chat=SimpleNamespace(id=200),
+        )
+        _PENDING_GUIY_OWNER_ACTIONS[42] = PendingGuiyOwnerAction(
+            selected_action="say",
+            bot_user_id="999",
+            target_message_id=None,
+            reply_author_user_id=None,
+            created_at=1_000.0,
+            target_chat_or_guild="-1001",
+            control_chat_id="100",
+            target_destination_id="-1001",
+        )
+
+        with patch("bot.telegram_bot.commands.guiy_owner.time.time", return_value=1_001.0):
+            self.assertFalse(_is_pending_guiy_owner_input_message(message))
 
 
 class TelegramGuiyOwnerVisibilityTests(unittest.TestCase):

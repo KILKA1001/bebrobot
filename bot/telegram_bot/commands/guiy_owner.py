@@ -42,6 +42,7 @@ class PendingGuiyOwnerAction:
     reply_author_user_id: str | None
     created_at: float
     target_chat_or_guild: str
+    control_chat_id: str | None = None
     selected_field: str | None = None
     target_destination_id: str | None = None
     target_destination_label: str | None = None
@@ -104,6 +105,45 @@ def _clear_pending_state(actor_user_id: int | None) -> None:
     _PENDING_GUIY_OWNER_DESTINATIONS.pop(actor_user_id, None)
 
 
+def _has_any_pending_state(actor_user_id: int | None) -> bool:
+    if actor_user_id is None:
+        return False
+    _get_non_expired_pending_action(actor_user_id)
+    return (
+        actor_user_id in _PENDING_GUIY_OWNER_ACTIONS
+        or actor_user_id in _PENDING_GUIY_OWNER_VISIBLE_ROLES
+        or actor_user_id in _PENDING_GUIY_OWNER_DESTINATIONS
+    )
+
+
+async def _cancel_owner_flow_via_message(message: Message) -> None:
+    actor_user_id = message.from_user.id if message.from_user else None
+    had_pending_state = _has_any_pending_state(actor_user_id)
+    _clear_pending_state(actor_user_id)
+    _log_guiy_owner_info(
+        provider="telegram",
+        actor_user_id=actor_user_id,
+        selected_action="cancel",
+        target_chat_or_guild=message.chat.id if message.chat else None,
+        target_message_id=None,
+        guiy_account_id=None,
+        message="telegram guiy owner flow canceled via text command",
+    )
+    if had_pending_state:
+        await message.answer(
+            "✅ <b>Owner-сценарий отключён вручную</b>\n"
+            "Режим ожидания очищен. Теперь команды и обычные сообщения снова обрабатываются в штатном режиме.\n"
+            "Если захотите запустить сценарий заново — откройте /guiy_owner.",
+            parse_mode="HTML",
+        )
+        return
+    await message.answer(
+        "ℹ️ <b>Активного owner-сценария нет</b>\n"
+        "Сейчас ничего не ждёт ввода. Если нужно открыть owner-меню заново — используйте /guiy_owner.",
+        parse_mode="HTML",
+    )
+
+
 def _get_non_expired_pending_action(actor_user_id: int | None) -> PendingGuiyOwnerAction | None:
     if actor_user_id is None:
         return None
@@ -127,6 +167,38 @@ def _get_non_expired_pending_action(actor_user_id: int | None) -> PendingGuiyOwn
 
 def has_pending_guiy_owner_action(actor_user_id: int | None) -> bool:
     return _get_non_expired_pending_action(actor_user_id) is not None
+
+
+def _is_command_message(message: Message) -> bool:
+    text = str(getattr(message, "text", "") or "").strip()
+    return bool(text) and text.startswith("/")
+
+
+def _is_pending_guiy_owner_input_message(message: Message) -> bool:
+    actor_user_id = getattr(getattr(message, "from_user", None), "id", None)
+    pending = _get_non_expired_pending_action(actor_user_id)
+    if pending is None:
+        return False
+    if _is_command_message(message):
+        logger.info(
+            "telegram guiy owner pending input ignored because command was received actor_user_id=%s chat_id=%s selected_action=%s control_chat_id=%s",
+            actor_user_id,
+            getattr(getattr(message, "chat", None), "id", None),
+            pending.selected_action,
+            pending.control_chat_id,
+        )
+        return False
+    control_chat_id = str(pending.control_chat_id or "").strip()
+    if control_chat_id and control_chat_id != str(getattr(getattr(message, "chat", None), "id", "")):
+        logger.info(
+            "telegram guiy owner pending input ignored because message arrived from another chat actor_user_id=%s chat_id=%s selected_action=%s control_chat_id=%s",
+            actor_user_id,
+            getattr(getattr(message, "chat", None), "id", None),
+            pending.selected_action,
+            control_chat_id,
+        )
+        return False
+    return True
 
 
 def _owner_action_keyboard() -> InlineKeyboardMarkup:
@@ -531,6 +603,10 @@ async def guiy_owner_command(message: Message, command: CommandObject) -> None:
     persist_telegram_identity_from_user(message.reply_to_message.from_user if message.reply_to_message else None)
     action, payload = parse_guiy_owner_text_command(command.args)
 
+    if action == "cancel":
+        await _cancel_owner_flow_via_message(message)
+        return
+
     if action in {"say", "reply", "register_profile"}:
         await _run_text_fallback(message, action, payload)
         return
@@ -714,6 +790,7 @@ async def guiy_owner_action_callback(callback: CallbackQuery) -> None:
             reply_author_user_id=reply_author_user_id,
             created_at=time.time(),
             target_chat_or_guild=str(target_chat_or_guild),
+            control_chat_id=str(target_chat_or_guild),
         )
         _PENDING_GUIY_OWNER_VISIBLE_ROLES.pop(callback.from_user.id, None)
         _log_guiy_owner_info(
@@ -810,6 +887,7 @@ async def guiy_owner_destination_callback(callback: CallbackQuery) -> None:
                 reply_author_user_id=state.get("reply_author_user_id"),
                 created_at=time.time(),
                 target_chat_or_guild=str(selected.destination_id),
+                control_chat_id=str(state.get("target_chat_or_guild") or ""),
                 target_destination_id=str(selected.destination_id),
                 target_destination_label=selected.display_label,
             )
@@ -886,6 +964,7 @@ async def guiy_owner_field_callback(callback: CallbackQuery) -> None:
             ),
             created_at=time.time(),
             target_chat_or_guild=str(target_chat_or_guild),
+            control_chat_id=str(target_chat_or_guild),
             selected_field=field_name,
         )
         _PENDING_GUIY_OWNER_ACTIONS[callback.from_user.id] = pending
@@ -1072,7 +1151,7 @@ async def guiy_owner_visible_roles_callback(callback: CallbackQuery) -> None:
         await callback.answer("Ошибка выбора ролей", show_alert=True)
 
 
-@router.message(F.from_user, F.from_user.id.func(has_pending_guiy_owner_action))
+@router.message(F.func(_is_pending_guiy_owner_input_message))
 async def guiy_owner_pending_input_handler(message: Message) -> None:
     persist_telegram_identity_from_user(message.from_user)
     actor_user_id = message.from_user.id if message.from_user else None

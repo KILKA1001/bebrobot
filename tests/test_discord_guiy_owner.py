@@ -91,6 +91,24 @@ class DiscordGuiyOwnerTests(unittest.IsolatedAsyncioTestCase):
         execute_mock.assert_called_once()
         send_mock.assert_awaited_once_with(ctx, "привет из дискорда", delete_after=None)
 
+    async def test_text_cancel_returns_manual_reset_hint(self):
+        ctx = SimpleNamespace(
+            author=SimpleNamespace(id=42, bot=False, name="owner", display_name="Owner", global_name="OwnerGlobal"),
+            bot=SimpleNamespace(user=SimpleNamespace(id=999)),
+            message=SimpleNamespace(reference=None, id=321),
+            guild=SimpleNamespace(id=777),
+            channel=SimpleNamespace(id=555),
+        )
+
+        with (
+            patch.object(mod, "send_temp", AsyncMock()) as send_mock,
+            patch.object(mod, "_persist_discord_identity"),
+        ):
+            await mod.guiy_owner(ctx, "cancel")
+
+        send_mock.assert_awaited_once()
+        self.assertIn("глобального режима ожидания", send_mock.await_args.args[1].lower())
+
     async def test_profile_button_auto_bootstraps_before_opening_editor(self):
         view = mod.GuiyOwnerActionsView(actor_id=42, bot_user_id="999", target_message_id=None, reply_author_user_id=None)
         interaction = SimpleNamespace(
@@ -156,4 +174,3 @@ class DiscordGuiyOwnerTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
