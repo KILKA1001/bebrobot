@@ -1,5 +1,6 @@
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any
 
 import discord
@@ -15,6 +16,20 @@ from bot.utils import send_temp
 
 logger = logging.getLogger(__name__)
 _MENTION_RE = re.compile(r"^<@!?(\d+)>$")
+_SECTION_LABELS = {
+    "categories": "Категории",
+    "roles": "Роли",
+    "users": "Пользователи",
+}
+
+
+@dataclass(frozen=True)
+class RolesAdminVisibilityContext:
+    actor_level: int
+    actor_titles: tuple[str, ...]
+    can_manage_categories: bool
+    can_manage_roles: bool
+    hidden_sections: tuple[str, ...]
 
 
 def _delete_role_denied_message() -> str:
@@ -346,25 +361,84 @@ async def _resolve_discord_target(ctx: commands.Context, raw_target: str, *, ope
     return None
 
 
-def _rolesadmin_help_embed() -> discord.Embed:
+def _resolve_rolesadmin_visibility(ctx: commands.Context) -> RolesAdminVisibilityContext:
+    actor_id = str(ctx.author.id)
+    authority = AuthorityService.resolve_authority("discord", actor_id)
+    can_manage_roles = bool(ctx.author.guild_permissions.administrator) or AuthorityService.has_command_permission(
+        "discord",
+        actor_id,
+        "players_manage",
+    )
+    can_manage_categories = bool(ctx.author.guild_permissions.administrator) or AuthorityService.can_manage_role_categories(
+        "discord",
+        actor_id,
+    )
+    hidden_sections = []
+    if not can_manage_categories:
+        hidden_sections.append("categories")
+    if not can_manage_roles:
+        hidden_sections.extend(["roles", "users"])
+    return RolesAdminVisibilityContext(
+        actor_level=authority.level,
+        actor_titles=tuple(authority.titles),
+        can_manage_categories=can_manage_categories,
+        can_manage_roles=can_manage_roles,
+        hidden_sections=tuple(hidden_sections),
+    )
+
+
+def _render_hidden_sections_note(hidden_sections: tuple[str, ...]) -> str:
+    if not hidden_sections:
+        return ""
+    return (
+        "⚠️ Некоторые кнопки скрыты, потому что у вас нет нужных полномочий.\n"
+        f"Скрытые разделы: {', '.join(_SECTION_LABELS.get(section, section) for section in hidden_sections)}.\n\n"
+    )
+
+
+def _log_rolesadmin_navigation(
+    *,
+    actor_id: int | None,
+    visibility: RolesAdminVisibilityContext,
+    screen: str,
+    guild_id: int | None,
+) -> None:
+    logger.info(
+        "rolesadmin navigation actor_id=%s actor_level=%s actor_titles=%s hidden_sections=%s screen=%s guild_id=%s source=%s",
+        actor_id,
+        visibility.actor_level,
+        list(visibility.actor_titles),
+        list(visibility.hidden_sections),
+        screen,
+        guild_id,
+        "discord_hybrid",
+    )
+
+
+def _rolesadmin_help_embed(
+    *,
+    section: str | None = None,
+    visibility: RolesAdminVisibilityContext | None = None,
+) -> discord.Embed:
+    visibility = visibility or RolesAdminVisibilityContext(0, tuple(), False, False, tuple())
     embed = discord.Embed(title="ℹ️ Что делает /rolesadmin", color=discord.Color.blurple())
     embed.description = (
         "Управление каталогом ролей и ролями пользователей.\n"
-        "Все команды доступны только администраторам/модераторам с правами.\n\n"
+        "Навигация разделена на Категории, Роли и Пользователи — как и в Telegram-панели.\n"
+        "Внутри каждого раздела показываются только относящиеся к нему действия.\n\n"
+        f"{_render_hidden_sections_note(visibility.hidden_sections)}"
         f"{_render_role_source_note()}"
     )
-    embed.add_field(
-        name="Категории",
-        value=(
+    section_fields = {
+        "categories": (
+            "Категории",
             "`/rolesadmin category_create <name> [position]` — создать/обновить категорию\n"
             "`/rolesadmin category_order <name> <position>` — изменить порядок категории\n"
-            "`/rolesadmin category_delete <name>` — удалить категорию"
+            "`/rolesadmin category_delete <name>` — удалить категорию\n"
+            "Используй этот раздел, когда меняешь верхний уровень структуры каталога ролей."
         ),
-        inline=False,
-    )
-    embed.add_field(
-        name="Роли",
-        value=(
+        "roles": (
+            "Роли",
             "`/rolesadmin list` — показать роли по категориям (с автосинхронизацией Discord-каталога)\n"
             "`/rolesadmin role_create <name> <category> [description] [acquire_hint] [discord_role] [position]` — создать роль\n"
             "`/rolesadmin role_edit_description <name> <description>` — обновить описание роли\n"
@@ -377,20 +451,99 @@ def _rolesadmin_help_embed() -> discord.Embed:
             "Если позицию не указывать в `role_create` или `role_move`, роль добавится последней.\n"
             "Внешние Discord-роли удалять нельзя: их можно только перемещать и сортировать."
         ),
-        inline=False,
-    )
-    embed.add_field(
-        name="Роли пользователей",
-        value=(
+        "users": (
+            "Пользователи",
             "`/rolesadmin user_roles <mention|username|display_name>` — посмотреть роли пользователя\n"
             "`/rolesadmin user_grant <mention|username|display_name> <role_name>` — выдать роль\n"
             "`/rolesadmin user_revoke <mention|username|display_name> <role_name>` — снять роль\n"
             "Порядок подсказок: Telegram ЛС — `@username`/`username`, Telegram группа — reply, Discord — mention/username/display_name, id только как резерв.\n"
             "Если найдено несколько совпадений, бот покажет кандидатов с provider, username, display и matched_by."
         ),
-        inline=False,
-    )
+    }
+    sections_to_render = [section] if section in section_fields else ["categories", "roles", "users"]
+    for section_key in sections_to_render:
+        if section_key == "categories" and not visibility.can_manage_categories:
+            continue
+        if section_key in {"roles", "users"} and not visibility.can_manage_roles:
+            continue
+        title, value = section_fields[section_key]
+        embed.add_field(name=title, value=value, inline=False)
+    if not embed.fields:
+        embed.add_field(
+            name="Недостаточно полномочий",
+            value="Сейчас для вас скрыты все разделы управления. Обратитесь к старшему администратору.",
+            inline=False,
+        )
     return embed
+
+
+class RolesAdminHelpView(discord.ui.View):
+    def __init__(self, *, actor_id: int, visibility: RolesAdminVisibilityContext, guild_id: int | None):
+        super().__init__(timeout=300)
+        self.actor_id = actor_id
+        self.visibility = visibility
+        self.guild_id = guild_id
+        if visibility.can_manage_categories:
+            self.add_item(_RolesAdminSectionButton(section="categories"))
+        if visibility.can_manage_roles:
+            self.add_item(_RolesAdminSectionButton(section="roles"))
+            self.add_item(_RolesAdminSectionButton(section="users"))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.actor_id:
+            logger.warning(
+                "rolesadmin help denied foreign actor actor_id=%s owner_id=%s custom_id=%s guild_id=%s",
+                interaction.user.id,
+                self.actor_id,
+                interaction.data.get("custom_id") if interaction.data else None,
+                self.guild_id,
+            )
+            await interaction.response.send_message("Эта панель открыта другим администратором.", ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+
+class _RolesAdminSectionButton(discord.ui.Button):
+    def __init__(self, *, section: str):
+        super().__init__(
+            label=_SECTION_LABELS[section],
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"rolesadmin_help:{section}",
+        )
+        self.section = section
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, RolesAdminHelpView):
+            logger.error("rolesadmin help button view mismatch actor_id=%s section=%s", interaction.user.id, self.section)
+            await interaction.response.send_message("❌ Ошибка навигации rolesadmin (смотри логи).", ephemeral=True)
+            return
+        try:
+            _log_rolesadmin_navigation(
+                actor_id=interaction.user.id,
+                visibility=view.visibility,
+                screen=f"help:{self.section}",
+                guild_id=view.guild_id,
+            )
+            await interaction.response.edit_message(
+                embed=_rolesadmin_help_embed(section=self.section, visibility=view.visibility),
+                view=view,
+            )
+        except Exception:
+            logger.exception(
+                "rolesadmin help button failed actor_id=%s section=%s guild_id=%s",
+                interaction.user.id,
+                self.section,
+                view.guild_id,
+            )
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Ошибка открытия раздела rolesadmin (смотри логи).", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Ошибка открытия раздела rolesadmin (смотри логи).", ephemeral=True)
 
 
 async def _ensure_roles_admin(ctx: commands.Context) -> bool:
@@ -420,7 +573,23 @@ async def _ensure_category_manager(ctx: commands.Context) -> bool:
 @bot.hybrid_group(name="rolesadmin", description="Управление ролями и категориями", with_app_command=True)
 async def rolesadmin(ctx: commands.Context):
     if ctx.invoked_subcommand is None:
-        await send_temp(ctx, embed=_rolesadmin_help_embed())
+        visibility = _resolve_rolesadmin_visibility(ctx)
+        _log_rolesadmin_navigation(
+            actor_id=ctx.author.id,
+            visibility=visibility,
+            screen="help:home",
+            guild_id=ctx.guild.id if ctx.guild else None,
+        )
+        await send_temp(
+            ctx,
+            embed=_rolesadmin_help_embed(visibility=visibility),
+            view=RolesAdminHelpView(
+                actor_id=ctx.author.id,
+                visibility=visibility,
+                guild_id=ctx.guild.id if ctx.guild else None,
+            ),
+            delete_after=None,
+        )
 
 
 @rolesadmin.command(name="list", description="Показать роли по категориям")
