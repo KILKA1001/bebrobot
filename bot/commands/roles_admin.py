@@ -32,6 +32,72 @@ class RolesAdminVisibilityContext:
     hidden_sections: tuple[str, ...]
 
 
+@dataclass
+class DiscordUserRoleFlowState:
+    actor_id: int
+    action: str
+    target: dict[str, Any]
+    grouped: list[dict[str, Any]]
+    current_category: str | None = None
+    selected_roles: tuple[str, ...] = tuple()
+
+    def category_names(self) -> list[str]:
+        return [str(item.get("category") or "Без категории") for item in self.grouped]
+
+    def roles_for_category(self, category_name: str | None = None) -> list[dict[str, Any]]:
+        category_key = str(category_name or self.current_category or "").strip()
+        if not category_key:
+            return []
+        for item in self.grouped:
+            if str(item.get("category") or "").strip() == category_key:
+                return [
+                    role
+                    for role in list(item.get("roles") or [])
+                    if str(role.get("name") or "").strip()
+                ]
+        return []
+
+    def with_category(self, category_name: str) -> "DiscordUserRoleFlowState":
+        return DiscordUserRoleFlowState(
+            actor_id=self.actor_id,
+            action=self.action,
+            target=self.target,
+            grouped=self.grouped,
+            current_category=category_name,
+            selected_roles=self.selected_roles,
+        )
+
+    def with_category_selection(self, category_name: str, selected_in_category: list[str]) -> "DiscordUserRoleFlowState":
+        roles_in_category = {
+            str(role.get("name") or "").strip()
+            for role in self.roles_for_category(category_name)
+            if str(role.get("name") or "").strip()
+        }
+        preserved = [role for role in self.selected_roles if role not in roles_in_category]
+        normalized_new: list[str] = []
+        seen = set(preserved)
+        for role_name in selected_in_category:
+            role_key = str(role_name or "").strip()
+            if not role_key or role_key in seen:
+                continue
+            seen.add(role_key)
+            normalized_new.append(role_key)
+        return DiscordUserRoleFlowState(
+            actor_id=self.actor_id,
+            action=self.action,
+            target=self.target,
+            grouped=self.grouped,
+            current_category=category_name,
+            selected_roles=tuple([*preserved, *normalized_new]),
+        )
+
+    def summary_lists(self) -> tuple[list[str], list[str]]:
+        normalized = list(dict.fromkeys(role for role in self.selected_roles if str(role or "").strip()))
+        if self.action == "revoke":
+            return [], normalized
+        return normalized, []
+
+
 def _delete_role_denied_message() -> str:
     return "❌ Эту внешнюю Discord-роль нельзя удалить из каталога. Её можно только переместить или отсортировать."
 
@@ -139,6 +205,55 @@ def _catalog_role_exists(role_name: str) -> bool:
     if not role_key:
         return False
     return any(item["role"] == role_key for item in RoleManagementService.list_roles_available_for_admin_reorder())
+
+
+def _build_user_role_flow_embed(state: DiscordUserRoleFlowState) -> discord.Embed:
+    embed = discord.Embed(
+        title="🧺 Пакетное управление ролями",
+        color=discord.Color.blurple(),
+    )
+    grant_roles, revoke_roles = state.summary_lists()
+    current_category = state.current_category or "не выбрана"
+    embed.description = (
+        f"Пользователь: **{state.target.get('label') or 'неизвестный пользователь'}**\n"
+        f"Действие: **{'выдача' if state.action == 'grant' else 'снятие'} ролей**\n"
+        f"Текущая категория: **{current_category}**\n"
+        f"Уже выбрано ролей: **{len(state.selected_roles)}**\n\n"
+        "Выбор можно продолжать по другим категориям до явного выхода из панели."
+    )
+    embed.add_field(
+        name="Будет выдано",
+        value="\n".join(f"• {item}" for item in grant_roles) or "• —",
+        inline=False,
+    )
+    embed.add_field(
+        name="Будет снято",
+        value="\n".join(f"• {item}" for item in revoke_roles) or "• —",
+        inline=False,
+    )
+    category_roles = state.roles_for_category()
+    if category_roles:
+        embed.add_field(
+            name=f"Роли категории «{current_category}»",
+            value="\n".join(
+                f"{'✅' if str(role.get('name') or '').strip() in set(state.selected_roles) else '⬜️'} "
+                f"{str(role.get('name') or '').strip()}"
+                for role in category_roles[:25]
+            ),
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="Как пользоваться",
+            value=(
+                "1. Выберите категорию.\n"
+                "2. Отметьте одну или несколько ролей.\n"
+                "3. Вернитесь к категориям и продолжайте выбор.\n"
+                "4. Нажмите подтверждение, когда пакет готов."
+            ),
+            inline=False,
+        )
+    return embed
 
 
 async def _sync_ctx_discord_roles_catalog(ctx: commands.Context, *, operation: str) -> bool:
@@ -454,8 +569,9 @@ def _rolesadmin_help_embed(
         "users": (
             "Пользователи",
             "`/rolesadmin user_roles <mention|username|display_name>` — посмотреть роли пользователя\n"
-            "`/rolesadmin user_grant <mention|username|display_name> <role_name>` — выдать роль\n"
-            "`/rolesadmin user_revoke <mention|username|display_name> <role_name>` — снять роль\n"
+            "`/rolesadmin user_grant <mention|username|display_name> [role_name]` — выдать роль или открыть пакетный flow\n"
+            "`/rolesadmin user_revoke <mention|username|display_name> [role_name]` — снять роль или открыть пакетный flow\n"
+            "Если `role_name` не указывать, откроется embed/view flow: выбор категории, multi-select ролей, возврат к категориям и подтверждение пакета.\n"
             "Порядок подсказок: Telegram ЛС — `@username`/`username`, Telegram группа — reply, Discord — mention/username/display_name, id только как резерв.\n"
             "Если найдено несколько совпадений, бот покажет кандидатов с provider, username, display и matched_by."
         ),
@@ -544,6 +660,198 @@ class _RolesAdminSectionButton(discord.ui.Button):
                 await interaction.followup.send("❌ Ошибка открытия раздела rolesadmin (смотри логи).", ephemeral=True)
             else:
                 await interaction.response.send_message("❌ Ошибка открытия раздела rolesadmin (смотри логи).", ephemeral=True)
+
+
+class _DiscordUserRoleCategorySelect(discord.ui.Select):
+    def __init__(self, state: DiscordUserRoleFlowState):
+        options = [
+            discord.SelectOption(
+                label=category[:100],
+                value=category,
+                default=category == state.current_category,
+            )
+            for category in state.category_names()[:25]
+        ] or [discord.SelectOption(label="Нет категорий", value="__none__")]
+        super().__init__(
+            placeholder="Выберите категорию",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, DiscordUserRoleFlowView):
+            await interaction.response.send_message("❌ Ошибка панели ролей (смотри логи).", ephemeral=True)
+            return
+        category_name = str(self.values[0] or "").strip()
+        if category_name == "__none__":
+            await interaction.response.send_message("Категории недоступны.", ephemeral=True)
+            return
+        view.state = view.state.with_category(category_name)
+        view.rebuild()
+        await interaction.response.edit_message(embed=_build_user_role_flow_embed(view.state), view=view)
+
+
+class _DiscordUserRoleMultiSelect(discord.ui.Select):
+    def __init__(self, state: DiscordUserRoleFlowState):
+        category_roles = state.roles_for_category()
+        options = [
+            discord.SelectOption(
+                label=str(role.get("name") or "").strip()[:100],
+                value=str(role.get("name") or "").strip(),
+                description=str(role.get("description") or "").strip()[:100] or None,
+                default=str(role.get("name") or "").strip() in set(state.selected_roles),
+            )
+            for role in category_roles[:25]
+            if str(role.get("name") or "").strip()
+        ]
+        if not options:
+            options = [discord.SelectOption(label="Сначала выберите категорию", value="__empty__")]
+        super().__init__(
+            placeholder="Отметьте роли в категории",
+            min_values=1 if options[0].value != "__empty__" else 1,
+            max_values=max(1, len(options)),
+            options=options,
+            row=1,
+            disabled=options[0].value == "__empty__",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, DiscordUserRoleFlowView):
+            await interaction.response.send_message("❌ Ошибка панели ролей (смотри логи).", ephemeral=True)
+            return
+        if not view.state.current_category:
+            await interaction.response.send_message("Сначала выберите категорию.", ephemeral=True)
+            return
+        view.state = view.state.with_category_selection(view.state.current_category, list(self.values))
+        view.rebuild()
+        await interaction.response.edit_message(embed=_build_user_role_flow_embed(view.state), view=view)
+
+
+class _DiscordUserRoleApplyButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Подтвердить пакет", style=discord.ButtonStyle.success, row=2)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, DiscordUserRoleFlowView):
+            await interaction.response.send_message("❌ Ошибка панели ролей (смотри логи).", ephemeral=True)
+            return
+        if not view.state.selected_roles:
+            await interaction.response.send_message("Сначала выберите хотя бы одну роль.", ephemeral=True)
+            return
+        grant_roles, revoke_roles = view.state.summary_lists()
+        account_id = str(view.state.target.get("account_id") or "").strip()
+        result = RoleManagementService.apply_user_role_changes_by_account(
+            account_id,
+            actor_id=str(interaction.user.id),
+            grant_roles=grant_roles,
+            revoke_roles=revoke_roles,
+        )
+        member = view.state.target.get("member")
+        if member and interaction.guild:
+            successful_roles = [
+                *(result.get("grant_success") or []),
+                *(result.get("revoke_success") or []),
+            ]
+            for role_name in successful_roles:
+                role_info = RoleManagementService.get_role(role_name) or {}
+                discord_role_id = str(role_info.get("discord_role_id") or "").strip()
+                if not discord_role_id:
+                    continue
+                guild_role = interaction.guild.get_role(int(discord_role_id))
+                if not guild_role:
+                    logger.warning(
+                        "rolesadmin flow guild role missing actor_id=%s guild_id=%s target_id=%s role_name=%s role_id=%s",
+                        interaction.user.id,
+                        interaction.guild.id,
+                        getattr(member, "id", None),
+                        role_name,
+                        discord_role_id,
+                    )
+                    continue
+                try:
+                    if role_name in list(result.get("grant_success") or []):
+                        await member.add_roles(guild_role, reason=f"rolesadmin batch grant by {interaction.user.id}")
+                    if role_name in list(result.get("revoke_success") or []):
+                        await member.remove_roles(guild_role, reason=f"rolesadmin batch revoke by {interaction.user.id}")
+                except Exception:
+                    logger.exception(
+                        "rolesadmin flow discord sync failed actor_id=%s guild_id=%s target_id=%s role_name=%s role_id=%s action=%s",
+                        interaction.user.id,
+                        interaction.guild.id,
+                        getattr(member, "id", None),
+                        role_name,
+                        discord_role_id,
+                        "grant" if role_name in list(result.get("grant_success") or []) else "revoke",
+                    )
+        for child in view.children:
+            child.disabled = True
+        lines = []
+        if result.get("grant_success"):
+            lines.append("✅ Выдано: " + ", ".join(result["grant_success"]))
+        if result.get("revoke_success"):
+            lines.append("✅ Снято: " + ", ".join(result["revoke_success"]))
+        if result.get("grant_failed"):
+            lines.append("❌ Не выдано: " + ", ".join(result["grant_failed"]))
+        if result.get("revoke_failed"):
+            lines.append("❌ Не снято: " + ", ".join(result["revoke_failed"]))
+        if result.get("conflicting_roles"):
+            lines.append("⚠️ Пропущены конфликтующие роли: " + ", ".join(result["conflicting_roles"]))
+        embed = discord.Embed(
+            title="Пакетная операция завершена",
+            description="\n".join(lines) or "⚠️ Пакет не применён.",
+            color=discord.Color.green() if result.get("ok") else discord.Color.orange(),
+        )
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class _DiscordUserRoleExitButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Выйти", style=discord.ButtonStyle.secondary, row=2)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, DiscordUserRoleFlowView):
+            await interaction.response.send_message("❌ Ошибка панели ролей (смотри логи).", ephemeral=True)
+            return
+        for child in view.children:
+            child.disabled = True
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title="Панель закрыта",
+                description="Чтобы открыть новый пакетный выбор ролей, вызовите `/rolesadmin user_grant` или `/rolesadmin user_revoke` без указания role_name.",
+                color=discord.Color.dark_grey(),
+            ),
+            view=view,
+        )
+
+
+class DiscordUserRoleFlowView(discord.ui.View):
+    def __init__(self, state: DiscordUserRoleFlowState):
+        super().__init__(timeout=300)
+        self.state = state
+        self.rebuild()
+
+    def rebuild(self) -> None:
+        self.clear_items()
+        self.add_item(_DiscordUserRoleCategorySelect(self.state))
+        self.add_item(_DiscordUserRoleMultiSelect(self.state))
+        self.add_item(_DiscordUserRoleApplyButton())
+        self.add_item(_DiscordUserRoleExitButton())
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.state.actor_id:
+            await interaction.response.send_message("Эта панель открыта другим администратором.", ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
 
 
 async def _ensure_roles_admin(ctx: commands.Context) -> bool:
@@ -892,7 +1200,7 @@ async def rolesadmin_user_roles(ctx: commands.Context, target: str):
 
 
 @rolesadmin.command(name="user_grant", description="Выдать роль пользователю")
-async def rolesadmin_user_grant(ctx: commands.Context, target: str, role_name: str):
+async def rolesadmin_user_grant(ctx: commands.Context, target: str, role_name: str | None = None):
     if not await _ensure_roles_admin(ctx):
         return
 
@@ -900,14 +1208,33 @@ async def rolesadmin_user_grant(ctx: commands.Context, target: str, role_name: s
     if not resolved:
         return
 
+    if not role_name:
+        grouped = RoleManagementService.list_roles_grouped()
+        if not grouped:
+            await send_temp(ctx, "📭 Каталог ролей пуст или БД недоступна.")
+            return
+        state = DiscordUserRoleFlowState(
+            actor_id=ctx.author.id,
+            action="grant",
+            target=resolved,
+            grouped=grouped,
+            current_category=str(grouped[0].get("category") or ""),
+        )
+        await send_temp(
+            ctx,
+            embed=_build_user_role_flow_embed(state),
+            view=DiscordUserRoleFlowView(state),
+            delete_after=None,
+        )
+        return
+
     role_info = RoleManagementService.get_role(role_name)
-    category = role_info.get("category_name") if role_info else None
-    ok = RoleManagementService.assign_user_role(
-        str(resolved["provider"]),
-        str(resolved["provider_user_id"]),
-        role_name,
-        category=category,
+    result = RoleManagementService.apply_user_role_changes_by_account(
+        str(resolved["account_id"]),
+        actor_id=str(ctx.author.id),
+        grant_roles=[role_name],
     )
+    ok = bool(result.get("grant_success"))
     if not ok:
         await send_temp(ctx, "❌ Не удалось выдать роль в БД (смотри логи).")
         return
@@ -939,7 +1266,7 @@ async def rolesadmin_user_grant(ctx: commands.Context, target: str, role_name: s
 
 
 @rolesadmin.command(name="user_revoke", description="Забрать роль у пользователя")
-async def rolesadmin_user_revoke(ctx: commands.Context, target: str, role_name: str):
+async def rolesadmin_user_revoke(ctx: commands.Context, target: str, role_name: str | None = None):
     if not await _ensure_roles_admin(ctx):
         return
 
@@ -947,12 +1274,33 @@ async def rolesadmin_user_revoke(ctx: commands.Context, target: str, role_name: 
     if not resolved:
         return
 
+    if not role_name:
+        grouped = RoleManagementService.list_roles_grouped()
+        if not grouped:
+            await send_temp(ctx, "📭 Каталог ролей пуст или БД недоступна.")
+            return
+        state = DiscordUserRoleFlowState(
+            actor_id=ctx.author.id,
+            action="revoke",
+            target=resolved,
+            grouped=grouped,
+            current_category=str(grouped[0].get("category") or ""),
+        )
+        await send_temp(
+            ctx,
+            embed=_build_user_role_flow_embed(state),
+            view=DiscordUserRoleFlowView(state),
+            delete_after=None,
+        )
+        return
+
     role_info = RoleManagementService.get_role(role_name)
-    ok = RoleManagementService.revoke_user_role(
-        str(resolved["provider"]),
-        str(resolved["provider_user_id"]),
-        role_name,
+    result = RoleManagementService.apply_user_role_changes_by_account(
+        str(resolved["account_id"]),
+        actor_id=str(ctx.author.id),
+        revoke_roles=[role_name],
     )
+    ok = bool(result.get("revoke_success"))
     if not ok:
         await send_temp(ctx, "❌ Не удалось забрать роль в БД (смотри логи).")
         return

@@ -3,15 +3,20 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from bot.telegram_bot.commands.roles_admin import (
+    PendingRolesAdminAction,
+    _PENDING_ACTIONS,
     _build_actions_keyboard,
     _build_home_keyboard,
     _build_pick_role_keyboard,
     _build_position_choice_keyboard,
+    _build_user_role_categories_keyboard,
+    _build_user_role_picker_keyboard,
     _render_home_text,
     _render_fallback_text,
     _render_help_text,
     _render_list_text,
     _render_position_picker_text,
+    _render_user_role_flow_text,
     _resolve_telegram_target,
 )
 
@@ -265,6 +270,67 @@ class TelegramRolesAdminTargetResolutionTests(unittest.TestCase):
         self.assertIn("Legacy", text)
         self.assertIn("Как получить", text)
         self.assertIn("Способ получения пока не указан администратором", text)
+
+    def test_user_role_flow_text_shows_multi_select_summary_and_continue_hint(self):
+        text = _render_user_role_flow_text(
+            target_label="@target",
+            action="grant",
+            selected_roles=["Alpha", "Beta"],
+            current_category="General",
+        )
+
+        self.assertIn("Будет выдано", text)
+        self.assertIn("Alpha", text)
+        self.assertIn("Beta", text)
+        self.assertIn("Будет снято", text)
+        self.assertIn("Уже выбрано ролей: <b>2</b>", text)
+        self.assertIn("можно продолжать по другим категориям", text)
+
+    def test_user_role_category_and_picker_keyboards_keep_multi_select_state(self):
+        grouped = [
+            {"category": "General", "roles": [{"name": "Alpha"}, {"name": "Beta"}]},
+            {"category": "Events", "roles": [{"name": "Gamma"}]},
+        ]
+
+        categories_keyboard = _build_user_role_categories_keyboard(grouped, actor_id=10, action="grant", selected_roles=["Alpha", "Gamma"])
+        picker_keyboard = _build_user_role_picker_keyboard(grouped, actor_id=10, action="grant", category_idx=0, selected_roles=["Alpha", "Gamma"])
+
+        category_texts = [button.text for row in categories_keyboard.inline_keyboard for button in row]
+        picker_texts = [button.text for row in picker_keyboard.inline_keyboard for button in row]
+
+        self.assertIn("📂 General [1]", category_texts)
+        self.assertIn("📂 Events [1]", category_texts)
+        self.assertIn("🚀 Подтвердить пакет (2)", category_texts)
+        self.assertIn("✅ Alpha", picker_texts)
+        self.assertIn("⬜️ Beta", picker_texts)
+
+    def test_pending_user_role_flow_state_supports_reentering_another_category(self):
+        _PENDING_ACTIONS[77] = PendingRolesAdminAction(
+            operation="user_role_flow_panel",
+            created_at=1.0,
+            payload={
+                "action": "grant",
+                "label": "@target",
+                "account_id": "acc-7",
+                "selected_roles": ["Alpha"],
+            },
+        )
+        try:
+            grouped = [
+                {"category": "General", "roles": [{"name": "Alpha"}]},
+                {"category": "Events", "roles": [{"name": "Gamma"}]},
+            ]
+
+            first_keyboard = _build_user_role_picker_keyboard(grouped, actor_id=77, action="grant", category_idx=0, selected_roles=["Alpha"])
+            second_keyboard = _build_user_role_picker_keyboard(grouped, actor_id=77, action="grant", category_idx=1, selected_roles=["Alpha", "Gamma"])
+            first_texts = [button.text for row in first_keyboard.inline_keyboard for button in row]
+            second_texts = [button.text for row in second_keyboard.inline_keyboard for button in row]
+
+            self.assertIn("✅ Alpha", first_texts)
+            self.assertIn("✅ Gamma", second_texts)
+            self.assertIn("🗂 К категориям", second_texts)
+        finally:
+            _PENDING_ACTIONS.pop(77, None)
 
 
 if __name__ == "__main__":
