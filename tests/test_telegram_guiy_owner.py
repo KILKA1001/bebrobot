@@ -2,11 +2,22 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from bot.telegram_bot.commands.guiy_owner import guiy_owner_command
+from bot.telegram_bot.commands import guiy_owner as guiy_owner_module
+from bot.telegram_bot.commands.guiy_owner import (
+    _PENDING_GUIY_OWNER_ACTIONS,
+    PendingGuiyOwnerAction,
+    guiy_owner_action_callback,
+    guiy_owner_command,
+    guiy_owner_pending_input_handler,
+)
 
 
 class TelegramGuiyOwnerCommandTests(unittest.IsolatedAsyncioTestCase):
-    async def test_reply_action_requires_reply_message(self):
+    def tearDown(self):
+        _PENDING_GUIY_OWNER_ACTIONS.clear()
+        guiy_owner_module._PENDING_GUIY_OWNER_VISIBLE_ROLES.clear()
+
+    async def test_command_without_args_shows_inline_keyboard(self):
         message = SimpleNamespace(
             from_user=SimpleNamespace(id=42, is_bot=False),
             reply_to_message=None,
@@ -14,15 +25,28 @@ class TelegramGuiyOwnerCommandTests(unittest.IsolatedAsyncioTestCase):
             answer=AsyncMock(),
             chat=SimpleNamespace(id=100),
         )
-        command = SimpleNamespace(args="reply привет")
+        command = SimpleNamespace(args=None)
 
         with patch("bot.telegram_bot.commands.guiy_owner.persist_telegram_identity_from_user"):
             await guiy_owner_command(message, command)
 
-        message.answer.assert_awaited_once()
-        self.assertIn("ответьте", message.answer.await_args.args[0].lower())
+        self.assertEqual(message.answer.await_count, 1)
+        text = message.answer.await_args.args[0]
+        keyboard = message.answer.await_args.kwargs["reply_markup"]
+        self.assertIn("Owner-управление Гуем", text)
+        labels = [button.text for row in keyboard.inline_keyboard for button in row]
+        self.assertEqual(
+            labels,
+            [
+                "Написать от Гуя",
+                "Ответить от Гуя",
+                "Профиль Гуя",
+                "Зарегистрировать профиль Гуя",
+                "Отмена",
+            ],
+        )
 
-    async def test_owner_can_send_message_as_guiy(self):
+    async def test_owner_can_send_message_as_guiy_via_text_fallback(self):
         message = SimpleNamespace(
             from_user=SimpleNamespace(id=42, is_bot=False),
             reply_to_message=None,
@@ -35,45 +59,60 @@ class TelegramGuiyOwnerCommandTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("bot.telegram_bot.commands.guiy_owner.persist_telegram_identity_from_user"),
             patch(
-                "bot.telegram_bot.commands.guiy_owner.authorize_guiy_owner_action",
-                return_value=SimpleNamespace(allowed=True),
-            ) as auth_mock,
-            patch(
-                "bot.telegram_bot.commands.guiy_owner.resolve_guiy_target_account",
-                return_value=SimpleNamespace(ok=True, message="", target_account_id="guiy-acc"),
-            ) as target_mock,
+                "bot.telegram_bot.commands.guiy_owner.execute_guiy_owner_flow",
+                return_value=SimpleNamespace(ok=True, outbound_text="привет от гуя", guiy_account_id="guiy-acc"),
+            ) as execute_mock,
         ):
             await guiy_owner_command(message, command)
 
-        auth_mock.assert_called_once()
-        target_mock.assert_called_once()
+        execute_mock.assert_called_once()
         message.answer.assert_awaited_once_with("привет от гуя")
 
-    async def test_non_owner_gets_neutral_denial(self):
+    async def test_reply_action_button_without_reply_context_shows_instruction(self):
+        callback_message = SimpleNamespace(chat=SimpleNamespace(id=100), reply_to_message=None, answer=AsyncMock(), bot=SimpleNamespace(get_me=AsyncMock(return_value=SimpleNamespace(id=999))))
+        callback = SimpleNamespace(
+            from_user=SimpleNamespace(id=42),
+            message=callback_message,
+            data="guiy_owner:action:reply",
+            answer=AsyncMock(),
+        )
+
+        await guiy_owner_action_callback(callback)
+
+        callback_message.answer.assert_awaited_once()
+        self.assertIn("ничего не изменится", callback_message.answer.await_args.args[0].lower())
+        self.assertEqual(len(_PENDING_GUIY_OWNER_ACTIONS), 0)
+
+    async def test_pending_profile_input_updates_profile(self):
         message = SimpleNamespace(
-            from_user=SimpleNamespace(id=77, is_bot=False),
-            reply_to_message=None,
-            bot=SimpleNamespace(get_me=AsyncMock()),
+            from_user=SimpleNamespace(id=42, is_bot=False),
+            text="Новый Гуй",
             answer=AsyncMock(),
             chat=SimpleNamespace(id=100),
         )
-        command = SimpleNamespace(args="say привет")
+        _PENDING_GUIY_OWNER_ACTIONS[42] = PendingGuiyOwnerAction(
+            selected_action="profile_update",
+            bot_user_id="999",
+            target_message_id=None,
+            reply_author_user_id=None,
+            created_at=1_000.0,
+            target_chat_or_guild="100",
+            selected_field="custom_nick",
+        )
 
         with (
             patch("bot.telegram_bot.commands.guiy_owner.persist_telegram_identity_from_user"),
+            patch("bot.telegram_bot.commands.guiy_owner.time.time", return_value=1_001.0),
             patch(
-                "bot.telegram_bot.commands.guiy_owner.authorize_guiy_owner_action",
-                return_value=SimpleNamespace(allowed=False),
-            ),
+                "bot.telegram_bot.commands.guiy_owner.execute_guiy_owner_flow",
+                return_value=SimpleNamespace(ok=True, message="✅ Никнейм обновлён", guiy_account_id="guiy-acc"),
+            ) as execute_mock,
         ):
-            await guiy_owner_command(message, command)
+            await guiy_owner_pending_input_handler(message)
 
-        message.answer.assert_awaited_once()
-        self.assertIn("недоступна", message.answer.await_args.args[0].lower())
-
-
-if __name__ == "__main__":
-    unittest.main()
+        execute_mock.assert_called_once()
+        message.answer.assert_awaited_once_with("✅ Никнейм обновлён")
+        self.assertNotIn(42, _PENDING_GUIY_OWNER_ACTIONS)
 
 
 class TelegramGuiyOwnerVisibilityTests(unittest.TestCase):
@@ -86,3 +125,7 @@ class TelegramGuiyOwnerVisibilityTests(unittest.TestCase):
         from bot.telegram_bot.main import BOT_COMMANDS
 
         self.assertNotIn("guiy_owner", [item.command for item in BOT_COMMANDS])
+
+
+if __name__ == "__main__":
+    unittest.main()
