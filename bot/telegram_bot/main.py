@@ -18,10 +18,11 @@ from aiogram.methods import GetUpdates
 from aiogram.dispatcher.dispatcher import DEFAULT_BACKOFF_CONFIG
 from aiogram.dispatcher.dispatcher import loggers as aiogram_loggers
 from aiogram.utils.backoff import Backoff, BackoffConfig
-from aiogram.types import BotCommand
+from aiogram.types import BotCommand, BotCommandScopeChat
 
 from bot.telegram_bot.commands import get_commands_router
 from bot.telegram_bot.config import TELEGRAM_BOT_TOKEN_ENV, get_telegram_bot_token
+from bot.services.guiy_admin_service import resolve_guiy_owner_telegram_ids
 
 logger = logging.getLogger(__name__)
 _DISPATCHER: Dispatcher | None = None
@@ -82,6 +83,11 @@ BOT_COMMANDS = [
     BotCommand(command="helpy", description="Список команд"),
     BotCommand(command="guiy", description="Обратиться к Гую (особенно в группе)"),
 ]
+
+GUIY_OWNER_COMMANDS = [
+    BotCommand(command="guiy_owner", description="Owner-only управление Гуем"),
+]
+OWNER_PRIVATE_COMMANDS = BOT_COMMANDS + GUIY_OWNER_COMMANDS
 
 
 def _configure_logging() -> None:
@@ -284,6 +290,26 @@ async def run_polling(token: str) -> None:
 
         await bot.set_my_commands(BOT_COMMANDS)
         logger.info("telegram commands registered: %s", ", ".join(f"/{c.command}" for c in BOT_COMMANDS))
+
+        owner_telegram_ids = resolve_guiy_owner_telegram_ids()
+        for owner_telegram_id in owner_telegram_ids:
+            try:
+                await bot.set_my_commands(
+                    OWNER_PRIVATE_COMMANDS,
+                    scope=BotCommandScopeChat(chat_id=owner_telegram_id),
+                )
+                logger.info(
+                    "telegram guiy owner commands registered owner_telegram_user_id=%s commands=%s",
+                    owner_telegram_id,
+                    ", ".join(f"/{c.command}" for c in OWNER_PRIVATE_COMMANDS),
+                )
+            except Exception:
+                logger.exception(
+                    "telegram guiy owner command registration failed owner_telegram_user_id=%s",
+                    owner_telegram_id,
+                )
+        if not owner_telegram_ids:
+            logger.warning("telegram guiy owner commands were not scoped because no owner telegram ids were resolved")
 
         # Start clean in polling mode.
         await bot.delete_webhook(drop_pending_updates=True)
