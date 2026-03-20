@@ -142,8 +142,59 @@ class RoleResolverTests(unittest.TestCase):
 
         self.assertEqual(result.roles, [])
 
+    def test_assignment_payload_uses_catalog_description_when_metadata_missing(self):
+        now = datetime.now(timezone.utc)
+        self.fake_db.tables["account_role_assignments"] = [
+            {
+                "account_id": "acc-1",
+                "role_name": "moderator",
+                "source": "custom",
+                "metadata": {"category": "Модерация"},
+                "synced_at": now.isoformat(),
+            }
+        ]
+        self.fake_db.tables["roles"] = [
+            {
+                "name": "moderator",
+                "category_name": "Модерация",
+                "description": "Следит за порядком",
+            }
+        ]
+
+        result = RoleResolver.resolve_for_account("acc-1")
+
+        self.assertEqual(result.roles[0]["description"], "Следит за порядком")
+
 
     def test_fallback_to_external_role_bindings_when_assignments_empty(self):
+        now = datetime.now(timezone.utc)
+        self.fake_db.tables["external_role_bindings"] = [
+            {
+                "account_id": "acc-1",
+                "source": "discord",
+                "external_role_id": "123",
+                "external_role_name": "Сладкая бебра",
+                "last_synced_at": now.isoformat(),
+                "deleted_at": None,
+            }
+        ]
+        self.fake_db.tables["roles"] = [
+            {
+                "name": "Сладкая бебра",
+                "category_name": "Клубные роли",
+                "description": "Редкая роль клуба",
+                "discord_role_id": "123",
+            }
+        ]
+
+        result = RoleResolver.resolve_for_account("acc-1")
+
+        self.assertEqual(len(result.roles), 1)
+        self.assertEqual(result.roles[0]["name"], "Сладкая бебра")
+        self.assertEqual(result.roles[0]["category"], "Клубные роли")
+        self.assertEqual(result.roles[0]["description"], "Редкая роль клуба")
+
+    def test_fallback_to_external_role_bindings_without_description_keeps_empty_string(self):
         now = datetime.now(timezone.utc)
         self.fake_db.tables["external_role_bindings"] = [
             {
@@ -165,9 +216,7 @@ class RoleResolverTests(unittest.TestCase):
 
         result = RoleResolver.resolve_for_account("acc-1")
 
-        self.assertEqual(len(result.roles), 1)
-        self.assertEqual(result.roles[0]["name"], "Сладкая бебра")
-        self.assertEqual(result.roles[0]["category"], "Клубные роли")
+        self.assertEqual(result.roles[0]["description"], "")
 
     def test_external_binding_uses_name_fallback_category_and_logs_id_mismatch(self):
         now = datetime.now(timezone.utc)

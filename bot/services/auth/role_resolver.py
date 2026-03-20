@@ -38,6 +38,7 @@ class RoleResolver:
 
         assignments = RoleResolver._collect_assignments(account_id)
         roles = RoleResolver._load_roles(assignments)
+        catalog_metadata = RoleResolver._load_role_catalog_metadata(assignments)
         permissions = RoleResolver._resolve_permissions(assignments, roles)
 
         role_payload = [
@@ -46,7 +47,15 @@ class RoleResolver:
                 "source": assignment.source,
                 "origin_label": assignment.origin_label,
                 "synced_at": assignment.synced_at.isoformat() if assignment.synced_at else None,
-                "category": RoleResolver.normalize_category_value(assignment.metadata.get("category")),
+                "category": RoleResolver.normalize_category_value(
+                    assignment.metadata.get("category"),
+                    fallback=(catalog_metadata.get(assignment.role_name.lower()) or {}).get("category"),
+                ),
+                "description": str(
+                    assignment.metadata.get("description")
+                    or (catalog_metadata.get(assignment.role_name.lower()) or {}).get("description")
+                    or ""
+                ).strip(),
             }
             for assignment in assignments
         ]
@@ -166,6 +175,7 @@ class RoleResolver:
                 (catalog_match or {}).get("category_name"),
                 fallback=RoleResolver.EXTERNAL_CATEGORY_FALLBACK,
             )
+            resolved_description = str((catalog_match or {}).get("description") or "").strip()
             if not catalog_match:
                 logger.warning(
                     "role resolver: using fallback external category account_id=%s source=%s external_role_id=%s external_role_name=%s fallback_category=%s catalog_roles_loaded=%s",
@@ -185,6 +195,7 @@ class RoleResolver:
                     metadata={
                         "source": "external_role_bindings",
                         "category": resolved_category,
+                        "description": resolved_description,
                     },
                     origin_label="legacy external_role_bindings",
                     synced_at=RoleResolver._parse_datetime(row.get("last_synced_at")),
@@ -231,6 +242,7 @@ class RoleResolver:
             "discord_role_id": str(row.get("discord_role_id") or "").strip() or None,
             "external_role_id": str(row.get("external_role_id") or "").strip() or None,
             "category_name": RoleResolver.normalize_category_value(row.get("category_name")),
+            "description": str(row.get("description") or "").strip() or None,
         }
 
     @staticmethod
@@ -239,6 +251,9 @@ class RoleResolver:
             return []
 
         select_variants = (
+            "name,category_name,description,discord_role_id,external_role_id",
+            "name,category_name,description,discord_role_id",
+            "name,category_name,description",
             "name,category_name,discord_role_id,external_role_id",
             "name,category_name,discord_role_id",
             "name,category_name",
@@ -441,6 +456,29 @@ class RoleResolver:
             if role_name and permission_name and role_name in role_map:
                 role_map[role_name].permissions.append(Permission(name=permission_name, effect=effect))
         return role_map
+
+    @staticmethod
+    def _load_role_catalog_metadata(assignments: list[UserRoleAssignment]) -> dict[str, dict[str, str]]:
+        if not db.supabase or not assignments:
+            return {}
+        try:
+            roles_resp = db.supabase.table("roles").select("name,category_name,description").execute()
+        except Exception as error:
+            logger.warning("role resolver: roles metadata read failed error=%s", error)
+            return {}
+
+        wanted = {assignment.role_name.strip().lower() for assignment in assignments if assignment.role_name.strip()}
+        metadata: dict[str, dict[str, str]] = {}
+        for row in roles_resp.data or []:
+            role_name = str(row.get("name") or "").strip()
+            role_key = role_name.lower()
+            if not role_key or role_key not in wanted:
+                continue
+            metadata[role_key] = {
+                "category": RoleResolver.normalize_category_value(row.get("category_name")),
+                "description": str(row.get("description") or "").strip(),
+            }
+        return metadata
 
     @staticmethod
     def _resolve_permissions(assignments: list[UserRoleAssignment], roles: dict[str, Role]) -> dict[str, list[str]]:

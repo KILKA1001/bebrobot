@@ -482,8 +482,9 @@ def _operation_hint(operation: str) -> str:
         "category_create": "Отправь: <code>Название категории | position(опционально)</code>",
         "category_order": "Отправь: <code>Название категории | position</code>",
         "category_delete": "Отправь: <code>Название категории</code>",
-        "role_create": "Отправь: <code>Название роли | Категория | discord_role_id(опц) | position(опц)</code>. Если позицию не указывать, роль будет добавлена последней.",
-        "role_create_enter_name": "Отправь: <code>Название роли | discord_role_id(опц)</code>. Категория и позиция уже выбраны кнопками.",
+        "role_create": "Отправь: <code>Название роли | Категория | Описание | discord_role_id(опц) | position(опц)</code>. Описание можно оставить пустым. Если позицию не указывать, роль будет добавлена последней.",
+        "role_create_enter_name": "Отправь: <code>Название роли | Описание | discord_role_id(опц)</code>. Категория и позиция уже выбраны кнопками.",
+        "role_edit_description": "Отправь: <code>Название роли | Описание</code>. Так роль будет понятнее пользователям прямо в интерфейсе.",
         "role_move": "Отправь: <code>Название роли | Категория | position(опц)</code>. Если позицию не указывать, роль будет добавлена последней. Внешнюю Discord-роль можно переместить.",
         "role_order": "Отправь: <code>Название роли | Категория | position</code>. Внешнюю Discord-роль можно отсортировать.",
         "role_delete": "Отправь: <code>Название роли</code>. Внешние Discord-роли удалить нельзя.",
@@ -495,7 +496,19 @@ def _operation_hint(operation: str) -> str:
 
 
 def _parse_pipe_args(raw: str) -> list[str]:
-    return [part.strip() for part in raw.split("|") if part.strip()]
+    parts = [part.strip() for part in raw.split("|")]
+    while parts and not parts[-1]:
+        parts.pop()
+    return parts
+
+
+def _format_role_line(role: dict[str, object], *, numbered: int | None = None) -> str:
+    prefix = f"{numbered}. " if numbered is not None else "• "
+    suffix = f" (Discord ID: {role['discord_role_id']})" if role.get("discord_role_id") else ""
+    external_note = " — внешняя Discord-роль, удаление скрыто" if role.get("is_discord_managed") else ""
+    description = str(role.get("description") or "").strip()
+    description_note = f"\n   ↳ {description}" if description else ""
+    return f"{prefix}{role['name']}{suffix}{external_note}{description_note}"
 
 
 def _is_pending_action_expired(pending: PendingRolesAdminAction) -> bool:
@@ -747,16 +760,19 @@ def _render_fallback_text() -> str:
     return (
         "🆘 <b>Не работают кнопки?</b>\n\n"
         "Если Telegram-кнопки не срабатывают (лаг, старый клиент, проблемы сети), используй резервные команды.\n"
-        "Формат: отправляй команду одной строкой после <code>/roles_admin</code>.\n\n"
+        "Формат: отправляй команду одной строкой после <code>/roles_admin</code>. "
+        "Для команд с описанием используй разделитель <code>|</code>, чтобы спокойно писать текст с пробелами.\n\n"
         "<b>Категории</b>\n"
         "<code>/roles_admin category_create &lt;name&gt; [position]</code>\n"
         "<code>/roles_admin category_order &lt;name&gt; &lt;position&gt;</code>\n"
         "<code>/roles_admin category_delete &lt;name&gt;</code>\n\n"
         "<b>Роли</b>\n"
-        "<code>/roles_admin role_create &lt;name&gt; &lt;category&gt; [discord_role_id] [position]</code>\n"
+        "<code>/roles_admin role_create &lt;name&gt; | &lt;category&gt; | &lt;description&gt; | [discord_role_id] | [position]</code>\n"
+        "<code>/roles_admin role_edit_description &lt;name&gt; | &lt;description&gt;</code>\n"
         "<code>/roles_admin role_move &lt;name&gt; &lt;category&gt; [position]</code>\n"
         "<code>/roles_admin role_order &lt;role_name&gt; &lt;category&gt; &lt;position&gt;</code>\n"
         "<code>/roles_admin role_delete &lt;name&gt;</code>\n"
+        "Описание можно оставить пустым: тогда роль сохранится без него.\n"
         "Если не указывать <code>position</code> в <code>role_create</code> или <code>role_move</code>, роль будет добавлена последней.\n"
         "Кнопочный режим показывает список ролей категории и отдельный экран выбора точной позиции вставки.\n"
         "Внешние Discord-роли не удаляются из каталога: их можно только перемещать и сортировать.\n\n"
@@ -780,11 +796,13 @@ def _render_help_text() -> str:
         "• <code>category_order &lt;name&gt; &lt;position&gt;</code> — выставить порядок категории (<b>только Глава клуба/Главный вице</b>).\n"
         "• <code>category_delete &lt;name&gt;</code> — удалить категорию (роли уйдут в 'Без категории', <b>только Глава клуба/Главный вице</b>).\n\n"
         "<b>Роли</b>\n"
-        "• <code>role_create &lt;name&gt; &lt;category&gt; [discord_role_id] [position]</code> — добавить роль в каталог.\n"
+        "• <code>role_create &lt;name&gt; | &lt;category&gt; | &lt;description&gt; | [discord_role_id] | [position]</code> — добавить роль в каталог.\n"
+        "• <code>role_edit_description &lt;name&gt; | &lt;description&gt;</code> — обновить описание роли без перемещения.\n"
         "• <code>role_move &lt;name&gt; &lt;category&gt; [position]</code> — переместить роль в другую категорию.\n"
         "• <code>role_order &lt;role_name&gt; &lt;category&gt; &lt;position&gt;</code> — выставить очередь роли в категории.\n"
         "• <code>role_delete &lt;name&gt;</code> — удалить роль из каталога. Внешние Discord-роли удалять нельзя: только move/order.\n"
         "• После выбора категории бот показывает текущий список ролей и отдельный экран выбора позиции.\n"
+        "• Описание роли видно в карточках и списках, чтобы админы быстрее понимали назначение роли.\n"
         "• Если позицию не указывать в <code>role_create</code> или <code>role_move</code>, роль будет добавлена последней.\n\n"
         "<b>Роли пользователей</b>\n"
         "• <code>user_roles [reply|@username|username|tg:@username|ds:username|id]</code> — показать роли пользователя.\n"
@@ -851,8 +869,7 @@ def _render_list_text(grouped: list[dict], page: int) -> str:
             lines.append("  • —")
             continue
         for role in roles:
-            suffix = f" (Discord ID: {role['discord_role_id']})" if role.get("discord_role_id") else ""
-            lines.append(f"  • {role['name']}{suffix}")
+            lines.append("  " + _format_role_line(role))
 
     lines.append("\nНажми на категорию ниже для действий (удаление категории/ролей).")
     return "\n".join(lines)
@@ -945,20 +962,44 @@ async def roles_admin_command(message: Message) -> None:
             await message.answer("✅ Категория удалена." if ok else "❌ Не удалось удалить категорию (смотри логи).")
             return
 
-        if subcommand == "role_create" and len(args) >= 2:
-            role_name = args[0]
-            category = args[1]
-            discord_role_id = args[2] if len(args) >= 3 else None
-            position = int(args[3]) if len(args) >= 4 and args[3].lstrip("-").isdigit() else None
+        if subcommand == "role_create":
+            raw_payload = text.split(None, 2)[2] if len(parts) >= 3 else ""
+            pipe_args = _parse_pipe_args(raw_payload)
+            if len(pipe_args) < 2:
+                await message.answer(
+                    "❌ Формат: /roles_admin role_create <Название роли> | <Категория> | <Описание> | [discord_role_id] | [position]"
+                )
+                return
+            role_name = pipe_args[0]
+            category = pipe_args[1]
+            description = pipe_args[2] if len(pipe_args) >= 3 else None
+            discord_role_id = pipe_args[3] if len(pipe_args) >= 4 else None
+            position = int(pipe_args[4]) if len(pipe_args) >= 5 and pipe_args[4].lstrip("-").isdigit() else None
             ok = RoleManagementService.create_role(
                 role_name,
                 category,
+                description=description,
                 discord_role_id=discord_role_id,
                 position=position,
                 actor_id=str(message.from_user.id) if message.from_user else None,
                 operation="role_create",
             )
             await message.answer("✅ Роль создана." if ok else "❌ Не удалось создать роль (смотри логи).")
+            return
+
+        if subcommand == "role_edit_description":
+            raw_payload = text.split(None, 2)[2] if len(parts) >= 3 else ""
+            pipe_args = _parse_pipe_args(raw_payload)
+            if len(pipe_args) < 2:
+                await message.answer("❌ Формат: /roles_admin role_edit_description <Название роли> | <Описание>")
+                return
+            ok = RoleManagementService.update_role_description(
+                pipe_args[0],
+                pipe_args[1],
+                actor_id=str(message.from_user.id) if message.from_user else None,
+                operation="role_edit_description",
+            )
+            await message.answer("✅ Описание роли обновлено." if ok else "❌ Не удалось обновить описание роли (смотри логи).")
             return
 
         if subcommand == "role_delete" and len(args) >= 1:
@@ -1084,7 +1125,11 @@ async def roles_admin_command(message: Message) -> None:
                 return
             lines = [f"🧾 Роли пользователя {resolved['label']}:"]
             for role in roles:
-                lines.append(f"• {role['name']} ({role['category']})")
+                description = str(role.get("description") or "").strip()
+                line = f"• {role['name']} ({role['category']})"
+                if description:
+                    line += f" — {description}"
+                lines.append(line)
             await message.answer("\n".join(lines))
             return
 
@@ -1477,8 +1522,8 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     (
                         f"Категория: <b>{category_name}</b>\n"
                         f"Позиция: <b>{preview.get('insertion_positions', [])[new_pos]['description'] if preview.get('insertion_positions') else preview.get('position_description')}</b>\n\n"
-                        "Теперь отправь: <code>Название роли | discord_role_id(опц)</code>\n"
-                        "Если Discord role id не нужен, просто отправь название."
+                        "Теперь отправь: <code>Название роли | Описание | discord_role_id(опц)</code>\n"
+                        "Если описание или Discord role id не нужны, можно оставить только название."
                     ),
                     parse_mode="HTML",
                     reply_markup=_build_actions_keyboard(owner_id),
@@ -1552,9 +1597,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 lines.append("\n• В категории нет ролей")
             else:
                 for idx, role in enumerate(roles[:_MAX_ROLE_BUTTONS], start=1):
-                    suffix = f" (Discord ID: {role['discord_role_id']})" if role.get("discord_role_id") else ""
-                    external_note = " — внешняя Discord-роль, удаление скрыто" if role.get("is_discord_managed") else ""
-                    lines.append(f"\n{idx}. {role['name']}{suffix}{external_note}")
+                    lines.append("\n" + _format_role_line(role, numbered=idx))
                 if len(roles) > _MAX_ROLE_BUTTONS:
                     lines.append(f"\n… и ещё {len(roles) - _MAX_ROLE_BUTTONS} ролей (удаляй через /roles_admin role_delete)")
 
@@ -1631,9 +1674,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     lines.append("\n• В категории нет ролей")
                 else:
                     for idx, role in enumerate(refreshed_roles[:_MAX_ROLE_BUTTONS], start=1):
-                        suffix = f" (Discord ID: {role['discord_role_id']})" if role.get("discord_role_id") else ""
-                        external_note = " — внешняя Discord-роль, удаление скрыто" if role.get("is_discord_managed") else ""
-                        lines.append(f"\n{idx}. {role['name']}{suffix}{external_note}")
+                        lines.append("\n" + _format_role_line(role, numbered=idx))
                 await _safe_edit_message_text(callback, 
                     "\n".join(lines),
                     parse_mode="HTML",
@@ -1729,32 +1770,46 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
             await message.answer("✅ Категория удалена." if ok else "❌ Не удалось удалить категорию (смотри логи).")
         elif op == "role_create":
             if len(args) < 2:
-                await message.answer("❌ Формат: Роль | Категория | discord_role_id(опц) | position(опц)")
+                await message.answer("❌ Формат: Роль | Категория | Описание | discord_role_id(опц) | position(опц)")
                 return
-            discord_role_id = args[2] if len(args) > 2 else None
-            pos = int(args[3]) if len(args) > 3 and args[3].lstrip("-").isdigit() else None
+            description = args[2] if len(args) > 2 else None
+            discord_role_id = args[3] if len(args) > 3 else None
+            pos = int(args[4]) if len(args) > 4 and args[4].lstrip("-").isdigit() else None
             ok = RoleManagementService.create_role(
                 args[0],
                 args[1],
+                description=description,
                 discord_role_id=discord_role_id,
                 position=pos,
                 actor_id=str(message.from_user.id) if message.from_user else None,
                 operation="role_create",
             )
             await message.answer("✅ Роль создана." if ok else "❌ Не удалось создать роль (смотри логи).")
+        elif op == "role_edit_description":
+            if len(args) < 2:
+                await message.answer("❌ Формат: Название роли | Описание")
+                return
+            ok = RoleManagementService.update_role_description(
+                args[0],
+                args[1],
+                actor_id=str(message.from_user.id) if message.from_user else None,
+                operation="role_edit_description",
+            )
+            await message.answer("✅ Описание роли обновлено." if ok else "❌ Не удалось обновить описание роли (смотри логи).")
         elif op == "role_create_enter_name":
             if not pending.payload or not pending.payload.get("category"):
                 await message.answer("❌ Сессия выбора категории устарела. Начните заново: /roles_admin")
                 return
             if not args:
-                await message.answer("❌ Формат: Название роли | discord_role_id(опц)")
+                await message.answer("❌ Формат: Название роли | Описание | discord_role_id(опц)")
                 return
             category = str(pending.payload.get("category") or "")
             position = int(str(pending.payload.get("position") or "0"))
             ok = RoleManagementService.create_role(
                 args[0],
                 category,
-                discord_role_id=args[1] if len(args) > 1 else None,
+                description=args[1] if len(args) > 1 else None,
+                discord_role_id=args[2] if len(args) > 2 else None,
                 position=position,
                 actor_id=str(message.from_user.id) if message.from_user else None,
                 operation="role_create",
@@ -1879,7 +1934,11 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
             else:
                 lines = [f"🧾 Роли пользователя {resolved['label']}:"]
                 for role in roles:
-                    lines.append(f"• {role['name']} ({role['category']})")
+                    description = str(role.get("description") or "").strip()
+                    line = f"• {role['name']} ({role['category']})"
+                    if description:
+                        line += f" — {description}"
+                    lines.append(line)
                 await message.answer("\n".join(lines))
         elif op in {"user_grant", "user_revoke"}:
             reply_user = message.reply_to_message.from_user if message.reply_to_message else None
