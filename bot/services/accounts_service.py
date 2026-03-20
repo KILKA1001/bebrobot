@@ -1156,6 +1156,74 @@ class AccountsService:
             return None
 
     @staticmethod
+    def _bind_identity_to_account(provider: str, provider_user_id: str, account_id: str) -> Tuple[bool, str]:
+        normalized_provider = (provider or "").strip().lower()
+        normalized_provider_user_id = str(provider_user_id or "").strip()
+        normalized_account_id = str(account_id or "").strip()
+        if not db.supabase or normalized_provider not in ("discord", "telegram") or not normalized_provider_user_id or not normalized_account_id:
+            return False, "invalid"
+
+        current_identity = AccountsService._load_identity_row(normalized_provider, normalized_provider_user_id)
+        current_account_id = str(current_identity.get("account_id") or "").strip() if current_identity else ""
+        if current_account_id:
+            logger.warning(
+                "register identity skipped repair because identity already bound provider=%s provider_user_id=%s existing_account_id=%s new_account_id=%s",
+                normalized_provider,
+                normalized_provider_user_id,
+                current_account_id,
+                normalized_account_id,
+            )
+            return True, "already_registered"
+
+        try:
+            query = (
+                db.supabase.table("account_identities")
+                .update({"account_id": normalized_account_id})
+                .eq("provider", normalized_provider)
+                .eq("provider_user_id", normalized_provider_user_id)
+            )
+            if hasattr(query, "is_"):
+                query = query.is_("account_id", "null")
+            response = query.execute()
+            updated_rows = response.data or []
+            if updated_rows:
+                logger.warning(
+                    "register identity claimed lookup identity row provider=%s provider_user_id=%s account_id=%s",
+                    normalized_provider,
+                    normalized_provider_user_id,
+                    normalized_account_id,
+                )
+                return True, "bound"
+
+            refreshed_identity = AccountsService._load_identity_row(normalized_provider, normalized_provider_user_id)
+            refreshed_account_id = str(refreshed_identity.get("account_id") or "").strip() if refreshed_identity else ""
+            if refreshed_account_id:
+                logger.warning(
+                    "register identity observed concurrent binding provider=%s provider_user_id=%s existing_account_id=%s new_account_id=%s",
+                    normalized_provider,
+                    normalized_provider_user_id,
+                    refreshed_account_id,
+                    normalized_account_id,
+                )
+                return True, "already_registered"
+
+            logger.error(
+                "register identity could not claim existing identity row provider=%s provider_user_id=%s account_id=%s reason=no_rows_updated",
+                normalized_provider,
+                normalized_provider_user_id,
+                normalized_account_id,
+            )
+        except Exception as error:
+            logger.error(
+                "register identity repair failed provider=%s provider_user_id=%s account_id=%s error=%s",
+                normalized_provider,
+                normalized_provider_user_id,
+                normalized_account_id,
+                AccountsService._format_db_error(error),
+            )
+        return False, "failed"
+
+    @staticmethod
     def register_identity(provider: str, provider_user_id: str) -> Tuple[bool, str]:
         if not db.supabase:
             return False, "База данных недоступна"
@@ -1165,13 +1233,20 @@ class AccountsService:
         if provider not in ("discord", "telegram") or not provider_user_id:
             return False, "Некорректные параметры регистрации"
 
-        existing_account_id = AccountsService.resolve_account_id(provider, provider_user_id)
+        existing_identity = AccountsService._load_identity_row(provider, provider_user_id)
+        existing_account_id = str(existing_identity.get("account_id") or "").strip() if existing_identity else ""
         if existing_account_id:
             return True, "Уже зарегистрирован"
 
         account_id = AccountsService._create_account()
         if not account_id:
             return False, "Не удалось создать общий аккаунт"
+
+        if existing_identity:
+            bind_success, bind_status = AccountsService._bind_identity_to_account(provider, provider_user_id, account_id)
+            if bind_success:
+                return True, "Уже зарегистрирован" if bind_status == "already_registered" else "Регистрация завершена"
+            return False, "Не удалось восстановить существующую identity"
 
         payload = {
             "account_id": account_id,
@@ -1182,6 +1257,21 @@ class AccountsService:
             db.supabase.table("account_identities").insert(payload).execute()
             return True, "Регистрация завершена"
         except Exception as e:
+            if AccountsService._is_unique_violation(e):
+                conflicted_identity = AccountsService._load_identity_row(provider, provider_user_id)
+                conflicted_account_id = str(conflicted_identity.get("account_id") or "").strip() if conflicted_identity else ""
+                if conflicted_account_id:
+                    logger.warning(
+                        "register identity detected concurrent registration provider=%s provider_user_id=%s account_id=%s",
+                        provider,
+                        provider_user_id,
+                        conflicted_account_id,
+                    )
+                    return True, "Уже зарегистрирован"
+                if conflicted_identity:
+                    bind_success, bind_status = AccountsService._bind_identity_to_account(provider, provider_user_id, account_id)
+                    if bind_success:
+                        return True, "Уже зарегистрирован" if bind_status == "already_registered" else "Регистрация завершена"
             logger.error("register identity failed (%s:%s): %s", provider, provider_user_id, e)
             return False, "Не удалось создать привязку identity"
 
