@@ -11,6 +11,7 @@ from bot.services.ai_service import (
     _inject_dialog_memory_context,
     _inject_dialog_participants_context,
     _inject_identity_claim_context,
+    _inject_public_identity_context,
     _inject_prompt_attack_context,
     _inject_style_manipulation_context,
     _inject_user_context,
@@ -158,6 +159,16 @@ class GuiyAIGuardsTests(unittest.TestCase):
         self.assertTrue(_is_father_user("telegram", "321"))
         mock_resolve.assert_called_once_with("telegram", "321")
 
+    @patch.dict(
+        "os.environ",
+        {"GUIY_FATHER_ACCOUNT_IDS": "acc-1", "GUIY_FATHER_TELEGRAM_IDS": "321"},
+        clear=True,
+    )
+    @patch("bot.services.ai_service.AccountsService.resolve_account_id", return_value="acc-1")
+    def test_is_father_user_checks_shared_account_before_direct_alias(self, mock_resolve):
+        self.assertTrue(_is_father_user("telegram", "321"))
+        mock_resolve.assert_called_once_with("telegram", "321")
+
 
 
     @patch.dict("os.environ", {"GUIY_EMOCHKA_ACCOUNT_IDS": "acc-2"}, clear=True)
@@ -175,6 +186,23 @@ class GuiyAIGuardsTests(unittest.TestCase):
     def test_inject_user_context_for_father(self):
         prompt = _inject_user_context("base", provider="telegram", user_id="100")
         self.assertIn("это твой отец Эмочка", prompt)
+
+    @patch(
+        "bot.services.ai_service.AccountsService.get_public_identity_context",
+        return_value={
+            "custom_nick": "Капитан Бебра",
+            "display_name": "Captain Bebra",
+            "username": "captain_bebra",
+            "global_username": "captain.global",
+            "best_public_name": "Капитан Бебра",
+        },
+    )
+    def test_inject_public_identity_context_includes_public_names_only(self, _mock_context):
+        prompt = _inject_public_identity_context("base", provider="telegram", user_id="200")
+        self.assertIn("Капитан Бебра", prompt)
+        self.assertIn("display_name: Captain Bebra", prompt)
+        self.assertIn("username: @captain_bebra", prompt)
+        self.assertIn("global_username: captain.global", prompt)
 
 
     def test_inject_prompt_attack_context_flags_override_attempt(self):
@@ -249,25 +277,41 @@ class GuiyAIGuardsTests(unittest.TestCase):
         )
         self.assertIn("корректно подтвердил роль", prompt)
 
-    def test_inject_dialog_participants_context_tracks_recent_users(self):
+    @patch(
+        "bot.services.ai_service.AccountsService.get_public_identity_context",
+        side_effect=[
+            {"best_public_name": "Эмочка", "account_id": "acc-em", "name_source": "custom_nick", "nickname_source_found": True},
+            {"best_public_name": "Олег", "account_id": "acc-ol", "name_source": "display_name", "nickname_source_found": True},
+        ],
+    )
+    def test_inject_dialog_participants_context_tracks_recent_users_with_public_names(self, _mock_context):
         prompt = _inject_dialog_participants_context(
             "base",
             provider="telegram",
             conversation_id="chat-1",
             user_id="100",
         )
-        self.assertIn("Сейчас отвечает пользователю U1", prompt)
+        self.assertIn("Сейчас отвечает пользователю Эмочка", prompt)
         prompt = _inject_dialog_participants_context(
             "base",
             provider="telegram",
             conversation_id="chat-1",
             user_id="200",
         )
-        self.assertIn("U1", prompt)
-        self.assertIn("U2", prompt)
+        self.assertIn("Эмочка", prompt)
+        self.assertIn("Олег", prompt)
+        self.assertIn("Сейчас отвечает пользователю Олег", prompt)
 
     @patch("bot.services.ai_service.time.time", side_effect=[1000, 1001, 1405])
-    def test_inject_dialog_participants_context_expires_old_users(self, _mock_time):
+    @patch(
+        "bot.services.ai_service.AccountsService.get_public_identity_context",
+        side_effect=[
+            {"best_public_name": "Эмочка", "account_id": "acc-em", "name_source": "custom_nick", "nickname_source_found": True},
+            {"best_public_name": "Олег", "account_id": "acc-ol", "name_source": "display_name", "nickname_source_found": True},
+            {"best_public_name": "Обычный пользователь", "account_id": "acc-user", "name_source": "display_name", "nickname_source_found": True},
+        ],
+    )
+    def test_inject_dialog_participants_context_expires_old_users(self, _mock_context, _mock_time):
         _inject_dialog_participants_context(
             "base",
             provider="telegram",
@@ -286,8 +330,15 @@ class GuiyAIGuardsTests(unittest.TestCase):
             conversation_id="chat-ttl",
             user_id="333",
         )
-        self.assertIn("U1", prompt)
+        self.assertIn("Обычный пользователь", prompt)
+        self.assertNotIn("Эмочка", prompt)
         self.assertNotIn("111", prompt)
+
+    @patch.dict("os.environ", {"GUIY_OLEG_ACCOUNT_IDS": "oleg-acc", "GUIY_OLEG_TELEGRAM_IDS": "700"}, clear=True)
+    @patch("bot.services.ai_service.AccountsService.resolve_account_id", return_value="oleg-acc")
+    def test_lore_character_checks_shared_account_before_direct_alias_for_oleg(self, mock_resolve):
+        self.assertTrue(ai_service._is_lore_character_user("oleg", provider="telegram", user_id="700"))
+        mock_resolve.assert_called_once_with("telegram", "700")
 
 
     @patch("bot.services.ai_service.time.time", side_effect=[1000, 1001, 1002])
