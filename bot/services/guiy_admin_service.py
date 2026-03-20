@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from typing import Literal
 
 from bot.data import db
 from bot.services.accounts_service import AccountsService
@@ -25,7 +26,11 @@ GUIY_OWNER_REPLY_REQUIRED_MESSAGE = (
 )
 GUIY_OWNER_USAGE_TEXT = (
     "🛠️ Управление Гуем доступно только владельцу.\n"
+    "Зачем нужна регистрация профиля Гуя: она создаёт общий аккаунт самого бота, куда сохраняются никнейм, описание, Null's ID и отображаемые роли.\n"
+    "Что делает регистрация: находит identity бота по его platform user id и, если записи ещё нет, создаёт её без привязки к владельцу. Повторный запуск безопасен.\n"
+    "Что делать дальше: после регистрации откройте редактирование профиля и заполните нужные поля.\n\n"
     "Форматы:\n"
+    "• /guiy_owner register_profile — зарегистрировать общий профиль Гуя перед первым редактированием\n"
     "• /guiy_owner say <текст> — отправить новое сообщение от лица Гуя\n"
     "• /guiy_owner reply <текст> — ответить от лица Гуя именно на сообщение Гуя\n"
     "• /guiy_owner profile <поле> | <значение> — изменить профиль Гуя\n"
@@ -33,6 +38,172 @@ GUIY_OWNER_USAGE_TEXT = (
     "Если значение нужно очистить, после | оставьте пусто или передайте -"
 )
 GUIY_OWNER_ALLOWED_PROFILE_FIELDS = {"custom_nick", "description", "nulls_brawl_id", "visible_roles"}
+
+
+@dataclass(slots=True)
+class GuiyProfileBootstrapResult:
+    ok: bool
+    created: bool
+    status: Literal["created", "already_exists", "error"]
+    provider: str
+    bot_user_id: str | None
+    guiy_account_id: str | None
+    message: str
+
+
+def bootstrap_guiy_profile(
+    *,
+    provider: str | None,
+    bot_user_id: str | int | None,
+) -> GuiyProfileBootstrapResult:
+    normalized_provider = (provider or "").strip().lower()
+    normalized_bot_user_id = str(bot_user_id).strip() if bot_user_id is not None else ""
+
+    if normalized_provider not in {"telegram", "discord"} or not normalized_bot_user_id:
+        logger.error(
+            "guiy profile bootstrap invalid parameters provider=%s bot_user_id=%s",
+            normalized_provider or None,
+            normalized_bot_user_id or None,
+        )
+        return GuiyProfileBootstrapResult(
+            ok=False,
+            created=False,
+            status="error",
+            provider=normalized_provider,
+            bot_user_id=normalized_bot_user_id or None,
+            guiy_account_id=None,
+            message="❌ Не удалось определить профиль Гуя для регистрации.",
+        )
+
+    try:
+        existing_account_id = AccountsService.resolve_account_id(normalized_provider, normalized_bot_user_id)
+    except Exception:
+        logger.exception(
+            "guiy profile bootstrap resolve failed provider=%s bot_user_id=%s",
+            normalized_provider,
+            normalized_bot_user_id,
+        )
+        return GuiyProfileBootstrapResult(
+            ok=False,
+            created=False,
+            status="error",
+            provider=normalized_provider,
+            bot_user_id=normalized_bot_user_id,
+            guiy_account_id=None,
+            message="❌ Не удалось проверить регистрацию профиля Гуя. Проверьте логи и БД.",
+        )
+
+    if existing_account_id:
+        logger.info(
+            "guiy profile bootstrap already registered provider=%s bot_user_id=%s account_id=%s",
+            normalized_provider,
+            normalized_bot_user_id,
+            existing_account_id,
+        )
+        return GuiyProfileBootstrapResult(
+            ok=True,
+            created=False,
+            status="already_exists",
+            provider=normalized_provider,
+            bot_user_id=normalized_bot_user_id,
+            guiy_account_id=str(existing_account_id),
+            message=(
+                "✅ Профиль Гуя уже зарегистрирован.\n"
+                "Теперь можно открыть редактирование профиля и изменить нужные поля."
+            ),
+        )
+
+    try:
+        success, response = AccountsService.register_identity(normalized_provider, normalized_bot_user_id)
+    except Exception:
+        logger.exception(
+            "guiy profile bootstrap register failed provider=%s bot_user_id=%s",
+            normalized_provider,
+            normalized_bot_user_id,
+        )
+        return GuiyProfileBootstrapResult(
+            ok=False,
+            created=False,
+            status="error",
+            provider=normalized_provider,
+            bot_user_id=normalized_bot_user_id,
+            guiy_account_id=None,
+            message="❌ Не удалось зарегистрировать профиль Гуя. Проверьте логи и БД.",
+        )
+
+    if not success:
+        logger.error(
+            "guiy profile bootstrap register returned error provider=%s bot_user_id=%s response=%s",
+            normalized_provider,
+            normalized_bot_user_id,
+            response,
+        )
+        return GuiyProfileBootstrapResult(
+            ok=False,
+            created=False,
+            status="error",
+            provider=normalized_provider,
+            bot_user_id=normalized_bot_user_id,
+            guiy_account_id=None,
+            message=(
+                "❌ Не удалось зарегистрировать профиль Гуя. "
+                f"Причина: {response or 'смотри логи сервиса'}."
+            ),
+        )
+
+    try:
+        registered_account_id = AccountsService.resolve_account_id(normalized_provider, normalized_bot_user_id)
+    except Exception:
+        logger.exception(
+            "guiy profile bootstrap resolve after register failed provider=%s bot_user_id=%s",
+            normalized_provider,
+            normalized_bot_user_id,
+        )
+        return GuiyProfileBootstrapResult(
+            ok=False,
+            created=False,
+            status="error",
+            provider=normalized_provider,
+            bot_user_id=normalized_bot_user_id,
+            guiy_account_id=None,
+            message="❌ Профиль Гуя зарегистрирован, но не удалось подтвердить account_id. Проверьте логи и БД.",
+        )
+
+    if not registered_account_id:
+        logger.error(
+            "guiy profile bootstrap missing account after register provider=%s bot_user_id=%s register_response=%s",
+            normalized_provider,
+            normalized_bot_user_id,
+            response,
+        )
+        return GuiyProfileBootstrapResult(
+            ok=False,
+            created=False,
+            status="error",
+            provider=normalized_provider,
+            bot_user_id=normalized_bot_user_id,
+            guiy_account_id=None,
+            message="❌ Профиль Гуя зарегистрирован, но account_id не найден. Проверьте логи и БД.",
+        )
+
+    logger.info(
+        "guiy profile bootstrap registered provider=%s bot_user_id=%s account_id=%s",
+        normalized_provider,
+        normalized_bot_user_id,
+        registered_account_id,
+    )
+    return GuiyProfileBootstrapResult(
+        ok=True,
+        created=True,
+        status="created",
+        provider=normalized_provider,
+        bot_user_id=normalized_bot_user_id,
+        guiy_account_id=str(registered_account_id),
+        message=(
+            "✅ Профиль Гуя зарегистрирован.\n"
+            "Теперь можно открыть редактирование профиля и изменить нужные поля."
+        ),
+    )
 
 
 @dataclass(slots=True)
