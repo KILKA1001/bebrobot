@@ -596,7 +596,7 @@ def _render_actions_text(section: str | None = None, *, hidden_sections: tuple[s
         "Нажми кнопку, затем следуй подсказкам на экране.\n"
         "Разделитель параметров: <code>|</code>.\n"
         "Для отмены ввода отправь: <code>отмена</code>.\n\n"
-        "Для create/move/order после выбора категории бот покажет текущий порядок ролей и отдельный экран выбора позиции.\n"
+        "Для create/move/order сначала выбирай категорию. Затем бот подскажет следующие параметры роли или покажет порядок ролей в выбранной категории.\n"
         "Для пользовательского интерфейса старайся заполнять и описание, и поле «как получить» — так бот лучше объясняет роль людям.\n"
         "Если позицию не менять, роль будет добавлена последней.\n\n"
         f"{_role_catalog_note()}"
@@ -639,8 +639,9 @@ def _operation_hint(operation: str) -> str:
         "category_create": "Отправь: <code>Название категории | position(опционально)</code>",
         "category_order": "Отправь: <code>Название категории | position</code>",
         "category_delete": "Отправь: <code>Название категории</code>",
-        "role_create": "Отправь: <code>Название роли | Категория | Описание | Как получить(опц) | discord_role_id(опц) | position(опц)</code>. Описание и способ получения можно оставить пустыми. Если позицию не указывать, роль будет добавлена последней.",
-        "role_create_enter_name": "Отправь: <code>Название роли | Описание | Как получить(опц) | discord_role_id(опц)</code>. Категория и позиция уже выбраны кнопками.",
+        "role_create": "Сначала выбери категорию кнопкой. Потом отправь: <code>Название роли | Описание | Как получить(опц) | discord_role_id(опц) | position(опц)</code>. Описание и способ получения можно оставить пустыми. Если позицию не указывать, роль будет добавлена последней.",
+        "role_create_enter_name": "Отправь: <code>Название роли | Описание | Как получить(опц) | discord_role_id(опц) | position(опц)</code>. Категория уже выбрана кнопками, осталось заполнить параметры роли.",
+        "role_create_new_category_name": "Отправь только <code>Название новой категории</code>. После этого бот сразу попросит параметры роли в этой категории.",
         "role_edit_description": "Отправь: <code>Название роли | Описание</code>. Так роль будет понятнее пользователям прямо в интерфейсе.",
         "role_edit_acquire_hint": "Отправь: <code>Название роли | Как получить</code>. Пиши коротко и понятно: через активность, выдачу админа, турнир, заявку и т.д.",
         "role_move": "Отправь: <code>Название роли | Категория | position(опц)</code>. Если позицию не указывать, роль будет добавлена последней. Внешнюю Discord-роль можно переместить.",
@@ -694,6 +695,52 @@ def _parse_role_create_metadata_args(args: list[str]) -> dict[str, Any]:
         "discord_role_id": discord_role_id,
         "position": position,
     }
+
+
+def _parse_role_create_selected_category_args(args: list[str], *, category: str) -> dict[str, Any]:
+    role_name = args[0] if args else ""
+    description = args[1] if len(args) > 1 else None
+    extras = list(args[2:]) if len(args) > 2 else []
+
+    position = None
+    if extras and str(extras[-1]).lstrip("-").isdigit():
+        position = int(str(extras.pop()))
+
+    acquire_hint = None
+    discord_role_id = None
+    if len(extras) >= 2:
+        acquire_hint = extras[0] or None
+        discord_role_id = extras[1] or None
+    elif len(extras) == 1:
+        if _looks_like_discord_role_id(extras[0]):
+            discord_role_id = extras[0]
+        else:
+            acquire_hint = extras[0] or None
+
+    return {
+        "role_name": role_name,
+        "category": category,
+        "description": description,
+        "acquire_hint": acquire_hint,
+        "discord_role_id": discord_role_id,
+        "position": position,
+    }
+
+
+def _log_role_create_category_selection(
+    *,
+    actor_id: int | None,
+    category: str,
+    source: str,
+    created_new: bool = False,
+) -> None:
+    logger.info(
+        "roles_admin role_create category selected actor_id=%s category=%s created_new=%s source=%s",
+        actor_id,
+        category,
+        created_new,
+        source,
+    )
 
 
 def _format_role_line(role: dict[str, object], *, numbered: int | None = None) -> str:
@@ -1040,7 +1087,13 @@ def _build_position_choice_keyboard(actor_id: int, operation: str, preview: dict
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _build_pick_category_keyboard(grouped: list[dict], actor_id: int, operation: str) -> InlineKeyboardMarkup:
+def _build_pick_category_keyboard(
+    grouped: list[dict],
+    actor_id: int,
+    operation: str,
+    *,
+    allow_create_new: bool = False,
+) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for idx, item in enumerate(grouped[:20]):
         rows.append([
@@ -1049,6 +1102,15 @@ def _build_pick_category_keyboard(grouped: list[dict], actor_id: int, operation:
                 callback_data=f"roles_admin:{actor_id}:pick_category:{operation}:{idx}",
             )
         ])
+    if allow_create_new and operation == "role_create":
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🆕 Создать новую категорию и продолжить",
+                    callback_data=f"roles_admin:{actor_id}:role_create_new_category",
+                )
+            ]
+        )
     back_section = _section_for_operation(operation)
     rows.append(
         [
@@ -1163,7 +1225,7 @@ def _render_home_text(*, hidden_sections: tuple[str, ...] = tuple()) -> str:
         "Главный экран разделён на <b>Категории</b>, <b>Роли</b> и <b>Пользователи</b>, чтобы быстрее попадать в нужный блок.\n"
         "Внутри каждого раздела бот показывает только относящиеся к нему действия.\n"
         "Если кнопки не срабатывают, открой <b>🆘 Не работают кнопки?</b> — там резервные команды и примеры.\n"
-        "Для create/move/order бот показывает роли внутри выбранной категории и даёт выбрать точную позицию вставки.\n"
+        "Для role_create сначала выбирай категорию, а уже потом вводи параметры роли. Для move/order бот показывает роли внутри выбранной категории и помогает выбрать позицию.\n"
         "Если позицию не задавать, роль будет добавлена в конец категории.\n"
         "\nНужны пояснения по функциям? Нажми кнопку <b>ℹ️ Что делает каждая функция</b>.\n\n"
         "Как указывать пользователя: в ЛС — <code>@username</code> / <code>username</code>, в группе — reply. "
@@ -1183,15 +1245,16 @@ def _render_fallback_text() -> str:
         "<code>/roles_admin category_order &lt;name&gt; &lt;position&gt;</code>\n"
         "<code>/roles_admin category_delete &lt;name&gt;</code>\n\n"
         "<b>Роли</b>\n"
-        "<code>/roles_admin role_create &lt;name&gt; | &lt;category&gt; | &lt;description&gt; | [&lt;как получить&gt;] | [discord_role_id] | [position]</code>\n"
+        "<code>/roles_admin role_create &lt;category&gt; | &lt;name&gt; | &lt;description&gt; | [&lt;как получить&gt;] | [discord_role_id] | [position]</code>\n"
         "<code>/roles_admin role_edit_description &lt;name&gt; | &lt;description&gt;</code>\n"
         "<code>/roles_admin role_edit_acquire_hint &lt;name&gt; | &lt;как получить&gt;</code>\n"
         "<code>/roles_admin role_move &lt;name&gt; &lt;category&gt; [position]</code>\n"
         "<code>/roles_admin role_order &lt;role_name&gt; &lt;category&gt; &lt;position&gt;</code>\n"
         "<code>/roles_admin role_delete &lt;name&gt;</code>\n"
+        "Новый порядок для create: сначала категория, затем название роли и её параметры. В кнопочном режиме можно выбрать существующую категорию или нажать «Создать новую категорию и продолжить».\n"
         "Описание и поле «как получить» можно оставить пустыми: тогда бот покажет понятную заглушку пользователю.\n"
         "Если не указывать <code>position</code> в <code>role_create</code> или <code>role_move</code>, роль будет добавлена последней.\n"
-        "Кнопочный режим показывает список ролей категории и отдельный экран выбора точной позиции вставки.\n"
+        "Кнопочный режим для create сначала открывает выбор категории, а затем просит ввести только параметры роли для уже выбранной категории.\n"
         "Внешние Discord-роли не удаляются из каталога: их можно только перемещать и сортировать.\n\n"
         "<b>Пользователи</b>\n"
         "<code>/roles_admin user_roles [reply|@username|username|tg:@username|ds:username|id]</code>\n"
@@ -1214,13 +1277,15 @@ def _render_help_text() -> str:
         "• <code>category_order &lt;name&gt; &lt;position&gt;</code> — выставить порядок категории (<b>только Глава клуба/Главный вице</b>).\n"
         "• <code>category_delete &lt;name&gt;</code> — удалить категорию (роли уйдут в 'Без категории', <b>только Глава клуба/Главный вице</b>).\n\n"
         "<b>Роли</b>\n"
-        "• <code>role_create &lt;name&gt; | &lt;category&gt; | &lt;description&gt; | [&lt;как получить&gt;] | [discord_role_id] | [position]</code> — добавить роль в каталог.\n"
+        "• <code>role_create &lt;category&gt; | &lt;name&gt; | &lt;description&gt; | [&lt;как получить&gt;] | [discord_role_id] | [position]</code> — добавить роль в каталог.\n"
         "• <code>role_edit_description &lt;name&gt; | &lt;description&gt;</code> — обновить описание роли без перемещения.\n"
         "• <code>role_edit_acquire_hint &lt;name&gt; | &lt;как получить&gt;</code> — обновить инструкцию, как получить роль.\n"
         "• <code>role_move &lt;name&gt; &lt;category&gt; [position]</code> — переместить роль в другую категорию.\n"
         "• <code>role_order &lt;role_name&gt; &lt;category&gt; &lt;position&gt;</code> — выставить очередь роли в категории.\n"
         "• <code>role_delete &lt;name&gt;</code> — удалить роль из каталога. Внешние Discord-роли удалять нельзя: только move/order.\n"
-        "• После выбора категории бот показывает текущий список ролей и отдельный экран выбора позиции.\n"
+        "• Новый порядок для создания роли: сначала категория, затем название роли, описание, способ получения и опциональные параметры.\n"
+        "• В кнопочном режиме можно выбрать существующую категорию или, если хватает прав, создать новую категорию и продолжить без выхода из сценария.\n"
+        "• После выбора категории бот показывает понятную подсказку, какие поля ещё нужно отправить. Для move/order бот также показывает текущий список ролей и выбор позиции.\n"
         "• Описание роли и блок «как получить» видны в карточках и списках, чтобы пользователи сразу понимали назначение роли и путь к ней.\n"
         "• Если позицию не указывать в <code>role_create</code> или <code>role_move</code>, роль будет добавлена последней.\n\n"
         "<b>Роли пользователей</b>\n"
@@ -1402,10 +1467,15 @@ async def roles_admin_command(message: Message) -> None:
             pipe_args = _parse_pipe_args(raw_payload)
             if len(pipe_args) < 2:
                 await message.answer(
-                    "❌ Формат: /roles_admin role_create <Название роли> | <Категория> | <Описание> | [Как получить] | [discord_role_id] | [position]"
+                    "❌ Формат: /roles_admin role_create <Категория> | <Название роли> | <Описание> | [Как получить] | [discord_role_id] | [position]"
                 )
                 return
-            parsed = _parse_role_create_metadata_args(pipe_args)
+            parsed = _parse_role_create_metadata_args([pipe_args[1], pipe_args[0], *pipe_args[2:]])
+            _log_role_create_category_selection(
+                actor_id=message.from_user.id if message.from_user else None,
+                category=parsed["category"],
+                source="fallback_text_command",
+            )
             ok = RoleManagementService.create_role(
                 parsed["role_name"],
                 parsed["category"],
@@ -1791,8 +1861,18 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 return
             if operation in {"category_order", "category_delete", "role_create"}:
                 await _safe_edit_message_text(callback, 
-                    "Выберите категорию:",
-                    reply_markup=_build_pick_category_keyboard(grouped, owner_id, operation),
+                    (
+                        "Сначала выберите категорию.\n"
+                        "После этого бот попросит только параметры роли."
+                        if operation == "role_create"
+                        else "Выберите категорию:"
+                    ),
+                    reply_markup=_build_pick_category_keyboard(
+                        grouped,
+                        owner_id,
+                        operation,
+                        allow_create_new=actor_can_manage_categories,
+                    ),
                 )
                 await callback.answer()
                 return
@@ -1891,17 +1971,29 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 await callback.answer()
                 return
             if operation == "role_create":
-                preview = RoleManagementService.get_category_role_positioning(category_name)
+                _log_role_create_category_selection(
+                    actor_id=callback.from_user.id if callback.from_user else None,
+                    category=category_name,
+                    source="button_existing_category",
+                )
                 _PENDING_ACTIONS[callback.from_user.id] = PendingRolesAdminAction(
-                    operation="role_create_pick_position",
+                    operation="role_create_enter_name",
                     created_at=time.time(),
                     payload={"category": category_name},
                 )
                 await _safe_edit_message_text(
                     callback,
-                    _render_position_picker_text(mode="create", category_name=category_name, preview=preview),
+                    (
+                        f"Категория выбрана: <b>{category_name}</b>\n\n"
+                        "Теперь отправь: <code>Название роли | Описание | Как получить(опц) | discord_role_id(опц) | position(опц)</code>\n"
+                        "Сначала идёт название роли, затем описание, способ получения и остальные опциональные параметры."
+                    ),
                     parse_mode="HTML",
-                    reply_markup=_build_position_choice_keyboard(owner_id, "role_create_position", preview),
+                    reply_markup=_build_actions_keyboard(
+                        owner_id,
+                        "roles",
+                        can_manage_categories=actor_can_manage_categories,
+                    ),
                 )
                 await callback.answer()
                 return
@@ -2287,8 +2379,38 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     parse_mode="HTML",
                     reply_markup=_build_pick_category_keyboard(grouped, owner_id, next_operation),
                 )
-                await callback.answer()
+            await callback.answer()
+            return
+
+        if action == "role_create_new_category":
+            if not actor_can_manage_categories:
+                logger.warning(
+                    "roles_admin role_create new category denied callback_data=%s actor_id=%s",
+                    callback.data,
+                    callback.from_user.id,
+                )
+                await callback.answer("Категориями может управлять только Глава клуба или Главный вице.", show_alert=True)
                 return
+            _PENDING_ACTIONS[callback.from_user.id] = PendingRolesAdminAction(
+                operation="role_create_new_category_name",
+                created_at=time.time(),
+            )
+            await _safe_edit_message_text(
+                callback,
+                (
+                    "Сначала создадим категорию для новой роли.\n\n"
+                    "Отправь только <code>Название новой категории</code>.\n"
+                    "После создания бот сразу попросит параметры роли в этой категории."
+                ),
+                parse_mode="HTML",
+                reply_markup=_build_actions_keyboard(
+                    owner_id,
+                    "roles",
+                    can_manage_categories=actor_can_manage_categories,
+                ),
+            )
+            await callback.answer()
+            return
 
         if action == "set_position":
             op = parts[3] if len(parts) > 3 else ""
@@ -2313,34 +2435,6 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                         can_manage_categories=actor_can_manage_categories,
                     ),
                 )
-                return
-            if op == "role_create_position":
-                if not pending or pending.operation != "role_create_pick_position" or not pending.payload:
-                    await callback.answer("Сессия устарела, начните заново", show_alert=True)
-                    return
-                category_name = pending.payload.get("category", "")
-                preview = RoleManagementService.get_category_role_positioning(category_name)
-                new_pos = int(value) if value.lstrip("-").isdigit() else int(preview.get("computed_last_position", 0))
-                pending.operation = "role_create_enter_name"
-                pending.payload["position"] = str(new_pos)
-                pending.created_at = time.time()
-                _PENDING_ACTIONS[callback.from_user.id] = pending
-                await _safe_edit_message_text(
-                    callback,
-                    (
-                        f"Категория: <b>{category_name}</b>\n"
-                        f"Позиция: <b>{preview.get('insertion_positions', [])[new_pos]['description'] if preview.get('insertion_positions') else preview.get('position_description')}</b>\n\n"
-                        "Теперь отправь: <code>Название роли | Описание | discord_role_id(опц)</code>\n"
-                        "Если описание или Discord role id не нужны, можно оставить только название."
-                    ),
-                    parse_mode="HTML",
-                    reply_markup=_build_actions_keyboard(
-                        owner_id,
-                        "roles",
-                        can_manage_categories=actor_can_manage_categories,
-                    ),
-                )
-                await callback.answer()
                 return
             if op == "role_position":
                 if not pending or pending.operation != "role_pick_position" or not pending.payload:
@@ -2592,9 +2686,14 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
             await message.answer("✅ Категория удалена." if ok else "❌ Не удалось удалить категорию (смотри логи).")
         elif op == "role_create":
             if len(args) < 2:
-                await message.answer("❌ Формат: Роль | Категория | Описание | Как получить(опц) | discord_role_id(опц) | position(опц)")
+                await message.answer("❌ Формат: Категория | Роль | Описание | Как получить(опц) | discord_role_id(опц) | position(опц)")
                 return
-            parsed = _parse_role_create_metadata_args(args)
+            parsed = _parse_role_create_metadata_args([args[1], args[0], *args[2:]])
+            _log_role_create_category_selection(
+                actor_id=message.from_user.id if message.from_user else None,
+                category=parsed["category"],
+                source="button_text_fallback",
+            )
             ok = RoleManagementService.create_role(
                 parsed["role_name"],
                 parsed["category"],
@@ -2639,22 +2738,69 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                 await message.answer("❌ Сессия выбора категории устарела. Начните заново: /roles_admin")
                 return
             if not args:
-                await message.answer("❌ Формат: Название роли | Описание | Как получить(опц) | discord_role_id(опц)")
+                await message.answer("❌ Формат: Название роли | Описание | Как получить(опц) | discord_role_id(опц) | position(опц)")
                 return
             category = str(pending.payload.get("category") or "")
-            position = int(str(pending.payload.get("position") or "0"))
-            parsed = _parse_role_create_metadata_args([args[0], category, args[1] if len(args) > 1 else "", *args[2:]])
+            parsed = _parse_role_create_selected_category_args(args, category=category)
+            _log_role_create_category_selection(
+                actor_id=message.from_user.id if message.from_user else None,
+                category=category,
+                source="button_selected_category",
+                created_new=bool(pending.payload.get("created_new_category")),
+            )
             ok = RoleManagementService.create_role(
                 parsed["role_name"],
                 category,
                 description=parsed["description"],
                 acquire_hint=parsed["acquire_hint"],
                 discord_role_id=parsed["discord_role_id"],
-                position=position,
+                position=parsed["position"],
                 actor_id=str(message.from_user.id) if message.from_user else None,
                 operation="role_create",
             )
             await message.answer("✅ Роль создана." if ok else "❌ Не удалось создать роль (смотри логи).")
+        elif op == "role_create_new_category_name":
+            if not _can_manage_categories("telegram", str(message.from_user.id)):
+                logger.warning(
+                    "roles_admin role_create new category denied actor_id=%s source=%s",
+                    message.from_user.id,
+                    "pending_message",
+                )
+                await message.answer("❌ Категориями может управлять только Глава клуба или Главный вице.")
+                return
+            if not args or not args[0]:
+                await message.answer("❌ Формат: Название новой категории")
+                return
+            category_name = args[0]
+            ok = RoleManagementService.create_category(category_name, 0)
+            if not ok:
+                logger.error(
+                    "roles_admin role_create new category failed actor_id=%s category=%s",
+                    message.from_user.id,
+                    category_name,
+                )
+                await message.answer("❌ Не удалось создать категорию (смотри логи).")
+                return
+            _log_role_create_category_selection(
+                actor_id=message.from_user.id if message.from_user else None,
+                category=category_name,
+                source="button_new_category",
+                created_new=True,
+            )
+            _PENDING_ACTIONS[message.from_user.id] = PendingRolesAdminAction(
+                operation="role_create_enter_name",
+                created_at=time.time(),
+                payload={"category": category_name, "created_new_category": True},
+            )
+            keep_pending = True
+            await message.answer(
+                (
+                    f"✅ Категория <b>{category_name}</b> создана и выбрана.\n\n"
+                    "Теперь отправь: <code>Название роли | Описание | Как получить(опц) | discord_role_id(опц) | position(опц)</code>\n"
+                    "Сначала идёт название роли, затем описание и инструкция, как получить роль."
+                ),
+                parse_mode="HTML",
+            )
         elif op == "role_move":
             if len(args) < 2:
                 await message.answer("❌ Формат: Роль | Категория | position(опц)")
