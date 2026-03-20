@@ -268,6 +268,10 @@ class TelegramRolesAdminTargetResolutionTests(unittest.TestCase):
         self.assertIn("role_edit_acquire_hint", _render_fallback_text())
         self.assertIn("Описание роли", _render_help_text())
         self.assertIn("как получить", _render_help_text())
+        self.assertIn("С чего начать", _render_home_text())
+        self.assertIn("Подход 1", _render_home_text())
+        self.assertIn("Подход 2", _render_home_text())
+        self.assertIn("выдай или сними роль", _render_help_text())
 
     def test_home_text_explains_hidden_buttons(self):
         text = _render_home_text(hidden_sections=("categories",))

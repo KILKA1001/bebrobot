@@ -65,10 +65,30 @@ class DiscordRolesAdminTests(unittest.IsolatedAsyncioTestCase):
         embed = roles_admin._rolesadmin_help_embed(visibility=visibility)
 
         field_names = [field.name for field in embed.fields]
+        self.assertIn("С чего начать", field_names)
         self.assertNotIn("Категории", field_names)
         self.assertIn("Роли", field_names)
         self.assertIn("Пользователи", field_names)
         self.assertIn("Некоторые кнопки скрыты", embed.description)
+        self.assertIn("сначала настрой каталог", embed.description)
+
+    def test_rolesadmin_help_embed_describes_start_order(self):
+        visibility = roles_admin.RolesAdminVisibilityContext(
+            actor_level=100,
+            actor_titles=("Глава клуба",),
+            can_manage_categories=True,
+            can_manage_roles=True,
+            hidden_sections=(),
+        )
+
+        embed = roles_admin._rolesadmin_help_embed(visibility=visibility)
+
+        self.assertEqual(embed.fields[0].name, "С чего начать")
+        self.assertIn("Подход 1", embed.fields[0].value)
+        self.assertIn("Подход 2", embed.fields[0].value)
+        self.assertIn("сначала создай категорию", embed.fields[1].value)
+        self.assertIn("создай роль", embed.fields[2].value)
+        self.assertIn("выдаче или снятию роли", embed.fields[3].value)
 
     def test_rolesadmin_help_view_hides_category_button_without_permission(self):
         visibility = roles_admin.RolesAdminVisibilityContext(

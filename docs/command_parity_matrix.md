@@ -9,7 +9,7 @@ This matrix reflects the current command parity between Discord and Telegram imp
 - `bot/telegram_bot/main.py`
 - `bot/telegram_bot/commands/linking.py`
 
-> **Definition of done rule:** Any new user-facing command in Discord or Telegram is considered complete only if this matrix is updated in the same change.
+> **Definition of done rule:** Any new user-facing command in Discord or Telegram is considered complete only if this matrix is updated in the same change. Help, onboarding, fallback тексты и сценарии первого запуска тоже входят в definition of done, если они меняют пользовательский путь команды.
 
 | Domain | Discord command | Telegram command | Parity level | Notes |
 |---|---|---|---|---|
@@ -17,13 +17,13 @@ This matrix reflects the current command parity between Discord and Telegram imp
 | Account linking | `/profile` | `/profile` | full | Profile view exists on both platforms (UX details differ per platform). |
 | Account linking | `/link` | `/link` | full | Code-based linking command is present in both runtimes. |
 | Account linking | `/link_telegram` | `/link_discord` | partial | Same linking flow stage (generate link code in the opposite client), but command naming differs by platform perspective. |
-| Utility | `/helpy` | `/helpy` | partial | Both expose help, but Discord uses richer interactive help UI while Telegram returns text help. |
-| Roles admin | `/rolesadmin ...` | `/roles_admin ...` | partial | CRUD категорий/ролей и просмотр/выдача/снятие ролей доступны в обоих рантаймах; Telegram и Discord теперь одинаково показывают текущий список ролей категории и рассчитанную позицию вставки для create/move/order, а в Discord дополнительно есть синхронизация с Discord role id при выдаче/снятии. |
+| Utility | `/helpy` | `/helpy` | partial | Both expose help; onboarding order for roles now matches (`/roles` first, then acquisition method / next step), but Discord still uses interactive embeds while Telegram returns text help. |
+| Roles admin | `/rolesadmin ...` | `/roles_admin ...` | partial | CRUD категорий/ролей и просмотр/выдача/снятие ролей доступны в обоих рантаймах; help/onboarding/fallback тексты теперь выровнены по одному двухшаговому сценарию: подход 1 — настрой каталог (категория → роль → описание/способ получения), подход 2 — выдай/сними роль пользователю. Telegram и Discord одинаково объясняют этот порядок, а в Discord дополнительно есть синхронизация с Discord role id при выдаче/снятии. |
 | Points | `/addpoints` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Points | `/removepoints` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Points | `/leaderboard` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Points | `/history` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
-| Points | `/roles` | `/roles` | full | Unified public roles catalog is available in both runtimes: roles are grouped by category and show description, acquisition method, and acquisition hint; Discord uses embeds, Telegram uses HTML text with the same data. |
+| Points | `/roles` | `/roles` | full | Unified public roles catalog is available in both runtimes: roles are grouped by category and show description, acquisition method, and acquisition hint; both versions now start with the same onboarding block explaining what roles are, where to read acquisition info, and which roles are manual vs automatic. |
 | Points | `/activities` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Points | `/undo` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Points | `/awardmonthtop` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
