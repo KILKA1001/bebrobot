@@ -25,6 +25,9 @@ router = Router()
 _ROLES_PAGE_SIZE = 5
 _MAX_ROLE_BUTTONS = 8
 _PENDING_TTL_SECONDS = 300
+_TELEGRAM_MESSAGE_LIMIT = 4096
+_LIST_ROLE_DESCRIPTION_LIMIT = 180
+_LIST_ROLE_ACQUIRE_HINT_LIMIT = 180
 _SECTION_LABELS = {
     "categories": "Категории",
     "roles": "Роли",
@@ -806,6 +809,26 @@ def _format_role_line(role: dict[str, object], *, numbered: int | None = None) -
     return f"{prefix}{role['name']}{suffix}{external_note}{description_note}{acquire_hint_note}"
 
 
+def _truncate_plain_text(value: str, limit: int) -> str:
+    text = str(value or "").strip()
+    if limit <= 0 or len(text) <= limit:
+        return text
+    if limit <= 1:
+        return "…"
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _format_role_line_for_list(role: dict[str, object]) -> str:
+    trimmed_role = dict(role)
+    trimmed_role["description"] = _truncate_plain_text(
+        str(role.get("description") or ""),
+        _LIST_ROLE_DESCRIPTION_LIMIT,
+    )
+    acquire_hint = str(role.get("acquire_hint") or "").strip() or USER_ACQUIRE_HINT_PLACEHOLDER
+    trimmed_role["acquire_hint"] = _truncate_plain_text(acquire_hint, _LIST_ROLE_ACQUIRE_HINT_LIMIT)
+    return _format_role_line(trimmed_role)
+
+
 def _is_pending_action_expired(pending: PendingRolesAdminAction) -> bool:
     return (time.time() - pending.created_at) > _PENDING_TTL_SECONDS
 
@@ -1405,6 +1428,15 @@ async def _safe_edit_message_text(callback: CallbackQuery, *args, **kwargs) -> b
                 callback.from_user.id if callback.from_user else None,
             )
             return False
+        if "message_too_long" in str(error).lower():
+            text = args[0] if args else kwargs.get("text")
+            logger.error(
+                "roles_admin edit rejected by telegram: message too long callback_data=%s actor_id=%s text_len=%s preview=%r",
+                callback.data,
+                callback.from_user.id if callback.from_user else None,
+                len(str(text or "")),
+                str(text or "")[:500],
+            )
         raise
 
 def _render_list_text(grouped: list[dict], page: int) -> str:
@@ -1414,18 +1446,58 @@ def _render_list_text(grouped: list[dict], page: int) -> str:
     total_pages = max((len(grouped) - 1) // _ROLES_PAGE_SIZE + 1, 1)
 
     lines = [f"🧩 <b>Роли по категориям</b> (стр. {safe_page + 1}/{total_pages})"]
+    footer = "\nНажми на категорию ниже для действий (удаление категории/ролей)."
+    reserved_tail = len(footer) + 128
     if not page_items:
         lines.append("\n📭 Категории отсутствуют.")
     for item in page_items:
-        lines.append(f"\n• <i>{item['category']}</i>")
+        category_lines = [f"\n• <i>{item['category']}</i>"]
         roles = item.get("roles", [])
         if not roles:
-            lines.append("  • —")
+            category_lines.append("  • —")
+            candidate = "\n".join(lines + category_lines) + footer
+            if len(candidate) <= _TELEGRAM_MESSAGE_LIMIT:
+                lines.extend(category_lines)
             continue
+        omitted_roles = 0
         for role in roles:
-            lines.append("  " + _format_role_line(role))
+            role_line = "  " + _format_role_line_for_list(role)
+            candidate_lines = category_lines + [role_line]
+            candidate = "\n".join(lines + candidate_lines) + footer
+            if len(candidate) > (_TELEGRAM_MESSAGE_LIMIT - reserved_tail):
+                omitted_roles = len(roles) - (len(category_lines) - 1)
+                break
+            category_lines.append(role_line)
 
-    lines.append("\nНажми на категорию ниже для действий (удаление категории/ролей).")
+        if omitted_roles > 0:
+            summary_line = (
+                f"  …ещё {omitted_roles} ролей скрыто в списке, "
+                "открой категорию кнопкой ниже для полного просмотра и действий."
+            )
+            summary_candidate = "\n".join(lines + category_lines + [summary_line]) + footer
+            if len(summary_candidate) <= _TELEGRAM_MESSAGE_LIMIT:
+                category_lines.append(summary_line)
+            logger.warning(
+                "roles_admin list text truncated actor_page=%s category=%s total_roles=%s rendered_roles=%s hidden_roles=%s",
+                safe_page,
+                item.get("category"),
+                len(roles),
+                len(category_lines) - 1,
+                omitted_roles,
+            )
+
+        candidate = "\n".join(lines + category_lines) + footer
+        if len(candidate) > _TELEGRAM_MESSAGE_LIMIT:
+            logger.warning(
+                "roles_admin list text reached telegram limit before category render page=%s category=%s current_len=%s",
+                safe_page,
+                item.get("category"),
+                len("\n".join(lines)),
+            )
+            break
+        lines.extend(category_lines)
+
+    lines.append(footer)
     return "\n".join(lines)
 
 
