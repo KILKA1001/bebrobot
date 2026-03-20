@@ -468,9 +468,11 @@ def _build_actions_keyboard(actor_id: int) -> InlineKeyboardMarkup:
 def _render_actions_text() -> str:
     return (
         "⚡ <b>Действия кнопками</b>\n\n"
-        "Нажми кнопку, затем отправь параметры <b>в следующем сообщении</b>.\n"
+        "Нажми кнопку, затем следуй подсказкам на экране.\n"
         "Разделитель параметров: <code>|</code>.\n"
         "Для отмены ввода отправь: <code>отмена</code>.\n\n"
+        "Для create/move/order после выбора категории бот покажет текущий порядок ролей и отдельный экран выбора позиции.\n"
+        "Если позицию не менять, роль будет добавлена последней.\n\n"
         f"{_role_catalog_note()}"
     )
 
@@ -480,8 +482,9 @@ def _operation_hint(operation: str) -> str:
         "category_create": "Отправь: <code>Название категории | position(опционально)</code>",
         "category_order": "Отправь: <code>Название категории | position</code>",
         "category_delete": "Отправь: <code>Название категории</code>",
-        "role_create": "Отправь: <code>Название роли | Категория | discord_role_id(опц) | position(опц)</code>",
-        "role_move": "Отправь: <code>Название роли | Категория | position(опц)</code>. Внешнюю Discord-роль можно переместить.",
+        "role_create": "Отправь: <code>Название роли | Категория | discord_role_id(опц) | position(опц)</code>. Если позицию не указывать, роль будет добавлена последней.",
+        "role_create_enter_name": "Отправь: <code>Название роли | discord_role_id(опц)</code>. Категория и позиция уже выбраны кнопками.",
+        "role_move": "Отправь: <code>Название роли | Категория | position(опц)</code>. Если позицию не указывать, роль будет добавлена последней. Внешнюю Discord-роль можно переместить.",
         "role_order": "Отправь: <code>Название роли | Категория | position</code>. Внешнюю Discord-роль можно отсортировать.",
         "role_delete": "Отправь: <code>Название роли</code>. Внешние Discord-роли удалить нельзя.",
         "user_roles": "Отправь: <code>@username</code> / <code>username</code> / <code>tg:@username</code> / <code>ds:username</code>. В группе удобнее reply.",
@@ -554,6 +557,78 @@ def _flatten_roles(grouped: list[dict]) -> list[dict[str, object]]:
     return fallback
 
 
+def _log_role_position_error(
+    *,
+    actor_id: int | None,
+    operation: str,
+    role_name: str | None,
+    category: str | None,
+    requested_position: int | None,
+    computed_last_position: int | None,
+    source: str,
+    message: str,
+) -> None:
+    logger.warning(
+        "%s actor_id=%s operation=%s role_name=%s category=%s requested_position=%s computed_last_position=%s source=%s",
+        message,
+        actor_id,
+        operation,
+        role_name,
+        category,
+        requested_position,
+        computed_last_position,
+        source,
+    )
+
+
+def _render_category_role_preview(preview: dict[str, Any]) -> str:
+    roles = list(preview.get("current_roles") or [])
+    if not roles:
+        return "• Категория пока пустая."
+    return "\n".join(
+        f"• #{idx}. {str(role.get('name') or 'Без названия')}"
+        for idx, role in enumerate(roles, start=1)
+    )
+
+
+def _render_position_picker_text(
+    *,
+    mode: str,
+    category_name: str,
+    preview: dict[str, Any],
+    role_name: str | None = None,
+) -> str:
+    action_line = {
+        "create": "Новая роль будет вставлена в выбранную категорию.",
+        "move": f"Роль: <b>{role_name}</b>",
+        "order": f"Роль: <b>{role_name}</b>",
+    }.get(mode, "")
+    return (
+        f"{action_line}\n"
+        f"Категория: <b>{category_name}</b>\n\n"
+        "<b>Текущий порядок ролей:</b>\n"
+        f"{_render_category_role_preview(preview)}\n\n"
+        "ℹ️ Если ничего не менять, роль будет добавлена последней.\n"
+        f"Сейчас: <b>{preview.get('position_description')}</b>\n\n"
+        "Выберите позицию кнопкой ниже."
+    )
+
+
+def _build_position_choice_keyboard(actor_id: int, operation: str, preview: dict[str, Any]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for item in list(preview.get("insertion_positions") or []):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"#{item['human_index']} — {item['description']}"[:64],
+                    callback_data=f"roles_admin:{actor_id}:set_position:{operation}:{item['position']}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"roles_admin:{actor_id}:actions")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def _build_pick_category_keyboard(grouped: list[dict], actor_id: int, operation: str) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for idx, item in enumerate(grouped[:20]):
@@ -593,15 +668,6 @@ def _build_pick_role_keyboard(grouped: list[dict], actor_id: int, operation: str
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"roles_admin:{actor_id}:actions")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-
-def _build_position_choice_keyboard(actor_id: int, operation: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="⏫ В начало", callback_data=f"roles_admin:{actor_id}:set_position:{operation}:start")],
-            [InlineKeyboardButton(text="⏬ В конец", callback_data=f"roles_admin:{actor_id}:set_position:{operation}:end")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"roles_admin:{actor_id}:actions")],
-        ]
-    )
 
 def _build_list_keyboard(grouped: list[dict], actor_id: int, page: int) -> InlineKeyboardMarkup:
     safe_page = _normalize_page(page, len(grouped), _ROLES_PAGE_SIZE)
@@ -668,6 +734,8 @@ def _render_home_text() -> str:
         "Все обновления идут в <b>одном сообщении</b> через кнопки.\n\n"
         "Управление через <b>кнопки</b> в разделе <b>⚡ Действия кнопками</b>.\n"
         "Если кнопки не срабатывают, открой <b>🆘 Не работают кнопки?</b> — там резервные команды и примеры.\n"
+        "Для create/move/order бот показывает роли внутри выбранной категории и даёт выбрать точную позицию вставки.\n"
+        "Если позицию не задавать, роль будет добавлена в конец категории.\n"
         "\nНужны пояснения по функциям? Нажми кнопку <b>ℹ️ Что делает каждая функция</b>.\n\n"
         "Как указывать пользователя: в ЛС — <code>@username</code> / <code>username</code>, в группе — reply. "
         "Для Discord-аккаунта можно использовать <code>ds:username</code>. ID нужен только как резерв.\n\n"
@@ -689,6 +757,8 @@ def _render_fallback_text() -> str:
         "<code>/roles_admin role_move &lt;name&gt; &lt;category&gt; [position]</code>\n"
         "<code>/roles_admin role_order &lt;role_name&gt; &lt;category&gt; &lt;position&gt;</code>\n"
         "<code>/roles_admin role_delete &lt;name&gt;</code>\n"
+        "Если не указывать <code>position</code> в <code>role_create</code> или <code>role_move</code>, роль будет добавлена последней.\n"
+        "Кнопочный режим показывает список ролей категории и отдельный экран выбора точной позиции вставки.\n"
         "Внешние Discord-роли не удаляются из каталога: их можно только перемещать и сортировать.\n\n"
         "<b>Пользователи</b>\n"
         "<code>/roles_admin user_roles [reply|@username|username|tg:@username|ds:username|id]</code>\n"
@@ -713,7 +783,9 @@ def _render_help_text() -> str:
         "• <code>role_create &lt;name&gt; &lt;category&gt; [discord_role_id] [position]</code> — добавить роль в каталог.\n"
         "• <code>role_move &lt;name&gt; &lt;category&gt; [position]</code> — переместить роль в другую категорию.\n"
         "• <code>role_order &lt;role_name&gt; &lt;category&gt; &lt;position&gt;</code> — выставить очередь роли в категории.\n"
-        "• <code>role_delete &lt;name&gt;</code> — удалить роль из каталога. Внешние Discord-роли удалять нельзя: только move/order.\n\n"
+        "• <code>role_delete &lt;name&gt;</code> — удалить роль из каталога. Внешние Discord-роли удалять нельзя: только move/order.\n"
+        "• После выбора категории бот показывает текущий список ролей и отдельный экран выбора позиции.\n"
+        "• Если позицию не указывать в <code>role_create</code> или <code>role_move</code>, роль будет добавлена последней.\n\n"
         "<b>Роли пользователей</b>\n"
         "• <code>user_roles [reply|@username|username|tg:@username|ds:username|id]</code> — показать роли пользователя.\n"
         "• <code>user_grant &lt;@username|ds:username&gt; &lt;role_name&gt;</code> — выдать роль в БД.\n"
@@ -877,12 +949,14 @@ async def roles_admin_command(message: Message) -> None:
             role_name = args[0]
             category = args[1]
             discord_role_id = args[2] if len(args) >= 3 else None
-            position = int(args[3]) if len(args) >= 4 and args[3].lstrip("-").isdigit() else 0
+            position = int(args[3]) if len(args) >= 4 and args[3].lstrip("-").isdigit() else None
             ok = RoleManagementService.create_role(
                 role_name,
                 category,
                 discord_role_id=discord_role_id,
                 position=position,
+                actor_id=str(message.from_user.id) if message.from_user else None,
+                operation="role_create",
             )
             await message.answer("✅ Роль создана." if ok else "❌ Не удалось создать роль (смотри логи).")
             return
@@ -897,33 +971,43 @@ async def roles_admin_command(message: Message) -> None:
             return
 
         if subcommand == "role_move" and len(args) >= 2:
+            preview = RoleManagementService.get_category_role_positioning(
+                args[1],
+                requested_position=int(args[2]) if len(args) >= 3 and args[2].lstrip("-").isdigit() else None,
+                exclude_role_name=args[0],
+            )
             available_roles = {item["role"] for item in RoleManagementService.list_roles_available_for_admin_reorder()}
             if args[0] not in available_roles:
-                logger.warning(
-                    "roles_admin role_move denied role missing from canonical catalog actor_id=%s guild_id=%s telegram_user_id=%s role_name=%s category=%s operation=%s source=%s",
-                    message.from_user.id if message.from_user else None,
-                    None,
-                    message.from_user.id if message.from_user else None,
-                    args[0],
-                    args[1],
-                    "role_move",
-                    "fallback_text_command",
+                _log_role_position_error(
+                    actor_id=message.from_user.id if message.from_user else None,
+                    operation="role_move",
+                    role_name=args[0],
+                    category=args[1],
+                    requested_position=int(args[2]) if len(args) >= 3 and args[2].lstrip("-").isdigit() else None,
+                    computed_last_position=int(preview.get("computed_last_position", 0)),
+                    source="fallback_text_command",
+                    message="roles_admin role_move denied role missing from canonical catalog",
                 )
                 await message.answer(_canonical_role_missing_message())
                 return
-            position = int(args[2]) if len(args) >= 3 and args[2].isdigit() else 0
-            ok = RoleManagementService.move_role(args[0], args[1], position)
+            position = int(args[2]) if len(args) >= 3 and args[2].lstrip("-").isdigit() else None
+            ok = RoleManagementService.move_role(
+                args[0],
+                args[1],
+                position,
+                actor_id=str(message.from_user.id) if message.from_user else None,
+                operation="role_move",
+            )
             if not ok:
-                logger.warning(
-                    "roles_admin role_move failed actor_id=%s guild_id=%s telegram_user_id=%s role_name=%s category=%s position=%s operation=%s source=%s",
-                    message.from_user.id if message.from_user else None,
-                    None,
-                    message.from_user.id if message.from_user else None,
-                    args[0],
-                    args[1],
-                    position,
-                    "role_move",
-                    "fallback_text_command",
+                _log_role_position_error(
+                    actor_id=message.from_user.id if message.from_user else None,
+                    operation="role_move",
+                    role_name=args[0],
+                    category=args[1],
+                    requested_position=position,
+                    computed_last_position=int(preview.get("computed_last_position", 0)),
+                    source="fallback_text_command",
+                    message="roles_admin role_move failed",
                 )
             await message.answer("✅ Роль перемещена." if ok else "❌ Не удалось переместить роль. Проверь синхронизацию каталога и логи.")
             return
@@ -932,35 +1016,45 @@ async def roles_admin_command(message: Message) -> None:
             role_name = args[0]
             category = args[1]
             position_raw = args[2]
+            preview = RoleManagementService.get_category_role_positioning(
+                category,
+                requested_position=int(position_raw) if position_raw.lstrip("-").isdigit() else None,
+                exclude_role_name=role_name,
+            )
             available_roles = {item["role"] for item in RoleManagementService.list_roles_available_for_admin_reorder()}
             if role_name not in available_roles:
-                logger.warning(
-                    "roles_admin role_order denied role missing from canonical catalog actor_id=%s guild_id=%s telegram_user_id=%s role_name=%s category=%s operation=%s source=%s",
-                    message.from_user.id if message.from_user else None,
-                    None,
-                    message.from_user.id if message.from_user else None,
-                    role_name,
-                    category,
-                    "role_order",
-                    "fallback_text_command",
+                _log_role_position_error(
+                    actor_id=message.from_user.id if message.from_user else None,
+                    operation="role_order",
+                    role_name=role_name,
+                    category=category,
+                    requested_position=int(position_raw) if position_raw.lstrip("-").isdigit() else None,
+                    computed_last_position=int(preview.get("computed_last_position", 0)),
+                    source="fallback_text_command",
+                    message="roles_admin role_order denied role missing from canonical catalog",
                 )
                 await message.answer(_canonical_role_missing_message())
                 return
             if not position_raw.lstrip("-").isdigit():
                 await message.answer("❌ Формат: /roles_admin role_order <role_name> <category> <position>")
                 return
-            ok = RoleManagementService.move_role(role_name, category, int(position_raw))
+            ok = RoleManagementService.move_role(
+                role_name,
+                category,
+                int(position_raw),
+                actor_id=str(message.from_user.id) if message.from_user else None,
+                operation="role_order",
+            )
             if not ok:
-                logger.warning(
-                    "roles_admin role_order failed actor_id=%s guild_id=%s telegram_user_id=%s role_name=%s category=%s position=%s operation=%s source=%s",
-                    message.from_user.id if message.from_user else None,
-                    None,
-                    message.from_user.id if message.from_user else None,
-                    role_name,
-                    category,
-                    int(position_raw),
-                    "role_order",
-                    "fallback_text_command",
+                _log_role_position_error(
+                    actor_id=message.from_user.id if message.from_user else None,
+                    operation="role_order",
+                    role_name=role_name,
+                    category=category,
+                    requested_position=int(position_raw),
+                    computed_last_position=int(preview.get("computed_last_position", 0)),
+                    source="fallback_text_command",
+                    message="roles_admin role_order failed",
                 )
             await message.answer("✅ Очередность роли обновлена." if ok else "❌ Не удалось обновить очередь роли. Проверь синхронизацию каталога и логи.")
             return
@@ -1137,7 +1231,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 await callback.answer("Категориями может управлять только Глава клуба или Главный вице.", show_alert=True)
                 return
             button_ops = {"category_order", "category_delete", "role_move", "role_order", "role_delete"}
-            if operation in {"category_order", "category_delete"}:
+            if operation in {"category_order", "category_delete", "role_create"}:
                 await _safe_edit_message_text(callback, 
                     "Выберите категорию:",
                     reply_markup=_build_pick_category_keyboard(grouped, owner_id, operation),
@@ -1213,10 +1307,35 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     created_at=time.time(),
                     payload={"category": category_name},
                 )
+                preview = {
+                    "insertion_positions": [
+                        {"position": 0, "human_index": 1, "description": "будет добавлено в начало (#1)"},
+                        {
+                            "position": max(len(grouped) - 1, 0),
+                            "human_index": max(len(grouped), 1),
+                            "description": f"будет добавлено в конец (#{max(len(grouped), 1)})",
+                        },
+                    ]
+                }
                 await _safe_edit_message_text(callback, 
                     f"Выбрана категория: <b>{category_name}</b>\nВыберите новую позицию:",
                     parse_mode="HTML",
-                    reply_markup=_build_position_choice_keyboard(owner_id, "category_order"),
+                    reply_markup=_build_position_choice_keyboard(owner_id, "category_order", preview),
+                )
+                await callback.answer()
+                return
+            if operation == "role_create":
+                preview = RoleManagementService.get_category_role_positioning(category_name)
+                _PENDING_ACTIONS[callback.from_user.id] = PendingRolesAdminAction(
+                    operation="role_create_pick_position",
+                    created_at=time.time(),
+                    payload={"category": category_name},
+                )
+                await _safe_edit_message_text(
+                    callback,
+                    _render_position_picker_text(mode="create", category_name=category_name, preview=preview),
+                    parse_mode="HTML",
+                    reply_markup=_build_position_choice_keyboard(owner_id, "role_create_position", preview),
                 )
                 await callback.answer()
                 return
@@ -1227,15 +1346,20 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     return
                 available_roles = {item["role"] for item in RoleManagementService.list_roles_available_for_admin_reorder()}
                 if pending.payload["role"] not in available_roles:
-                    logger.warning(
-                        "roles_admin pending role target denied role missing from canonical catalog actor_id=%s guild_id=%s telegram_user_id=%s role_name=%s category=%s operation=%s source=%s",
-                        callback.from_user.id if callback.from_user else None,
-                        None,
-                        callback.from_user.id if callback.from_user else None,
-                        pending.payload["role"],
-                        category_name,
-                        "role_move" if operation == "role_move_target" else "role_order",
-                        "button",
+                    _log_role_position_error(
+                        actor_id=callback.from_user.id if callback.from_user else None,
+                        operation="role_move" if operation == "role_move_target" else "role_order",
+                        role_name=pending.payload["role"],
+                        category=category_name,
+                        requested_position=None,
+                        computed_last_position=int(
+                            RoleManagementService.get_category_role_positioning(
+                                category_name,
+                                exclude_role_name=pending.payload["role"],
+                            ).get("computed_last_position", 0)
+                        ),
+                        source="button",
+                        message="roles_admin pending role target denied role missing from canonical catalog",
                     )
                     _PENDING_ACTIONS.pop(callback.from_user.id, None)
                     await callback.answer("Роль больше не найдена в каталоге", show_alert=True)
@@ -1246,10 +1370,19 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 pending.payload["mode"] = "move" if operation == "role_move_target" else "order"
                 pending.created_at = time.time()
                 _PENDING_ACTIONS[callback.from_user.id] = pending
+                preview = RoleManagementService.get_category_role_positioning(
+                    category_name,
+                    exclude_role_name=pending.payload["role"],
+                )
                 await _safe_edit_message_text(callback, 
-                    f"Роль: <b>{pending.payload['role']}</b>\nКатегория: <b>{category_name}</b>\nВыберите позицию:",
+                    _render_position_picker_text(
+                        mode="move" if operation == "role_move_target" else "order",
+                        category_name=category_name,
+                        preview=preview,
+                        role_name=pending.payload["role"],
+                    ),
                     parse_mode="HTML",
-                    reply_markup=_build_position_choice_keyboard(owner_id, "role_position"),
+                    reply_markup=_build_position_choice_keyboard(owner_id, "role_position", preview),
                 )
                 await callback.answer()
                 return
@@ -1281,15 +1414,20 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             if operation in {"role_move", "role_order"}:
                 available_roles = {item["role"] for item in RoleManagementService.list_roles_available_for_admin_reorder()}
                 if role_name not in available_roles:
-                    logger.warning(
-                        "roles_admin pick_role denied role missing from canonical catalog actor_id=%s guild_id=%s telegram_user_id=%s role_name=%s category=%s operation=%s source=%s",
-                        callback.from_user.id if callback.from_user else None,
-                        None,
-                        callback.from_user.id if callback.from_user else None,
-                        role_name,
-                        flattened[item_index].get("category"),
-                        operation,
-                        "button",
+                    _log_role_position_error(
+                        actor_id=callback.from_user.id if callback.from_user else None,
+                        operation=operation,
+                        role_name=role_name,
+                        category=str(flattened[item_index].get("category") or ""),
+                        requested_position=None,
+                        computed_last_position=int(
+                            RoleManagementService.get_category_role_positioning(
+                                str(flattened[item_index].get("category") or ""),
+                                exclude_role_name=role_name,
+                            ).get("computed_last_position", 0)
+                        ),
+                        source="button",
+                        message="roles_admin pick_role denied role missing from canonical catalog",
                     )
                     await callback.answer("Роль не найдена в каталоге", show_alert=True)
                     await callback.message.reply(_canonical_role_missing_message())
@@ -1317,11 +1455,35 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     await callback.answer("Сессия устарела, начните заново", show_alert=True)
                     return
                 category_name = pending.payload.get("category", "")
-                new_pos = 0 if value == "start" else max(len(grouped) - 1, 0)
+                new_pos = int(value) if value.lstrip("-").isdigit() else max(len(grouped) - 1, 0)
                 ok = RoleManagementService.create_category(category_name, new_pos)
                 _PENDING_ACTIONS.pop(callback.from_user.id, None)
                 await callback.answer("Порядок категории обновлён" if ok else "Не удалось обновить порядок", show_alert=not ok)
                 await _safe_edit_message_text(callback, _render_actions_text(), parse_mode="HTML", reply_markup=_build_actions_keyboard(owner_id))
+                return
+            if op == "role_create_position":
+                if not pending or pending.operation != "role_create_pick_position" or not pending.payload:
+                    await callback.answer("Сессия устарела, начните заново", show_alert=True)
+                    return
+                category_name = pending.payload.get("category", "")
+                preview = RoleManagementService.get_category_role_positioning(category_name)
+                new_pos = int(value) if value.lstrip("-").isdigit() else int(preview.get("computed_last_position", 0))
+                pending.operation = "role_create_enter_name"
+                pending.payload["position"] = str(new_pos)
+                pending.created_at = time.time()
+                _PENDING_ACTIONS[callback.from_user.id] = pending
+                await _safe_edit_message_text(
+                    callback,
+                    (
+                        f"Категория: <b>{category_name}</b>\n"
+                        f"Позиция: <b>{preview.get('insertion_positions', [])[new_pos]['description'] if preview.get('insertion_positions') else preview.get('position_description')}</b>\n\n"
+                        "Теперь отправь: <code>Название роли | discord_role_id(опц)</code>\n"
+                        "Если Discord role id не нужен, просто отправь название."
+                    ),
+                    parse_mode="HTML",
+                    reply_markup=_build_actions_keyboard(owner_id),
+                )
+                await callback.answer()
                 return
             if op == "role_position":
                 if not pending or pending.operation != "role_pick_position" or not pending.payload:
@@ -1329,38 +1491,45 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     return
                 role_name = pending.payload.get("role", "")
                 category_name = pending.payload.get("category", "")
+                preview = RoleManagementService.get_category_role_positioning(
+                    category_name,
+                    exclude_role_name=role_name,
+                )
                 available_roles = {item["role"] for item in RoleManagementService.list_roles_available_for_admin_reorder()}
                 if role_name not in available_roles:
-                    logger.warning(
-                        "roles_admin role_position denied role missing from canonical catalog actor_id=%s guild_id=%s telegram_user_id=%s role_name=%s category=%s operation=%s source=%s",
-                        callback.from_user.id if callback.from_user else None,
-                        None,
-                        callback.from_user.id if callback.from_user else None,
-                        role_name,
-                        category_name,
-                        pending.payload.get("mode") or "role_move",
-                        "button",
+                    _log_role_position_error(
+                        actor_id=callback.from_user.id if callback.from_user else None,
+                        operation=pending.payload.get("mode") or "role_move",
+                        role_name=role_name,
+                        category=category_name,
+                        requested_position=None,
+                        computed_last_position=int(preview.get("computed_last_position", 0)),
+                        source="button",
+                        message="roles_admin role_position denied role missing from canonical catalog",
                     )
                     _PENDING_ACTIONS.pop(callback.from_user.id, None)
                     await callback.answer("Роль не найдена в каталоге", show_alert=True)
                     await callback.message.reply(_canonical_role_missing_message())
                     return
-                category_item = next((item for item in grouped if str(item.get("category")) == category_name), None)
-                total_roles = len((category_item or {}).get("roles", []))
-                new_pos = 0 if value == "start" else total_roles
-                ok = RoleManagementService.move_role(role_name, category_name, new_pos)
+                new_pos = int(value) if value.lstrip("-").isdigit() else int(preview.get("computed_last_position", 0))
+                ok = RoleManagementService.move_role(
+                    role_name,
+                    category_name,
+                    new_pos,
+                    actor_id=str(callback.from_user.id) if callback.from_user else None,
+                    operation="role_move" if (pending.payload.get("mode") or "move") == "move" else "role_order",
+                )
                 _PENDING_ACTIONS.pop(callback.from_user.id, None)
                 if not ok:
-                    logger.warning(
-                        "roles_admin role_position failed actor_id=%s guild_id=%s telegram_user_id=%s role_name=%s category=%s position=%s operation=%s source=%s",
-                        callback.from_user.id if callback.from_user else None,
-                        None,
-                        callback.from_user.id if callback.from_user else None,
-                        role_name,
-                        category_name,
-                        new_pos,
-                        pending.payload.get("mode") or "role_move",
-                        "button",
+                    _log_role_position_error(
+                        actor_id=callback.from_user.id if callback.from_user else None,
+                        operation="role_move" if (pending.payload.get("mode") or "move") == "move" else "role_order",
+                        role_name=role_name,
+                        category=category_name,
+                        requested_position=new_pos,
+                        computed_last_position=int(preview.get("computed_last_position", 0)),
+                        source="button",
+                        message="roles_admin role_position failed",
                     )
                 await callback.answer(
                     "Позиция роли обновлена" if ok else "Не удалось обновить позицию роли",
@@ -1563,72 +1732,117 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                 await message.answer("❌ Формат: Роль | Категория | discord_role_id(опц) | position(опц)")
                 return
             discord_role_id = args[2] if len(args) > 2 else None
-            pos = int(args[3]) if len(args) > 3 and args[3].lstrip("-").isdigit() else 0
-            ok = RoleManagementService.create_role(args[0], args[1], discord_role_id=discord_role_id, position=pos)
+            pos = int(args[3]) if len(args) > 3 and args[3].lstrip("-").isdigit() else None
+            ok = RoleManagementService.create_role(
+                args[0],
+                args[1],
+                discord_role_id=discord_role_id,
+                position=pos,
+                actor_id=str(message.from_user.id) if message.from_user else None,
+                operation="role_create",
+            )
+            await message.answer("✅ Роль создана." if ok else "❌ Не удалось создать роль (смотри логи).")
+        elif op == "role_create_enter_name":
+            if not pending.payload or not pending.payload.get("category"):
+                await message.answer("❌ Сессия выбора категории устарела. Начните заново: /roles_admin")
+                return
+            if not args:
+                await message.answer("❌ Формат: Название роли | discord_role_id(опц)")
+                return
+            category = str(pending.payload.get("category") or "")
+            position = int(str(pending.payload.get("position") or "0"))
+            ok = RoleManagementService.create_role(
+                args[0],
+                category,
+                discord_role_id=args[1] if len(args) > 1 else None,
+                position=position,
+                actor_id=str(message.from_user.id) if message.from_user else None,
+                operation="role_create",
+            )
             await message.answer("✅ Роль создана." if ok else "❌ Не удалось создать роль (смотри логи).")
         elif op == "role_move":
             if len(args) < 2:
                 await message.answer("❌ Формат: Роль | Категория | position(опц)")
                 return
+            preview = RoleManagementService.get_category_role_positioning(
+                args[1],
+                requested_position=int(args[2]) if len(args) > 2 and args[2].lstrip("-").isdigit() else None,
+                exclude_role_name=args[0],
+            )
             available_roles = {item["role"] for item in RoleManagementService.list_roles_available_for_admin_reorder()}
             if args[0] not in available_roles:
-                logger.warning(
-                    "roles_admin role_move denied role missing from canonical catalog actor_id=%s guild_id=%s telegram_user_id=%s role_name=%s category=%s operation=%s source=%s",
-                    message.from_user.id if message.from_user else None,
-                    None,
-                    message.from_user.id if message.from_user else None,
-                    args[0],
-                    args[1],
-                    "role_move",
-                    "button",
+                _log_role_position_error(
+                    actor_id=message.from_user.id if message.from_user else None,
+                    operation="role_move",
+                    role_name=args[0],
+                    category=args[1],
+                    requested_position=int(args[2]) if len(args) > 2 and args[2].lstrip("-").isdigit() else None,
+                    computed_last_position=int(preview.get("computed_last_position", 0)),
+                    source="button",
+                    message="roles_admin role_move denied role missing from canonical catalog",
                 )
                 await message.answer(_canonical_role_missing_message())
                 return
-            pos = int(args[2]) if len(args) > 2 and args[2].lstrip("-").isdigit() else 0
-            ok = RoleManagementService.move_role(args[0], args[1], pos)
+            pos = int(args[2]) if len(args) > 2 and args[2].lstrip("-").isdigit() else None
+            ok = RoleManagementService.move_role(
+                args[0],
+                args[1],
+                pos,
+                actor_id=str(message.from_user.id) if message.from_user else None,
+                operation="role_move",
+            )
             if not ok:
-                logger.warning(
-                    "roles_admin role_move failed actor_id=%s guild_id=%s telegram_user_id=%s role_name=%s category=%s position=%s operation=%s source=%s",
-                    message.from_user.id if message.from_user else None,
-                    None,
-                    message.from_user.id if message.from_user else None,
-                    args[0],
-                    args[1],
-                    pos,
-                    "role_move",
-                    "button",
+                _log_role_position_error(
+                    actor_id=message.from_user.id if message.from_user else None,
+                    operation="role_move",
+                    role_name=args[0],
+                    category=args[1],
+                    requested_position=pos,
+                    computed_last_position=int(preview.get("computed_last_position", 0)),
+                    source="button",
+                    message="roles_admin role_move failed",
                 )
             await message.answer("✅ Роль перемещена." if ok else "❌ Не удалось переместить роль. Проверь синхронизацию каталога и логи.")
         elif op == "role_order":
             if len(args) < 3 or not args[2].lstrip("-").isdigit():
                 await message.answer("❌ Формат: Роль | Категория | position")
                 return
+            preview = RoleManagementService.get_category_role_positioning(
+                args[1],
+                requested_position=int(args[2]),
+                exclude_role_name=args[0],
+            )
             available_roles = {item["role"] for item in RoleManagementService.list_roles_available_for_admin_reorder()}
             if args[0] not in available_roles:
-                logger.warning(
-                    "roles_admin role_order denied role missing from canonical catalog actor_id=%s guild_id=%s telegram_user_id=%s role_name=%s category=%s operation=%s source=%s",
-                    message.from_user.id if message.from_user else None,
-                    None,
-                    message.from_user.id if message.from_user else None,
-                    args[0],
-                    args[1],
-                    "role_order",
-                    "button",
+                _log_role_position_error(
+                    actor_id=message.from_user.id if message.from_user else None,
+                    operation="role_order",
+                    role_name=args[0],
+                    category=args[1],
+                    requested_position=int(args[2]),
+                    computed_last_position=int(preview.get("computed_last_position", 0)),
+                    source="button",
+                    message="roles_admin role_order denied role missing from canonical catalog",
                 )
                 await message.answer(_canonical_role_missing_message())
                 return
-            ok = RoleManagementService.move_role(args[0], args[1], int(args[2]))
+            ok = RoleManagementService.move_role(
+                args[0],
+                args[1],
+                int(args[2]),
+                actor_id=str(message.from_user.id) if message.from_user else None,
+                operation="role_order",
+            )
             if not ok:
-                logger.warning(
-                    "roles_admin role_order failed actor_id=%s guild_id=%s telegram_user_id=%s role_name=%s category=%s position=%s operation=%s source=%s",
-                    message.from_user.id if message.from_user else None,
-                    None,
-                    message.from_user.id if message.from_user else None,
-                    args[0],
-                    args[1],
-                    int(args[2]),
-                    "role_order",
-                    "button",
+                _log_role_position_error(
+                    actor_id=message.from_user.id if message.from_user else None,
+                    operation="role_order",
+                    role_name=args[0],
+                    category=args[1],
+                    requested_position=int(args[2]),
+                    computed_last_position=int(preview.get("computed_last_position", 0)),
+                    source="button",
+                    message="roles_admin role_order failed",
                 )
             await message.answer("✅ Очередность роли обновлена." if ok else "❌ Не удалось обновить очередь роли. Проверь синхронизацию каталога и логи.")
         elif op == "role_delete":

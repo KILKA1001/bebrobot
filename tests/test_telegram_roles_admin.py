@@ -4,6 +4,10 @@ from unittest.mock import patch
 
 from bot.telegram_bot.commands.roles_admin import (
     _build_pick_role_keyboard,
+    _build_position_choice_keyboard,
+    _render_fallback_text,
+    _render_help_text,
+    _render_position_picker_text,
     _resolve_telegram_target,
 )
 
@@ -156,6 +160,41 @@ class TelegramRolesAdminTargetResolutionTests(unittest.TestCase):
         self.assertFalse(any("External" in text for text in delete_texts))
         self.assertTrue(any("Custom" in text for text in delete_texts))
         self.assertTrue(any("External" in text for text in move_texts))
+
+    def test_position_picker_renders_all_available_positions(self):
+        preview = {
+            "insertion_positions": [
+                {"position": 0, "human_index": 1, "description": "будет добавлено в начало (#1)"},
+                {"position": 1, "human_index": 2, "description": "будет добавлено в конец (#2)"},
+            ]
+        }
+
+        keyboard = _build_position_choice_keyboard(actor_id=10, operation="role_position", preview=preview)
+        texts = [button.text for row in keyboard.inline_keyboard for button in row]
+
+        self.assertIn("#1 — будет добавлено в начало (#1)", texts)
+        self.assertIn("#2 — будет добавлено в конец (#2)", texts)
+
+    def test_position_picker_text_explains_default_last_position(self):
+        preview = {
+            "current_roles": [{"name": "Alpha"}, {"name": "Beta"}],
+            "position_description": "будет добавлено в конец (#3)",
+        }
+
+        text = _render_position_picker_text(
+            mode="move",
+            category_name="General",
+            preview=preview,
+            role_name="Gamma",
+        )
+
+        self.assertIn("Если ничего не менять, роль будет добавлена последней", text)
+        self.assertIn("• #1. Alpha", text)
+        self.assertIn("будет добавлено в конец (#3)", text)
+
+    def test_help_and_fallback_texts_describe_position_parity(self):
+        self.assertIn("отдельный экран выбора точной позиции", _render_fallback_text())
+        self.assertIn("роль будет добавлена последней", _render_help_text())
 
 
 if __name__ == "__main__":

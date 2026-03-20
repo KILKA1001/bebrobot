@@ -18,7 +18,7 @@ This matrix reflects the current command parity between Discord and Telegram imp
 | Account linking | `/link` | `/link` | full | Code-based linking command is present in both runtimes. |
 | Account linking | `/link_telegram` | `/link_discord` | partial | Same linking flow stage (generate link code in the opposite client), but command naming differs by platform perspective. |
 | Utility | `/helpy` | `/helpy` | partial | Both expose help, but Discord uses richer interactive help UI while Telegram returns text help. |
-| Roles admin | `/rolesadmin ...` | `/roles_admin ...` | partial | CRUD категорий/ролей и просмотр/выдача/снятие ролей доступны в обоих рантаймах; в Discord дополнительно есть синхронизация с Discord role id при выдаче/снятии. |
+| Roles admin | `/rolesadmin ...` | `/roles_admin ...` | partial | CRUD категорий/ролей и просмотр/выдача/снятие ролей доступны в обоих рантаймах; Telegram и Discord теперь одинаково показывают текущий список ролей категории и рассчитанную позицию вставки для create/move/order, а в Discord дополнительно есть синхронизация с Discord role id при выдаче/снятии. |
 | Points | `/addpoints` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Points | `/removepoints` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Points | `/leaderboard` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
