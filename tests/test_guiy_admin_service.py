@@ -4,10 +4,12 @@ from unittest.mock import patch
 from bot.services.guiy_admin_service import (
     GUIY_OWNER_REPLY_REQUIRED_MESSAGE,
     authorize_guiy_owner_action,
+    bootstrap_guiy_profile,
     parse_guiy_owner_profile_payload,
     resolve_guiy_owner_telegram_ids,
     resolve_guiy_target_account,
 )
+from bot.services.guiy_owner_flow_service import execute_guiy_owner_flow
 
 
 class GuiyAdminServiceTests(unittest.TestCase):
@@ -75,6 +77,58 @@ class GuiyAdminServiceTests(unittest.TestCase):
         self.assertEqual(field_name, "description")
         self.assertEqual(field_value, "")
 
+
+class GuiyProfileBootstrapTests(unittest.TestCase):
+    @patch("bot.services.guiy_admin_service.AccountsService.resolve_account_id", side_effect=[None, "guiy-acc"])
+    @patch("bot.services.guiy_admin_service.AccountsService.register_identity", return_value=(True, "Регистрация завершена"))
+    def test_bootstrap_creates_missing_profile(self, register_mock, resolve_mock):
+        result = bootstrap_guiy_profile(provider="telegram", bot_user_id="999")
+
+        self.assertTrue(result.ok)
+        self.assertTrue(result.created)
+        self.assertEqual(result.status, "created")
+        self.assertEqual(result.guiy_account_id, "guiy-acc")
+        self.assertIn("Теперь можно открыть редактирование профиля", result.message)
+        resolve_mock.assert_any_call("telegram", "999")
+        register_mock.assert_called_once_with("telegram", "999")
+
+    @patch("bot.services.guiy_admin_service.AccountsService.resolve_account_id", return_value="guiy-acc")
+    @patch("bot.services.guiy_admin_service.AccountsService.register_identity")
+    def test_bootstrap_returns_neutral_message_when_profile_exists(self, register_mock, resolve_mock):
+        result = bootstrap_guiy_profile(provider="discord", bot_user_id="555")
+
+        self.assertTrue(result.ok)
+        self.assertFalse(result.created)
+        self.assertEqual(result.status, "already_exists")
+        self.assertEqual(result.guiy_account_id, "guiy-acc")
+        self.assertIn("Профиль Гуя уже зарегистрирован", result.message)
+        resolve_mock.assert_called_once_with("discord", "555")
+        register_mock.assert_not_called()
+
+    @patch("bot.services.guiy_owner_flow_service.authorize_guiy_owner_action", return_value=type("Access", (), {"allowed": True})())
+    @patch("bot.services.guiy_owner_flow_service.bootstrap_guiy_profile")
+    def test_register_flow_returns_clear_error_message(self, bootstrap_mock, _access_mock):
+        bootstrap_mock.return_value = type(
+            "BootstrapResult",
+            (),
+            {
+                "ok": False,
+                "message": "❌ Не удалось зарегистрировать профиль Гуя. Причина: База данных недоступна.",
+                "guiy_account_id": None,
+            },
+        )()
+
+        result = execute_guiy_owner_flow(
+            provider="telegram",
+            actor_user_id="42",
+            bot_user_id="999",
+            selected_action="register_profile",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("Не удалось зарегистрировать профиль Гуя", result.message)
+        self.assertIn("База данных недоступна", result.message)
+        bootstrap_mock.assert_called_once_with(provider="telegram", bot_user_id="999")
 
 if __name__ == "__main__":
     unittest.main()
