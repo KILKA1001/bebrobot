@@ -7,6 +7,7 @@ from . import engagement  # noqa: F401
 from . import maps  # noqa: F401
 from . import linking  # noqa: F401
 from . import roles_admin  # noqa: F401
+from . import guiy_owner  # noqa: F401
 
 # Import specific commands for explicit access if needed
 from .fines import (

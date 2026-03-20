@@ -26,6 +26,7 @@ KNOWN_COMMAND_PREFIXES = (
     "/points",
     "/tickets",
     "/roles_admin",
+    "/guiy_owner",
     "/helpy",
     "/guiy",
 )

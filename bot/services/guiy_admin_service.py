@@ -1,0 +1,222 @@
+from __future__ import annotations
+
+import logging
+import os
+from dataclasses import dataclass
+
+from bot.data import db
+from bot.services.accounts_service import AccountsService
+from bot.services.ai_service import _is_father_user
+
+
+logger = logging.getLogger(__name__)
+
+
+def _parse_env_id_set(var_name: str) -> set[str]:
+    raw = (os.getenv(var_name) or "").strip()
+    if not raw:
+        return set()
+    return {item.strip() for item in raw.split(",") if item.strip()}
+
+
+GUIY_OWNER_DENIED_MESSAGE = "❌ Команда сейчас недоступна."
+GUIY_OWNER_REPLY_REQUIRED_MESSAGE = (
+    "ℹ️ Для этого действия ответьте командой на сообщение Гуя."
+)
+GUIY_OWNER_USAGE_TEXT = (
+    "🛠️ Управление Гуем доступно только владельцу.\n"
+    "Форматы:\n"
+    "• /guiy_owner say <текст> — отправить новое сообщение от лица Гуя\n"
+    "• /guiy_owner reply <текст> — ответить от лица Гуя именно на сообщение Гуя\n"
+    "• /guiy_owner profile <поле> | <значение> — изменить профиль Гуя\n"
+    "Доступные поля профиля: custom_nick, description, nulls_brawl_id, visible_roles.\n"
+    "Если значение нужно очистить, после | оставьте пусто или передайте -"
+)
+GUIY_OWNER_ALLOWED_PROFILE_FIELDS = {"custom_nick", "description", "nulls_brawl_id", "visible_roles"}
+
+
+@dataclass(slots=True)
+class GuiyOwnerAccessResult:
+    allowed: bool
+    actor_provider: str
+    actor_user_id: str | None
+    resolved_account_id: str | None
+    target_message_id: str | None
+    requested_action: str
+    denial_message: str = GUIY_OWNER_DENIED_MESSAGE
+
+
+@dataclass(slots=True)
+class GuiyOwnerTargetResolution:
+    ok: bool
+    target_account_id: str | None
+    target_provider_user_id: str | None
+    message: str
+
+
+def authorize_guiy_owner_action(
+    *,
+    actor_provider: str | None,
+    actor_user_id: str | int | None,
+    requested_action: str,
+    target_message_id: str | int | None = None,
+) -> GuiyOwnerAccessResult:
+    normalized_provider = (actor_provider or "").strip().lower()
+    normalized_user_id = str(actor_user_id).strip() if actor_user_id is not None else None
+    normalized_target_message_id = str(target_message_id).strip() if target_message_id is not None else None
+    resolved_account_id: str | None = None
+    allowed = False
+
+    if normalized_provider in {"telegram", "discord"} and normalized_user_id:
+        try:
+            resolved_account_id = AccountsService.resolve_account_id(normalized_provider, normalized_user_id)
+        except Exception:
+            logger.exception(
+                "guiy owner actor account resolve failed actor_provider=%s actor_user_id=%s target_message_id=%s requested_action=%s",
+                normalized_provider,
+                normalized_user_id,
+                normalized_target_message_id,
+                requested_action,
+            )
+
+        try:
+            allowed = _is_father_user(normalized_provider, normalized_user_id)
+        except Exception:
+            logger.exception(
+                "guiy owner authorization crashed actor_provider=%s actor_user_id=%s resolved_account_id=%s target_message_id=%s requested_action=%s",
+                normalized_provider,
+                normalized_user_id,
+                resolved_account_id,
+                normalized_target_message_id,
+                requested_action,
+            )
+            allowed = False
+
+    logger.info(
+        "guiy owner access attempt actor_provider=%s actor_user_id=%s resolved_account_id=%s allowed=%s target_message_id=%s requested_action=%s",
+        normalized_provider or None,
+        normalized_user_id,
+        resolved_account_id,
+        allowed,
+        normalized_target_message_id,
+        requested_action,
+    )
+    return GuiyOwnerAccessResult(
+        allowed=allowed,
+        actor_provider=normalized_provider,
+        actor_user_id=normalized_user_id,
+        resolved_account_id=resolved_account_id,
+        target_message_id=normalized_target_message_id,
+        requested_action=requested_action,
+    )
+
+
+def resolve_guiy_target_account(
+    *,
+    provider: str | None,
+    bot_user_id: str | int | None,
+    reply_author_user_id: str | int | None = None,
+    explicit_owner_command: bool,
+) -> GuiyOwnerTargetResolution:
+    normalized_provider = (provider or "").strip().lower()
+    normalized_bot_user_id = str(bot_user_id).strip() if bot_user_id is not None else ""
+    normalized_reply_author_user_id = str(reply_author_user_id).strip() if reply_author_user_id is not None else ""
+
+    if normalized_provider not in {"telegram", "discord"} or not normalized_bot_user_id:
+        logger.error(
+            "guiy owner target resolve invalid provider=%s bot_user_id=%s reply_author_user_id=%s explicit_owner_command=%s",
+            normalized_provider,
+            normalized_bot_user_id or None,
+            normalized_reply_author_user_id or None,
+            explicit_owner_command,
+        )
+        return GuiyOwnerTargetResolution(False, None, None, GUIY_OWNER_DENIED_MESSAGE)
+
+    if normalized_reply_author_user_id and normalized_reply_author_user_id != normalized_bot_user_id:
+        logger.warning(
+            "guiy owner target resolve denied non-guiy reply provider=%s bot_user_id=%s reply_author_user_id=%s explicit_owner_command=%s",
+            normalized_provider,
+            normalized_bot_user_id,
+            normalized_reply_author_user_id,
+            explicit_owner_command,
+        )
+        return GuiyOwnerTargetResolution(False, None, None, GUIY_OWNER_DENIED_MESSAGE)
+
+    if not explicit_owner_command and not normalized_reply_author_user_id:
+        logger.info(
+            "guiy owner target resolve requires reply provider=%s bot_user_id=%s explicit_owner_command=%s",
+            normalized_provider,
+            normalized_bot_user_id,
+            explicit_owner_command,
+        )
+        return GuiyOwnerTargetResolution(False, None, None, GUIY_OWNER_REPLY_REQUIRED_MESSAGE)
+
+    try:
+        target_account_id = AccountsService.resolve_account_id(normalized_provider, normalized_bot_user_id)
+    except Exception:
+        logger.exception(
+            "guiy owner target account resolve failed provider=%s bot_user_id=%s reply_author_user_id=%s explicit_owner_command=%s",
+            normalized_provider,
+            normalized_bot_user_id,
+            normalized_reply_author_user_id or None,
+            explicit_owner_command,
+        )
+        return GuiyOwnerTargetResolution(False, None, normalized_bot_user_id, GUIY_OWNER_DENIED_MESSAGE)
+
+    if not target_account_id:
+        logger.warning(
+            "guiy owner target account missing provider=%s bot_user_id=%s reply_author_user_id=%s explicit_owner_command=%s",
+            normalized_provider,
+            normalized_bot_user_id,
+            normalized_reply_author_user_id or None,
+            explicit_owner_command,
+        )
+        return GuiyOwnerTargetResolution(False, None, normalized_bot_user_id, GUIY_OWNER_DENIED_MESSAGE)
+
+    return GuiyOwnerTargetResolution(True, str(target_account_id), normalized_bot_user_id, "")
+
+
+def parse_guiy_owner_profile_payload(payload: str) -> tuple[str | None, str | None]:
+    raw = str(payload or "").strip()
+    if not raw or "|" not in raw:
+        return None, None
+    field_name, value = raw.split("|", 1)
+    normalized_field = field_name.strip().lower()
+    if normalized_field not in GUIY_OWNER_ALLOWED_PROFILE_FIELDS:
+        return None, None
+    normalized_value = value.strip()
+    if normalized_value == "-":
+        normalized_value = ""
+    return normalized_field, normalized_value
+
+
+def resolve_guiy_owner_telegram_ids() -> list[int]:
+    owner_ids: set[int] = set()
+
+    for raw_user_id in _parse_env_id_set("GUIY_FATHER_TELEGRAM_IDS"):
+        if str(raw_user_id).isdigit():
+            owner_ids.add(int(raw_user_id))
+
+    account_ids = _parse_env_id_set("GUIY_FATHER_ACCOUNT_IDS")
+    if not account_ids or not db.supabase:
+        return sorted(owner_ids)
+
+    try:
+        response = (
+            db.supabase.table("account_identities")
+            .select("account_id,provider,provider_user_id")
+            .eq("provider", "telegram")
+            .in_("account_id", sorted(account_ids))
+            .execute()
+        )
+        for row in response.data or []:
+            provider_user_id = str(row.get("provider_user_id") or "").strip()
+            if provider_user_id.isdigit():
+                owner_ids.add(int(provider_user_id))
+    except Exception:
+        logger.exception(
+            "guiy owner telegram ids resolve failed account_ids=%s",
+            sorted(account_ids),
+        )
+
+    return sorted(owner_ids)
