@@ -221,6 +221,32 @@ class DiscordRolesAdminTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("перемещена" in message for message in messages))
         self.assertTrue(any("обновлён" in message for message in messages))
 
+    async def test_rolesadmin_user_grant_shows_privileged_discord_role_message_for_vice(self):
+        ctx = self._build_ctx()
+        resolved = {"account_id": "acc-2", "label": "@target", "member": None, "provider_user_id": "222"}
+
+        with (
+            patch.object(roles_admin, "_ensure_roles_admin", AsyncMock(return_value=True)),
+            patch.object(roles_admin, "_resolve_discord_target", AsyncMock(return_value=resolved)),
+            patch.object(
+                roles_admin.RoleManagementService,
+                "apply_user_role_changes_by_account",
+                return_value={
+                    "grant_success": [],
+                    "grant_denied": [
+                        {
+                            "reason": "privileged_discord_role",
+                            "message": "Эту Discord-роль может выдавать только глава/главный вице.",
+                        }
+                    ],
+                },
+            ),
+            patch.object(roles_admin, "send_temp", AsyncMock()) as send_mock,
+        ):
+            await roles_admin.rolesadmin_user_grant(ctx, "@target", "Discord Admin")
+
+        self.assertIn("только глава/главный вице", send_mock.await_args.args[1])
+
     async def test_rolesadmin_role_create_sends_preview_embed_before_confirmation(self):
         ctx = self._build_ctx()
 

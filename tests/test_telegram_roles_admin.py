@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from bot.telegram_bot.commands.roles_admin import (
     PendingRolesAdminAction,
@@ -18,6 +18,7 @@ from bot.telegram_bot.commands.roles_admin import (
     _render_position_picker_text,
     _render_user_role_flow_text,
     _resolve_telegram_target,
+    roles_admin_command,
 )
 
 
@@ -331,6 +332,37 @@ class TelegramRolesAdminTargetResolutionTests(unittest.TestCase):
             self.assertIn("🗂 К категориям", second_texts)
         finally:
             _PENDING_ACTIONS.pop(77, None)
+
+
+class TelegramRolesAdminCommandTests(unittest.IsolatedAsyncioTestCase):
+    async def test_roles_admin_user_grant_shows_privileged_discord_role_message_for_vice(self):
+        from_user = SimpleNamespace(id=42, username="vice", full_name="Vice User", is_bot=False)
+        message = SimpleNamespace(
+            text="/roles_admin user_grant ds:target Discord Admin",
+            from_user=from_user,
+            reply_to_message=None,
+            answer=AsyncMock(),
+        )
+        resolved = {"account_id": "acc-2", "label": "ds:target", "provider": "discord", "provider_user_id": "222"}
+
+        with (
+            patch("bot.telegram_bot.commands.roles_admin.persist_telegram_identity_from_user"),
+            patch("bot.telegram_bot.commands.roles_admin._ensure_roles_admin", AsyncMock(return_value=True)),
+            patch("bot.telegram_bot.commands.roles_admin._sync_discord_roles_catalog", AsyncMock(return_value=True)),
+            patch("bot.telegram_bot.commands.roles_admin._resolve_telegram_target", return_value=resolved),
+            patch("bot.telegram_bot.commands.roles_admin.RoleManagementService.get_role", return_value={"category_name": "Админские"}),
+            patch(
+                "bot.telegram_bot.commands.roles_admin.RoleManagementService.assign_user_role_by_account",
+                return_value={
+                    "ok": False,
+                    "reason": "privileged_discord_role",
+                    "message": "Эту Discord-роль может выдавать только глава/главный вице.",
+                },
+            ),
+        ):
+            await roles_admin_command(message)
+
+        self.assertIn("только глава/главный вице", message.answer.await_args.args[0])
 
 
 if __name__ == "__main__":

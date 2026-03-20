@@ -14,6 +14,8 @@ from bot.telegram_bot.identity import persist_telegram_identity_from_user
 from bot.services.role_management_service import (
     DELETE_ROLE_REASON_DISCORD_MANAGED,
     DELETE_ROLE_REASON_NOT_FOUND,
+    PRIVILEGED_DISCORD_ROLE_MESSAGE,
+    ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE,
     USER_ACQUIRE_HINT_PLACEHOLDER,
 )
 
@@ -86,6 +88,12 @@ def _canonical_role_missing_message() -> str:
         "❌ Роль не найдена в каталоге `roles`.\n"
         "Сначала дождись синхронизации Discord-ролей или запусти `/rolesadmin sync_discord_roles` в Discord, потом попробуй ещё раз."
     )
+
+
+def _role_assignment_error_message(result: dict[str, object], *, default_message: str) -> str:
+    if result.get("reason") == ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE:
+        return f"❌ {result.get('message') or PRIVILEGED_DISCORD_ROLE_MESSAGE}"
+    return default_message
 
 
 def _telegram_user_lookup_hint() -> str:
@@ -1600,25 +1608,29 @@ async def roles_admin_command(message: Message) -> None:
                     account_id,
                     role_name,
                     category=category,
+                    actor_provider="telegram",
+                    actor_user_id=str(message.from_user.id) if message.from_user else None,
                 )
-                if ok:
+                if ok.get("ok"):
                     await _sync_linked_discord_role(resolved, role_name, revoke=False)
                 await message.answer(
                     f"✅ Роль выдана пользователю {resolved['label']}."
-                    if ok
-                    else f"❌ Не удалось выдать роль. {_telegram_user_lookup_hint()}"
+                    if ok.get("ok")
+                    else _role_assignment_error_message(ok, default_message=f"❌ Не удалось выдать роль. {_telegram_user_lookup_hint()}")
                 )
             else:
                 ok = RoleManagementService.revoke_user_role_by_account(
                     account_id,
                     role_name,
+                    actor_provider="telegram",
+                    actor_user_id=str(message.from_user.id) if message.from_user else None,
                 )
-                if ok:
+                if ok.get("ok"):
                     await _sync_linked_discord_role(resolved, role_name, revoke=True)
                 await message.answer(
                     f"✅ Роль снята у пользователя {resolved['label']}."
-                    if ok
-                    else f"❌ Не удалось снять роль. {_telegram_user_lookup_hint()}"
+                    if ok.get("ok")
+                    else _role_assignment_error_message(ok, default_message=f"❌ Не удалось снять роль. {_telegram_user_lookup_hint()}")
                 )
             return
 
@@ -2149,6 +2161,8 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             result = RoleManagementService.apply_user_role_changes_by_account(
                 account_id,
                 actor_id=str(callback.from_user.id) if callback.from_user else None,
+                actor_provider="telegram",
+                actor_user_id=str(callback.from_user.id) if callback.from_user else None,
                 grant_roles=grant_roles,
                 revoke_roles=revoke_roles,
             )
@@ -2171,6 +2185,9 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 success_lines.append("❌ Не выдано: " + ", ".join(result["grant_failed"]))
             if result.get("revoke_failed"):
                 success_lines.append("❌ Не снято: " + ", ".join(result["revoke_failed"]))
+            for denied in [*(result.get("grant_denied") or []), *(result.get("revoke_denied") or [])]:
+                if denied.get("reason") == ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE:
+                    success_lines.append(f"❌ {denied.get('message') or PRIVILEGED_DISCORD_ROLE_MESSAGE}")
             if result.get("conflicting_roles"):
                 success_lines.append("⚠️ Пропущены конфликтующие роли: " + ", ".join(result["conflicting_roles"]))
             await _safe_edit_message_text(
@@ -2839,6 +2856,8 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                 result = RoleManagementService.apply_user_role_changes_by_account(
                     account_id,
                     actor_id=str(message.from_user.id) if message.from_user else None,
+                    actor_provider="telegram",
+                    actor_user_id=str(message.from_user.id) if message.from_user else None,
                     grant_roles=[role_name],
                 )
                 ok = bool(result.get("grant_success"))
@@ -2847,12 +2866,17 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                 await message.answer(
                     f"✅ Роль выдана пользователю {resolved['label']}."
                     if ok
-                    else f"❌ Не удалось выдать роль. {_telegram_user_lookup_hint()}"
+                    else _role_assignment_error_message(
+                        result.get("grant_denied", [{}])[0] if result.get("grant_denied") else result,
+                        default_message=f"❌ Не удалось выдать роль. {_telegram_user_lookup_hint()}",
+                    )
                 )
             else:
                 result = RoleManagementService.apply_user_role_changes_by_account(
                     account_id,
                     actor_id=str(message.from_user.id) if message.from_user else None,
+                    actor_provider="telegram",
+                    actor_user_id=str(message.from_user.id) if message.from_user else None,
                     revoke_roles=[role_name],
                 )
                 ok = bool(result.get("revoke_success"))
@@ -2861,7 +2885,10 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                 await message.answer(
                     f"✅ Роль снята у пользователя {resolved['label']}."
                     if ok
-                    else f"❌ Не удалось снять роль. {_telegram_user_lookup_hint()}"
+                    else _role_assignment_error_message(
+                        result.get("revoke_denied", [{}])[0] if result.get("revoke_denied") else result,
+                        default_message=f"❌ Не удалось снять роль. {_telegram_user_lookup_hint()}",
+                    )
                 )
         else:
             logger.warning("roles_admin pending unknown operation user_id=%s operation=%s", message.from_user.id, op)
