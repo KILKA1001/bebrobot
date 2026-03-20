@@ -8,6 +8,7 @@ from bot.services.guiy_admin_service import (
     GUIY_OWNER_REPLY_REQUIRED_MESSAGE,
     GUIY_OWNER_USAGE_TEXT,
     authorize_guiy_owner_action,
+    bootstrap_guiy_profile,
     resolve_guiy_target_account,
 )
 
@@ -209,24 +210,15 @@ def execute_guiy_owner_flow(
         )
 
     if normalized_action == "register_profile":
-        if normalized_provider not in {"telegram", "discord"} or not normalized_bot_user_id:
-            return GuiyOwnerFlowResult(
-                ok=False,
-                selected_action=normalized_action,
-                message=GUIY_OWNER_DENIED_MESSAGE,
-                target_message_id=normalized_target_message_id,
-            )
-        success, response = AccountsService.register_identity(normalized_provider, normalized_bot_user_id)
-        guiy_account_id = AccountsService.resolve_account_id(normalized_provider, normalized_bot_user_id)
-        prefix = "✅" if success else "❌"
+        bootstrap_result = bootstrap_guiy_profile(
+            provider=normalized_provider,
+            bot_user_id=normalized_bot_user_id,
+        )
         return GuiyOwnerFlowResult(
-            ok=success,
+            ok=bootstrap_result.ok,
             selected_action=normalized_action,
-            message=(
-                f"{prefix} {response}\n"
-                "Что изменилось: у Гуя теперь есть общий аккаунт, и owner-сценарии профиля смогут сохранять изменения."
-            ),
-            guiy_account_id=str(guiy_account_id) if guiy_account_id else None,
+            message=bootstrap_result.message,
+            guiy_account_id=bootstrap_result.guiy_account_id,
             target_message_id=normalized_target_message_id,
             target_provider_user_id=normalized_bot_user_id or None,
         )

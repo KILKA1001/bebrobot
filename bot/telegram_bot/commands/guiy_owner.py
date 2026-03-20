@@ -159,14 +159,63 @@ def _owner_menu_text() -> str:
         "Выберите действие ниже. После каждого выбора бот коротко объяснит следующий шаг и что изменится после подтверждения.\n\n"
         "• <b>Написать от Гуя</b> — выбрать группу и отправить туда новое сообщение.\n"
         "• <b>Ответить от Гуя</b> — ответить именно на сообщение Гуя, если команда открыта reply-сообщением.\n"
-        "• <b>Профиль Гуя</b> — изменить поля общего профиля Гуя.\n"
-        "• <b>Зарегистрировать профиль Гуя</b> — создать общий аккаунт, если его ещё нет."
+        "• <b>Профиль Гуя</b> — автоматически проверить регистрацию общего аккаунта Гуя и сразу открыть редактирование полей.\n"
+        "• <b>Зарегистрировать профиль Гуя</b> — вручную создать общий аккаунт, если хотите сделать это отдельным шагом заранее."
     )
 
 
-def _owner_profile_text() -> str:
+def _owner_profile_intro(registration_message: str | None = None) -> str:
     spec = GUIY_OWNER_ACTION_SPECS["profile"]
-    return f"👤 <b>{spec.title}</b>\n{spec.instruction}\n\nВыберите поле, которое хотите изменить."
+    lines = ["👤 <b>Профиль Гуя</b>"]
+    if registration_message:
+        lines.extend([registration_message, ""])
+    lines.extend([
+        spec.instruction,
+        "",
+        "Теперь можно открыть редактирование профиля. Выберите поле, которое хотите изменить.",
+    ])
+    return "\n".join(lines)
+
+
+async def _open_profile_menu(
+    message: Message,
+    *,
+    actor_user_id: int | None,
+    target_chat_or_guild: int | str | None,
+    target_message_id: int | str | None,
+    auto_bootstrap: bool,
+    log_message: str,
+) -> None:
+    bot_user = await message.bot.get_me()
+    registration_message: str | None = None
+    guiy_account_id: str | None = None
+    if auto_bootstrap:
+        result = execute_guiy_owner_flow(
+            provider="telegram",
+            actor_user_id=actor_user_id,
+            bot_user_id=bot_user.id,
+            selected_action="register_profile",
+            target_message_id=target_message_id,
+        )
+        guiy_account_id = result.guiy_account_id
+        if not result.ok:
+            await message.answer(result.message)
+            return
+        registration_message = result.message
+    _log_guiy_owner_info(
+        provider="telegram",
+        actor_user_id=actor_user_id,
+        selected_action="profile",
+        target_chat_or_guild=target_chat_or_guild,
+        target_message_id=target_message_id,
+        guiy_account_id=guiy_account_id,
+        message=log_message,
+    )
+    await message.answer(
+        _owner_profile_intro(registration_message),
+        parse_mode="HTML",
+        reply_markup=_owner_profile_keyboard(),
+    )
 
 
 def _build_destination_keyboard(
@@ -450,6 +499,13 @@ async def _run_text_fallback(message: Message, action: str, payload: str) -> Non
         return
 
     try:
+        if action == "register_profile":
+            await message.answer(
+                _owner_profile_intro(result.message),
+                parse_mode="HTML",
+                reply_markup=_owner_profile_keyboard(),
+            )
+            return
         if action == "say":
             await message.answer(result.outbound_text)
             return
@@ -475,7 +531,7 @@ async def guiy_owner_command(message: Message, command: CommandObject) -> None:
     persist_telegram_identity_from_user(message.reply_to_message.from_user if message.reply_to_message else None)
     action, payload = parse_guiy_owner_text_command(command.args)
 
-    if action in {"say", "reply"}:
+    if action in {"say", "reply", "register_profile"}:
         await _run_text_fallback(message, action, payload)
         return
 
@@ -523,17 +579,15 @@ async def guiy_owner_cancel_callback(callback: CallbackQuery) -> None:
 async def guiy_owner_profile_menu_callback(callback: CallbackQuery) -> None:
     try:
         _clear_pending_state(callback.from_user.id if callback.from_user else None)
-        _log_guiy_owner_info(
-            provider="telegram",
-            actor_user_id=getattr(callback.from_user, "id", None),
-            selected_action="profile",
-            target_chat_or_guild=callback.message.chat.id if callback.message and callback.message.chat else None,
-            target_message_id=getattr(callback.message.reply_to_message, "message_id", None) if callback.message else None,
-            guiy_account_id=None,
-            message="telegram guiy owner profile menu opened",
-        )
         if callback.message:
-            await callback.message.answer(_owner_profile_text(), parse_mode="HTML", reply_markup=_owner_profile_keyboard())
+            await _open_profile_menu(
+                callback.message,
+                actor_user_id=getattr(callback.from_user, "id", None),
+                target_chat_or_guild=callback.message.chat.id if callback.message.chat else None,
+                target_message_id=getattr(callback.message.reply_to_message, "message_id", None),
+                auto_bootstrap=True,
+                log_message="telegram guiy owner profile menu opened",
+            )
         await callback.answer()
     except Exception:
         logger.exception(
@@ -599,7 +653,14 @@ async def guiy_owner_action_callback(callback: CallbackQuery) -> None:
                 message="telegram guiy owner register action handled",
             )
             if callback.message:
-                await callback.message.answer(result.message)
+                if result.ok:
+                    await callback.message.answer(
+                        _owner_profile_intro(result.message),
+                        parse_mode="HTML",
+                        reply_markup=_owner_profile_keyboard(),
+                    )
+                else:
+                    await callback.message.answer(result.message)
             await callback.answer("Готово" if result.ok else "Ошибка", show_alert=not result.ok)
             return
 

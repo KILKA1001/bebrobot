@@ -71,6 +71,85 @@ class TelegramGuiyOwnerCommandTests(unittest.IsolatedAsyncioTestCase):
         execute_mock.assert_called_once()
         message.answer.assert_awaited_once_with("привет от гуя")
 
+
+    async def test_profile_menu_auto_bootstraps_and_opens_field_buttons(self):
+        callback_message = SimpleNamespace(
+            chat=SimpleNamespace(id=100),
+            reply_to_message=None,
+            answer=AsyncMock(),
+            bot=SimpleNamespace(get_me=AsyncMock(return_value=SimpleNamespace(id=999))),
+        )
+        callback = SimpleNamespace(
+            from_user=SimpleNamespace(id=42),
+            message=callback_message,
+            data="guiy_owner:action:profile",
+            answer=AsyncMock(),
+        )
+
+        with patch(
+            "bot.telegram_bot.commands.guiy_owner.execute_guiy_owner_flow",
+            return_value=SimpleNamespace(ok=True, message="✅ Профиль Гуя зарегистрирован.\nТеперь можно открыть редактирование профиля и изменить нужные поля.", guiy_account_id="guiy-acc"),
+        ) as execute_mock:
+            await guiy_owner_module.guiy_owner_profile_menu_callback(callback)
+
+        execute_mock.assert_called_once()
+        callback_message.answer.assert_awaited_once()
+        text = callback_message.answer.await_args.args[0]
+        keyboard = callback_message.answer.await_args.kwargs["reply_markup"]
+        self.assertIn("Теперь можно открыть редактирование профиля", text)
+        self.assertEqual([button.text for row in keyboard.inline_keyboard for button in row], [
+            "Никнейм",
+            "Описание",
+            "Null's ID",
+            "Отображаемые роли",
+            "Отмена",
+        ])
+
+    async def test_register_action_success_shows_next_step_buttons(self):
+        callback_message = SimpleNamespace(
+            chat=SimpleNamespace(id=100),
+            reply_to_message=None,
+            answer=AsyncMock(),
+            bot=SimpleNamespace(get_me=AsyncMock(return_value=SimpleNamespace(id=999))),
+        )
+        callback = SimpleNamespace(
+            from_user=SimpleNamespace(id=42),
+            message=callback_message,
+            data="guiy_owner:action:register_profile",
+            answer=AsyncMock(),
+        )
+
+        with patch(
+            "bot.telegram_bot.commands.guiy_owner.execute_guiy_owner_flow",
+            return_value=SimpleNamespace(ok=True, message="✅ Профиль Гуя уже зарегистрирован.\nТеперь можно открыть редактирование профиля и изменить нужные поля.", guiy_account_id="guiy-acc"),
+        ):
+            await guiy_owner_action_callback(callback)
+
+        callback_message.answer.assert_awaited_once()
+        self.assertIn("Профиль Гуя уже зарегистрирован", callback_message.answer.await_args.args[0])
+        self.assertIn("reply_markup", callback_message.answer.await_args.kwargs)
+
+    async def test_register_action_failure_returns_clear_message(self):
+        callback_message = SimpleNamespace(
+            chat=SimpleNamespace(id=100),
+            reply_to_message=None,
+            answer=AsyncMock(),
+            bot=SimpleNamespace(get_me=AsyncMock(return_value=SimpleNamespace(id=999))),
+        )
+        callback = SimpleNamespace(
+            from_user=SimpleNamespace(id=42),
+            message=callback_message,
+            data="guiy_owner:action:register_profile",
+            answer=AsyncMock(),
+        )
+
+        with patch(
+            "bot.telegram_bot.commands.guiy_owner.execute_guiy_owner_flow",
+            return_value=SimpleNamespace(ok=False, message="❌ Не удалось зарегистрировать профиль Гуя. Причина: База данных недоступна.", guiy_account_id=None),
+        ):
+            await guiy_owner_action_callback(callback)
+
+        callback_message.answer.assert_awaited_once_with("❌ Не удалось зарегистрировать профиль Гуя. Причина: База данных недоступна.")
     async def test_reply_action_button_without_reply_context_shows_instruction(self):
         callback_message = SimpleNamespace(chat=SimpleNamespace(id=100), reply_to_message=None, answer=AsyncMock(), bot=SimpleNamespace(get_me=AsyncMock(return_value=SimpleNamespace(id=999))))
         callback = SimpleNamespace(
