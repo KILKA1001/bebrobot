@@ -25,7 +25,7 @@ HELPY_TEXT = (
     "/points [reply|id] — меню управления баллами\n"
     "/balance [reply|id] — показать баланс пользователя\n"
     "/tickets [reply|id] — меню управления билетами\n"
-    "/roles_admin — панель ролей с кнопками и встроенной справкой\n"
+    "/roles_admin / /rolesadmin — панель ролей с кнопками и встроенной справкой (в Telegram меню показывает /roles_admin, alias /rolesadmin нужен для паритета с Discord)\n"
     "/helpy — показать это сообщение"
 )
 

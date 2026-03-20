@@ -70,6 +70,7 @@ class TelegramCommandsLogicTests(unittest.TestCase):
         self.assertIn("/points", get_helpy_text())
         self.assertIn("/balance", get_helpy_text())
         self.assertIn("/tickets", get_helpy_text())
+        self.assertIn("/roles_admin / /rolesadmin", get_helpy_text())
 
     @patch("bot.telegram_bot.systems.commands_logic.RoleManagementService.list_public_roles_catalog")
     def test_roles_catalog_command_renders_description_and_acquire_hint(self, mock_list_roles_grouped):

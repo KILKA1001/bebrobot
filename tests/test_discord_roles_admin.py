@@ -72,6 +72,23 @@ class DiscordRolesAdminTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Некоторые кнопки скрыты", embed.description)
         self.assertIn("сначала настрой каталог", embed.description)
 
+    def test_rolesadmin_help_embed_mentions_alias_and_platform_limits(self):
+        visibility = roles_admin.RolesAdminVisibilityContext(
+            actor_level=100,
+            actor_titles=("Глава клуба",),
+            can_manage_categories=True,
+            can_manage_roles=True,
+            hidden_sections=(),
+        )
+
+        embed = roles_admin._rolesadmin_help_embed(visibility=visibility)
+
+        self.assertIn("Discord команда называется", embed.description)
+        self.assertIn("/roles_admin", embed.description)
+        self.assertIn("sync_discord_roles", embed.description)
+        users_field = next(field for field in embed.fields if field.name == "Пользователи")
+        self.assertIn("Пакетный режим доступен на обеих платформах", users_field.value)
+
     def test_rolesadmin_help_embed_describes_start_order(self):
         visibility = roles_admin.RolesAdminVisibilityContext(
             actor_level=100,

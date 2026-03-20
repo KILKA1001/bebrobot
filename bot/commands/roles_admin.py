@@ -129,6 +129,14 @@ def _delete_role_result_message(result: dict[str, Any]) -> str:
     return "❌ Не удалось удалить роль. Проверь синхронизацию каталога и логи, затем попробуй ещё раз."
 
 
+def _render_command_alias_note() -> str:
+    return (
+        "Паритет названий: в Discord команда называется <code>/rolesadmin</code>, а в Telegram — <code>/roles_admin</code>. "
+        "В Telegram дополнительно поддерживается текстовый alias <code>/rolesadmin</code>, чтобы не было ложных ожиданий при переключении между платформами. "
+        "Команда <code>sync_discord_roles</code> сейчас запускается только из Discord.\n\n"
+    )
+
+
 def _render_role_source_note() -> str:
     return (
         "Команды `list`, `role_move` и `role_order` сначала пытаются автоматически подтянуть актуальные Discord-роли "
@@ -598,6 +606,7 @@ def _rolesadmin_help_embed(
     embed = discord.Embed(title="ℹ️ Что делает /rolesadmin", color=discord.Color.blurple())
     embed.description = (
         "Управление каталогом ролей и ролями пользователей.\n"
+        f"{_render_command_alias_note()}"
         "Навигация разделена на Категории, Роли и Пользователи — как и в Telegram-панели.\n"
         "Порядок старта везде одинаковый: сначала настрой каталог, а потом переходи к выдаче или снятию роли у пользователя.\n\n"
         f"{_render_hidden_sections_note(visibility.hidden_sections)}"
@@ -639,6 +648,7 @@ def _rolesadmin_help_embed(
             "`/rolesadmin user_roles <mention|username|display_name>` — посмотреть роли пользователя\n"
             "`/rolesadmin user_grant <mention|username|display_name> [role_name]` — выдать роль или открыть пакетный flow\n"
             "`/rolesadmin user_revoke <mention|username|display_name> [role_name]` — снять роль или открыть пакетный flow\n"
+            "Пакетный режим доступен на обеих платформах только в интерактивной панели; текстовый fallback в Telegram остаётся одно-ролевым, что явно показано в подсказках.\n"
             "Если `role_name` не указывать, откроется embed/view flow: выбор категории, multi-select ролей, возврат к категориям и подтверждение пакета.\n"
             "Порядок подсказок: Telegram ЛС — `@username`/`username`, Telegram группа — reply, Discord — mention/username/display_name, id только как резерв.\n"
             "Если найдено несколько совпадений, бот покажет кандидатов с provider, username, display и matched_by."

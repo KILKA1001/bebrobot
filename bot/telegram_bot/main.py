@@ -79,7 +79,7 @@ BOT_COMMANDS = [
     BotCommand(command="points", description="Меню управления баллами"),
     BotCommand(command="balance", description="Показать баланс пользователя"),
     BotCommand(command="tickets", description="Меню управления билетами"),
-    BotCommand(command="roles_admin", description="Управление ролями и категориями"),
+    BotCommand(command="roles_admin", description="Управление ролями и категориями (/rolesadmin тоже работает)"),
     BotCommand(command="helpy", description="Список команд"),
     BotCommand(command="guiy", description="Обратиться к Гую (особенно в группе)"),
 ]
