@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock, patch
 from bot.telegram_bot.commands import guiy_owner as guiy_owner_module
 from bot.telegram_bot.commands.guiy_owner import (
     _PENDING_GUIY_OWNER_ACTIONS,
+    _PENDING_GUIY_OWNER_DESTINATIONS,
     PendingGuiyOwnerAction,
+    guiy_owner_destination_callback,
     guiy_owner_action_callback,
     guiy_owner_command,
     guiy_owner_pending_input_handler,
@@ -15,6 +17,7 @@ from bot.telegram_bot.commands.guiy_owner import (
 class TelegramGuiyOwnerCommandTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         _PENDING_GUIY_OWNER_ACTIONS.clear()
+        _PENDING_GUIY_OWNER_DESTINATIONS.clear()
         guiy_owner_module._PENDING_GUIY_OWNER_VISIBLE_ROLES.clear()
 
     async def test_command_without_args_shows_inline_keyboard(self):
@@ -113,6 +116,109 @@ class TelegramGuiyOwnerCommandTests(unittest.IsolatedAsyncioTestCase):
         execute_mock.assert_called_once()
         message.answer.assert_awaited_once_with("✅ Никнейм обновлён")
         self.assertNotIn(42, _PENDING_GUIY_OWNER_ACTIONS)
+
+    async def test_say_action_without_known_destinations_shows_helpful_message(self):
+        callback_message = SimpleNamespace(
+            chat=SimpleNamespace(id=100),
+            reply_to_message=None,
+            answer=AsyncMock(),
+            bot=SimpleNamespace(get_me=AsyncMock(return_value=SimpleNamespace(id=999))),
+        )
+        callback = SimpleNamespace(
+            from_user=SimpleNamespace(id=42),
+            message=callback_message,
+            data="guiy_owner:action:say",
+            answer=AsyncMock(),
+        )
+
+        with patch(
+            "bot.telegram_bot.commands.guiy_owner.GuiyPublishDestinationsService.list_telegram_destinations",
+            return_value=[],
+        ):
+            await guiy_owner_action_callback(callback)
+
+        callback_message.answer.assert_awaited_once()
+        self.assertIn("нет доступных групп", callback_message.answer.await_args.args[0].lower())
+
+    async def test_destination_confirmation_creates_pending_say_action(self):
+        callback_message = SimpleNamespace(
+            chat=SimpleNamespace(id=100),
+            edit_text=AsyncMock(),
+        )
+        callback = SimpleNamespace(
+            from_user=SimpleNamespace(id=42),
+            message=callback_message,
+            data="guiy_owner_destination:confirm",
+            answer=AsyncMock(),
+        )
+        _PENDING_GUIY_OWNER_DESTINATIONS[42] = {
+            "destinations": [
+                guiy_owner_module.GuiyPublishDestination(
+                    provider="telegram",
+                    destination_id="-1001",
+                    title="Тестовая группа",
+                    subtitle="supergroup",
+                    destination_type="supergroup",
+                    chat_id="-1001",
+                )
+            ],
+            "page": 0,
+            "selected_destination_id": "-1001",
+            "bot_user_id": "999",
+            "target_message_id": None,
+            "reply_author_user_id": None,
+            "created_at": 1_000.0,
+            "target_chat_or_guild": "100",
+        }
+
+        with patch("bot.telegram_bot.commands.guiy_owner.time.time", return_value=1_001.0):
+            await guiy_owner_destination_callback(callback)
+
+        pending = _PENDING_GUIY_OWNER_ACTIONS[42]
+        self.assertEqual(pending.target_destination_id, "-1001")
+        self.assertIn("Тестовая группа", pending.target_destination_label)
+        callback_message.edit_text.assert_awaited_once()
+
+    async def test_pending_say_sends_to_selected_destination(self):
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=42, is_bot=False),
+            text="Текст для группы",
+            answer=AsyncMock(),
+            chat=SimpleNamespace(id=100),
+            bot=SimpleNamespace(
+                get_me=AsyncMock(return_value=SimpleNamespace(id=999)),
+                get_chat_member=AsyncMock(return_value=SimpleNamespace(status="administrator", can_send_messages=True)),
+                send_message=AsyncMock(),
+            ),
+        )
+        _PENDING_GUIY_OWNER_ACTIONS[42] = PendingGuiyOwnerAction(
+            selected_action="say",
+            bot_user_id="999",
+            target_message_id=None,
+            reply_author_user_id=None,
+            created_at=1_000.0,
+            target_chat_or_guild="-1001",
+            target_destination_id="-1001",
+            target_destination_label="Тестовая группа — supergroup",
+        )
+
+        with (
+            patch("bot.telegram_bot.commands.guiy_owner.persist_telegram_identity_from_user"),
+            patch("bot.telegram_bot.commands.guiy_owner.time.time", return_value=1_001.0),
+            patch(
+                "bot.telegram_bot.commands.guiy_owner.execute_guiy_owner_flow",
+                return_value=SimpleNamespace(ok=True, outbound_text="Текст для группы", guiy_account_id="guiy-acc"),
+            ),
+            patch(
+                "bot.telegram_bot.commands.guiy_owner.GuiyPublishDestinationsService.get_telegram_destination",
+                return_value=SimpleNamespace(destination_id="-1001"),
+            ),
+        ):
+            await guiy_owner_pending_input_handler(message)
+
+        message.bot.send_message.assert_awaited_once_with(-1001, "Текст для группы")
+        message.answer.assert_awaited_once()
+        self.assertIn("Гуй отправил сообщение сюда", message.answer.await_args.args[0])
 
 
 class TelegramGuiyOwnerVisibilityTests(unittest.TestCase):

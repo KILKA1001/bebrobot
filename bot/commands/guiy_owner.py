@@ -19,10 +19,15 @@ from bot.services.guiy_owner_flow_service import (
     parse_guiy_owner_text_command,
     resolve_guiy_profile_catalog,
 )
+from bot.services.guiy_publish_destinations_service import (
+    GuiyPublishDestination,
+    GuiyPublishDestinationsService,
+)
 from bot.utils import send_temp
 from bot.utils.safe_view import SafeView
 
 logger = logging.getLogger(__name__)
+_DISCORD_DESTINATIONS_PAGE_SIZE = 20
 
 
 def _persist_discord_identity(user: discord.abc.User | None) -> None:
@@ -240,7 +245,17 @@ class GuiyOwnerVisibleRolesView(SafeView):
 
 
 class GuiyOwnerMessageModal(discord.ui.Modal):
-    def __init__(self, *, actor_id: int, bot_user_id: str, selected_action: str, target_message_id: int | None, reply_author_user_id: str | None):
+    def __init__(
+        self,
+        *,
+        actor_id: int,
+        bot_user_id: str,
+        selected_action: str,
+        target_message_id: int | None,
+        reply_author_user_id: str | None,
+        target_destination_id: str | None = None,
+        target_destination_label: str | None = None,
+    ):
         title = get_guiy_owner_action_spec(selected_action).title if get_guiy_owner_action_spec(selected_action) else "Guiy Owner"
         super().__init__(title=title)
         self.actor_id = actor_id
@@ -248,6 +263,8 @@ class GuiyOwnerMessageModal(discord.ui.Modal):
         self.selected_action = selected_action
         self.target_message_id = target_message_id
         self.reply_author_user_id = reply_author_user_id
+        self.target_destination_id = target_destination_id
+        self.target_destination_label = target_destination_label
         action_spec = get_guiy_owner_action_spec(selected_action)
         self.text_input = discord.ui.TextInput(
             label=action_spec.title if action_spec else "Текст",
@@ -281,9 +298,54 @@ class GuiyOwnerMessageModal(discord.ui.Modal):
                 await interaction.response.send_message(result.message, ephemeral=True)
                 return
             if self.selected_action == "say":
-                await interaction.channel.send(result.outbound_text)
+                is_writable, reason, channel, destination = GuiyPublishDestinationsService.discord_destination_is_writable(
+                    interaction.client,
+                    self.target_destination_id,
+                )
+                if not is_writable or channel is None:
+                    _log_guiy_owner_warning(
+                        actor_user_id=interaction.user.id,
+                        selected_action=self.selected_action,
+                        target_chat_or_guild=self.target_destination_id,
+                        target_message_id=self.target_message_id,
+                        guiy_account_id=result.guiy_account_id,
+                        message=f"discord guiy owner send blocked reason={reason}",
+                    )
+                    await interaction.response.send_message(
+                        "❌ Не удалось отправить сообщение от Гуя: канал больше недоступен или у бота нет прав писать туда.\n"
+                        f"Выбранное место: {self.target_destination_label or getattr(destination, 'display_label', 'неизвестно')}.",
+                        ephemeral=True,
+                    )
+                    return
+                try:
+                    await channel.send(result.outbound_text)
+                except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                    _log_guiy_owner_warning(
+                        actor_user_id=interaction.user.id,
+                        selected_action=self.selected_action,
+                        target_chat_or_guild=self.target_destination_id,
+                        target_message_id=self.target_message_id,
+                        guiy_account_id=result.guiy_account_id,
+                        message="discord guiy owner send failed after destination selection",
+                    )
+                    logger.exception(
+                        "discord guiy owner send failed provider=%s actor_user_id=%s selected_action=%s target_chat_or_guild=%s target_message_id=%s guiy_account_id=%s",
+                        "discord",
+                        getattr(interaction.user, "id", None),
+                        self.selected_action,
+                        self.target_destination_id,
+                        self.target_message_id,
+                        result.guiy_account_id,
+                    )
+                    await interaction.response.send_message(
+                        "❌ Не удалось отправить сообщение от Гуя: канал удалён, недоступен или у бота пропали права.\n"
+                        f"Выбранное место: {self.target_destination_label or getattr(destination, 'display_label', 'неизвестно')}.",
+                        ephemeral=True,
+                    )
+                    return
                 await interaction.response.send_message(
-                    "✅ Сообщение отправлено. Что изменилось: новый текст уже опубликован от лица Гуя.",
+                    "✅ Сообщение отправлено. "
+                    f"Гуй отправил сообщение сюда: {self.target_destination_label or getattr(destination, 'display_label', 'неизвестно')}.",
                     ephemeral=True,
                 )
                 return
@@ -315,6 +377,192 @@ class GuiyOwnerMessageModal(discord.ui.Modal):
                 await interaction.followup.send("❌ Не удалось выполнить действие. Попробуйте позже.", ephemeral=True)
             else:
                 await interaction.response.send_message("❌ Не удалось выполнить действие. Попробуйте позже.", ephemeral=True)
+
+
+class GuiyOwnerDestinationSelect(discord.ui.Select):
+    def __init__(self, view: "GuiyOwnerDestinationView"):
+        self.destination_view = view
+        options = self.destination_view.build_options()
+        super().__init__(
+            placeholder="Выберите канал для публикации",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.destination_view.select_destination(interaction, self.values[0])
+
+
+class GuiyOwnerDestinationView(SafeView):
+    def __init__(
+        self,
+        *,
+        actor_id: int,
+        bot_user_id: str,
+        bot_client,
+        target_message_id: int | None,
+        reply_author_user_id: str | None,
+    ):
+        super().__init__(timeout=300)
+        self.actor_id = actor_id
+        self.bot_user_id = bot_user_id
+        self.bot_client = bot_client
+        self.target_message_id = target_message_id
+        self.reply_author_user_id = reply_author_user_id
+        self.destinations = GuiyPublishDestinationsService.list_discord_destinations(bot_client)
+        self.page = 0
+        self.selected_destination_id: str | None = None
+        self.selected_destination_label: str | None = None
+        self._rebuild_items()
+
+    def _get_page_items(self) -> tuple[int, int, list[GuiyPublishDestination]]:
+        total_pages = max((len(self.destinations) - 1) // _DISCORD_DESTINATIONS_PAGE_SIZE + 1, 1)
+        self.page = min(max(self.page, 0), total_pages - 1)
+        start = self.page * _DISCORD_DESTINATIONS_PAGE_SIZE
+        return self.page, total_pages, self.destinations[start : start + _DISCORD_DESTINATIONS_PAGE_SIZE]
+
+    def build_options(self) -> list[discord.SelectOption]:
+        _page, _total_pages, items = self._get_page_items()
+        options: list[discord.SelectOption] = []
+        for item in items:
+            options.append(
+                discord.SelectOption(
+                    label=item.title[:100],
+                    description=item.subtitle[:100] if item.subtitle else None,
+                    value=item.destination_id,
+                    default=item.destination_id == self.selected_destination_id,
+                )
+            )
+        if not options:
+            options.append(
+                discord.SelectOption(
+                    label="Нет доступных каналов",
+                    description="Проверьте права бота и повторите позже",
+                    value="__empty__",
+                )
+            )
+        return options
+
+    def content_text(self) -> str:
+        _page, total_pages, _items = self._get_page_items()
+        if not self.destinations:
+            return (
+                "📍 **Куда писать?**\n"
+                "Сейчас у бота нет ни одного доступного канала для отправки. "
+                "Проверьте, что бот состоит в нужном сервере и имеет право писать в текстовые каналы."
+            )
+        if self.selected_destination_label:
+            return (
+                "📍 **Куда писать?**\n"
+                f"Гуй отправит сообщение сюда: **{self.selected_destination_label}**.\n"
+                f"Страница: **{self.page + 1}/{total_pages}**\n"
+                "Нажмите **Ввести текст**, чтобы открыть форму отправки."
+            )
+        return (
+            "📍 **Куда писать?**\n"
+            "Выберите канал, куда Гуй отправит новое сообщение. "
+            f"Страница: **{self.page + 1}/{total_pages}**"
+        )
+
+    def _rebuild_items(self) -> None:
+        self.clear_items()
+        select = GuiyOwnerDestinationSelect(self)
+        if not self.destinations:
+            select.disabled = True
+        self.add_item(select)
+        page, total_pages, _items = self._get_page_items()
+        if page > 0:
+            prev_button = discord.ui.Button(label="⬅️", style=discord.ButtonStyle.secondary, row=1)
+            prev_button.callback = self._prev_callback
+            self.add_item(prev_button)
+        if page + 1 < total_pages:
+            next_button = discord.ui.Button(label="➡️", style=discord.ButtonStyle.secondary, row=1)
+            next_button.callback = self._next_callback
+            self.add_item(next_button)
+        confirm_button = discord.ui.Button(label="✍️ Ввести текст", style=discord.ButtonStyle.primary, row=1)
+        confirm_button.disabled = not bool(self.selected_destination_id)
+        confirm_button.callback = self._confirm_callback
+        self.add_item(confirm_button)
+        cancel_button = discord.ui.Button(label="Отмена", style=discord.ButtonStyle.danger, row=1)
+        cancel_button.callback = self._cancel_callback
+        self.add_item(cancel_button)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.actor_id:
+            await interaction.response.send_message("❌ Это меню owner-управления не для вас.", ephemeral=True)
+            return False
+        return True
+
+    async def select_destination(self, interaction: discord.Interaction, destination_id: str) -> None:
+        if destination_id == "__empty__":
+            await interaction.response.send_message("❌ Нет доступных каналов для выбора.", ephemeral=True)
+            return
+        selected = next((item for item in self.destinations if item.destination_id == destination_id), None)
+        if selected is None:
+            _log_guiy_owner_warning(
+                actor_user_id=interaction.user.id,
+                selected_action="say",
+                target_chat_or_guild=destination_id,
+                target_message_id=self.target_message_id,
+                guiy_account_id=None,
+                message="discord guiy owner selected destination disappeared",
+            )
+            await interaction.response.send_message("❌ Этот канал больше недоступен. Выберите другой.", ephemeral=True)
+            return
+        self.selected_destination_id = selected.destination_id
+        self.selected_destination_label = selected.display_label
+        _log_guiy_owner_info(
+            actor_user_id=interaction.user.id,
+            selected_action="say",
+            target_chat_or_guild=selected.destination_id,
+            target_message_id=self.target_message_id,
+            guiy_account_id=None,
+            message="discord guiy owner destination selected",
+        )
+        self._rebuild_items()
+        await interaction.response.edit_message(content=self.content_text(), view=self)
+
+    async def _prev_callback(self, interaction: discord.Interaction) -> None:
+        self.page -= 1
+        self._rebuild_items()
+        await interaction.response.edit_message(content=self.content_text(), view=self)
+
+    async def _next_callback(self, interaction: discord.Interaction) -> None:
+        self.page += 1
+        self._rebuild_items()
+        await interaction.response.edit_message(content=self.content_text(), view=self)
+
+    async def _confirm_callback(self, interaction: discord.Interaction) -> None:
+        if not self.selected_destination_id:
+            await interaction.response.send_message("❌ Сначала выберите канал.", ephemeral=True)
+            return
+        await interaction.response.send_modal(
+            GuiyOwnerMessageModal(
+                actor_id=self.actor_id,
+                bot_user_id=self.bot_user_id,
+                selected_action="say",
+                target_message_id=self.target_message_id,
+                reply_author_user_id=self.reply_author_user_id,
+                target_destination_id=self.selected_destination_id,
+                target_destination_label=self.selected_destination_label,
+            )
+        )
+
+    async def _cancel_callback(self, interaction: discord.Interaction) -> None:
+        _log_guiy_owner_info(
+            actor_user_id=interaction.user.id,
+            selected_action="cancel",
+            target_chat_or_guild=self.selected_destination_id,
+            target_message_id=self.target_message_id,
+            guiy_account_id=None,
+            message="discord guiy owner destination picker canceled",
+        )
+        await interaction.response.edit_message(
+            content="✅ Owner-сценарий отменён. Ничего не изменилось, меню можно открыть снова командой /guiy_owner.",
+            view=None,
+        )
 
 
 class GuiyOwnerProfileFieldModal(discord.ui.Modal):
@@ -495,26 +743,31 @@ class GuiyOwnerActionsView(SafeView):
 
     @discord.ui.button(label="Написать от Гуя", style=discord.ButtonStyle.primary)
     async def say(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        spec = GUIY_OWNER_ACTION_SPECS["say"]
         _log_guiy_owner_info(
             actor_user_id=interaction.user.id,
             selected_action="say",
             target_chat_or_guild=getattr(interaction.guild, "id", None) or getattr(interaction.channel, "id", None),
             target_message_id=self.target_message_id,
             guiy_account_id=None,
-            message="discord guiy owner action selected",
+            message="discord guiy owner destination picker opened",
         )
-        await interaction.response.send_modal(
-            GuiyOwnerMessageModal(
-                actor_id=self.actor_id,
-                bot_user_id=self.bot_user_id,
+        view = GuiyOwnerDestinationView(
+            actor_id=self.actor_id,
+            bot_user_id=self.bot_user_id,
+            bot_client=interaction.client,
+            target_message_id=self.target_message_id,
+            reply_author_user_id=self.reply_author_user_id,
+        )
+        if not view.destinations:
+            _log_guiy_owner_warning(
+                actor_user_id=interaction.user.id,
                 selected_action="say",
+                target_chat_or_guild=getattr(interaction.guild, "id", None) or getattr(interaction.channel, "id", None),
                 target_message_id=self.target_message_id,
-                reply_author_user_id=self.reply_author_user_id,
+                guiy_account_id=None,
+                message="discord guiy owner destination list is empty",
             )
-        )
-        if interaction.followup:
-            pass
+        await interaction.response.send_message(view.content_text(), view=view, ephemeral=True)
 
     @discord.ui.button(label="Ответить от Гуя", style=discord.ButtonStyle.primary)
     async def reply(self, interaction: discord.Interaction, _button: discord.ui.Button):
@@ -695,7 +948,7 @@ async def guiy_owner(ctx, action: str = "", *, payload: str = ""):
         title="Owner-управление Гуем",
         description=(
             "Выберите действие кнопками ниже. После каждого выбора бот коротко объяснит следующий шаг и что изменится после подтверждения.\n\n"
-            f"• {GUIY_OWNER_ACTION_SPECS['say'].title} — отправить новое сообщение от лица Гуя.\n"
+            f"• {GUIY_OWNER_ACTION_SPECS['say'].title} — выбрать канал и отправить туда новое сообщение от лица Гуя.\n"
             f"• {GUIY_OWNER_ACTION_SPECS['reply'].title} — ответить от лица Гуя на выбранное сообщение.\n"
             f"• {GUIY_OWNER_ACTION_SPECS['profile'].title} — открыть поля профиля Гуя.\n"
             f"• {GUIY_OWNER_ACTION_SPECS['register_profile'].title} — создать профиль Гуя, если его ещё нет."

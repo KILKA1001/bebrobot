@@ -5,5 +5,6 @@ from .tickets_service import TicketsService
 from .authority_service import AuthorityService
 from .external_roles_sync_service import ExternalRolesSyncService
 from .role_management_service import RoleManagementService
+from .guiy_publish_destinations_service import GuiyPublishDestination, GuiyPublishDestinationsService
 
-__all__ = ["AccountsService", "PointsService", "FinesService", "TicketsService", "AuthorityService", "ExternalRolesSyncService", "RoleManagementService"]
+__all__ = ["AccountsService", "PointsService", "FinesService", "TicketsService", "AuthorityService", "ExternalRolesSyncService", "RoleManagementService", "GuiyPublishDestination", "GuiyPublishDestinationsService"]
