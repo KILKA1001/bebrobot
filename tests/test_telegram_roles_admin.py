@@ -7,10 +7,12 @@ from bot.telegram_bot.commands.roles_admin import (
     _PENDING_ACTIONS,
     _build_actions_keyboard,
     _build_home_keyboard,
+    _build_pick_category_keyboard,
     _build_pick_role_keyboard,
     _build_position_choice_keyboard,
     _build_user_role_categories_keyboard,
     _build_user_role_picker_keyboard,
+    RolesAdminVisibilityContext,
     _render_home_text,
     _render_fallback_text,
     _render_help_text,
@@ -18,7 +20,9 @@ from bot.telegram_bot.commands.roles_admin import (
     _render_position_picker_text,
     _render_user_role_flow_text,
     _resolve_telegram_target,
+    roles_admin_callback,
     roles_admin_command,
+    roles_admin_pending_action_handler,
 )
 
 
@@ -209,6 +213,23 @@ class TelegramRolesAdminTargetResolutionTests(unittest.TestCase):
         self.assertNotIn("🗂 Создать категорию", texts)
         self.assertNotIn("➕ Создать роль", texts)
 
+    def test_role_create_category_picker_shows_new_category_button_when_allowed(self):
+        grouped = [{"category": "General", "roles": []}]
+
+        keyboard = _build_pick_category_keyboard(grouped, actor_id=10, operation="role_create", allow_create_new=True)
+        texts = [button.text for row in keyboard.inline_keyboard for button in row]
+
+        self.assertIn("📂 General", texts)
+        self.assertIn("🆕 Создать новую категорию и продолжить", texts)
+
+    def test_role_create_category_picker_hides_new_category_button_without_permission(self):
+        grouped = [{"category": "General", "roles": []}]
+
+        keyboard = _build_pick_category_keyboard(grouped, actor_id=10, operation="role_create", allow_create_new=False)
+        texts = [button.text for row in keyboard.inline_keyboard for button in row]
+
+        self.assertNotIn("🆕 Создать новую категорию и продолжить", texts)
+
     def test_position_picker_renders_all_available_positions(self):
         preview = {
             "insertion_positions": [
@@ -241,7 +262,7 @@ class TelegramRolesAdminTargetResolutionTests(unittest.TestCase):
         self.assertIn("будет добавлено в конец (#3)", text)
 
     def test_help_and_fallback_texts_describe_position_parity(self):
-        self.assertIn("отдельный экран выбора точной позиции", _render_fallback_text())
+        self.assertIn("сначала категория", _render_fallback_text())
         self.assertIn("роль будет добавлена последней", _render_help_text())
         self.assertIn("role_edit_description", _render_fallback_text())
         self.assertIn("role_edit_acquire_hint", _render_fallback_text())
@@ -363,6 +384,93 @@ class TelegramRolesAdminCommandTests(unittest.IsolatedAsyncioTestCase):
             await roles_admin_command(message)
 
         self.assertIn("только глава/главный вице", message.answer.await_args.args[0])
+
+
+class TelegramRolesAdminCategoryFirstFlowTests(unittest.IsolatedAsyncioTestCase):
+    def _callback(self, data: str, user_id: int = 42):
+        return SimpleNamespace(
+            data=data,
+            from_user=SimpleNamespace(id=user_id, username="admin", full_name="Admin", is_bot=False),
+            message=SimpleNamespace(edit_text=AsyncMock(), reply=AsyncMock()),
+            answer=AsyncMock(),
+        )
+
+    async def test_role_create_flow_selects_existing_category_first(self):
+        callback = self._callback("roles_admin:42:pick_category:role_create:0")
+        grouped = [{"category": "General", "roles": []}]
+
+        with (
+            patch("bot.telegram_bot.commands.roles_admin.persist_telegram_identity_from_user"),
+            patch("bot.telegram_bot.commands.roles_admin._sync_discord_roles_catalog", AsyncMock()),
+            patch("bot.telegram_bot.commands.roles_admin.RoleManagementService.list_roles_grouped", return_value=grouped),
+            patch(
+                "bot.telegram_bot.commands.roles_admin._resolve_visibility_context",
+                return_value=RolesAdminVisibilityContext(
+                    actor_level=100,
+                    actor_titles=("Глава клуба",),
+                    can_manage_categories=True,
+                    hidden_sections=(),
+                ),
+            ),
+        ):
+            await roles_admin_callback(callback)
+
+        pending = _PENDING_ACTIONS[42]
+        self.assertEqual(pending.operation, "role_create_enter_name")
+        self.assertEqual(pending.payload["category"], "General")
+        callback.message.edit_text.assert_awaited()
+        self.assertIn("Категория выбрана", callback.message.edit_text.await_args.args[0])
+        self.assertIn("Название роли", callback.message.edit_text.await_args.args[0])
+        _PENDING_ACTIONS.pop(42, None)
+
+    async def test_role_create_flow_can_create_new_category_and_continue(self):
+        _PENDING_ACTIONS[42] = PendingRolesAdminAction(operation="role_create_new_category_name", created_at=1.0)
+        message = SimpleNamespace(
+            text="Новая категория",
+            from_user=SimpleNamespace(id=42, username="admin", full_name="Admin", is_bot=False),
+            reply_to_message=None,
+            chat=SimpleNamespace(id=99),
+            answer=AsyncMock(),
+        )
+
+        with (
+            patch("bot.telegram_bot.commands.roles_admin.persist_telegram_identity_from_user"),
+            patch("bot.telegram_bot.commands.roles_admin._can_manage_categories", return_value=True),
+            patch("bot.telegram_bot.commands.roles_admin.RoleManagementService.create_category", return_value=True) as create_mock,
+        ):
+            await roles_admin_pending_action_handler(message)
+
+        pending = _PENDING_ACTIONS[42]
+        create_mock.assert_called_once_with("Новая категория", 0)
+        self.assertEqual(pending.operation, "role_create_enter_name")
+        self.assertEqual(pending.payload["category"], "Новая категория")
+        self.assertTrue(pending.payload["created_new_category"])
+        self.assertIn("Категория <b>Новая категория</b> создана и выбрана", message.answer.await_args.args[0])
+        _PENDING_ACTIONS.pop(42, None)
+
+    async def test_role_create_flow_denies_new_category_without_permission(self):
+        callback = self._callback("roles_admin:42:role_create_new_category")
+        grouped = [{"category": "General", "roles": []}]
+
+        with (
+            patch("bot.telegram_bot.commands.roles_admin.persist_telegram_identity_from_user"),
+            patch("bot.telegram_bot.commands.roles_admin._sync_discord_roles_catalog", AsyncMock()),
+            patch("bot.telegram_bot.commands.roles_admin.RoleManagementService.list_roles_grouped", return_value=grouped),
+            patch(
+                "bot.telegram_bot.commands.roles_admin._resolve_visibility_context",
+                return_value=RolesAdminVisibilityContext(
+                    actor_level=80,
+                    actor_titles=("Вице",),
+                    can_manage_categories=False,
+                    hidden_sections=("categories",),
+                ),
+            ),
+        ):
+            await roles_admin_callback(callback)
+
+        callback.answer.assert_awaited()
+        self.assertIn("Категориями может управлять только", callback.answer.await_args.args[0])
+        self.assertNotIn(42, _PENDING_ACTIONS)
 
 
 if __name__ == "__main__":
