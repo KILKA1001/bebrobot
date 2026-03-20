@@ -84,11 +84,14 @@ def _build_role_position_preview_embed(
     title: str,
     role_name: str,
     preview: dict[str, Any],
+    role_description: str | None = None,
 ) -> discord.Embed:
     embed = discord.Embed(title=title, color=discord.Color.blurple())
+    description_text = str(role_description or "").strip()
     embed.description = (
         f"Роль: **{role_name}**\n"
         f"Категория: **{preview.get('category')}**\n"
+        f"Описание: **{description_text or '—'}**\n"
         f"Расчёт позиции: **{preview.get('position_description')}**\n"
         "Если позицию не указывать в `role_create` или `role_move`, роль будет добавлена последней."
     )
@@ -99,6 +102,14 @@ def _build_role_position_preview_embed(
         inline=False,
     )
     return embed
+
+
+def _format_role_line(role: dict[str, Any]) -> str:
+    suffix = f" (Discord ID: {role['discord_role_id']})" if role.get("discord_role_id") else ""
+    description = str(role.get("description") or "").strip()
+    if description:
+        return f"• {role['name']}{suffix} — {description}"
+    return f"• {role['name']}{suffix}"
 
 
 def _catalog_role_exists(role_name: str) -> bool:
@@ -348,11 +359,13 @@ def _rolesadmin_help_embed() -> discord.Embed:
         name="Роли",
         value=(
             "`/rolesadmin list` — показать роли по категориям (с автосинхронизацией Discord-каталога)\n"
-            "`/rolesadmin role_create <name> <category> [discord_role] [position]` — создать роль\n"
+            "`/rolesadmin role_create <name> <category> [description] [discord_role] [position]` — создать роль\n"
+            "`/rolesadmin role_edit_description <name> <description>` — обновить описание роли\n"
             "`/rolesadmin role_move <role_name> <category> [position]` — переместить роль\n"
             "`/rolesadmin role_order <role_name> <category> <position>` — изменить порядок роли\n"
             "`/rolesadmin role_delete <name>` — удалить роль\n"
             "Перед `role_create` / `role_move` / `role_order` бот показывает embed со списком ролей категории и рассчитанной позицией вставки.\n"
+            "Описание помогает админам и пользователям понять назначение роли прямо в карточке.\n"
             "Если позицию не указывать в `role_create` или `role_move`, роль добавится последней.\n"
             "Внешние Discord-роли удалять нельзя: их можно только перемещать и сортировать."
         ),
@@ -428,8 +441,7 @@ async def rolesadmin_list(ctx: commands.Context):
             continue
         lines = []
         for role in roles:
-            suffix = f" (Discord ID: {role['discord_role_id']})" if role.get("discord_role_id") else ""
-            lines.append(f"• {role['name']}{suffix}")
+            lines.append(_format_role_line(role))
         embed.add_field(name=category, value="\n".join(lines), inline=False)
     await send_temp(ctx, embed=embed)
 
@@ -475,6 +487,7 @@ async def rolesadmin_role_create(
     ctx: commands.Context,
     name: str,
     category: str,
+    description: str | None = None,
     discord_role: discord.Role | None = None,
     position: int | None = None,
 ):
@@ -487,18 +500,21 @@ async def rolesadmin_role_create(
             title="🧭 Предпросмотр создания роли",
             role_name=name,
             preview=preview,
+            role_description=description,
         ),
     )
     if RoleManagementService.create_role(
         name,
         category,
+        description=description,
         position=position,
         discord_role_id=str(discord_role.id) if discord_role else None,
         discord_role_name=discord_role.name if discord_role else None,
         actor_id=str(ctx.author.id),
         operation="role_create",
     ):
-        await send_temp(ctx, f"✅ Роль **{name}** создана в категории **{category}**.")
+        description_note = f" Описание: {description}." if str(description or "").strip() else ""
+        await send_temp(ctx, f"✅ Роль **{name}** создана в категории **{category}**.{description_note}")
     else:
         _log_role_position_error(
             actor_id=ctx.author.id,
@@ -511,6 +527,21 @@ async def rolesadmin_role_create(
             message="rolesadmin role_create failed",
         )
         await send_temp(ctx, "❌ Не удалось создать роль (смотри логи).")
+
+
+@rolesadmin.command(name="role_edit_description", description="Обновить описание роли")
+async def rolesadmin_role_edit_description(ctx: commands.Context, name: str, description: str):
+    if not await _ensure_roles_admin(ctx):
+        return
+    if RoleManagementService.update_role_description(
+        name,
+        description,
+        actor_id=str(ctx.author.id),
+        operation="role_edit_description",
+    ):
+        await send_temp(ctx, f"✅ Описание роли **{name}** обновлено.")
+    else:
+        await send_temp(ctx, "❌ Не удалось обновить описание роли (смотри логи).")
 
 
 @rolesadmin.command(name="role_delete", description="Удалить роль из каталога")
@@ -654,7 +685,13 @@ async def rolesadmin_user_roles(ctx: commands.Context, target: str):
         await send_temp(ctx, f"📭 У пользователя {resolved['label']} нет ролей.")
         return
 
-    lines = [f"• {role['name']} ({role['category']})" for role in roles]
+    lines = []
+    for role in roles:
+        description = str(role.get("description") or "").strip()
+        line = f"• {role['name']} ({role['category']})"
+        if description:
+            line += f" — {description}"
+        lines.append(line)
     await send_temp(ctx, f"🧾 Роли {resolved['label']}:\n" + "\n".join(lines))
 
 

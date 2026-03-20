@@ -55,7 +55,7 @@ class DiscordRolesAdminTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_rolesadmin_list_runs_implicit_sync_before_listing(self):
         ctx = self._build_ctx()
-        grouped = [{"category": "General", "roles": [{"name": "Role A", "discord_role_id": "1"}]}]
+        grouped = [{"category": "General", "roles": [{"name": "Role A", "discord_role_id": "1", "description": "Описание"}]}]
 
         with (
             patch.object(roles_admin, "_ensure_roles_admin", AsyncMock(return_value=True)),
@@ -69,6 +69,7 @@ class DiscordRolesAdminTests(unittest.IsolatedAsyncioTestCase):
         embed = send_mock.await_args.kwargs["embed"]
         self.assertEqual(embed.title, "🧩 Роли по категориям")
         self.assertIsNone(embed.description)
+        self.assertIn("Описание", embed.fields[0].value)
 
     async def test_rolesadmin_list_warns_and_logs_when_implicit_sync_fails(self):
         ctx = self._build_ctx()
@@ -204,8 +205,27 @@ class DiscordRolesAdminTests(unittest.IsolatedAsyncioTestCase):
             patch.object(roles_admin.RoleManagementService, "create_role", return_value=True),
             patch.object(roles_admin, "send_temp", AsyncMock()) as send_mock,
         ):
-            await roles_admin.rolesadmin_role_create(ctx, "New", "General", None, None)
+            await roles_admin.rolesadmin_role_create(ctx, "New", "General", "Описание", None, None)
 
         first_embed = send_mock.await_args_list[0].kwargs["embed"]
         self.assertEqual(first_embed.title, "🧭 Предпросмотр создания роли")
         self.assertIn("Если позицию не указывать", first_embed.description)
+        self.assertIn("Описание", first_embed.description)
+
+    async def test_rolesadmin_role_edit_description_calls_service(self):
+        ctx = self._build_ctx()
+
+        with (
+            patch.object(roles_admin, "_ensure_roles_admin", AsyncMock(return_value=True)),
+            patch.object(roles_admin.RoleManagementService, "update_role_description", return_value=True) as update_mock,
+            patch.object(roles_admin, "send_temp", AsyncMock()) as send_mock,
+        ):
+            await roles_admin.rolesadmin_role_edit_description(ctx, "New", "Новое описание")
+
+        update_mock.assert_called_once_with(
+            "New",
+            "Новое описание",
+            actor_id=str(ctx.author.id),
+            operation="role_edit_description",
+        )
+        self.assertIn("Описание роли", send_mock.await_args.args[1])

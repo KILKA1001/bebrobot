@@ -7,6 +7,7 @@ from bot.telegram_bot.commands.roles_admin import (
     _build_position_choice_keyboard,
     _render_fallback_text,
     _render_help_text,
+    _render_list_text,
     _render_position_picker_text,
     _resolve_telegram_target,
 )
@@ -195,6 +196,24 @@ class TelegramRolesAdminTargetResolutionTests(unittest.TestCase):
     def test_help_and_fallback_texts_describe_position_parity(self):
         self.assertIn("отдельный экран выбора точной позиции", _render_fallback_text())
         self.assertIn("роль будет добавлена последней", _render_help_text())
+        self.assertIn("role_edit_description", _render_fallback_text())
+        self.assertIn("Описание роли", _render_help_text())
+
+    def test_render_list_text_shows_role_description_and_legacy_rows_without_it(self):
+        grouped = [
+            {
+                "category": "General",
+                "roles": [
+                    {"name": "Alpha", "discord_role_id": "1", "description": "Первое описание"},
+                    {"name": "Legacy", "discord_role_id": None, "description": ""},
+                ],
+            }
+        ]
+
+        text = _render_list_text(grouped, 0)
+
+        self.assertIn("Первое описание", text)
+        self.assertIn("Legacy", text)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,15 @@ DELETE_ROLE_REASON_ERROR = "error"
 
 class RoleManagementService:
     @staticmethod
+    def _normalized_description(value: str | None) -> str | None:
+        normalized = str(value or "").strip()
+        return normalized or None
+
+    @staticmethod
+    def _description_text(value: object) -> str:
+        return str(value or "").strip()
+
+    @staticmethod
     def _log_role_position_error(
         message: str,
         *,
@@ -60,22 +69,19 @@ class RoleManagementService:
         if not db.supabase:
             return []
 
-        try:
-            response = (
-                db.supabase.table("roles")
-                .select("name,category_name,position,is_discord_managed,discord_role_id")
-                .execute()
-            )
-            return response.data or []
-        except Exception:
-            logger.exception("roles query with discord columns failed, fallback to base columns")
-
-        try:
-            response = db.supabase.table("roles").select("name,category_name,position").execute()
-            return response.data or []
-        except Exception:
-            logger.exception("roles query fallback failed")
-            return []
+        select_variants = (
+            "name,category_name,description,position,is_discord_managed,discord_role_id",
+            "name,category_name,position,is_discord_managed,discord_role_id",
+            "name,category_name,description,position",
+            "name,category_name,position",
+        )
+        for select_clause in select_variants:
+            try:
+                response = db.supabase.table("roles").select(select_clause).execute()
+                return response.data or []
+            except Exception:
+                logger.exception("roles query failed select=%s", select_clause)
+        return []
 
     @staticmethod
     def _normalized_category(name: str | None) -> str:
@@ -101,6 +107,7 @@ class RoleManagementService:
             grouped.setdefault(category, []).append(
                 {
                     "name": role_name,
+                    "description": RoleManagementService._description_text(row.get("description")),
                     "position": int(row.get("position") or 0),
                     "is_discord_managed": bool(row.get("is_discord_managed")),
                     "discord_role_id": str(row.get("discord_role_id") or "").strip() or None,
@@ -327,6 +334,7 @@ class RoleManagementService:
     def create_role(
         name: str,
         category: str,
+        description: str | None = None,
         position: int | None = None,
         discord_role_id: str | None = None,
         discord_role_name: str | None = None,
@@ -347,9 +355,11 @@ class RoleManagementService:
         )
         computed_position = int(preview.get("computed_position", 0))
         computed_last_position = int(preview.get("computed_last_position", 0))
+        normalized_description = RoleManagementService._normalized_description(description)
         payload = {
             "name": role_name,
             "category_name": normalized_category,
+            "description": normalized_description,
             "position": computed_position,
             "is_discord_managed": bool(discord_role_id),
             "discord_role_id": str(discord_role_id).strip() if discord_role_id else None,
@@ -359,14 +369,24 @@ class RoleManagementService:
         try:
             db.supabase.table("role_categories").upsert({"name": normalized_category, "position": 0}).execute()
             db.supabase.table("roles").upsert(payload, on_conflict="name").execute()
+            logger.info(
+                "create_role completed role_name=%s category=%s description_length=%s actor_id=%s operation=%s computed_position=%s",
+                role_name,
+                normalized_category,
+                len(normalized_description or ""),
+                actor_id,
+                operation,
+                computed_position,
+            )
             return True
         except Exception:
             logger.exception(
-                "create_role failed actor_id=%s operation=%s role_name=%s category=%s requested_position=%s computed_last_position=%s computed_position=%s",
+                "create_role failed actor_id=%s operation=%s role_name=%s category=%s description_length=%s requested_position=%s computed_last_position=%s computed_position=%s",
                 actor_id,
                 operation,
                 role_name,
                 normalized_category,
+                len(normalized_description or ""),
                 position,
                 computed_last_position,
                 computed_position,
@@ -705,19 +725,81 @@ class RoleManagementService:
         role_key = str(role_name or "").strip()
         if not role_key:
             return None
+
+        select_variants = (
+            "name,category_name,description,is_discord_managed,discord_role_id,discord_role_name",
+            "name,category_name,is_discord_managed,discord_role_id,discord_role_name",
+        )
+        for select_clause in select_variants:
+            try:
+                resp = (
+                    db.supabase.table("roles")
+                    .select(select_clause)
+                    .eq("name", role_key)
+                    .limit(1)
+                    .execute()
+                )
+                if resp.data:
+                    row = resp.data[0]
+                    row["description"] = RoleManagementService._description_text(row.get("description"))
+                    return row
+            except Exception:
+                logger.exception("get_role failed role_name=%s select=%s", role_key, select_clause)
+        return None
+
+    @staticmethod
+    def update_role_description(
+        role_name: str,
+        description: str | None,
+        *,
+        actor_id: str | None = None,
+        operation: str = "role_edit_description",
+    ) -> bool:
+        if not db.supabase:
+            return False
+        role_key = str(role_name or "").strip()
+        if not role_key:
+            return False
+
+        normalized_description = RoleManagementService._normalized_description(description)
         try:
-            resp = (
+            response = (
                 db.supabase.table("roles")
-                .select("name,category_name,is_discord_managed,discord_role_id,discord_role_name")
+                .update({"description": normalized_description})
                 .eq("name", role_key)
-                .limit(1)
                 .execute()
             )
-            if resp.data:
-                return resp.data[0]
+            if response is not None and hasattr(response, "data") and response.data == []:
+                logger.warning(
+                    "update_role_description skipped role_name=%s category=%s description_length=%s actor_id=%s operation=%s reason=%s",
+                    role_key,
+                    None,
+                    len(normalized_description or ""),
+                    actor_id,
+                    operation,
+                    "not_found",
+                )
+                return False
+            role = RoleManagementService.get_role(role_key) or {}
+            logger.info(
+                "update_role_description completed role_name=%s category=%s description_length=%s actor_id=%s operation=%s",
+                role_key,
+                role.get("category_name"),
+                len(normalized_description or ""),
+                actor_id,
+                operation,
+            )
+            return True
         except Exception:
-            logger.exception("get_role failed role_name=%s", role_key)
-        return None
+            logger.exception(
+                "update_role_description failed role_name=%s category=%s description_length=%s actor_id=%s operation=%s",
+                role_key,
+                None,
+                len(normalized_description or ""),
+                actor_id,
+                operation,
+            )
+            return False
 
     @staticmethod
     def sync_discord_guild_roles(guild_roles: list[dict[str, Any]]) -> dict[str, int]:

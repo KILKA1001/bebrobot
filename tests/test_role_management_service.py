@@ -203,7 +203,19 @@ class RoleManagementServiceTests(unittest.TestCase):
 
         self.assertEqual(grouped[0]["roles"][0]["name"], "External role")
         self.assertEqual(grouped[0]["roles"][0]["discord_role_id"], "role-1")
+        self.assertEqual(grouped[0]["roles"][0]["description"], "")
         self.assertTrue(self.fake_db.tables["roles"])
+
+    def test_list_roles_grouped_keeps_backward_compatibility_without_description(self):
+        self.fake_db.tables["roles"] = [
+            {"name": "Legacy", "category_name": "General", "position": 0},
+        ]
+        self.fake_db.tables["role_categories"] = [{"name": "General", "position": 0}]
+
+        grouped = RoleManagementService.list_roles_grouped()
+
+        self.assertEqual(grouped[0]["roles"][0]["name"], "Legacy")
+        self.assertEqual(grouped[0]["roles"][0]["description"], "")
 
     def test_move_role_returns_false_when_role_missing_from_catalog(self):
         with self.assertLogs("bot.services.role_management_service", level="WARNING") as captured:
@@ -250,11 +262,32 @@ class RoleManagementServiceTests(unittest.TestCase):
             {"name": "Beta", "category_name": "General", "position": 1},
         ]
 
-        ok = RoleManagementService.create_role("Gamma", "General", position=None)
+        ok = RoleManagementService.create_role("Gamma", "General", description="Описание", position=None)
 
         self.assertTrue(ok)
         created = next(row for row in self.fake_db.tables["roles"] if row["name"] == "Gamma")
         self.assertEqual(created["position"], 2)
+        self.assertEqual(created["description"], "Описание")
+
+    def test_get_role_returns_empty_description_for_legacy_rows(self):
+        self.fake_db.tables["roles"] = [
+            {"name": "Legacy", "category_name": "General", "position": 0},
+        ]
+
+        role = RoleManagementService.get_role("Legacy")
+
+        assert role is not None
+        self.assertEqual(role["description"], "")
+
+    def test_update_role_description_updates_role(self):
+        self.fake_db.tables["roles"] = [
+            {"name": "Gamma", "category_name": "General", "position": 0, "description": None},
+        ]
+
+        ok = RoleManagementService.update_role_description("Gamma", "Новое описание", actor_id="42")
+
+        self.assertTrue(ok)
+        self.assertEqual(self.fake_db.tables["roles"][0]["description"], "Новое описание")
 
 
 if __name__ == "__main__":
