@@ -29,6 +29,39 @@ ACQUIRE_METHOD_DISCORD_SYNC = "автоматически синхронизир
 
 class RoleManagementService:
     @staticmethod
+    def _normalize_role_names(role_names: list[str] | tuple[str, ...] | set[str] | None) -> list[str]:
+        seen: set[str] = set()
+        normalized: list[str] = []
+        for item in list(role_names or []):
+            role_key = str(item or "").strip()
+            if not role_key or role_key in seen:
+                continue
+            seen.add(role_key)
+            normalized.append(role_key)
+        return normalized
+
+    @staticmethod
+    def _log_user_role_batch_item(
+        *,
+        actor_id: str | None,
+        target_account_id: str,
+        role_name: str,
+        action: str,
+        success: bool,
+        error: str | None = None,
+    ) -> None:
+        log_method = logger.info if success else logger.warning
+        log_method(
+            "user_role_batch actor_id=%s target_account_id=%s role_name=%s action=%s success=%s failure=%s",
+            actor_id,
+            target_account_id,
+            role_name,
+            action,
+            success,
+            error or "",
+        )
+
+    @staticmethod
     def _normalized_description(value: str | None) -> str | None:
         normalized = str(value or "").strip()
         return normalized or None
@@ -789,6 +822,103 @@ class RoleManagementService:
                 role_name,
             )
             return False
+
+    @staticmethod
+    def apply_user_role_changes_by_account(
+        account_id: str,
+        *,
+        actor_id: str | None = None,
+        grant_roles: list[str] | tuple[str, ...] | set[str] | None = None,
+        revoke_roles: list[str] | tuple[str, ...] | set[str] | None = None,
+    ) -> dict[str, Any]:
+        account_key = str(account_id or "").strip()
+        if not account_key:
+            return {
+                "ok": False,
+                "grant_success": [],
+                "grant_failed": [],
+                "revoke_success": [],
+                "revoke_failed": [],
+            }
+
+        normalized_grants = RoleManagementService._normalize_role_names(grant_roles)
+        normalized_revokes = RoleManagementService._normalize_role_names(revoke_roles)
+        conflicting = set(normalized_grants) & set(normalized_revokes)
+        if conflicting:
+            logger.warning(
+                "apply_user_role_changes_by_account skipped conflicting roles actor_id=%s target_account_id=%s roles=%s",
+                actor_id,
+                account_key,
+                sorted(conflicting),
+            )
+            normalized_grants = [item for item in normalized_grants if item not in conflicting]
+            normalized_revokes = [item for item in normalized_revokes if item not in conflicting]
+
+        result: dict[str, Any] = {
+            "ok": True,
+            "grant_success": [],
+            "grant_failed": [],
+            "revoke_success": [],
+            "revoke_failed": [],
+            "conflicting_roles": sorted(conflicting),
+        }
+
+        for role_name in normalized_grants:
+            try:
+                role_info = RoleManagementService.get_role(role_name) or {}
+                ok = RoleManagementService.assign_user_role_by_account(
+                    account_key,
+                    role_name,
+                    category=str(role_info.get("category_name") or "").strip() or None,
+                )
+            except Exception:
+                ok = False
+                logger.exception(
+                    "apply_user_role_changes_by_account grant crashed actor_id=%s target_account_id=%s role_name=%s",
+                    actor_id,
+                    account_key,
+                    role_name,
+                )
+            if ok:
+                result["grant_success"].append(role_name)
+            else:
+                result["grant_failed"].append(role_name)
+                result["ok"] = False
+            RoleManagementService._log_user_role_batch_item(
+                actor_id=actor_id,
+                target_account_id=account_key,
+                role_name=role_name,
+                action="grant",
+                success=ok,
+                error=None if ok else "service_returned_false",
+            )
+
+        for role_name in normalized_revokes:
+            try:
+                ok = RoleManagementService.revoke_user_role_by_account(account_key, role_name)
+            except Exception:
+                ok = False
+                logger.exception(
+                    "apply_user_role_changes_by_account revoke crashed actor_id=%s target_account_id=%s role_name=%s",
+                    actor_id,
+                    account_key,
+                    role_name,
+                )
+            if ok:
+                result["revoke_success"].append(role_name)
+            else:
+                result["revoke_failed"].append(role_name)
+                result["ok"] = False
+            RoleManagementService._log_user_role_batch_item(
+                actor_id=actor_id,
+                target_account_id=account_key,
+                role_name=role_name,
+                action="revoke",
+                success=ok,
+                error=None if ok else "service_returned_false",
+            )
+
+        return result
 
     @staticmethod
     def assign_user_role_by_account(account_id: str, role_name: str, category: str | None = None) -> bool:

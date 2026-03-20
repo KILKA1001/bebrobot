@@ -39,7 +39,7 @@ _SECTION_OPERATIONS = {
 class PendingRolesAdminAction:
     operation: str
     created_at: float
-    payload: dict[str, str] | None = None
+    payload: dict[str, Any] | None = None
 
 
 _PENDING_ACTIONS: dict[int, PendingRolesAdminAction] = {}
@@ -639,8 +639,8 @@ def _operation_hint(operation: str) -> str:
         "role_order": "Отправь: <code>Название роли | Категория | position</code>. Внешнюю Discord-роль можно отсортировать.",
         "role_delete": "Отправь: <code>Название роли</code>. Внешние Discord-роли удалить нельзя.",
         "user_roles": "Отправь: <code>@username</code> / <code>username</code> / <code>tg:@username</code> / <code>ds:username</code>. В группе удобнее reply.",
-        "user_grant": "Отправь: <code>@username | Название роли</code> или reply + <code>Название роли</code>. Для Discord можно <code>ds:username | Роль</code>.",
-        "user_revoke": "Отправь: <code>@username | Название роли</code> или reply + <code>Название роли</code>. Для Discord можно <code>ds:username | Роль</code>.",
+        "user_grant": "Кнопочный режим: сначала укажи пользователя, потом выбирай роли по категориям и подтверждай пакет. Текстовый fallback: <code>@username | Название роли</code> или reply + <code>Название роли</code>. Для Discord можно <code>ds:username | Роль</code>.",
+        "user_revoke": "Кнопочный режим: сначала укажи пользователя, потом выбирай роли по категориям и подтверждай пакет. Текстовый fallback: <code>@username | Название роли</code> или reply + <code>Название роли</code>. Для Discord можно <code>ds:username | Роль</code>.",
     }
     return hints.get(operation, "Неизвестная операция")
 
@@ -756,6 +756,198 @@ def _flatten_roles(grouped: list[dict]) -> list[dict[str, object]]:
                     }
                 )
     return fallback
+
+
+def _normalize_role_names(role_names: list[str] | tuple[str, ...] | set[str] | None) -> list[str]:
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for item in list(role_names or []):
+        role_key = str(item or "").strip()
+        if not role_key or role_key in seen:
+            continue
+        seen.add(role_key)
+        normalized.append(role_key)
+    return normalized
+
+
+def _get_user_role_flow_pending(actor_id: int | None) -> PendingRolesAdminAction | None:
+    pending = _PENDING_ACTIONS.get(actor_id or 0)
+    if not pending or pending.operation != "user_role_flow_panel":
+        return None
+    return pending
+
+
+def _user_role_flow_summary_lists(action: str, selected_roles: list[str]) -> tuple[list[str], list[str]]:
+    normalized = _normalize_role_names(selected_roles)
+    if action == "revoke":
+        return [], normalized
+    return normalized, []
+
+
+def _render_user_role_flow_text(
+    *,
+    target_label: str,
+    action: str,
+    selected_roles: list[str],
+    current_category: str | None = None,
+) -> str:
+    grant_roles, revoke_roles = _user_role_flow_summary_lists(action, selected_roles)
+    action_title = "выдачи" if action == "grant" else "снятия"
+    category_note = f"Текущая категория: <b>{current_category}</b>\n" if current_category else ""
+    grant_text = "\n".join(f"• {item}" for item in grant_roles) if grant_roles else "• —"
+    revoke_text = "\n".join(f"• {item}" for item in revoke_roles) if revoke_roles else "• —"
+    return (
+        f"👤 Пользователь: <b>{target_label}</b>\n"
+        f"🧺 Панель пакетного {action_title} ролей\n"
+        f"{category_note}"
+        f"🔢 Уже выбрано ролей: <b>{len(_normalize_role_names(selected_roles))}</b>\n\n"
+        "<b>Будет выдано:</b>\n"
+        f"{grant_text}\n\n"
+        "<b>Будет снято:</b>\n"
+        f"{revoke_text}\n\n"
+        "ℹ️ Выбор можно продолжать по другим категориям до явного выхода из панели.\n"
+        "Сначала выберите категорию, затем отмечайте одну или несколько ролей, возвращайтесь к категориям и подтверждайте пакет только когда всё готово."
+    )
+
+
+def _build_user_role_categories_keyboard(
+    grouped: list[dict],
+    actor_id: int,
+    action: str,
+    selected_roles: list[str],
+) -> InlineKeyboardMarkup:
+    selected_set = set(_normalize_role_names(selected_roles))
+    rows: list[list[InlineKeyboardButton]] = []
+    for idx, item in enumerate(grouped[:20]):
+        role_names = {
+            str(role.get("name") or "").strip()
+            for role in list(item.get("roles") or [])
+            if str(role.get("name") or "").strip()
+        }
+        selected_count = len(role_names & selected_set)
+        suffix = f" [{selected_count}]" if selected_count else ""
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"📂 {item['category']}{suffix}"[:64],
+                    callback_data=f"roles_admin:{actor_id}:user_role_category:{action}:{idx}",
+                )
+            ]
+        )
+    total_selected = len(selected_set)
+    if total_selected:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"🚀 Подтвердить пакет ({total_selected})",
+                    callback_data=f"roles_admin:{actor_id}:user_role_apply:{action}",
+                )
+            ]
+        )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🧹 Очистить выбор",
+                    callback_data=f"roles_admin:{actor_id}:user_role_clear:{action}",
+                )
+            ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="✖️ Выйти из панели",
+                callback_data=f"roles_admin:{actor_id}:user_role_exit:{action}",
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _build_user_role_picker_keyboard(
+    grouped: list[dict],
+    actor_id: int,
+    action: str,
+    category_idx: int,
+    selected_roles: list[str],
+    page: int = 0,
+) -> InlineKeyboardMarkup:
+    if category_idx < 0 or category_idx >= len(grouped):
+        return _build_user_role_categories_keyboard(grouped, actor_id, action, selected_roles)
+    category_item = grouped[category_idx]
+    roles = [
+        role
+        for role in list(category_item.get("roles") or [])
+        if str(role.get("name") or "").strip()
+    ]
+    safe_page = _normalize_page(page, len(roles), _MAX_ROLE_BUTTONS)
+    start = safe_page * _MAX_ROLE_BUTTONS
+    items = roles[start : start + _MAX_ROLE_BUTTONS]
+    selected_set = set(_normalize_role_names(selected_roles))
+
+    rows: list[list[InlineKeyboardButton]] = []
+    for idx, role in enumerate(items):
+        role_name = str(role.get("name") or "").strip()
+        marker = "✅" if role_name in selected_set else "⬜️"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{marker} {role_name}"[:64],
+                    callback_data=f"roles_admin:{actor_id}:user_role_toggle:{action}:{category_idx}:{safe_page}:{idx}",
+                )
+            ]
+        )
+
+    nav: list[InlineKeyboardButton] = []
+    if safe_page > 0:
+        nav.append(
+            InlineKeyboardButton(
+                text="⬅️",
+                callback_data=f"roles_admin:{actor_id}:user_role_page:{action}:{category_idx}:{safe_page - 1}",
+            )
+        )
+    nav.append(
+        InlineKeyboardButton(
+            text="🔄",
+            callback_data=f"roles_admin:{actor_id}:user_role_page:{action}:{category_idx}:{safe_page}",
+        )
+    )
+    if (safe_page + 1) * _MAX_ROLE_BUTTONS < len(roles):
+        nav.append(
+            InlineKeyboardButton(
+                text="➡️",
+                callback_data=f"roles_admin:{actor_id}:user_role_page:{action}:{category_idx}:{safe_page + 1}",
+            )
+        )
+    if nav:
+        rows.append(nav)
+
+    total_selected = len(selected_set)
+    if total_selected:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"🚀 Подтвердить пакет ({total_selected})",
+                    callback_data=f"roles_admin:{actor_id}:user_role_apply:{action}",
+                )
+            ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="🗂 К категориям",
+                callback_data=f"roles_admin:{actor_id}:user_role_categories:{action}",
+            )
+        ]
+    )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="✖️ Выйти из панели",
+                callback_data=f"roles_admin:{actor_id}:user_role_exit:{action}",
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _log_role_position_error(
@@ -997,6 +1189,7 @@ def _render_fallback_text() -> str:
         "<code>/roles_admin user_roles [reply|@username|username|tg:@username|ds:username|id]</code>\n"
         "<code>/roles_admin user_grant &lt;@username|ds:username&gt; &lt;role_name&gt;</code>\n"
         "<code>/roles_admin user_revoke &lt;@username|ds:username&gt; &lt;role_name&gt;</code>\n"
+        "Кнопочный режим для выдачи/снятия ролей теперь поддерживает пакетный выбор: выбери пользователя, отмечай несколько ролей в категории, возвращайся к категориям и продолжай выбор до явного выхода из панели.\n"
         "В ЛС удобнее всего @username / username, в группе — reply. Для Discord используй mention / username / display_name или <code>ds:username</code>. ID оставлен только как резерв для админов.\n"
         "Если найдено несколько совпадений, бот покажет кандидатов с provider, username, display и matched_by.\n\n"
         f"{_role_catalog_note()}"
@@ -1026,6 +1219,7 @@ def _render_help_text() -> str:
         "• <code>user_roles [reply|@username|username|tg:@username|ds:username|id]</code> — показать роли пользователя.\n"
         "• <code>user_grant &lt;@username|ds:username&gt; &lt;role_name&gt;</code> — выдать роль в БД.\n"
         "• <code>user_revoke &lt;@username|ds:username&gt; &lt;role_name&gt;</code> — снять роль в БД.\n"
+        "• Кнопочная панель выдачи/снятия ролей поддерживает пакетный выбор: можно заходить в разные категории, отмечать несколько ролей и подтверждать всё одной кнопкой.\n"
         "• Порядок ввода одинаковый: Telegram ЛС — <code>@username</code> / <code>username</code>, Telegram группа — reply, Discord — mention / username / display_name.\n"
         "• Если нужен Discord fallback, укажи <code>ds:username</code>; для Telegram можно явно написать <code>tg:@username</code>; ID оставь как резерв.\n"
         "• Если найдено несколько совпадений, бот попросит уточнение, а не выберет первого молча.\n\n"
@@ -1565,7 +1759,24 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             if operation.startswith("category_") and not actor_can_manage_categories:
                 await callback.answer("Категориями может управлять только Глава клуба или Главный вице.", show_alert=True)
                 return
-            button_ops = {"category_order", "category_delete", "role_move", "role_order", "role_delete"}
+            if operation in {"user_grant", "user_revoke"}:
+                flow_action = "grant" if operation == "user_grant" else "revoke"
+                _PENDING_ACTIONS[callback.from_user.id] = PendingRolesAdminAction(
+                    operation="user_role_flow_target",
+                    created_at=time.time(),
+                    payload={"action": flow_action},
+                )
+                await callback.answer("Сначала выберите пользователя", show_alert=True)
+                await callback.message.reply(
+                    (
+                        "👤 Сначала укажите пользователя: <code>@username</code>, <code>username</code>, "
+                        "<code>tg:@username</code>, <code>ds:username</code> или reply.\n"
+                        "После выбора откроется кнопочная панель категорий и ролей.\n"
+                        "ℹ️ Выбор можно продолжать по другим категориям до явного выхода из панели."
+                    ),
+                    parse_mode="HTML",
+                )
+                return
             if operation in {"category_order", "category_delete", "role_create"}:
                 await _safe_edit_message_text(callback, 
                     "Выберите категорию:",
@@ -1727,8 +1938,258 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     parse_mode="HTML",
                     reply_markup=_build_position_choice_keyboard(owner_id, "role_position", preview),
                 )
-                await callback.answer()
+            await callback.answer()
+            return
+
+        if action == "user_role_categories":
+            flow_action = parts[3] if len(parts) > 3 else ""
+            pending = _get_user_role_flow_pending(callback.from_user.id if callback.from_user else None)
+            if not pending or str((pending.payload or {}).get("action") or "") != flow_action:
+                await callback.answer("Панель выбора устарела, начните заново.", show_alert=True)
                 return
+            payload = pending.payload or {}
+            await _safe_edit_message_text(
+                callback,
+                _render_user_role_flow_text(
+                    target_label=str(payload.get("label") or "неизвестный пользователь"),
+                    action=flow_action,
+                    selected_roles=_normalize_role_names(payload.get("selected_roles")),
+                ),
+                parse_mode="HTML",
+                reply_markup=_build_user_role_categories_keyboard(
+                    grouped,
+                    owner_id,
+                    flow_action,
+                    _normalize_role_names(payload.get("selected_roles")),
+                ),
+            )
+            await callback.answer()
+            return
+
+        if action == "user_role_category":
+            flow_action = parts[3] if len(parts) > 3 else ""
+            category_idx = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else -1
+            pending = _get_user_role_flow_pending(callback.from_user.id if callback.from_user else None)
+            if not pending or str((pending.payload or {}).get("action") or "") != flow_action:
+                await callback.answer("Панель выбора устарела, начните заново.", show_alert=True)
+                return
+            if category_idx < 0 or category_idx >= len(grouped):
+                await callback.answer("Категория не найдена", show_alert=True)
+                return
+            payload = pending.payload or {}
+            payload["selected_roles"] = _normalize_role_names(payload.get("selected_roles"))
+            pending.payload = payload
+            _PENDING_ACTIONS[callback.from_user.id] = pending
+            await _safe_edit_message_text(
+                callback,
+                _render_user_role_flow_text(
+                    target_label=str(payload.get("label") or "неизвестный пользователь"),
+                    action=flow_action,
+                    selected_roles=payload["selected_roles"],
+                    current_category=str(grouped[category_idx]["category"]),
+                ),
+                parse_mode="HTML",
+                reply_markup=_build_user_role_picker_keyboard(
+                    grouped,
+                    owner_id,
+                    flow_action,
+                    category_idx,
+                    payload["selected_roles"],
+                    0,
+                ),
+            )
+            await callback.answer()
+            return
+
+        if action == "user_role_page":
+            flow_action = parts[3] if len(parts) > 3 else ""
+            category_idx = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else -1
+            page = int(parts[5]) if len(parts) > 5 and parts[5].isdigit() else 0
+            pending = _get_user_role_flow_pending(callback.from_user.id if callback.from_user else None)
+            if not pending or str((pending.payload or {}).get("action") or "") != flow_action:
+                await callback.answer("Панель выбора устарела, начните заново.", show_alert=True)
+                return
+            if category_idx < 0 or category_idx >= len(grouped):
+                await callback.answer("Категория не найдена", show_alert=True)
+                return
+            payload = pending.payload or {}
+            selected_roles = _normalize_role_names(payload.get("selected_roles"))
+            await _safe_edit_message_text(
+                callback,
+                _render_user_role_flow_text(
+                    target_label=str(payload.get("label") or "неизвестный пользователь"),
+                    action=flow_action,
+                    selected_roles=selected_roles,
+                    current_category=str(grouped[category_idx]["category"]),
+                ),
+                parse_mode="HTML",
+                reply_markup=_build_user_role_picker_keyboard(
+                    grouped,
+                    owner_id,
+                    flow_action,
+                    category_idx,
+                    selected_roles,
+                    page,
+                ),
+            )
+            await callback.answer()
+            return
+
+        if action == "user_role_toggle":
+            flow_action = parts[3] if len(parts) > 3 else ""
+            category_idx = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else -1
+            page = int(parts[5]) if len(parts) > 5 and parts[5].isdigit() else 0
+            role_idx = int(parts[6]) if len(parts) > 6 and parts[6].isdigit() else -1
+            pending = _get_user_role_flow_pending(callback.from_user.id if callback.from_user else None)
+            if not pending or str((pending.payload or {}).get("action") or "") != flow_action:
+                await callback.answer("Панель выбора устарела, начните заново.", show_alert=True)
+                return
+            if category_idx < 0 or category_idx >= len(grouped):
+                await callback.answer("Категория не найдена", show_alert=True)
+                return
+            category_roles = [
+                role
+                for role in list(grouped[category_idx].get("roles") or [])
+                if str(role.get("name") or "").strip()
+            ]
+            safe_page = _normalize_page(page, len(category_roles), _MAX_ROLE_BUTTONS)
+            item_index = safe_page * _MAX_ROLE_BUTTONS + role_idx
+            if role_idx < 0 or item_index >= len(category_roles):
+                await callback.answer("Роль не найдена", show_alert=True)
+                return
+            role_name = str(category_roles[item_index].get("name") or "").strip()
+            payload = pending.payload or {}
+            selected_set = set(_normalize_role_names(payload.get("selected_roles")))
+            if role_name in selected_set:
+                selected_set.remove(role_name)
+                toast = f"Убрано из пакета: {role_name}"
+            else:
+                selected_set.add(role_name)
+                toast = f"Добавлено в пакет: {role_name}"
+            payload["selected_roles"] = sorted(selected_set)
+            pending.payload = payload
+            pending.created_at = time.time()
+            _PENDING_ACTIONS[callback.from_user.id] = pending
+            await _safe_edit_message_text(
+                callback,
+                _render_user_role_flow_text(
+                    target_label=str(payload.get("label") or "неизвестный пользователь"),
+                    action=flow_action,
+                    selected_roles=payload["selected_roles"],
+                    current_category=str(grouped[category_idx]["category"]),
+                ),
+                parse_mode="HTML",
+                reply_markup=_build_user_role_picker_keyboard(
+                    grouped,
+                    owner_id,
+                    flow_action,
+                    category_idx,
+                    payload["selected_roles"],
+                    safe_page,
+                ),
+            )
+            await callback.answer(toast)
+            return
+
+        if action == "user_role_clear":
+            flow_action = parts[3] if len(parts) > 3 else ""
+            pending = _get_user_role_flow_pending(callback.from_user.id if callback.from_user else None)
+            if not pending or str((pending.payload or {}).get("action") or "") != flow_action:
+                await callback.answer("Панель выбора устарела, начните заново.", show_alert=True)
+                return
+            payload = pending.payload or {}
+            payload["selected_roles"] = []
+            pending.payload = payload
+            pending.created_at = time.time()
+            _PENDING_ACTIONS[callback.from_user.id] = pending
+            await _safe_edit_message_text(
+                callback,
+                _render_user_role_flow_text(
+                    target_label=str(payload.get("label") or "неизвестный пользователь"),
+                    action=flow_action,
+                    selected_roles=[],
+                ),
+                parse_mode="HTML",
+                reply_markup=_build_user_role_categories_keyboard(grouped, owner_id, flow_action, []),
+            )
+            await callback.answer("Выбор очищен")
+            return
+
+        if action == "user_role_exit":
+            flow_action = parts[3] if len(parts) > 3 else ""
+            pending = _get_user_role_flow_pending(callback.from_user.id if callback.from_user else None)
+            if pending and str((pending.payload or {}).get("action") or "") == flow_action:
+                _PENDING_ACTIONS.pop(callback.from_user.id, None)
+            await _safe_edit_message_text(
+                callback,
+                _render_actions_text("users", hidden_sections=visibility.hidden_sections),
+                parse_mode="HTML",
+                reply_markup=_build_actions_keyboard(
+                    owner_id,
+                    "users",
+                    can_manage_categories=actor_can_manage_categories,
+                ),
+            )
+            await callback.answer("Панель выбора закрыта")
+            return
+
+        if action == "user_role_apply":
+            flow_action = parts[3] if len(parts) > 3 else ""
+            pending = _get_user_role_flow_pending(callback.from_user.id if callback.from_user else None)
+            if not pending or str((pending.payload or {}).get("action") or "") != flow_action:
+                await callback.answer("Панель выбора устарела, начните заново.", show_alert=True)
+                return
+            payload = pending.payload or {}
+            selected_roles = _normalize_role_names(payload.get("selected_roles"))
+            account_id = str(payload.get("account_id") or "").strip()
+            if not account_id or not selected_roles:
+                await callback.answer("Сначала выберите хотя бы одну роль.", show_alert=True)
+                return
+            grant_roles, revoke_roles = _user_role_flow_summary_lists(flow_action, selected_roles)
+            result = RoleManagementService.apply_user_role_changes_by_account(
+                account_id,
+                actor_id=str(callback.from_user.id) if callback.from_user else None,
+                grant_roles=grant_roles,
+                revoke_roles=revoke_roles,
+            )
+            sync_target = {
+                "provider": payload.get("provider"),
+                "provider_user_id": payload.get("provider_user_id"),
+                "account_id": account_id,
+            }
+            for role_name in list(result.get("grant_success") or []):
+                await _sync_linked_discord_role(sync_target, role_name, revoke=False)
+            for role_name in list(result.get("revoke_success") or []):
+                await _sync_linked_discord_role(sync_target, role_name, revoke=True)
+            _PENDING_ACTIONS.pop(callback.from_user.id, None)
+            success_lines = []
+            if result.get("grant_success"):
+                success_lines.append("✅ Выдано: " + ", ".join(result["grant_success"]))
+            if result.get("revoke_success"):
+                success_lines.append("✅ Снято: " + ", ".join(result["revoke_success"]))
+            if result.get("grant_failed"):
+                success_lines.append("❌ Не выдано: " + ", ".join(result["grant_failed"]))
+            if result.get("revoke_failed"):
+                success_lines.append("❌ Не снято: " + ", ".join(result["revoke_failed"]))
+            if result.get("conflicting_roles"):
+                success_lines.append("⚠️ Пропущены конфликтующие роли: " + ", ".join(result["conflicting_roles"]))
+            await _safe_edit_message_text(
+                callback,
+                (
+                    f"👤 Пользователь: <b>{payload.get('label') or 'неизвестный пользователь'}</b>\n"
+                    "Пакетная операция завершена.\n\n"
+                    + ("\n".join(success_lines) if success_lines else "⚠️ Ничего не было применено.")
+                    + "\n\nℹ️ Чтобы продолжить работу, откройте раздел пользователей снова."
+                ),
+                parse_mode="HTML",
+                reply_markup=_build_actions_keyboard(
+                    owner_id,
+                    "users",
+                    can_manage_categories=actor_can_manage_categories,
+                ),
+            )
+            await callback.answer("Пакет применён" if result.get("ok") else "Пакет применён с ошибками", show_alert=not result.get("ok"))
+            return
 
         if action == "pick_role":
             operation = parts[3] if len(parts) > 3 else ""
@@ -2085,6 +2546,7 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
         return
 
     try:
+        keep_pending = False
         if pending.operation.startswith("category_") and not _can_manage_categories("telegram", str(message.from_user.id)):
             await message.answer("❌ Категориями может управлять только Глава клуба или Главный вице.")
             _PENDING_ACTIONS.pop(message.from_user.id, None)
@@ -2301,6 +2763,54 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                         line += f" — {description}"
                     lines.append(line)
                 await message.answer("\n".join(lines))
+        elif op == "user_role_flow_target":
+            flow_action = str((pending.payload or {}).get("action") or "").strip()
+            resolved = _resolve_telegram_target(
+                actor_id=message.from_user.id if message.from_user else None,
+                raw_target=args[0] if args else None,
+                reply_user=message.reply_to_message.from_user if message.reply_to_message else None,
+                operation=f"user_{flow_action or 'grant'}",
+                source="button",
+            )
+            if not resolved:
+                await message.answer(f"❌ Формат: укажи пользователя по правилам поиска. {_telegram_user_lookup_hint()}")
+                return
+            if resolved.get("error"):
+                await message.answer(str(resolved.get("message") or "❌ Не удалось найти пользователя."))
+                return
+            account_id = str(resolved.get("account_id") or "").strip()
+            if not account_id:
+                await message.answer(_user_without_account_message())
+                return
+            selected_action = "revoke" if flow_action == "revoke" else "grant"
+            _PENDING_ACTIONS[message.from_user.id] = PendingRolesAdminAction(
+                operation="user_role_flow_panel",
+                created_at=time.time(),
+                payload={
+                    "action": selected_action,
+                    "account_id": account_id,
+                    "provider": str(resolved.get("provider") or ""),
+                    "provider_user_id": str(resolved.get("provider_user_id") or ""),
+                    "label": str(resolved.get("label") or "неизвестный пользователь"),
+                    "selected_roles": [],
+                },
+            )
+            keep_pending = True
+            grouped = RoleManagementService.list_roles_grouped() or []
+            await message.answer(
+                _render_user_role_flow_text(
+                    target_label=str(resolved.get("label") or "неизвестный пользователь"),
+                    action=selected_action,
+                    selected_roles=[],
+                ),
+                parse_mode="HTML",
+                reply_markup=_build_user_role_categories_keyboard(
+                    grouped,
+                    message.from_user.id,
+                    selected_action,
+                    [],
+                ),
+            )
         elif op in {"user_grant", "user_revoke"}:
             reply_user = message.reply_to_message.from_user if message.reply_to_message else None
             raw_target = args[0] if args else None
@@ -2326,13 +2836,12 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                 await message.answer(_user_without_account_message())
                 return
             if op == "user_grant":
-                role_info = RoleManagementService.get_role(role_name)
-                category = role_info.get("category_name") if role_info else None
-                ok = RoleManagementService.assign_user_role_by_account(
+                result = RoleManagementService.apply_user_role_changes_by_account(
                     account_id,
-                    role_name,
-                    category=category,
+                    actor_id=str(message.from_user.id) if message.from_user else None,
+                    grant_roles=[role_name],
                 )
+                ok = bool(result.get("grant_success"))
                 if ok:
                     await _sync_linked_discord_role(resolved, role_name, revoke=False)
                 await message.answer(
@@ -2341,10 +2850,12 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                     else f"❌ Не удалось выдать роль. {_telegram_user_lookup_hint()}"
                 )
             else:
-                ok = RoleManagementService.revoke_user_role_by_account(
+                result = RoleManagementService.apply_user_role_changes_by_account(
                     account_id,
-                    role_name,
+                    actor_id=str(message.from_user.id) if message.from_user else None,
+                    revoke_roles=[role_name],
                 )
+                ok = bool(result.get("revoke_success"))
                 if ok:
                     await _sync_linked_discord_role(resolved, role_name, revoke=True)
                 await message.answer(
@@ -2364,4 +2875,5 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
         )
         await message.answer("❌ Ошибка выполнения операции (смотри логи).")
     finally:
-        _PENDING_ACTIONS.pop(message.from_user.id, None)
+        if not locals().get("keep_pending", False):
+            _PENDING_ACTIONS.pop(message.from_user.id, None)
