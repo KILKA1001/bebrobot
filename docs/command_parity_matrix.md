@@ -23,7 +23,7 @@ This matrix reflects the current command parity between Discord and Telegram imp
 | Points | `/removepoints` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Points | `/leaderboard` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Points | `/history` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
-| Points | `/roles` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
+| Points | `/roles` | `/roles` | full | Unified public roles catalog is available in both runtimes: roles are grouped by category and show description, acquisition method, and acquisition hint; Discord uses embeds, Telegram uses HTML text with the same data. |
 | Points | `/activities` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Points | `/undo` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Points | `/awardmonthtop` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |

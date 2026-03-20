@@ -7,7 +7,6 @@ import logging
 from bot.data import db
 from bot.utils.roles_and_activities import (
     ACTIVITY_CATEGORIES,
-    ROLE_THRESHOLDS,
     display_last_edit_date,
 )
 from bot.systems import render_history, log_action_cancellation, tophistory
@@ -41,6 +40,8 @@ intents.message_content = True
 
 trace_config = TraceConfig()
 logger = logging.getLogger(__name__)
+
+ROLE_DESCRIPTION_PLACEHOLDER = "Описание пока не указано администратором"
 
 @trace_config.on_request_end.append
 async def _trace_request_end(session, ctx, params):
@@ -111,54 +112,52 @@ async def history_cmd(
 
 
 @bot.hybrid_command(
-    name="roles", description="Список ролей и стоимость в баллах"
+    name="roles", description="Каталог ролей по категориям и способам получения"
 )
 async def roles_list(ctx):
     try:
-        grouped = RoleManagementService.list_roles_grouped()
+        grouped = RoleManagementService.list_public_roles_catalog(
+            role_name_resolver=lambda role_id: ctx.guild.get_role(role_id).name if ctx.guild and ctx.guild.get_role(role_id) else None,
+            log_context="/roles",
+        )
     except Exception:
-        logger.exception("roles command failed source=discord_user_command guild_id=%s", ctx.guild.id if ctx.guild else None)
+        logger.exception("roles command failed command=/roles source=discord_user_command guild_id=%s", ctx.guild.id if ctx.guild else None)
         grouped = []
 
-    if grouped:
-        embed = discord.Embed(
-            title="🏅 Каталог ролей",
-            description=(
-                "Ниже собраны роли, их описание и подсказки, как их получить. "
-                "Если способ получения ещё не заполнен, бот честно это покажет."
-            ),
-            color=discord.Color.purple(),
-        )
-        for item in grouped:
-            lines = []
-            for role in item.get("roles", []):
-                role_name = str(role.get("name") or "Без названия")
-                description = str(role.get("description") or "").strip() or "Описание пока не указано администратором"
-                acquire_hint = str(role.get("acquire_hint") or "").strip() or USER_ACQUIRE_HINT_PLACEHOLDER
-                lines.append(
-                    f"**{role_name}**\n"
-                    f"Описание: {description}\n"
-                    f"Как получить: {acquire_hint}"
-                )
-            embed.add_field(
-                name=str(item.get("category") or "Без категории"),
-                value="\n\n".join(lines) if lines else "Пока нет ролей.",
-                inline=False,
-            )
-        embed.set_footer(text="Если хочешь получить роль, используй подсказку из блока «Как получить» или уточни условия у администратора.")
-        await send_temp(ctx, embed=embed)
-        return
-
-    desc = ""
-    for role_id, points_needed in sorted(ROLE_THRESHOLDS.items(), key=lambda x: x[1], reverse=True):
-        role = ctx.guild.get_role(role_id)
-        if role:
-            desc += f"**{role.name}**: {points_needed} баллов\n"
     embed = discord.Embed(
-        title="Роли и стоимость баллов",
-        description=desc or "Каталог ролей пока пуст.",
+        title="🏅 Каталог ролей",
+        description=(
+            "Ниже собраны роли по категориям: с описанием, способом получения и практической подсказкой. "
+            "Если описание или инструкция ещё не заполнены, бот прямо это покажет."
+        ),
         color=discord.Color.purple(),
     )
+    for item in grouped:
+        lines = []
+        for role in item.get("roles", []):
+            role_name = str(role.get("name") or "Без названия")
+            description = str(role.get("description") or "").strip() or ROLE_DESCRIPTION_PLACEHOLDER
+            acquire_method = str(role.get("acquire_method_label") or "Не указан").strip()
+            acquire_hint = str(role.get("acquire_hint") or "").strip() or USER_ACQUIRE_HINT_PLACEHOLDER
+            lines.append(
+                f"**{role_name}**\n"
+                f"Описание: {description}\n"
+                f"Способ получения: {acquire_method}\n"
+                f"Как получить: {acquire_hint}"
+            )
+        embed.add_field(
+            name=str(item.get("category") or "Без категории"),
+            value="\n\n".join(lines) if lines else "Пока нет ролей.",
+            inline=False,
+        )
+
+    if not grouped:
+        embed.description = (
+            "📭 Каталог ролей пока пуст.\n"
+            "Когда администраторы добавят роли, здесь появятся категории, описания и инструкция по получению."
+        )
+
+    embed.set_footer(text="Если хочешь получить роль, ориентируйся на блок «Как получить» и при необходимости уточняй условия у администратора.")
     await send_temp(ctx, embed=embed)
 
 

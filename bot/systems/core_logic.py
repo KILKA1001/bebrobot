@@ -638,7 +638,7 @@ def get_help_embed(category: str) -> discord.Embed:
     elif category == "roles":
         embed.title = "🏅 Роли и активности"
         embed.description = (
-            "`/roles` — список ролей и стоимость\n"
+            "`/roles` — единый каталог ролей по категориям, с описанием и подсказкой по получению\n"
             "`/activities` — виды деятельности и их баллы"
         )
     elif category == "fines":
