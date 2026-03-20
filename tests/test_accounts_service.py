@@ -353,6 +353,59 @@ class AccountsServiceTests(unittest.TestCase):
         self.assertEqual(len(self.fake_db.tables["accounts"]), 1)
         self.assertEqual(len(self.fake_db.tables["account_identities"]), 1)
 
+    def test_register_repairs_legacy_identity_without_account_id(self):
+        self.fake_db.tables["account_identities"].append(
+            {"account_id": None, "provider": "telegram", "provider_user_id": "222", "username": "legacy_user"}
+        )
+
+        ok, message = AccountsService.register_identity("telegram", "222")
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "Регистрация завершена")
+        self.assertEqual(len(self.fake_db.tables["accounts"]), 1)
+        self.assertEqual(len(self.fake_db.tables["account_identities"]), 1)
+        self.assertEqual(self.fake_db.tables["account_identities"][0]["account_id"], self.fake_db.tables["accounts"][0]["id"])
+
+    def test_register_repairs_identity_after_unique_conflict_when_lookup_row_exists(self):
+        class _UniqueIdentityInsertTableOp(_TableOp):
+            def execute(self):
+                if self.table_name == "account_identities" and self._action == "insert":
+                    key = (self._payload.get("provider"), self._payload.get("provider_user_id"))
+                    for row in self.fake_db.tables[self.table_name]:
+                        if (row.get("provider"), row.get("provider_user_id")) == key:
+                            raise Exception("duplicate key value violates unique constraint account_identities_provider_user")
+                return super().execute()
+
+        class _UniqueIdentityInsertSupabase(_FakeSupabase):
+            def table(self, name):
+                if name == "account_identities":
+                    return _UniqueIdentityInsertTableOp(self.fake_db, name)
+                return _TableOp(self.fake_db, name)
+
+        original_load_identity_row = AccountsService._load_identity_row
+        load_calls = {"count": 0}
+
+        def fake_load_identity_row(provider, provider_user_id):
+            load_calls["count"] += 1
+            row = original_load_identity_row(provider, provider_user_id)
+            if load_calls["count"] == 1 and row and not row.get("account_id"):
+                return None
+            return row
+
+        self.fake_db.supabase = _UniqueIdentityInsertSupabase(self.fake_db)
+        self.fake_db.tables["account_identities"].append(
+            {"account_id": None, "provider": "discord", "provider_user_id": "333", "display_name": "Legacy Discord"}
+        )
+
+        with patch.object(AccountsService, "_load_identity_row", side_effect=fake_load_identity_row):
+            ok, message = AccountsService.register_identity("discord", "333")
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "Регистрация завершена")
+        self.assertEqual(len(self.fake_db.tables["accounts"]), 1)
+        self.assertEqual(len(self.fake_db.tables["account_identities"]), 1)
+        self.assertEqual(self.fake_db.tables["account_identities"][0]["account_id"], self.fake_db.tables["accounts"][0]["id"])
+
     def test_discord_to_telegram_link_flow(self):
         AccountsService.register_identity("discord", "111")
 
