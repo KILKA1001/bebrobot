@@ -15,6 +15,7 @@ from bot.telegram_bot.systems.commands_logic import (
     process_link_discord_command,
     process_profile_command,
     process_profile_roles_command,
+    process_roles_catalog_command,
     process_register_command,
 )
 
@@ -522,6 +523,13 @@ async def profile_roles_command(message: Message) -> None:
         target_telegram_user_id=target_user_id,
         target_display_name=target_display_name,
     )
+    await message.answer(response, parse_mode=ParseMode.HTML)
+
+
+@router.message(Command("roles"))
+async def roles_catalog_command(message: Message) -> None:
+    persist_telegram_identity_from_user(message.from_user)
+    response = process_roles_catalog_command()
     await message.answer(response, parse_mode=ParseMode.HTML)
 
 

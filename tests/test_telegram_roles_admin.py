@@ -197,7 +197,9 @@ class TelegramRolesAdminTargetResolutionTests(unittest.TestCase):
         self.assertIn("отдельный экран выбора точной позиции", _render_fallback_text())
         self.assertIn("роль будет добавлена последней", _render_help_text())
         self.assertIn("role_edit_description", _render_fallback_text())
+        self.assertIn("role_edit_acquire_hint", _render_fallback_text())
         self.assertIn("Описание роли", _render_help_text())
+        self.assertIn("как получить", _render_help_text())
 
     def test_render_list_text_shows_role_description_and_legacy_rows_without_it(self):
         grouped = [
@@ -205,7 +207,7 @@ class TelegramRolesAdminTargetResolutionTests(unittest.TestCase):
                 "category": "General",
                 "roles": [
                     {"name": "Alpha", "discord_role_id": "1", "description": "Первое описание"},
-                    {"name": "Legacy", "discord_role_id": None, "description": ""},
+                    {"name": "Legacy", "discord_role_id": None, "description": "", "acquire_hint": ""},
                 ],
             }
         ]
@@ -214,6 +216,8 @@ class TelegramRolesAdminTargetResolutionTests(unittest.TestCase):
 
         self.assertIn("Первое описание", text)
         self.assertIn("Legacy", text)
+        self.assertIn("Как получить", text)
+        self.assertIn("Способ получения пока не указан администратором", text)
 
 
 if __name__ == "__main__":

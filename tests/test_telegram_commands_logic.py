@@ -6,6 +6,7 @@ from bot.telegram_bot.systems.commands_logic import (
     process_link_command,
     process_link_discord_command,
     process_profile_command,
+    process_roles_catalog_command,
 )
 
 
@@ -65,9 +66,53 @@ class TelegramCommandsLogicTests(unittest.TestCase):
 
     def test_helpy_contains_profile_edit(self):
         self.assertIn("/profile_edit", get_helpy_text())
+        self.assertIn("/roles", get_helpy_text())
         self.assertIn("/points", get_helpy_text())
         self.assertIn("/balance", get_helpy_text())
         self.assertIn("/tickets", get_helpy_text())
+
+    @patch("bot.telegram_bot.systems.commands_logic.RoleManagementService.list_roles_grouped")
+    def test_roles_catalog_command_renders_description_and_acquire_hint(self, mock_list_roles_grouped):
+        mock_list_roles_grouped.return_value = [
+            {
+                "category": "Турниры",
+                "roles": [
+                    {
+                        "name": "Чемпион",
+                        "description": "Победитель сезона",
+                        "acquire_hint": "Выиграть сезонный турнир",
+                    }
+                ],
+            }
+        ]
+
+        result = process_roles_catalog_command()
+
+        self.assertIn("Каталог ролей", result)
+        self.assertIn("Чемпион", result)
+        self.assertIn("Победитель сезона", result)
+        self.assertIn("Выиграть сезонный турнир", result)
+
+    @patch("bot.telegram_bot.systems.commands_logic.RoleManagementService.list_roles_grouped")
+    def test_roles_catalog_command_uses_placeholder_when_acquire_hint_missing(self, mock_list_roles_grouped):
+        mock_list_roles_grouped.return_value = [
+            {
+                "category": "Общие",
+                "roles": [
+                    {
+                        "name": "Новичок",
+                        "description": "",
+                        "acquire_hint": "",
+                    }
+                ],
+            }
+        ]
+
+        result = process_roles_catalog_command()
+
+        self.assertIn("Новичок", result)
+        self.assertIn("Описание пока не указано администратором", result)
+        self.assertIn("Способ получения пока не указан администратором", result)
 
     def test_link_command_restricted_to_private_chat(self):
         result = process_link_command('/link ABC123', telegram_user_id=100, is_private_chat=False)

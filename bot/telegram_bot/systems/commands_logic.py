@@ -1,7 +1,8 @@
 import logging
 from html import escape
 
-from bot.services import AccountsService
+from bot.services import AccountsService, RoleManagementService
+from bot.services.role_management_service import USER_ACQUIRE_HINT_PLACEHOLDER
 from bot.legacy_identity_logging import (
     log_identity_resolve_error,
     log_transport_identity_error,
@@ -19,6 +20,7 @@ HELPY_TEXT = (
     "/profile_edit — открыть меню редактирования профиля\n"
     "/link <код> — привязать Telegram к аккаунту по коду из Discord\n"
     "/link_discord — получить код для привязки Discord\n"
+    "/roles — каталог ролей с описанием и подсказкой, как их получить\n"
     "/points [reply|id] — меню управления баллами\n"
     "/balance [reply|id] — показать баланс пользователя\n"
     "/tickets [reply|id] — меню управления билетами\n"
@@ -30,6 +32,43 @@ HELPY_TEXT = (
 
 def get_helpy_text() -> str:
     return HELPY_TEXT
+
+
+def process_roles_catalog_command() -> str:
+    try:
+        grouped = RoleManagementService.list_roles_grouped()
+    except Exception:
+        logger.exception("roles catalog render failed source=telegram_user_command")
+        return "❌ Не удалось загрузить каталог ролей. Попробуйте позже и, если проблема повторится, сообщите администратору."
+
+    if not grouped:
+        return (
+            "📭 <b>Каталог ролей пока пуст.</b>\n"
+            "Когда администраторы добавят роли, здесь появятся название, описание и понятная инструкция, как получить каждую роль."
+        )
+
+    parts = [
+        "🏅 <b>Каталог ролей</b>",
+        "Ниже собраны роли, их описание и подсказки, как их получить. Если способ получения ещё не заполнен, бот честно это покажет.",
+    ]
+    for item in grouped:
+        category = escape(str(item.get("category") or "Без категории"))
+        parts.append(f"\n<b>{category}</b>")
+        roles = item.get("roles") or []
+        if not roles:
+            parts.append("• Пока нет ролей")
+            continue
+        for role in roles:
+            role_name = escape(str(role.get("name") or "Без названия"))
+            description = escape(str(role.get("description") or "").strip() or "Описание пока не указано администратором")
+            acquire_hint = escape(str(role.get("acquire_hint") or "").strip() or USER_ACQUIRE_HINT_PLACEHOLDER)
+            parts.append(
+                f"\n• <b>{role_name}</b>\n"
+                f"Описание: {description}\n"
+                f"Как получить: {acquire_hint}"
+            )
+    parts.append("\nЕсли хочешь примерить роль на себя или уточнить условия — напиши администратору и укажи точное название роли из списка.")
+    return "\n".join(parts)
 
 
 def process_register_command(telegram_user_id: int | None) -> str:
