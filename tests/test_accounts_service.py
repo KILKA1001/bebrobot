@@ -33,6 +33,10 @@ class _TableOp:
         self._limit = n
         return self
 
+    def is_(self, key, value):
+        self._filters.append((key, None if str(value).lower() == "null" else value))
+        return self
+
     def insert(self, payload, **_kwargs):
         self._payload = payload
         self._action = "insert"
@@ -405,6 +409,40 @@ class AccountsServiceTests(unittest.TestCase):
         self.assertEqual(len(self.fake_db.tables["accounts"]), 1)
         self.assertEqual(len(self.fake_db.tables["account_identities"]), 1)
         self.assertEqual(self.fake_db.tables["account_identities"][0]["account_id"], self.fake_db.tables["accounts"][0]["id"])
+
+    def test_register_does_not_overwrite_account_id_when_lookup_row_becomes_bound_during_repair(self):
+        class _ConcurrentBindTableOp(_TableOp):
+            def execute(self):
+                if self.table_name == "account_identities" and self._action == "update":
+                    for key, value in self._filters:
+                        if key == "account_id" and value is None:
+                            for row in self.fake_db.tables[self.table_name]:
+                                if (
+                                    str(row.get("provider")) == "telegram"
+                                    and str(row.get("provider_user_id")) == "444"
+                                    and row.get("account_id") is None
+                                ):
+                                    row["account_id"] = "acc-existing"
+                    return super().execute()
+                return super().execute()
+
+        class _ConcurrentBindSupabase(_FakeSupabase):
+            def table(self, name):
+                if name == "account_identities":
+                    return _ConcurrentBindTableOp(self.fake_db, name)
+                return _TableOp(self.fake_db, name)
+
+        self.fake_db.supabase = _ConcurrentBindSupabase(self.fake_db)
+        self.fake_db.tables["account_identities"].append(
+            {"account_id": None, "provider": "telegram", "provider_user_id": "444", "display_name": "Race User"}
+        )
+
+        ok, message = AccountsService.register_identity("telegram", "444")
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "Уже зарегистрирован")
+        self.assertEqual(self.fake_db.tables["account_identities"][0]["account_id"], "acc-existing")
+        self.assertEqual(len(self.fake_db.tables["accounts"]), 1)
 
     def test_discord_to_telegram_link_flow(self):
         AccountsService.register_identity("discord", "111")
