@@ -11,6 +11,8 @@ from bot.services import AccountsService, AuthorityService, RoleManagementServic
 from bot.services.role_management_service import (
     DELETE_ROLE_REASON_DISCORD_MANAGED,
     DELETE_ROLE_REASON_NOT_FOUND,
+    PRIVILEGED_DISCORD_ROLE_MESSAGE,
+    ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE,
 )
 from bot.utils import send_temp
 
@@ -21,6 +23,12 @@ _SECTION_LABELS = {
     "roles": "Роли",
     "users": "Пользователи",
 }
+
+
+def _role_assignment_error_message(result: dict[str, Any], *, default_message: str) -> str:
+    if result.get("reason") == ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE:
+        return f"❌ {result.get('message') or PRIVILEGED_DISCORD_ROLE_MESSAGE}"
+    return default_message
 
 
 @dataclass(frozen=True)
@@ -748,6 +756,8 @@ class _DiscordUserRoleApplyButton(discord.ui.Button):
         result = RoleManagementService.apply_user_role_changes_by_account(
             account_id,
             actor_id=str(interaction.user.id),
+            actor_provider="discord",
+            actor_user_id=str(interaction.user.id),
             grant_roles=grant_roles,
             revoke_roles=revoke_roles,
         )
@@ -799,6 +809,10 @@ class _DiscordUserRoleApplyButton(discord.ui.Button):
             lines.append("❌ Не выдано: " + ", ".join(result["grant_failed"]))
         if result.get("revoke_failed"):
             lines.append("❌ Не снято: " + ", ".join(result["revoke_failed"]))
+        privileged_denied = [*(result.get("grant_denied") or []), *(result.get("revoke_denied") or [])]
+        for denied in privileged_denied:
+            if denied.get("reason") == ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE:
+                lines.append(f"❌ {denied.get('message') or PRIVILEGED_DISCORD_ROLE_MESSAGE}")
         if result.get("conflicting_roles"):
             lines.append("⚠️ Пропущены конфликтующие роли: " + ", ".join(result["conflicting_roles"]))
         embed = discord.Embed(
@@ -1232,11 +1246,16 @@ async def rolesadmin_user_grant(ctx: commands.Context, target: str, role_name: s
     result = RoleManagementService.apply_user_role_changes_by_account(
         str(resolved["account_id"]),
         actor_id=str(ctx.author.id),
+        actor_provider="discord",
+        actor_user_id=str(ctx.author.id),
         grant_roles=[role_name],
     )
     ok = bool(result.get("grant_success"))
     if not ok:
-        await send_temp(ctx, "❌ Не удалось выдать роль в БД (смотри логи).")
+        await send_temp(
+            ctx,
+            _role_assignment_error_message(result.get("grant_denied", [{}])[0] if result.get("grant_denied") else result, default_message="❌ Не удалось выдать роль в БД (смотри логи)."),
+        )
         return
 
     member = resolved.get("member")
@@ -1298,11 +1317,16 @@ async def rolesadmin_user_revoke(ctx: commands.Context, target: str, role_name: 
     result = RoleManagementService.apply_user_role_changes_by_account(
         str(resolved["account_id"]),
         actor_id=str(ctx.author.id),
+        actor_provider="discord",
+        actor_user_id=str(ctx.author.id),
         revoke_roles=[role_name],
     )
     ok = bool(result.get("revoke_success"))
     if not ok:
-        await send_temp(ctx, "❌ Не удалось забрать роль в БД (смотри логи).")
+        await send_temp(
+            ctx,
+            _role_assignment_error_message(result.get("revoke_denied", [{}])[0] if result.get("revoke_denied") else result, default_message="❌ Не удалось забрать роль в БД (смотри логи)."),
+        )
         return
 
     member = resolved.get("member")

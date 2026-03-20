@@ -1,9 +1,12 @@
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from bot.services.role_management_service import (
     DELETE_ROLE_REASON_DISCORD_MANAGED,
     DELETE_ROLE_REASON_NOT_FOUND,
+    PRIVILEGED_DISCORD_ROLE_MESSAGE,
+    ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE,
     RoleManagementService,
 )
 
@@ -324,6 +327,42 @@ class RoleManagementServiceTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(self.fake_db.tables["roles"][0]["category_name"], "Новая категория")
         self.assertEqual(self.fake_db.tables["roles"][0]["position"], 0)
+
+    def test_apply_user_role_changes_denies_privileged_discord_role_for_vice(self):
+        self.fake_db.tables["roles"] = [
+            {
+                "name": "Discord Admin",
+                "category_name": "Админские",
+                "is_discord_managed": True,
+                "discord_role_id": "999888",
+                "is_privileged_discord_role": True,
+            }
+        ]
+
+        with (
+            patch("bot.services.role_management_service.AuthorityService.is_super_admin", return_value=False),
+            patch(
+                "bot.services.role_management_service.AuthorityService.resolve_authority",
+                return_value=SimpleNamespace(level=80, rank_weight=80, titles=("Вице города",)),
+            ),
+            self.assertLogs("bot.services.role_management_service", level="WARNING") as captured,
+        ):
+            result = RoleManagementService.apply_user_role_changes_by_account(
+                "acc-7",
+                actor_id="42",
+                actor_provider="discord",
+                actor_user_id="42",
+                grant_roles=["Discord Admin"],
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["grant_success"], [])
+        self.assertEqual(result["grant_failed"], ["Discord Admin"])
+        self.assertEqual(result["grant_denied"][0]["reason"], ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE)
+        self.assertEqual(result["grant_denied"][0]["message"], PRIVILEGED_DISCORD_ROLE_MESSAGE)
+        self.assertEqual(self.fake_db.tables["account_role_assignments"], [])
+        self.assertTrue(any("privileged_discord_role_access_denied" in line for line in captured.output), captured.output)
+        self.assertTrue(any("actor_id=42" in line and "discord_role_id=999888" in line for line in captured.output), captured.output)
 
     def test_get_category_role_positioning_returns_roles_and_end_description(self):
         self.fake_db.tables["roles"] = [

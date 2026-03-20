@@ -55,6 +55,21 @@ class AuthorityService:
         return {str(title).strip().lower() for title in titles}
 
     @staticmethod
+    def is_super_admin(actor_provider: str, actor_user_id: str) -> bool:
+        actor = AuthorityService.resolve_authority(actor_provider, actor_user_id)
+        actor_titles = AuthorityService._normalized_titles(actor.titles)
+        allowed = bool(actor_titles & SUPER_ADMIN_ROLE_KEYS)
+        logger.info(
+            "authority super-admin check actor=%s:%s actor_level=%s titles=%s allowed=%s",
+            actor_provider,
+            actor_user_id,
+            actor.level,
+            sorted(actor_titles),
+            allowed,
+        )
+        return allowed
+
+    @staticmethod
     def resolve_authority(provider: str, provider_user_id: str) -> AuthorityResult:
         try:
             account_id = AccountsService.resolve_account_id(provider, str(provider_user_id))

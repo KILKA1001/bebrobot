@@ -3,6 +3,7 @@ from typing import Any, Callable
 
 from bot.data import db
 from bot.services.accounts_service import AccountsService
+from bot.services.authority_service import AuthorityService
 from bot.services.auth import RoleResolver
 from bot.utils.roles_and_activities import ROLE_THRESHOLDS
 
@@ -21,6 +22,8 @@ logger = logging.getLogger(__name__)
 DELETE_ROLE_REASON_DISCORD_MANAGED = "discord_managed"
 DELETE_ROLE_REASON_NOT_FOUND = "not_found"
 DELETE_ROLE_REASON_ERROR = "error"
+ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE = "privileged_discord_role"
+PRIVILEGED_DISCORD_ROLE_MESSAGE = "Эту Discord-роль может выдавать только глава/главный вице."
 USER_ACQUIRE_HINT_PLACEHOLDER = "Способ получения пока не указан администратором"
 ACQUIRE_METHOD_POINTS = "за баллы"
 ACQUIRE_METHOD_ADMIN = "выдаёт администратор"
@@ -59,6 +62,71 @@ class RoleManagementService:
             action,
             success,
             error or "",
+        )
+
+    @staticmethod
+    def _role_action_result(
+        ok: bool,
+        *,
+        reason: str | None = None,
+        message: str | None = None,
+        role_name: str | None = None,
+        discord_role_id: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "ok": ok,
+            "reason": reason,
+            "message": message,
+            "role_name": role_name,
+            "discord_role_id": discord_role_id,
+        }
+
+    @staticmethod
+    def _check_privileged_discord_role_access(
+        *,
+        actor_provider: str | None,
+        actor_user_id: str | None,
+        role_name: str,
+        role_info: dict[str, Any] | None = None,
+        action: str,
+    ) -> dict[str, Any]:
+        role = dict(role_info or RoleManagementService.get_role(role_name) or {})
+        discord_role_id = str(role.get("discord_role_id") or "").strip() or None
+        is_discord_role = bool(discord_role_id)
+        is_privileged = bool(role.get("is_privileged_discord_role"))
+        if not is_discord_role or not is_privileged:
+            return RoleManagementService._role_action_result(
+                True,
+                role_name=role_name,
+                discord_role_id=discord_role_id,
+            )
+
+        provider = str(actor_provider or "").strip()
+        user_id = str(actor_user_id or "").strip()
+        if provider and user_id and AuthorityService.is_super_admin(provider, user_id):
+            return RoleManagementService._role_action_result(
+                True,
+                role_name=role_name,
+                discord_role_id=discord_role_id,
+            )
+
+        actor = AuthorityService.resolve_authority(provider, user_id) if provider and user_id else None
+        actor_titles = sorted(AuthorityService._normalized_titles(actor.titles if actor else tuple()))
+        logger.warning(
+            "privileged_discord_role_access_denied actor_id=%s actor_provider=%s target_role=%s discord_role_id=%s actor_titles=%s action=%s",
+            user_id or None,
+            provider or None,
+            role_name,
+            discord_role_id,
+            actor_titles,
+            action,
+        )
+        return RoleManagementService._role_action_result(
+            False,
+            reason=ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE,
+            message=PRIVILEGED_DISCORD_ROLE_MESSAGE,
+            role_name=role_name,
+            discord_role_id=discord_role_id,
         )
 
     @staticmethod
@@ -125,6 +193,9 @@ class RoleManagementService:
             return []
 
         select_variants = (
+            "name,category_name,description,acquire_hint,position,is_discord_managed,discord_role_id,is_privileged_discord_role",
+            "name,category_name,acquire_hint,position,is_discord_managed,discord_role_id,is_privileged_discord_role",
+            "name,category_name,position,is_discord_managed,discord_role_id,is_privileged_discord_role",
             "name,category_name,description,acquire_hint,position,is_discord_managed,discord_role_id",
             "name,category_name,acquire_hint,position,is_discord_managed,discord_role_id",
             "name,category_name,position,is_discord_managed,discord_role_id",
@@ -170,6 +241,7 @@ class RoleManagementService:
                     "position": int(row.get("position") or 0),
                     "is_discord_managed": bool(row.get("is_discord_managed")),
                     "discord_role_id": str(row.get("discord_role_id") or "").strip() or None,
+                    "is_privileged_discord_role": bool(row.get("is_privileged_discord_role")),
                 }
             )
 
@@ -231,6 +303,7 @@ class RoleManagementService:
             "is_discord_managed": True,
             "discord_role_id": role_id,
             "discord_role_name": role_name,
+            "is_privileged_discord_role": bool((existing or {}).get("is_privileged_discord_role")),
         }
 
         try:
@@ -526,6 +599,7 @@ class RoleManagementService:
             "is_discord_managed": bool(discord_role_id),
             "discord_role_id": str(discord_role_id).strip() if discord_role_id else None,
             "discord_role_name": str(discord_role_name).strip() if discord_role_name else None,
+            "is_privileged_discord_role": False,
         }
 
         try:
@@ -578,7 +652,7 @@ class RoleManagementService:
         try:
             role_row = (
                 db.supabase.table("roles")
-                .select("name,is_discord_managed,discord_role_id")
+                .select("name,is_discord_managed,discord_role_id,is_privileged_discord_role")
                 .eq("name", role_name)
                 .limit(1)
                 .execute()
@@ -813,7 +887,14 @@ class RoleManagementService:
             if not account_id:
                 logger.warning("assign_user_role skipped: account not found provider=%s user_id=%s", provider, provider_user_id)
                 return False
-            return RoleManagementService.assign_user_role_by_account(str(account_id), role_name, category=category)
+            result = RoleManagementService.assign_user_role_by_account(
+                str(account_id),
+                role_name,
+                category=category,
+                actor_provider=provider,
+                actor_user_id=str(provider_user_id),
+            )
+            return bool(result.get("ok"))
         except Exception:
             logger.exception(
                 "assign_user_role failed provider=%s user_id=%s role=%s",
@@ -828,6 +909,8 @@ class RoleManagementService:
         account_id: str,
         *,
         actor_id: str | None = None,
+        actor_provider: str | None = None,
+        actor_user_id: str | None = None,
         grant_roles: list[str] | tuple[str, ...] | set[str] | None = None,
         revoke_roles: list[str] | tuple[str, ...] | set[str] | None = None,
     ) -> dict[str, Any]:
@@ -839,6 +922,8 @@ class RoleManagementService:
                 "grant_failed": [],
                 "revoke_success": [],
                 "revoke_failed": [],
+                "grant_denied": [],
+                "revoke_denied": [],
             }
 
         normalized_grants = RoleManagementService._normalize_role_names(grant_roles)
@@ -860,29 +945,43 @@ class RoleManagementService:
             "grant_failed": [],
             "revoke_success": [],
             "revoke_failed": [],
+            "grant_denied": [],
+            "revoke_denied": [],
             "conflicting_roles": sorted(conflicting),
         }
 
         for role_name in normalized_grants:
             try:
                 role_info = RoleManagementService.get_role(role_name) or {}
-                ok = RoleManagementService.assign_user_role_by_account(
+                grant_result = RoleManagementService.assign_user_role_by_account(
                     account_key,
                     role_name,
                     category=str(role_info.get("category_name") or "").strip() or None,
+                    actor_provider=actor_provider,
+                    actor_user_id=actor_user_id or actor_id,
                 )
             except Exception:
-                ok = False
+                grant_result = RoleManagementService._role_action_result(False, role_name=role_name)
                 logger.exception(
                     "apply_user_role_changes_by_account grant crashed actor_id=%s target_account_id=%s role_name=%s",
                     actor_id,
                     account_key,
                     role_name,
                 )
+            ok = bool(grant_result.get("ok"))
             if ok:
                 result["grant_success"].append(role_name)
             else:
                 result["grant_failed"].append(role_name)
+                if grant_result.get("reason"):
+                    result["grant_denied"].append(
+                        {
+                            "role_name": role_name,
+                            "reason": grant_result.get("reason"),
+                            "message": grant_result.get("message"),
+                            "discord_role_id": grant_result.get("discord_role_id"),
+                        }
+                    )
                 result["ok"] = False
             RoleManagementService._log_user_role_batch_item(
                 actor_id=actor_id,
@@ -890,24 +989,39 @@ class RoleManagementService:
                 role_name=role_name,
                 action="grant",
                 success=ok,
-                error=None if ok else "service_returned_false",
+                error=None if ok else str(grant_result.get("reason") or "service_returned_false"),
             )
 
         for role_name in normalized_revokes:
             try:
-                ok = RoleManagementService.revoke_user_role_by_account(account_key, role_name)
+                revoke_result = RoleManagementService.revoke_user_role_by_account(
+                    account_key,
+                    role_name,
+                    actor_provider=actor_provider,
+                    actor_user_id=actor_user_id or actor_id,
+                )
             except Exception:
-                ok = False
+                revoke_result = RoleManagementService._role_action_result(False, role_name=role_name)
                 logger.exception(
                     "apply_user_role_changes_by_account revoke crashed actor_id=%s target_account_id=%s role_name=%s",
                     actor_id,
                     account_key,
                     role_name,
                 )
+            ok = bool(revoke_result.get("ok"))
             if ok:
                 result["revoke_success"].append(role_name)
             else:
                 result["revoke_failed"].append(role_name)
+                if revoke_result.get("reason"):
+                    result["revoke_denied"].append(
+                        {
+                            "role_name": role_name,
+                            "reason": revoke_result.get("reason"),
+                            "message": revoke_result.get("message"),
+                            "discord_role_id": revoke_result.get("discord_role_id"),
+                        }
+                    )
                 result["ok"] = False
             RoleManagementService._log_user_role_batch_item(
                 actor_id=actor_id,
@@ -915,21 +1029,36 @@ class RoleManagementService:
                 role_name=role_name,
                 action="revoke",
                 success=ok,
-                error=None if ok else "service_returned_false",
+                error=None if ok else str(revoke_result.get("reason") or "service_returned_false"),
             )
 
         return result
 
     @staticmethod
-    def assign_user_role_by_account(account_id: str, role_name: str, category: str | None = None) -> bool:
+    def assign_user_role_by_account(
+        account_id: str,
+        role_name: str,
+        category: str | None = None,
+        *,
+        actor_provider: str | None = None,
+        actor_user_id: str | None = None,
+    ) -> dict[str, Any]:
         if not db.supabase:
-            return False
+            return RoleManagementService._role_action_result(False, role_name=role_name)
         account_key = str(account_id or "").strip()
         role_key = str(role_name or "").strip()
         if not account_key or not role_key:
-            return False
+            return RoleManagementService._role_action_result(False, role_name=role_key or role_name)
 
         try:
+            guard_result = RoleManagementService._check_privileged_discord_role_access(
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id,
+                role_name=role_key,
+                action="grant",
+            )
+            if not guard_result["ok"]:
+                return guard_result
             metadata = {"category": RoleManagementService._normalized_category(category)} if category else {}
             db.supabase.table("account_role_assignments").upsert(
                 {
@@ -941,14 +1070,14 @@ class RoleManagementService:
                 },
                 on_conflict="account_id,role_name,source",
             ).execute()
-            return True
+            return RoleManagementService._role_action_result(True, role_name=role_key)
         except Exception:
             logger.exception(
                 "assign_user_role_by_account failed account_id=%s role=%s",
                 account_key,
                 role_key,
             )
-            return False
+            return RoleManagementService._role_action_result(False, role_name=role_key)
 
     @staticmethod
     def revoke_user_role(provider: str, provider_user_id: str, role_name: str) -> bool:
@@ -956,7 +1085,13 @@ class RoleManagementService:
             account_id = AccountsService.resolve_account_id(provider, str(provider_user_id))
             if not account_id:
                 return False
-            return RoleManagementService.revoke_user_role_by_account(str(account_id), role_name)
+            result = RoleManagementService.revoke_user_role_by_account(
+                str(account_id),
+                role_name,
+                actor_provider=provider,
+                actor_user_id=str(provider_user_id),
+            )
+            return bool(result.get("ok"))
         except Exception:
             logger.exception(
                 "revoke_user_role failed provider=%s user_id=%s role=%s",
@@ -967,24 +1102,38 @@ class RoleManagementService:
             return False
 
     @staticmethod
-    def revoke_user_role_by_account(account_id: str, role_name: str) -> bool:
+    def revoke_user_role_by_account(
+        account_id: str,
+        role_name: str,
+        *,
+        actor_provider: str | None = None,
+        actor_user_id: str | None = None,
+    ) -> dict[str, Any]:
         if not db.supabase:
-            return False
+            return RoleManagementService._role_action_result(False, role_name=role_name)
         account_key = str(account_id or "").strip()
         role_key = str(role_name or "").strip()
         if not account_key or not role_key:
-            return False
+            return RoleManagementService._role_action_result(False, role_name=role_key or role_name)
 
         try:
+            guard_result = RoleManagementService._check_privileged_discord_role_access(
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id,
+                role_name=role_key,
+                action="revoke",
+            )
+            if not guard_result["ok"]:
+                return guard_result
             db.supabase.table("account_role_assignments").delete().eq("account_id", account_key).eq("role_name", role_key).execute()
-            return True
+            return RoleManagementService._role_action_result(True, role_name=role_key)
         except Exception:
             logger.exception(
                 "revoke_user_role_by_account failed account_id=%s role=%s",
                 account_key,
                 role_key,
             )
-            return False
+            return RoleManagementService._role_action_result(False, role_name=role_key)
 
     @staticmethod
     def get_role(role_name: str) -> dict[str, Any] | None:
@@ -995,6 +1144,9 @@ class RoleManagementService:
             return None
 
         select_variants = (
+            "name,category_name,description,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role",
+            "name,category_name,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role",
+            "name,category_name,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role",
             "name,category_name,description,acquire_hint,is_discord_managed,discord_role_id,discord_role_name",
             "name,category_name,acquire_hint,is_discord_managed,discord_role_id,discord_role_name",
             "name,category_name,is_discord_managed,discord_role_id,discord_role_name",
