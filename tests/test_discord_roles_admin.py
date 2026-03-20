@@ -53,6 +53,39 @@ class DiscordRolesAdminTests(unittest.IsolatedAsyncioTestCase):
         )
         return SimpleNamespace(guild=guild, author=author)
 
+    def test_rolesadmin_help_embed_hides_categories_when_not_allowed(self):
+        visibility = roles_admin.RolesAdminVisibilityContext(
+            actor_level=80,
+            actor_titles=("Вице города",),
+            can_manage_categories=False,
+            can_manage_roles=True,
+            hidden_sections=("categories",),
+        )
+
+        embed = roles_admin._rolesadmin_help_embed(visibility=visibility)
+
+        field_names = [field.name for field in embed.fields]
+        self.assertNotIn("Категории", field_names)
+        self.assertIn("Роли", field_names)
+        self.assertIn("Пользователи", field_names)
+        self.assertIn("Некоторые кнопки скрыты", embed.description)
+
+    def test_rolesadmin_help_view_hides_category_button_without_permission(self):
+        visibility = roles_admin.RolesAdminVisibilityContext(
+            actor_level=80,
+            actor_titles=("Вице города",),
+            can_manage_categories=False,
+            can_manage_roles=True,
+            hidden_sections=("categories",),
+        )
+
+        view = roles_admin.RolesAdminHelpView(actor_id=111, visibility=visibility, guild_id=222)
+        labels = [child.label for child in view.children]
+
+        self.assertNotIn("Категории", labels)
+        self.assertIn("Роли", labels)
+        self.assertIn("Пользователи", labels)
+
     async def test_rolesadmin_list_runs_implicit_sync_before_listing(self):
         ctx = self._build_ctx()
         grouped = [{"category": "General", "roles": [{"name": "Role A", "discord_role_id": "1", "description": "Описание", "acquire_hint": "Через турнир"}]}]

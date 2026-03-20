@@ -3,8 +3,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from bot.telegram_bot.commands.roles_admin import (
+    _build_actions_keyboard,
+    _build_home_keyboard,
     _build_pick_role_keyboard,
     _build_position_choice_keyboard,
+    _render_home_text,
     _render_fallback_text,
     _render_help_text,
     _render_list_text,
@@ -162,6 +165,44 @@ class TelegramRolesAdminTargetResolutionTests(unittest.TestCase):
         self.assertTrue(any("Custom" in text for text in delete_texts))
         self.assertTrue(any("External" in text for text in move_texts))
 
+    def test_home_keyboard_hides_categories_section_without_permission(self):
+        keyboard = _build_home_keyboard(actor_id=10, can_manage_categories=False)
+
+        texts = [button.text for row in keyboard.inline_keyboard for button in row]
+
+        self.assertNotIn("🗂 Категории", texts)
+        self.assertIn("🪪 Роли", texts)
+        self.assertIn("👥 Пользователи", texts)
+
+    def test_home_keyboard_shows_categories_section_with_permission(self):
+        keyboard = _build_home_keyboard(actor_id=10, can_manage_categories=True)
+
+        texts = [button.text for row in keyboard.inline_keyboard for button in row]
+
+        self.assertIn("🗂 Категории", texts)
+
+    def test_actions_keyboard_shows_only_category_actions(self):
+        keyboard = _build_actions_keyboard(actor_id=10, section="categories", can_manage_categories=True)
+
+        texts = [button.text for row in keyboard.inline_keyboard for button in row]
+
+        self.assertIn("🗂 Создать категорию", texts)
+        self.assertIn("↕️ Порядок категории", texts)
+        self.assertIn("🗑 Удалить категорию", texts)
+        self.assertNotIn("➕ Создать роль", texts)
+        self.assertNotIn("🧾 Роли пользователя", texts)
+
+    def test_actions_keyboard_shows_only_user_actions(self):
+        keyboard = _build_actions_keyboard(actor_id=10, section="users", can_manage_categories=False)
+
+        texts = [button.text for row in keyboard.inline_keyboard for button in row]
+
+        self.assertIn("🧾 Роли пользователя", texts)
+        self.assertIn("✅ Выдать роль", texts)
+        self.assertIn("❌ Снять роль", texts)
+        self.assertNotIn("🗂 Создать категорию", texts)
+        self.assertNotIn("➕ Создать роль", texts)
+
     def test_position_picker_renders_all_available_positions(self):
         preview = {
             "insertion_positions": [
@@ -200,6 +241,12 @@ class TelegramRolesAdminTargetResolutionTests(unittest.TestCase):
         self.assertIn("role_edit_acquire_hint", _render_fallback_text())
         self.assertIn("Описание роли", _render_help_text())
         self.assertIn("как получить", _render_help_text())
+
+    def test_home_text_explains_hidden_buttons(self):
+        text = _render_home_text(hidden_sections=("categories",))
+
+        self.assertIn("Некоторые кнопки скрыты, потому что у вас нет нужных полномочий", text)
+        self.assertIn("Категории", text)
 
     def test_render_list_text_shows_role_description_and_legacy_rows_without_it(self):
         grouped = [

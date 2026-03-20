@@ -23,6 +23,16 @@ router = Router()
 _ROLES_PAGE_SIZE = 5
 _MAX_ROLE_BUTTONS = 8
 _PENDING_TTL_SECONDS = 300
+_SECTION_LABELS = {
+    "categories": "Категории",
+    "roles": "Роли",
+    "users": "Пользователи",
+}
+_SECTION_OPERATIONS = {
+    "categories": ("category_create", "category_order", "category_delete"),
+    "roles": ("role_create", "role_edit_acquire_hint", "role_move", "role_order", "role_delete"),
+    "users": ("user_roles", "user_grant", "user_revoke"),
+}
 
 
 @dataclass
@@ -33,6 +43,14 @@ class PendingRolesAdminAction:
 
 
 _PENDING_ACTIONS: dict[int, PendingRolesAdminAction] = {}
+
+
+@dataclass(frozen=True)
+class RolesAdminVisibilityContext:
+    actor_level: int
+    actor_titles: tuple[str, ...]
+    can_manage_categories: bool
+    hidden_sections: tuple[str, ...]
 
 
 def _role_catalog_note() -> str:
@@ -436,40 +454,137 @@ def _normalize_page(page: int, total_items: int, page_size: int) -> int:
     return min(max(page, 0), max_page)
 
 
-def _build_home_keyboard(actor_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+def _resolve_visibility_context(provider: str, provider_user_id: str) -> RolesAdminVisibilityContext:
+    authority = AuthorityService.resolve_authority(provider, provider_user_id)
+    can_manage_categories = AuthorityService.can_manage_role_categories(provider, provider_user_id)
+    hidden_sections = tuple(section for section in ("categories",) if not can_manage_categories)
+    return RolesAdminVisibilityContext(
+        actor_level=authority.level,
+        actor_titles=tuple(authority.titles),
+        can_manage_categories=can_manage_categories,
+        hidden_sections=hidden_sections,
+    )
+
+
+def _log_roles_admin_navigation(
+    *,
+    actor_id: int | None,
+    actor_level: int,
+    actor_titles: tuple[str, ...],
+    hidden_sections: tuple[str, ...],
+    screen: str,
+) -> None:
+    logger.info(
+        "roles_admin navigation actor_id=%s actor_level=%s actor_titles=%s hidden_sections=%s screen=%s source=%s",
+        actor_id,
+        actor_level,
+        list(actor_titles),
+        list(hidden_sections),
+        screen,
+        "telegram",
+    )
+
+
+def _section_for_operation(operation: str | None) -> str | None:
+    operation_key = str(operation or "").strip()
+    for section, operations in _SECTION_OPERATIONS.items():
+        if operation_key in operations:
+            return section
+    return None
+
+
+def _build_home_keyboard(
+    actor_id: int,
+    *,
+    can_manage_categories: bool | None = None,
+) -> InlineKeyboardMarkup:
+    allow_categories = (
+        AuthorityService.can_manage_role_categories("telegram", str(actor_id))
+        if can_manage_categories is None
+        else can_manage_categories
+    )
+    rows = []
+    if allow_categories:
+        rows.append([InlineKeyboardButton(text="🗂 Категории", callback_data=f"roles_admin:{actor_id}:actions:categories")])
+    rows.extend(
+        [
+            [InlineKeyboardButton(text="🪪 Роли", callback_data=f"roles_admin:{actor_id}:actions:roles")],
+            [InlineKeyboardButton(text="👥 Пользователи", callback_data=f"roles_admin:{actor_id}:actions:users")],
             [InlineKeyboardButton(text="📋 Категории и роли", callback_data=f"roles_admin:{actor_id}:list:0")],
-            [InlineKeyboardButton(text="⚡ Действия кнопками", callback_data=f"roles_admin:{actor_id}:actions")],
             [InlineKeyboardButton(text="🆘 Не работают кнопки?", callback_data=f"roles_admin:{actor_id}:fallback")],
             [InlineKeyboardButton(text="ℹ️ Что делает каждая функция", callback_data=f"roles_admin:{actor_id}:help")],
             [InlineKeyboardButton(text="🔄 Обновить", callback_data=f"roles_admin:{actor_id}:home")],
         ]
     )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _build_actions_keyboard(actor_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🗂 Создать категорию", callback_data=f"roles_admin:{actor_id}:start:category_create")],
-            [InlineKeyboardButton(text="↕️ Порядок категории", callback_data=f"roles_admin:{actor_id}:start:category_order")],
-            [InlineKeyboardButton(text="🗑 Удалить категорию", callback_data=f"roles_admin:{actor_id}:start:category_delete")],
-            [InlineKeyboardButton(text="➕ Создать роль", callback_data=f"roles_admin:{actor_id}:start:role_create")],
-            [InlineKeyboardButton(text="🧭 Как получить роль", callback_data=f"roles_admin:{actor_id}:start:role_edit_acquire_hint")],
-            [InlineKeyboardButton(text="🚚 Переместить роль", callback_data=f"roles_admin:{actor_id}:start:role_move")],
-            [InlineKeyboardButton(text="🔢 Порядок роли", callback_data=f"roles_admin:{actor_id}:start:role_order")],
-            [InlineKeyboardButton(text="🗑 Удалить роль", callback_data=f"roles_admin:{actor_id}:start:role_delete")],
-            [InlineKeyboardButton(text="🧾 Роли пользователя", callback_data=f"roles_admin:{actor_id}:start:user_roles")],
-            [InlineKeyboardButton(text="✅ Выдать роль", callback_data=f"roles_admin:{actor_id}:start:user_grant")],
-            [InlineKeyboardButton(text="❌ Снять роль", callback_data=f"roles_admin:{actor_id}:start:user_revoke")],
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data=f"roles_admin:{actor_id}:home")],
-        ]
+def _build_actions_keyboard(
+    actor_id: int,
+    section: str | None = None,
+    *,
+    can_manage_categories: bool | None = None,
+) -> InlineKeyboardMarkup:
+    allow_categories = (
+        AuthorityService.can_manage_role_categories("telegram", str(actor_id))
+        if can_manage_categories is None
+        else can_manage_categories
+    )
+    rows: list[list[InlineKeyboardButton]] = []
+
+    if section == "categories":
+        if allow_categories:
+            rows.extend(
+                [
+                    [InlineKeyboardButton(text="🗂 Создать категорию", callback_data=f"roles_admin:{actor_id}:start:category_create")],
+                    [InlineKeyboardButton(text="↕️ Порядок категории", callback_data=f"roles_admin:{actor_id}:start:category_order")],
+                    [InlineKeyboardButton(text="🗑 Удалить категорию", callback_data=f"roles_admin:{actor_id}:start:category_delete")],
+                ]
+            )
+    elif section == "roles":
+        rows.extend(
+            [
+                [InlineKeyboardButton(text="➕ Создать роль", callback_data=f"roles_admin:{actor_id}:start:role_create")],
+                [InlineKeyboardButton(text="🧭 Как получить роль", callback_data=f"roles_admin:{actor_id}:start:role_edit_acquire_hint")],
+                [InlineKeyboardButton(text="🚚 Переместить роль", callback_data=f"roles_admin:{actor_id}:start:role_move")],
+                [InlineKeyboardButton(text="🔢 Порядок роли", callback_data=f"roles_admin:{actor_id}:start:role_order")],
+                [InlineKeyboardButton(text="🗑 Удалить роль", callback_data=f"roles_admin:{actor_id}:start:role_delete")],
+            ]
+        )
+    elif section == "users":
+        rows.extend(
+            [
+                [InlineKeyboardButton(text="🧾 Роли пользователя", callback_data=f"roles_admin:{actor_id}:start:user_roles")],
+                [InlineKeyboardButton(text="✅ Выдать роль", callback_data=f"roles_admin:{actor_id}:start:user_grant")],
+                [InlineKeyboardButton(text="❌ Снять роль", callback_data=f"roles_admin:{actor_id}:start:user_revoke")],
+            ]
+        )
+    else:
+        if allow_categories:
+            rows.append([InlineKeyboardButton(text="🗂 Категории", callback_data=f"roles_admin:{actor_id}:actions:categories")])
+        rows.extend(
+            [
+                [InlineKeyboardButton(text="🪪 Роли", callback_data=f"roles_admin:{actor_id}:actions:roles")],
+                [InlineKeyboardButton(text="👥 Пользователи", callback_data=f"roles_admin:{actor_id}:actions:users")],
+            ]
+        )
+
+    rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data=f"roles_admin:{actor_id}:home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _render_hidden_sections_note(hidden_sections: tuple[str, ...]) -> str:
+    if not hidden_sections:
+        return ""
+    return (
+        "⚠️ Некоторые кнопки скрыты, потому что у вас нет нужных полномочий.\n"
+        f"Скрытые разделы: {', '.join(_SECTION_LABELS.get(section, section) for section in hidden_sections)}.\n\n"
     )
 
 
-def _render_actions_text() -> str:
-    return (
-        "⚡ <b>Действия кнопками</b>\n\n"
+def _render_actions_text(section: str | None = None, *, hidden_sections: tuple[str, ...] = tuple()) -> str:
+    hidden_note = _render_hidden_sections_note(hidden_sections)
+    common_tail = (
         "Нажми кнопку, затем следуй подсказкам на экране.\n"
         "Разделитель параметров: <code>|</code>.\n"
         "Для отмены ввода отправь: <code>отмена</code>.\n\n"
@@ -477,6 +592,37 @@ def _render_actions_text() -> str:
         "Для пользовательского интерфейса старайся заполнять и описание, и поле «как получить» — так бот лучше объясняет роль людям.\n"
         "Если позицию не менять, роль будет добавлена последней.\n\n"
         f"{_role_catalog_note()}"
+    )
+    if section == "categories":
+        return (
+            "🗂 <b>Раздел «Категории»</b>\n\n"
+            f"{hidden_note}"
+            "Здесь собраны только действия по структуре каталога: создание, изменение порядка и удаление категорий.\n"
+            "Используй этот раздел, когда меняешь верхний уровень навигации ролей.\n\n"
+            f"{common_tail}"
+        )
+    if section == "roles":
+        return (
+            "🪪 <b>Раздел «Роли»</b>\n\n"
+            f"{hidden_note}"
+            "Здесь собраны действия по самим ролям: создание, инструкция «как получить», перенос между категориями, порядок и удаление.\n"
+            "Старайся заполнять описание и способ получения — так пользователю проще понять роль прямо в интерфейсе бота.\n\n"
+            f"{common_tail}"
+        )
+    if section == "users":
+        return (
+            "👥 <b>Раздел «Пользователи»</b>\n\n"
+            f"{hidden_note}"
+            "Здесь доступны только действия над ролями пользователей: посмотреть, выдать или снять роль.\n"
+            "Для поиска пользователя в ЛС удобнее @username / username, в группе — reply, для Discord — ds:username.\n\n"
+            f"{common_tail}"
+        )
+    return (
+        "⚡ <b>Действия кнопками</b>\n\n"
+        f"{hidden_note}"
+        "Выберите раздел: категории, роли или пользователи.\n"
+        "Внутри раздела бот покажет только относящиеся к нему действия, чтобы экран было проще читать и сложнее нажать не ту кнопку.\n\n"
+        f"{common_tail}"
     )
 
 
@@ -680,7 +826,17 @@ def _build_position_choice_keyboard(actor_id: int, operation: str, preview: dict
                 )
             ]
         )
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"roles_admin:{actor_id}:actions")])
+    back_section = _section_for_operation(
+        "category_order" if operation == "category_order" else "role_move"
+    )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ Назад",
+                callback_data=f"roles_admin:{actor_id}:actions:{back_section}" if back_section else f"roles_admin:{actor_id}:actions",
+            )
+        ]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -693,7 +849,15 @@ def _build_pick_category_keyboard(grouped: list[dict], actor_id: int, operation:
                 callback_data=f"roles_admin:{actor_id}:pick_category:{operation}:{idx}",
             )
         ])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"roles_admin:{actor_id}:actions")])
+    back_section = _section_for_operation(operation)
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ Назад",
+                callback_data=f"roles_admin:{actor_id}:actions:{back_section}" if back_section else f"roles_admin:{actor_id}:actions",
+            )
+        ]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -720,7 +884,15 @@ def _build_pick_role_keyboard(grouped: list[dict], actor_id: int, operation: str
     if (safe_page + 1) * page_size < len(flattened):
         nav.append(InlineKeyboardButton(text="➡️", callback_data=f"roles_admin:{actor_id}:pick_role_page:{operation}:{safe_page + 1}"))
     rows.append(nav)
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"roles_admin:{actor_id}:actions")])
+    back_section = _section_for_operation(operation)
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ Назад",
+                callback_data=f"roles_admin:{actor_id}:actions:{back_section}" if back_section else f"roles_admin:{actor_id}:actions",
+            )
+        ]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -783,11 +955,13 @@ def _build_category_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _render_home_text() -> str:
+def _render_home_text(*, hidden_sections: tuple[str, ...] = tuple()) -> str:
     return (
         "🛠 <b>Панель управления ролями</b>\n\n"
+        f"{_render_hidden_sections_note(hidden_sections)}"
         "Все обновления идут в <b>одном сообщении</b> через кнопки.\n\n"
-        "Управление через <b>кнопки</b> в разделе <b>⚡ Действия кнопками</b>.\n"
+        "Главный экран разделён на <b>Категории</b>, <b>Роли</b> и <b>Пользователи</b>, чтобы быстрее попадать в нужный блок.\n"
+        "Внутри каждого раздела бот показывает только относящиеся к нему действия.\n"
         "Если кнопки не срабатывают, открой <b>🆘 Не работают кнопки?</b> — там резервные команды и примеры.\n"
         "Для create/move/order бот показывает роли внутри выбранной категории и даёт выбрать точную позицию вставки.\n"
         "Если позицию не задавать, роль будет добавлена в конец категории.\n"
@@ -960,7 +1134,22 @@ async def roles_admin_command(message: Message) -> None:
             if not message.from_user:
                 await message.answer("❌ Не удалось определить пользователя Telegram.")
                 return
-            await message.answer(_render_home_text(), parse_mode="HTML", reply_markup=_build_home_keyboard(message.from_user.id))
+            visibility = _resolve_visibility_context("telegram", str(message.from_user.id))
+            _log_roles_admin_navigation(
+                actor_id=message.from_user.id,
+                actor_level=visibility.actor_level,
+                actor_titles=visibility.actor_titles,
+                hidden_sections=visibility.hidden_sections,
+                screen="home",
+            )
+            await message.answer(
+                _render_home_text(hidden_sections=visibility.hidden_sections),
+                parse_mode="HTML",
+                reply_markup=_build_home_keyboard(
+                    message.from_user.id,
+                    can_manage_categories=visibility.can_manage_categories,
+                ),
+            )
             return
 
         subcommand = parts[1].lower()
@@ -1263,7 +1452,8 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             return
 
         owner_id = int(parts[1]) if parts[1].isdigit() else 0
-        actor_can_manage_categories = _can_manage_categories("telegram", str(callback.from_user.id))
+        visibility = _resolve_visibility_context("telegram", str(callback.from_user.id))
+        actor_can_manage_categories = visibility.can_manage_categories
         if owner_id != callback.from_user.id:
             logger.warning(
                 "roles_admin callback denied foreign actor callback_data=%s actor_id=%s owner_id=%s",
@@ -1279,30 +1469,51 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
         grouped = RoleManagementService.list_roles_grouped() or []
 
         if action == "help":
+            _log_roles_admin_navigation(
+                actor_id=callback.from_user.id,
+                actor_level=visibility.actor_level,
+                actor_titles=visibility.actor_titles,
+                hidden_sections=visibility.hidden_sections,
+                screen="help",
+            )
             await _safe_edit_message_text(callback, 
                 _render_help_text(),
                 parse_mode="HTML",
-                reply_markup=_build_home_keyboard(owner_id),
+                reply_markup=_build_home_keyboard(owner_id, can_manage_categories=actor_can_manage_categories),
             )
             await callback.answer()
             return
 
         if action == "fallback":
             logger.info("roles_admin fallback opened actor_id=%s", callback.from_user.id)
+            _log_roles_admin_navigation(
+                actor_id=callback.from_user.id,
+                actor_level=visibility.actor_level,
+                actor_titles=visibility.actor_titles,
+                hidden_sections=visibility.hidden_sections,
+                screen="fallback",
+            )
             await _safe_edit_message_text(
                 callback,
                 _render_fallback_text(),
                 parse_mode="HTML",
-                reply_markup=_build_home_keyboard(owner_id),
+                reply_markup=_build_home_keyboard(owner_id, can_manage_categories=actor_can_manage_categories),
             )
             await callback.answer()
             return
 
         if action == "home":
+            _log_roles_admin_navigation(
+                actor_id=callback.from_user.id,
+                actor_level=visibility.actor_level,
+                actor_titles=visibility.actor_titles,
+                hidden_sections=visibility.hidden_sections,
+                screen="home",
+            )
             await _safe_edit_message_text(callback, 
-                _render_home_text(),
+                _render_home_text(hidden_sections=visibility.hidden_sections),
                 parse_mode="HTML",
-                reply_markup=_build_home_keyboard(owner_id),
+                reply_markup=_build_home_keyboard(owner_id, can_manage_categories=actor_can_manage_categories),
             )
             await callback.answer()
             return
@@ -1318,10 +1529,33 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             return
 
         if action == "actions":
+            section = parts[3] if len(parts) > 3 else None
+            if section == "categories" and not actor_can_manage_categories:
+                logger.warning(
+                    "roles_admin section denied actor_id=%s actor_level=%s actor_titles=%s hidden_sections=%s section=%s",
+                    callback.from_user.id,
+                    visibility.actor_level,
+                    list(visibility.actor_titles),
+                    list(visibility.hidden_sections),
+                    section,
+                )
+                await callback.answer("Раздел скрыт: категориями может управлять только Глава клуба или Главный вице.", show_alert=True)
+                return
+            _log_roles_admin_navigation(
+                actor_id=callback.from_user.id,
+                actor_level=visibility.actor_level,
+                actor_titles=visibility.actor_titles,
+                hidden_sections=visibility.hidden_sections,
+                screen=f"actions:{section or 'hub'}",
+            )
             await _safe_edit_message_text(callback, 
-                _render_actions_text(),
+                _render_actions_text(section, hidden_sections=visibility.hidden_sections),
                 parse_mode="HTML",
-                reply_markup=_build_actions_keyboard(owner_id),
+                reply_markup=_build_actions_keyboard(
+                    owner_id,
+                    section,
+                    can_manage_categories=actor_can_manage_categories,
+                ),
             )
             await callback.answer()
             return
@@ -1399,8 +1633,16 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             if operation == "category_delete":
                 ok = RoleManagementService.delete_category(category_name)
                 await callback.answer("Категория удалена" if ok else "Не удалось удалить категорию", show_alert=not ok)
-                grouped_after = RoleManagementService.list_roles_grouped() or []
-                await _safe_edit_message_text(callback, _render_actions_text(), parse_mode="HTML", reply_markup=_build_actions_keyboard(owner_id))
+                await _safe_edit_message_text(
+                    callback,
+                    _render_actions_text("categories", hidden_sections=visibility.hidden_sections),
+                    parse_mode="HTML",
+                    reply_markup=_build_actions_keyboard(
+                        owner_id,
+                        "categories",
+                        can_manage_categories=actor_can_manage_categories,
+                    ),
+                )
                 return
             if operation == "category_order":
                 _PENDING_ACTIONS[callback.from_user.id] = PendingRolesAdminAction(
@@ -1510,7 +1752,16 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     f"Роль {role_name} удалена" if result["ok"] else _delete_role_result_message(result),
                     show_alert=not result["ok"],
                 )
-                await _safe_edit_message_text(callback, _render_actions_text(), parse_mode="HTML", reply_markup=_build_actions_keyboard(owner_id))
+                await _safe_edit_message_text(
+                    callback,
+                    _render_actions_text("roles", hidden_sections=visibility.hidden_sections),
+                    parse_mode="HTML",
+                    reply_markup=_build_actions_keyboard(
+                        owner_id,
+                        "roles",
+                        can_manage_categories=actor_can_manage_categories,
+                    ),
+                )
                 return
             if operation == "role_edit_acquire_hint":
                 _PENDING_ACTIONS[callback.from_user.id] = PendingRolesAdminAction(
@@ -1574,7 +1825,16 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 ok = RoleManagementService.create_category(category_name, new_pos)
                 _PENDING_ACTIONS.pop(callback.from_user.id, None)
                 await callback.answer("Порядок категории обновлён" if ok else "Не удалось обновить порядок", show_alert=not ok)
-                await _safe_edit_message_text(callback, _render_actions_text(), parse_mode="HTML", reply_markup=_build_actions_keyboard(owner_id))
+                await _safe_edit_message_text(
+                    callback,
+                    _render_actions_text("categories", hidden_sections=visibility.hidden_sections),
+                    parse_mode="HTML",
+                    reply_markup=_build_actions_keyboard(
+                        owner_id,
+                        "categories",
+                        can_manage_categories=actor_can_manage_categories,
+                    ),
+                )
                 return
             if op == "role_create_position":
                 if not pending or pending.operation != "role_create_pick_position" or not pending.payload:
@@ -1596,7 +1856,11 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                         "Если описание или Discord role id не нужны, можно оставить только название."
                     ),
                     parse_mode="HTML",
-                    reply_markup=_build_actions_keyboard(owner_id),
+                    reply_markup=_build_actions_keyboard(
+                        owner_id,
+                        "roles",
+                        can_manage_categories=actor_can_manage_categories,
+                    ),
                 )
                 await callback.answer()
                 return
@@ -1650,7 +1914,16 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     "Позиция роли обновлена" if ok else "Не удалось обновить позицию роли",
                     show_alert=not ok,
                 )
-                await _safe_edit_message_text(callback, _render_actions_text(), parse_mode="HTML", reply_markup=_build_actions_keyboard(owner_id))
+                await _safe_edit_message_text(
+                    callback,
+                    _render_actions_text("roles", hidden_sections=visibility.hidden_sections),
+                    parse_mode="HTML",
+                    reply_markup=_build_actions_keyboard(
+                        owner_id,
+                        "roles",
+                        can_manage_categories=actor_can_manage_categories,
+                    ),
+                )
                 return
 
         if action == "category":
