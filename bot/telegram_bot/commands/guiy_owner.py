@@ -42,6 +42,7 @@ class PendingGuiyOwnerAction:
     reply_author_user_id: str | None
     created_at: float
     target_chat_or_guild: str
+    control_chat_id: str | None = None
     selected_field: str | None = None
     target_destination_id: str | None = None
     target_destination_label: str | None = None
@@ -127,6 +128,38 @@ def _get_non_expired_pending_action(actor_user_id: int | None) -> PendingGuiyOwn
 
 def has_pending_guiy_owner_action(actor_user_id: int | None) -> bool:
     return _get_non_expired_pending_action(actor_user_id) is not None
+
+
+def _is_command_message(message: Message) -> bool:
+    text = str(getattr(message, "text", "") or "").strip()
+    return bool(text) and text.startswith("/")
+
+
+def _is_pending_guiy_owner_input_message(message: Message) -> bool:
+    actor_user_id = getattr(getattr(message, "from_user", None), "id", None)
+    pending = _get_non_expired_pending_action(actor_user_id)
+    if pending is None:
+        return False
+    if _is_command_message(message):
+        logger.info(
+            "telegram guiy owner pending input ignored because command was received actor_user_id=%s chat_id=%s selected_action=%s control_chat_id=%s",
+            actor_user_id,
+            getattr(getattr(message, "chat", None), "id", None),
+            pending.selected_action,
+            pending.control_chat_id,
+        )
+        return False
+    control_chat_id = str(pending.control_chat_id or "").strip()
+    if control_chat_id and control_chat_id != str(getattr(getattr(message, "chat", None), "id", "")):
+        logger.info(
+            "telegram guiy owner pending input ignored because message arrived from another chat actor_user_id=%s chat_id=%s selected_action=%s control_chat_id=%s",
+            actor_user_id,
+            getattr(getattr(message, "chat", None), "id", None),
+            pending.selected_action,
+            control_chat_id,
+        )
+        return False
+    return True
 
 
 def _owner_action_keyboard() -> InlineKeyboardMarkup:
@@ -714,6 +747,7 @@ async def guiy_owner_action_callback(callback: CallbackQuery) -> None:
             reply_author_user_id=reply_author_user_id,
             created_at=time.time(),
             target_chat_or_guild=str(target_chat_or_guild),
+            control_chat_id=str(target_chat_or_guild),
         )
         _PENDING_GUIY_OWNER_VISIBLE_ROLES.pop(callback.from_user.id, None)
         _log_guiy_owner_info(
@@ -810,6 +844,7 @@ async def guiy_owner_destination_callback(callback: CallbackQuery) -> None:
                 reply_author_user_id=state.get("reply_author_user_id"),
                 created_at=time.time(),
                 target_chat_or_guild=str(selected.destination_id),
+                control_chat_id=str(state.get("target_chat_or_guild") or ""),
                 target_destination_id=str(selected.destination_id),
                 target_destination_label=selected.display_label,
             )
@@ -886,6 +921,7 @@ async def guiy_owner_field_callback(callback: CallbackQuery) -> None:
             ),
             created_at=time.time(),
             target_chat_or_guild=str(target_chat_or_guild),
+            control_chat_id=str(target_chat_or_guild),
             selected_field=field_name,
         )
         _PENDING_GUIY_OWNER_ACTIONS[callback.from_user.id] = pending
@@ -1072,7 +1108,7 @@ async def guiy_owner_visible_roles_callback(callback: CallbackQuery) -> None:
         await callback.answer("Ошибка выбора ролей", show_alert=True)
 
 
-@router.message(F.from_user, F.from_user.id.func(has_pending_guiy_owner_action))
+@router.message(F.func(_is_pending_guiy_owner_input_message))
 async def guiy_owner_pending_input_handler(message: Message) -> None:
     persist_telegram_identity_from_user(message.from_user)
     actor_user_id = message.from_user.id if message.from_user else None
