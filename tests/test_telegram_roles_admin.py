@@ -301,6 +301,28 @@ class TelegramRolesAdminTargetResolutionTests(unittest.TestCase):
         self.assertIn("Как получить", text)
         self.assertIn("Способ получения пока не указан администратором", text)
 
+    def test_render_list_text_truncates_oversized_category_page_for_telegram_limit(self):
+        grouped = [
+            {
+                "category": "General",
+                "roles": [
+                    {
+                        "name": f"Role {idx}",
+                        "discord_role_id": str(idx),
+                        "description": "Описание " + ("очень длинное " * 40),
+                        "acquire_hint": "Инструкция " + ("подробная " * 40),
+                    }
+                    for idx in range(1, 26)
+                ],
+            }
+        ]
+
+        text = _render_list_text(grouped, 0)
+
+        self.assertLessEqual(len(text), 4096)
+        self.assertIn("скрыто в списке", text)
+        self.assertIn("открой категорию кнопкой ниже", text)
+
     def test_user_role_flow_text_shows_multi_select_summary_and_continue_hint(self):
         text = _render_user_role_flow_text(
             target_label="@target",
