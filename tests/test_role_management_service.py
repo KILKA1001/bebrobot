@@ -219,6 +219,33 @@ class RoleManagementServiceTests(unittest.TestCase):
         self.assertEqual(grouped[0]["roles"][0]["description"], "")
         self.assertEqual(grouped[0]["roles"][0]["acquire_hint"], "")
 
+    def test_apply_user_role_changes_by_account_logs_each_role_and_keeps_multi_result(self):
+        self.fake_db.tables["roles"] = [
+            {"name": "Alpha", "category_name": "General", "is_discord_managed": False, "discord_role_id": None},
+            {"name": "Beta", "category_name": "General", "is_discord_managed": False, "discord_role_id": None},
+            {"name": "Gamma", "category_name": "Events", "is_discord_managed": False, "discord_role_id": None},
+        ]
+        self.fake_db.tables["account_role_assignments"] = [
+            {"account_id": "acc-7", "role_name": "Gamma", "source": "custom"},
+        ]
+
+        with self.assertLogs("bot.services.role_management_service", level="INFO") as captured:
+            result = RoleManagementService.apply_user_role_changes_by_account(
+                "acc-7",
+                actor_id="42",
+                grant_roles=["Alpha", "Beta", "Alpha"],
+                revoke_roles=["Gamma"],
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["grant_success"], ["Alpha", "Beta"])
+        self.assertEqual(result["revoke_success"], ["Gamma"])
+        assigned_roles = sorted(row["role_name"] for row in self.fake_db.tables["account_role_assignments"])
+        self.assertEqual(assigned_roles, ["Alpha", "Beta"])
+        self.assertTrue(any("role_name=Alpha action=grant success=True" in message for message in captured.output))
+        self.assertTrue(any("role_name=Beta action=grant success=True" in message for message in captured.output))
+        self.assertTrue(any("role_name=Gamma action=revoke success=True" in message for message in captured.output))
+
     def test_list_public_roles_catalog_sorts_categories_and_marks_acquire_methods(self):
         self.fake_db.tables["roles"] = [
             {
