@@ -104,7 +104,7 @@ def _telegram_user_lookup_hint() -> str:
     )
 
 
-async def _sync_linked_discord_role(target: dict[str, str], role_name: str, *, revoke: bool) -> None:
+async def _sync_linked_discord_role(target: dict[str, str], role_name: str, *, revoke: bool, source: str = "telegram_command") -> None:
     try:
         provider = str(target.get("provider") or "").strip()
         provider_user_id = str(target.get("provider_user_id") or "").strip()
@@ -138,6 +138,19 @@ async def _sync_linked_discord_role(target: dict[str, str], role_name: str, *, r
                 provider,
                 provider_user_id,
             )
+            RoleManagementService.record_role_change_audit(
+                action="discord_role_sync_conflict",
+                role_name=role_name,
+                source=source,
+                target_provider=provider or None,
+                target_user_id=provider_user_id or None,
+                target_account_id=account_id,
+                before={"db_applied": True, "discord_role_id": discord_role_id},
+                after={"discord_synced": False, "revoke": revoke},
+                status="conflict",
+                error_code="discord_bot_unavailable",
+                error_message="discord bot guilds unavailable for telegram sync",
+            )
             return
         for guild in discord_bot.guilds:
             member = guild.get_member(discord_user_id)
@@ -160,6 +173,19 @@ async def _sync_linked_discord_role(target: dict[str, str], role_name: str, *, r
                     revoke,
                     guild.id,
                 )
+                RoleManagementService.record_role_change_audit(
+                    action="discord_role_sync_conflict",
+                    role_name=role_name,
+                    source=source,
+                    target_provider=provider or None,
+                    target_user_id=provider_user_id or None,
+                    target_account_id=account_id,
+                    before={"db_applied": True, "discord_role_id": discord_role_id, "discord_user_id": discord_user_id},
+                    after={"discord_synced": False, "revoke": revoke, "guild_id": str(guild.id)},
+                    status="conflict",
+                    error_code="discord_sync_failed",
+                    error_message="telegram-triggered discord role sync failed",
+                )
             return
         logger.warning(
             "telegram roles_admin discord sync target not found account_id=%s provider=%s provider_user_id=%s discord_user_id=%s role_id=%s revoke=%s",
@@ -170,6 +196,19 @@ async def _sync_linked_discord_role(target: dict[str, str], role_name: str, *, r
             discord_role_id,
             revoke,
         )
+        RoleManagementService.record_role_change_audit(
+            action="discord_role_sync_conflict",
+            role_name=role_name,
+            source=source,
+            target_provider=provider or None,
+            target_user_id=provider_user_id or None,
+            target_account_id=account_id,
+            before={"db_applied": True, "discord_role_id": discord_role_id, "discord_user_id": discord_user_id},
+            after={"discord_synced": False, "revoke": revoke},
+            status="conflict",
+            error_code="discord_target_not_found",
+            error_message="linked discord member or role not found for sync",
+        )
     except Exception:
         logger.exception(
             "telegram roles_admin discord sync crashed provider=%s provider_user_id=%s account_id=%s role=%s revoke=%s",
@@ -178,6 +217,19 @@ async def _sync_linked_discord_role(target: dict[str, str], role_name: str, *, r
             target.get("account_id"),
             role_name,
             revoke,
+        )
+        RoleManagementService.record_role_change_audit(
+            action="discord_role_sync_conflict",
+            role_name=role_name,
+            source=source,
+            target_provider=str(target.get("provider") or "").strip() or None,
+            target_user_id=str(target.get("provider_user_id") or "").strip() or None,
+            target_account_id=str(target.get("account_id") or "").strip() or None,
+            before={"db_applied": True},
+            after={"discord_synced": False, "revoke": revoke},
+            status="error",
+            error_code="discord_sync_crashed",
+            error_message="telegram-triggered discord role sync crashed",
         )
 
 
@@ -1383,6 +1435,23 @@ async def _ensure_roles_admin(message: Message) -> bool:
         return False
     authority = AuthorityService.resolve_authority("telegram", str(message.from_user.id))
     if authority.level < 80:
+        logger.warning(
+            "roles_admin access denied actor_id=%s source=%s",
+            message.from_user.id,
+            "telegram_command",
+        )
+        RoleManagementService.record_role_change_audit(
+            action="rolesadmin_access_denied",
+            role_name="*",
+            source="telegram_command",
+            actor_provider="telegram",
+            actor_user_id=str(message.from_user.id),
+            before={"command": "roles_admin"},
+            after={"allowed": False},
+            status="denied",
+            error_code="forbidden_role_manage",
+            error_message="insufficient permissions for roles_admin",
+        )
         await message.answer("❌ Недостаточно полномочий для управления ролями.")
         return False
     return True
@@ -1492,7 +1561,10 @@ async def roles_admin_command(message: Message) -> None:
                 discord_role_id=parsed["discord_role_id"],
                 position=parsed["position"],
                 actor_id=str(message.from_user.id) if message.from_user else None,
+                actor_provider="telegram",
+                actor_user_id=str(message.from_user.id) if message.from_user else None,
                 operation="role_create",
+                source="telegram_command",
             )
             await message.answer("✅ Роль создана." if ok else "❌ Не удалось создать роль (смотри логи).")
             return
@@ -1507,7 +1579,10 @@ async def roles_admin_command(message: Message) -> None:
                 pipe_args[0],
                 pipe_args[1],
                 actor_id=str(message.from_user.id) if message.from_user else None,
+                actor_provider="telegram",
+                actor_user_id=str(message.from_user.id) if message.from_user else None,
                 operation="role_edit_description",
+                source="telegram_command",
             )
             await message.answer("✅ Описание роли обновлено." if ok else "❌ Не удалось обновить описание роли (смотри логи).")
             return
@@ -1522,7 +1597,10 @@ async def roles_admin_command(message: Message) -> None:
                 pipe_args[0],
                 pipe_args[1],
                 actor_id=str(message.from_user.id) if message.from_user else None,
+                actor_provider="telegram",
+                actor_user_id=str(message.from_user.id) if message.from_user else None,
                 operation="role_edit_acquire_hint",
+                source="telegram_command",
             )
             await message.answer("✅ Способ получения роли обновлён." if ok else "❌ Не удалось обновить способ получения роли (смотри логи).")
             return
@@ -1531,7 +1609,10 @@ async def roles_admin_command(message: Message) -> None:
             result = RoleManagementService.delete_role(
                 args[0],
                 actor_id=str(message.from_user.id) if message.from_user else None,
+                actor_provider="telegram",
+                actor_user_id=str(message.from_user.id) if message.from_user else None,
                 telegram_user_id=str(message.from_user.id) if message.from_user else None,
+                source="telegram_command",
             )
             await message.answer("✅ Роль удалена." if result["ok"] else _delete_role_result_message(result))
             return
@@ -1690,7 +1771,7 @@ async def roles_admin_command(message: Message) -> None:
                     actor_user_id=str(message.from_user.id) if message.from_user else None,
                 )
                 if ok.get("ok"):
-                    await _sync_linked_discord_role(resolved, role_name, revoke=False)
+                    await _sync_linked_discord_role(resolved, role_name, revoke=False, source="telegram_command")
                 await message.answer(
                     f"✅ Роль выдана пользователю {resolved['label']}."
                     if ok.get("ok")
@@ -1704,7 +1785,7 @@ async def roles_admin_command(message: Message) -> None:
                     actor_user_id=str(message.from_user.id) if message.from_user else None,
                 )
                 if ok.get("ok"):
-                    await _sync_linked_discord_role(resolved, role_name, revoke=True)
+                    await _sync_linked_discord_role(resolved, role_name, revoke=True, source="telegram_command")
                 await message.answer(
                     f"✅ Роль снята у пользователя {resolved['label']}."
                     if ok.get("ok")
@@ -2263,8 +2344,11 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 actor_id=str(callback.from_user.id) if callback.from_user else None,
                 actor_provider="telegram",
                 actor_user_id=str(callback.from_user.id) if callback.from_user else None,
+                target_provider=str(payload.get("provider") or "").strip() or None,
+                target_user_id=str(payload.get("provider_user_id") or "").strip() or None,
                 grant_roles=grant_roles,
                 revoke_roles=revoke_roles,
+                source="telegram_button",
             )
             sync_target = {
                 "provider": payload.get("provider"),
@@ -2272,9 +2356,9 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 "account_id": account_id,
             }
             for role_name in list(result.get("grant_success") or []):
-                await _sync_linked_discord_role(sync_target, role_name, revoke=False)
+                await _sync_linked_discord_role(sync_target, role_name, revoke=False, source="telegram_button")
             for role_name in list(result.get("revoke_success") or []):
-                await _sync_linked_discord_role(sync_target, role_name, revoke=True)
+                await _sync_linked_discord_role(sync_target, role_name, revoke=True, source="telegram_button")
             _PENDING_ACTIONS.pop(callback.from_user.id, None)
             success_lines = []
             if result.get("grant_success"):
@@ -2324,7 +2408,10 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 result = RoleManagementService.delete_role(
                     role_name,
                     actor_id=str(callback.from_user.id) if callback.from_user else None,
+                    actor_provider="telegram",
+                    actor_user_id=str(callback.from_user.id) if callback.from_user else None,
                     telegram_user_id=str(callback.from_user.id) if callback.from_user else None,
+                    source="telegram_button",
                 )
                 await callback.answer(
                     f"Роль {role_name} удалена" if result["ok"] else _delete_role_result_message(result),
@@ -2582,7 +2669,10 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             result = RoleManagementService.delete_role(
                 role_name,
                 actor_id=str(callback.from_user.id) if callback.from_user else None,
+                actor_provider="telegram",
+                actor_user_id=str(callback.from_user.id) if callback.from_user else None,
                 telegram_user_id=str(callback.from_user.id) if callback.from_user else None,
+                source="telegram_button",
             )
             if not result["ok"]:
                 await callback.answer(_delete_role_result_message(result), show_alert=True)
@@ -2710,7 +2800,10 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                 discord_role_id=parsed["discord_role_id"],
                 position=parsed["position"],
                 actor_id=str(message.from_user.id) if message.from_user else None,
+                actor_provider="telegram",
+                actor_user_id=str(message.from_user.id) if message.from_user else None,
                 operation="role_create",
+                source="telegram_pending_text",
             )
             await message.answer("✅ Роль создана." if ok else "❌ Не удалось создать роль (смотри логи).")
         elif op == "role_edit_description":
@@ -2721,7 +2814,10 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                 args[0],
                 args[1],
                 actor_id=str(message.from_user.id) if message.from_user else None,
+                actor_provider="telegram",
+                actor_user_id=str(message.from_user.id) if message.from_user else None,
                 operation="role_edit_description",
+                source="telegram_pending_text",
             )
             await message.answer("✅ Описание роли обновлено." if ok else "❌ Не удалось обновить описание роли (смотри логи).")
         elif op == "role_edit_acquire_hint":
@@ -2738,7 +2834,10 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                 role_name,
                 acquire_hint,
                 actor_id=str(message.from_user.id) if message.from_user else None,
+                actor_provider="telegram",
+                actor_user_id=str(message.from_user.id) if message.from_user else None,
                 operation="role_edit_acquire_hint",
+                source="telegram_pending_text",
             )
             await message.answer("✅ Способ получения роли обновлён." if ok else "❌ Не удалось обновить способ получения роли (смотри логи).")
         elif op == "role_create_enter_name":
@@ -2764,7 +2863,10 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                 discord_role_id=parsed["discord_role_id"],
                 position=parsed["position"],
                 actor_id=str(message.from_user.id) if message.from_user else None,
+                actor_provider="telegram",
+                actor_user_id=str(message.from_user.id) if message.from_user else None,
                 operation="role_create",
+                source="telegram_button",
             )
             await message.answer("✅ Роль создана." if ok else "❌ Не удалось создать роль (смотри логи).")
         elif op == "role_create_new_category_name":
@@ -2901,7 +3003,10 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
             result = RoleManagementService.delete_role(
                 args[0],
                 actor_id=str(message.from_user.id) if message.from_user else None,
+                actor_provider="telegram",
+                actor_user_id=str(message.from_user.id) if message.from_user else None,
                 telegram_user_id=str(message.from_user.id) if message.from_user else None,
+                source="telegram_pending_text",
             )
             await message.answer("✅ Роль удалена." if result["ok"] else _delete_role_result_message(result))
         elif op == "user_roles":
@@ -3012,11 +3117,14 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                     actor_id=str(message.from_user.id) if message.from_user else None,
                     actor_provider="telegram",
                     actor_user_id=str(message.from_user.id) if message.from_user else None,
+                    target_provider=str(resolved.get("provider") or "").strip() or None,
+                    target_user_id=str(resolved.get("provider_user_id") or "").strip() or None,
                     grant_roles=[role_name],
+                    source="telegram_pending_text",
                 )
                 ok = bool(result.get("grant_success"))
                 if ok:
-                    await _sync_linked_discord_role(resolved, role_name, revoke=False)
+                    await _sync_linked_discord_role(resolved, role_name, revoke=False, source="telegram_pending_text")
                 await message.answer(
                     f"✅ Роль выдана пользователю {resolved['label']}."
                     if ok
@@ -3031,11 +3139,14 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                     actor_id=str(message.from_user.id) if message.from_user else None,
                     actor_provider="telegram",
                     actor_user_id=str(message.from_user.id) if message.from_user else None,
+                    target_provider=str(resolved.get("provider") or "").strip() or None,
+                    target_user_id=str(resolved.get("provider_user_id") or "").strip() or None,
                     revoke_roles=[role_name],
+                    source="telegram_pending_text",
                 )
                 ok = bool(result.get("revoke_success"))
                 if ok:
-                    await _sync_linked_discord_role(resolved, role_name, revoke=True)
+                    await _sync_linked_discord_role(resolved, role_name, revoke=True, source="telegram_pending_text")
                 await message.answer(
                     f"✅ Роль снята у пользователя {resolved['label']}."
                     if ok

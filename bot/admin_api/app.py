@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import Any
 
 from flask import Blueprint, Flask, jsonify, render_template_string, request
@@ -10,6 +9,7 @@ from bot.data import db
 from bot.services.accounts_service import AccountsService
 from bot.services.auth.role_resolver import RoleResolver
 from bot.services.authority_service import AuthorityService
+from bot.services.role_management_service import RoleManagementService
 
 logger = logging.getLogger(__name__)
 
@@ -55,23 +55,15 @@ def _write_role_audit(
     source: str,
     reason: str | None,
 ) -> None:
-    if not db.supabase:
-        logger.warning("role change audit skipped: supabase is not configured")
-        return
-
-    payload = {
-        "actor_user_id": str(actor_user_id),
-        "target_user_id": str(target_user_id),
-        "action": action,
-        "role_id": role_id,
-        "source": source,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "reason": reason,
-    }
-    try:
-        db.supabase.table("role_change_audit").insert(payload).execute()
-    except Exception:
-        logger.exception("role change audit insert failed payload=%s", payload)
+    RoleManagementService.record_role_change_audit(
+        action=action,
+        role_name=role_id,
+        source=source,
+        actor_user_id=str(actor_user_id),
+        target_user_id=str(target_user_id),
+        after={"reason": reason},
+        error_message=reason,
+    )
 
 
 @admin_api_bp.get("/admin/api/users/<provider>/<provider_user_id>")

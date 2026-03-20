@@ -822,8 +822,11 @@ class _DiscordUserRoleApplyButton(discord.ui.Button):
             actor_id=str(interaction.user.id),
             actor_provider="discord",
             actor_user_id=str(interaction.user.id),
+            target_provider=str(view.state.target.get("provider") or "").strip() or None,
+            target_user_id=str(view.state.target.get("provider_user_id") or "").strip() or None,
             grant_roles=grant_roles,
             revoke_roles=revoke_roles,
+            source="discord_button",
         )
         member = view.state.target.get("member")
         if member and interaction.guild:
@@ -861,6 +864,21 @@ class _DiscordUserRoleApplyButton(discord.ui.Button):
                         role_name,
                         discord_role_id,
                         "grant" if role_name in list(result.get("grant_success") or []) else "revoke",
+                    )
+                    RoleManagementService.record_role_change_audit(
+                        action="discord_role_sync_conflict",
+                        role_name=role_name,
+                        source="discord_button",
+                        actor_provider="discord",
+                        actor_user_id=str(interaction.user.id),
+                        target_provider=str(view.state.target.get("provider") or "").strip() or None,
+                        target_user_id=str(view.state.target.get("provider_user_id") or "").strip() or None,
+                        target_account_id=account_id,
+                        before={"db_applied": True, "discord_role_id": discord_role_id},
+                        after={"discord_synced": False, "action": "grant" if role_name in list(result.get("grant_success") or []) else "revoke"},
+                        status="conflict",
+                        error_code="discord_sync_failed",
+                        error_message="discord guild role sync failed after db update",
                     )
         for child in view.children:
             child.disabled = True
@@ -936,6 +954,24 @@ async def _ensure_roles_admin(ctx: commands.Context) -> bool:
     if ctx.author.guild_permissions.administrator:
         return True
     if not AuthorityService.has_command_permission("discord", str(ctx.author.id), "players_manage"):
+        logger.warning(
+            "rolesadmin access denied actor_id=%s guild_id=%s source=%s",
+            ctx.author.id,
+            ctx.guild.id if ctx.guild else None,
+            "discord_command",
+        )
+        RoleManagementService.record_role_change_audit(
+            action="rolesadmin_access_denied",
+            role_name="*",
+            source="discord_command",
+            actor_provider="discord",
+            actor_user_id=str(ctx.author.id),
+            before={"command": "rolesadmin"},
+            after={"allowed": False},
+            status="denied",
+            error_code="forbidden_role_manage",
+            error_message="insufficient permissions for rolesadmin",
+        )
         await send_temp(ctx, "❌ Недостаточно полномочий для управления ролями.")
         return False
     return True
@@ -1092,7 +1128,10 @@ async def rolesadmin_role_create(
         discord_role_id=str(discord_role.id) if discord_role else None,
         discord_role_name=discord_role.name if discord_role else None,
         actor_id=str(ctx.author.id),
+        actor_provider="discord",
+        actor_user_id=str(ctx.author.id),
         operation="role_create",
+        source="discord_command",
     ):
         description_note = f" Описание: {description}." if str(description or "").strip() else ""
         acquire_hint_note = f" Как получить: {acquire_hint}." if str(acquire_hint or "").strip() else ""
@@ -1119,7 +1158,10 @@ async def rolesadmin_role_edit_description(ctx: commands.Context, name: str, des
         name,
         description,
         actor_id=str(ctx.author.id),
+        actor_provider="discord",
+        actor_user_id=str(ctx.author.id),
         operation="role_edit_description",
+        source="discord_command",
     ):
         await send_temp(ctx, f"✅ Описание роли **{name}** обновлено.")
     else:
@@ -1134,7 +1176,10 @@ async def rolesadmin_role_edit_acquire_hint(ctx: commands.Context, name: str, ac
         name,
         acquire_hint,
         actor_id=str(ctx.author.id),
+        actor_provider="discord",
+        actor_user_id=str(ctx.author.id),
         operation="role_edit_acquire_hint",
+        source="discord_command",
     ):
         await send_temp(ctx, f"✅ Способ получения роли **{name}** обновлён.")
     else:
@@ -1148,7 +1193,10 @@ async def rolesadmin_role_delete(ctx: commands.Context, name: str):
     result = RoleManagementService.delete_role(
         name,
         actor_id=str(ctx.author.id),
+        actor_provider="discord",
+        actor_user_id=str(ctx.author.id),
         guild_id=str(ctx.guild.id) if ctx.guild else None,
+        source="discord_command",
     )
     if result["ok"]:
         await send_temp(ctx, f"✅ Роль **{name}** удалена.")
@@ -1327,7 +1375,10 @@ async def rolesadmin_user_grant(ctx: commands.Context, target: str, role_name: s
         actor_id=str(ctx.author.id),
         actor_provider="discord",
         actor_user_id=str(ctx.author.id),
+        target_provider=str(resolved.get("provider") or "").strip() or None,
+        target_user_id=str(resolved.get("provider_user_id") or "").strip() or None,
         grant_roles=[role_name],
+        source="discord_command",
     )
     ok = bool(result.get("grant_success"))
     if not ok:
@@ -1346,6 +1397,21 @@ async def rolesadmin_user_grant(ctx: commands.Context, target: str, role_name: s
                 await member.add_roles(guild_role, reason=f"rolesadmin grant by {ctx.author.id}")
             except Exception:
                 logger.exception("failed to add discord role member_id=%s role_id=%s", member.id, discord_role_id)
+                RoleManagementService.record_role_change_audit(
+                    action="discord_role_sync_conflict",
+                    role_name=role_name,
+                    source="discord_command",
+                    actor_provider="discord",
+                    actor_user_id=str(ctx.author.id),
+                    target_provider=str(resolved.get("provider") or "").strip() or None,
+                    target_user_id=str(resolved.get("provider_user_id") or "").strip() or None,
+                    target_account_id=str(resolved.get("account_id") or "").strip() or None,
+                    before={"db_applied": True, "discord_role_id": discord_role_id},
+                    after={"discord_synced": False, "action": "grant"},
+                    status="conflict",
+                    error_code="discord_sync_failed",
+                    error_message="discord add_roles failed after db grant",
+                )
                 await send_temp(ctx, "⚠️ Роль в БД выдана, но выдать Discord-роль не удалось (смотри логи).")
                 return
 
@@ -1398,7 +1464,10 @@ async def rolesadmin_user_revoke(ctx: commands.Context, target: str, role_name: 
         actor_id=str(ctx.author.id),
         actor_provider="discord",
         actor_user_id=str(ctx.author.id),
+        target_provider=str(resolved.get("provider") or "").strip() or None,
+        target_user_id=str(resolved.get("provider_user_id") or "").strip() or None,
         revoke_roles=[role_name],
+        source="discord_command",
     )
     ok = bool(result.get("revoke_success"))
     if not ok:
@@ -1417,6 +1486,21 @@ async def rolesadmin_user_revoke(ctx: commands.Context, target: str, role_name: 
                 await member.remove_roles(guild_role, reason=f"rolesadmin revoke by {ctx.author.id}")
             except Exception:
                 logger.exception("failed to remove discord role member_id=%s role_id=%s", member.id, discord_role_id)
+                RoleManagementService.record_role_change_audit(
+                    action="discord_role_sync_conflict",
+                    role_name=role_name,
+                    source="discord_command",
+                    actor_provider="discord",
+                    actor_user_id=str(ctx.author.id),
+                    target_provider=str(resolved.get("provider") or "").strip() or None,
+                    target_user_id=str(resolved.get("provider_user_id") or "").strip() or None,
+                    target_account_id=str(resolved.get("account_id") or "").strip() or None,
+                    before={"db_applied": True, "discord_role_id": discord_role_id},
+                    after={"discord_synced": False, "action": "revoke"},
+                    status="conflict",
+                    error_code="discord_sync_failed",
+                    error_message="discord remove_roles failed after db revoke",
+                )
                 await send_temp(ctx, "⚠️ Роль в БД снята, но снять Discord-роль не удалось (смотри логи).")
                 return
 

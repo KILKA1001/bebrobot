@@ -55,6 +55,11 @@ class _TableOp:
         self._payload = dict(payload)
         return self
 
+    def insert(self, payload, **_kwargs):
+        self._action = "insert"
+        self._payload = dict(payload)
+        return self
+
     def _matches(self, row):
         return all(row.get(k) == v for k, v in self._filters)
 
@@ -96,6 +101,10 @@ class _TableOp:
             rows.append(dict(self._payload))
             return _Resp([dict(self._payload)])
 
+        if self._action == "insert":
+            rows.append(dict(self._payload))
+            return _Resp([dict(self._payload)])
+
         selected = []
         for row in rows:
             if self._matches(row):
@@ -120,6 +129,8 @@ class _FakeDb:
             "account_role_assignments": [],
             "external_role_bindings": [],
             "role_categories": [],
+            "account_identities": [],
+            "role_change_audit": [],
         }
         self.supabase = _FakeSupabase(self)
 
@@ -231,13 +242,20 @@ class RoleManagementServiceTests(unittest.TestCase):
         self.fake_db.tables["account_role_assignments"] = [
             {"account_id": "acc-7", "role_name": "Gamma", "source": "custom"},
         ]
+        self.fake_db.tables["account_identities"] = [
+            {"account_id": "acc-7", "provider": "telegram", "provider_user_id": "700"},
+            {"account_id": "acc-42", "provider": "discord", "provider_user_id": "42"},
+        ]
 
         with self.assertLogs("bot.services.role_management_service", level="INFO") as captured:
             result = RoleManagementService.apply_user_role_changes_by_account(
                 "acc-7",
                 actor_id="42",
+                actor_provider="discord",
+                actor_user_id="42",
                 grant_roles=["Alpha", "Beta", "Alpha"],
                 revoke_roles=["Gamma"],
+                source="discord_command",
             )
 
         self.assertTrue(result["ok"])
@@ -248,6 +266,15 @@ class RoleManagementServiceTests(unittest.TestCase):
         self.assertTrue(any("role_name=Alpha action=grant success=True" in message for message in captured.output))
         self.assertTrue(any("role_name=Beta action=grant success=True" in message for message in captured.output))
         self.assertTrue(any("role_name=Gamma action=revoke success=True" in message for message in captured.output))
+        audit_actions = [row["action"] for row in self.fake_db.tables["role_change_audit"]]
+        self.assertIn("role_grant", audit_actions)
+        self.assertIn("role_revoke", audit_actions)
+        self.assertIn("role_batch_change", audit_actions)
+        batch_row = next(row for row in self.fake_db.tables["role_change_audit"] if row["action"] == "role_batch_change")
+        self.assertEqual(batch_row["source"], "discord_command")
+        self.assertEqual(batch_row["actor_provider"], "discord")
+        self.assertEqual(batch_row["actor_provider_user_id"], "42")
+        self.assertEqual(batch_row["target_account_id"], "acc-7")
 
     def test_list_public_roles_catalog_sorts_categories_and_marks_acquire_methods(self):
         self.fake_db.tables["roles"] = [
@@ -363,6 +390,10 @@ class RoleManagementServiceTests(unittest.TestCase):
         self.assertEqual(self.fake_db.tables["account_role_assignments"], [])
         self.assertTrue(any("privileged_discord_role_access_denied" in line for line in captured.output), captured.output)
         self.assertTrue(any("actor_id=42" in line and "discord_role_id=999888" in line for line in captured.output), captured.output)
+        denied_audit = next(row for row in self.fake_db.tables["role_change_audit"] if row["action"] == "role_grant_denied")
+        self.assertEqual(denied_audit["status"], "denied")
+        self.assertEqual(denied_audit["error_code"], ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE)
+        self.assertEqual(denied_audit["source"], "unknown")
 
     def test_get_category_role_positioning_returns_roles_and_end_description(self):
         self.fake_db.tables["roles"] = [
@@ -413,6 +444,9 @@ class RoleManagementServiceTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertEqual(self.fake_db.tables["roles"][0]["description"], "Новое описание")
+        audit_row = next(row for row in self.fake_db.tables["role_change_audit"] if row["action"] == "role_edit_description")
+        self.assertEqual(audit_row["role_name"], "Gamma")
+        self.assertEqual(audit_row["after_value"]["description"], "Новое описание")
 
     def test_update_role_acquire_hint_updates_role_and_logs_field(self):
         self.fake_db.tables["roles"] = [
@@ -430,6 +464,24 @@ class RoleManagementServiceTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(self.fake_db.tables["roles"][0]["acquire_hint"], "Выдается после турнира")
         self.assertTrue(any("actor_id=42" in line and "field=acquire_hint" in line for line in captured.output), captured.output)
+        audit_row = next(row for row in self.fake_db.tables["role_change_audit"] if row["action"] == "role_edit_acquire_hint")
+        self.assertEqual(audit_row["after_value"]["acquire_hint"], "Выдается после турнира")
+
+    def test_apply_user_role_changes_audits_batch_conflict(self):
+        result = RoleManagementService.apply_user_role_changes_by_account(
+            "acc-1",
+            actor_id="42",
+            actor_provider="discord",
+            actor_user_id="42",
+            grant_roles=["Alpha"],
+            revoke_roles=["Alpha"],
+            source="discord_button",
+        )
+
+        self.assertEqual(result["conflicting_roles"], ["Alpha"])
+        conflict_row = next(row for row in self.fake_db.tables["role_change_audit"] if row["action"] == "role_batch_conflict")
+        self.assertEqual(conflict_row["status"], "conflict")
+        self.assertEqual(conflict_row["source"], "discord_button")
 
 
 if __name__ == "__main__":

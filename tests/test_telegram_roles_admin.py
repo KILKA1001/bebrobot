@@ -1,4 +1,6 @@
 import unittest
+import asyncio
+import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -20,6 +22,8 @@ from bot.telegram_bot.commands.roles_admin import (
     _render_position_picker_text,
     _render_user_role_flow_text,
     _resolve_telegram_target,
+    _ensure_roles_admin,
+    _sync_linked_discord_role,
     roles_admin_callback,
     roles_admin_command,
     roles_admin_pending_action_handler,
@@ -357,6 +361,45 @@ class TelegramRolesAdminTargetResolutionTests(unittest.TestCase):
             self.assertIn("🗂 К категориям", second_texts)
         finally:
             _PENDING_ACTIONS.pop(77, None)
+
+    def test_roles_admin_access_denied_records_audit(self):
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=10),
+            answer=AsyncMock(),
+        )
+
+        with (
+            patch("bot.telegram_bot.commands.roles_admin.AuthorityService.resolve_authority", return_value=SimpleNamespace(level=10)),
+            patch("bot.telegram_bot.commands.roles_admin.RoleManagementService.record_role_change_audit") as audit_mock,
+        ):
+            allowed = asyncio.run(_ensure_roles_admin(message))
+
+        self.assertFalse(allowed)
+        audit_mock.assert_called_once()
+        self.assertIn("Недостаточно полномочий", message.answer.await_args.args[0])
+
+    def test_sync_linked_discord_role_audits_target_not_found(self):
+        target = {"provider": "telegram", "provider_user_id": "777", "account_id": "acc-7"}
+        fake_identity_resp = SimpleNamespace(data=[{"provider_user_id": "555"}])
+        fake_table = SimpleNamespace(
+            select=lambda *_args, **_kwargs: fake_table,
+            eq=lambda *_args, **_kwargs: fake_table,
+            limit=lambda *_args, **_kwargs: fake_table,
+            execute=lambda: fake_identity_resp,
+        )
+        fake_db = SimpleNamespace(supabase=SimpleNamespace(table=lambda _name: fake_table))
+        fake_guild = SimpleNamespace(get_member=lambda _user_id: None, get_role=lambda _role_id: None)
+        fake_bot = SimpleNamespace(guilds=[fake_guild])
+
+        with (
+            patch("bot.telegram_bot.commands.roles_admin.db", fake_db),
+            patch("bot.telegram_bot.commands.roles_admin.RoleManagementService.get_role", return_value={"discord_role_id": "999"}),
+            patch("bot.telegram_bot.commands.roles_admin.RoleManagementService.record_role_change_audit") as audit_mock,
+        ):
+            with patch.dict("sys.modules", {"bot.commands.base": types.SimpleNamespace(bot=fake_bot)}):
+                self.assertIsNone(asyncio.run(_sync_linked_discord_role(target, "Moderator", revoke=False, source="telegram_button")))
+
+        audit_mock.assert_called()
 
 
 class TelegramRolesAdminCommandTests(unittest.IsolatedAsyncioTestCase):
