@@ -282,3 +282,44 @@ class DiscordRolesAdminTests(unittest.IsolatedAsyncioTestCase):
             operation="role_edit_acquire_hint",
         )
         self.assertIn("Способ получения роли", send_mock.await_args.args[1])
+
+    def test_discord_user_role_flow_state_supports_multi_select_and_category_reentry(self):
+        grouped = [
+            {"category": "General", "roles": [{"name": "Alpha"}, {"name": "Beta"}]},
+            {"category": "Events", "roles": [{"name": "Gamma"}]},
+        ]
+        state = roles_admin.DiscordUserRoleFlowState(
+            actor_id=111,
+            action="grant",
+            target={"label": "@target", "account_id": "acc-7"},
+            grouped=grouped,
+            current_category="General",
+        )
+
+        state = state.with_category_selection("General", ["Alpha", "Beta"])
+        state = state.with_category("Events")
+        state = state.with_category_selection("Events", ["Gamma"])
+        embed = roles_admin._build_user_role_flow_embed(state)
+
+        self.assertEqual(list(state.selected_roles), ["Alpha", "Beta", "Gamma"])
+        self.assertIn("Alpha", embed.fields[0].value)
+        self.assertIn("Gamma", embed.fields[0].value)
+        self.assertIn("можно продолжать по другим категориям", embed.description)
+
+    async def test_rolesadmin_user_grant_without_role_name_opens_batch_flow(self):
+        ctx = self._build_ctx()
+        grouped = [{"category": "General", "roles": [{"name": "Alpha"}]}]
+        resolved = {"label": "@target", "account_id": "acc-7", "provider": "discord", "provider_user_id": "555", "member": None}
+
+        with (
+            patch.object(roles_admin, "_ensure_roles_admin", AsyncMock(return_value=True)),
+            patch.object(roles_admin, "_resolve_discord_target", AsyncMock(return_value=resolved)),
+            patch.object(roles_admin.RoleManagementService, "list_roles_grouped", return_value=grouped),
+            patch.object(roles_admin, "send_temp", AsyncMock()) as send_mock,
+        ):
+            await roles_admin.rolesadmin_user_grant(ctx, "target", None)
+
+        self.assertIsInstance(send_mock.await_args.kwargs["view"], roles_admin.DiscordUserRoleFlowView)
+        embed = send_mock.await_args.kwargs["embed"]
+        self.assertIn("Уже выбрано ролей: **0**", embed.description)
+        self.assertIn("Выбор можно продолжать по другим категориям", embed.description)
