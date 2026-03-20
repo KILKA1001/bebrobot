@@ -24,7 +24,8 @@ from bot.systems.core_logic import (
 from bot.legacy_identity_logging import log_legacy_identity_fallback_used
 from bot.utils import send_temp
 from bot.utils.api_monitor import monitor
-from bot.services import AuthorityService
+from bot.services import AuthorityService, RoleManagementService
+from bot.services.role_management_service import USER_ACQUIRE_HINT_PLACEHOLDER
 from bot import COMMAND_PREFIX
 
 
@@ -113,16 +114,49 @@ async def history_cmd(
     name="roles", description="Список ролей и стоимость в баллах"
 )
 async def roles_list(ctx):
+    try:
+        grouped = RoleManagementService.list_roles_grouped()
+    except Exception:
+        logger.exception("roles command failed source=discord_user_command guild_id=%s", ctx.guild.id if ctx.guild else None)
+        grouped = []
+
+    if grouped:
+        embed = discord.Embed(
+            title="🏅 Каталог ролей",
+            description=(
+                "Ниже собраны роли, их описание и подсказки, как их получить. "
+                "Если способ получения ещё не заполнен, бот честно это покажет."
+            ),
+            color=discord.Color.purple(),
+        )
+        for item in grouped:
+            lines = []
+            for role in item.get("roles", []):
+                role_name = str(role.get("name") or "Без названия")
+                description = str(role.get("description") or "").strip() or "Описание пока не указано администратором"
+                acquire_hint = str(role.get("acquire_hint") or "").strip() or USER_ACQUIRE_HINT_PLACEHOLDER
+                lines.append(
+                    f"**{role_name}**\n"
+                    f"Описание: {description}\n"
+                    f"Как получить: {acquire_hint}"
+                )
+            embed.add_field(
+                name=str(item.get("category") or "Без категории"),
+                value="\n\n".join(lines) if lines else "Пока нет ролей.",
+                inline=False,
+            )
+        embed.set_footer(text="Если хочешь получить роль, используй подсказку из блока «Как получить» или уточни условия у администратора.")
+        await send_temp(ctx, embed=embed)
+        return
+
     desc = ""
-    for role_id, points_needed in sorted(
-        ROLE_THRESHOLDS.items(), key=lambda x: x[1], reverse=True
-    ):
+    for role_id, points_needed in sorted(ROLE_THRESHOLDS.items(), key=lambda x: x[1], reverse=True):
         role = ctx.guild.get_role(role_id)
         if role:
             desc += f"**{role.name}**: {points_needed} баллов\n"
     embed = discord.Embed(
         title="Роли и стоимость баллов",
-        description=desc,
+        description=desc or "Каталог ролей пока пуст.",
         color=discord.Color.purple(),
     )
     await send_temp(ctx, embed=embed)

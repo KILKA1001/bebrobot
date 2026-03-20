@@ -85,13 +85,16 @@ def _build_role_position_preview_embed(
     role_name: str,
     preview: dict[str, Any],
     role_description: str | None = None,
+    role_acquire_hint: str | None = None,
 ) -> discord.Embed:
     embed = discord.Embed(title=title, color=discord.Color.blurple())
     description_text = str(role_description or "").strip()
+    acquire_hint_text = str(role_acquire_hint or "").strip()
     embed.description = (
         f"Роль: **{role_name}**\n"
         f"Категория: **{preview.get('category')}**\n"
         f"Описание: **{description_text or '—'}**\n"
+        f"Как получить: **{acquire_hint_text or '—'}**\n"
         f"Расчёт позиции: **{preview.get('position_description')}**\n"
         "Если позицию не указывать в `role_create` или `role_move`, роль будет добавлена последней."
     )
@@ -107,9 +110,13 @@ def _build_role_position_preview_embed(
 def _format_role_line(role: dict[str, Any]) -> str:
     suffix = f" (Discord ID: {role['discord_role_id']})" if role.get("discord_role_id") else ""
     description = str(role.get("description") or "").strip()
+    acquire_hint = str(role.get("acquire_hint") or "").strip()
+    parts = [f"• {role['name']}{suffix}"]
     if description:
-        return f"• {role['name']}{suffix} — {description}"
-    return f"• {role['name']}{suffix}"
+        parts.append(f"описание: {description}")
+    if acquire_hint:
+        parts.append(f"как получить: {acquire_hint}")
+    return " — ".join(parts)
 
 
 def _catalog_role_exists(role_name: str) -> bool:
@@ -359,13 +366,14 @@ def _rolesadmin_help_embed() -> discord.Embed:
         name="Роли",
         value=(
             "`/rolesadmin list` — показать роли по категориям (с автосинхронизацией Discord-каталога)\n"
-            "`/rolesadmin role_create <name> <category> [description] [discord_role] [position]` — создать роль\n"
+            "`/rolesadmin role_create <name> <category> [description] [acquire_hint] [discord_role] [position]` — создать роль\n"
             "`/rolesadmin role_edit_description <name> <description>` — обновить описание роли\n"
+            "`/rolesadmin role_edit_acquire_hint <name> <acquire_hint>` — обновить способ получения роли\n"
             "`/rolesadmin role_move <role_name> <category> [position]` — переместить роль\n"
             "`/rolesadmin role_order <role_name> <category> <position>` — изменить порядок роли\n"
             "`/rolesadmin role_delete <name>` — удалить роль\n"
             "Перед `role_create` / `role_move` / `role_order` бот показывает embed со списком ролей категории и рассчитанной позицией вставки.\n"
-            "Описание помогает админам и пользователям понять назначение роли прямо в карточке.\n"
+            "Описание и способ получения помогают админам и пользователям быстрее понять роль прямо в карточке.\n"
             "Если позицию не указывать в `role_create` или `role_move`, роль добавится последней.\n"
             "Внешние Discord-роли удалять нельзя: их можно только перемещать и сортировать."
         ),
@@ -488,6 +496,7 @@ async def rolesadmin_role_create(
     name: str,
     category: str,
     description: str | None = None,
+    acquire_hint: str | None = None,
     discord_role: discord.Role | None = None,
     position: int | None = None,
 ):
@@ -501,12 +510,14 @@ async def rolesadmin_role_create(
             role_name=name,
             preview=preview,
             role_description=description,
+            role_acquire_hint=acquire_hint,
         ),
     )
     if RoleManagementService.create_role(
         name,
         category,
         description=description,
+        acquire_hint=acquire_hint,
         position=position,
         discord_role_id=str(discord_role.id) if discord_role else None,
         discord_role_name=discord_role.name if discord_role else None,
@@ -514,7 +525,8 @@ async def rolesadmin_role_create(
         operation="role_create",
     ):
         description_note = f" Описание: {description}." if str(description or "").strip() else ""
-        await send_temp(ctx, f"✅ Роль **{name}** создана в категории **{category}**.{description_note}")
+        acquire_hint_note = f" Как получить: {acquire_hint}." if str(acquire_hint or "").strip() else ""
+        await send_temp(ctx, f"✅ Роль **{name}** создана в категории **{category}**.{description_note}{acquire_hint_note}")
     else:
         _log_role_position_error(
             actor_id=ctx.author.id,
@@ -542,6 +554,21 @@ async def rolesadmin_role_edit_description(ctx: commands.Context, name: str, des
         await send_temp(ctx, f"✅ Описание роли **{name}** обновлено.")
     else:
         await send_temp(ctx, "❌ Не удалось обновить описание роли (смотри логи).")
+
+
+@rolesadmin.command(name="role_edit_acquire_hint", description="Обновить способ получения роли")
+async def rolesadmin_role_edit_acquire_hint(ctx: commands.Context, name: str, acquire_hint: str):
+    if not await _ensure_roles_admin(ctx):
+        return
+    if RoleManagementService.update_role_acquire_hint(
+        name,
+        acquire_hint,
+        actor_id=str(ctx.author.id),
+        operation="role_edit_acquire_hint",
+    ):
+        await send_temp(ctx, f"✅ Способ получения роли **{name}** обновлён.")
+    else:
+        await send_temp(ctx, "❌ Не удалось обновить способ получения роли (смотри логи).")
 
 
 @rolesadmin.command(name="role_delete", description="Удалить роль из каталога")

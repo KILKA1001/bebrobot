@@ -204,6 +204,7 @@ class RoleManagementServiceTests(unittest.TestCase):
         self.assertEqual(grouped[0]["roles"][0]["name"], "External role")
         self.assertEqual(grouped[0]["roles"][0]["discord_role_id"], "role-1")
         self.assertEqual(grouped[0]["roles"][0]["description"], "")
+        self.assertEqual(grouped[0]["roles"][0]["acquire_hint"], "")
         self.assertTrue(self.fake_db.tables["roles"])
 
     def test_list_roles_grouped_keeps_backward_compatibility_without_description(self):
@@ -216,6 +217,7 @@ class RoleManagementServiceTests(unittest.TestCase):
 
         self.assertEqual(grouped[0]["roles"][0]["name"], "Legacy")
         self.assertEqual(grouped[0]["roles"][0]["description"], "")
+        self.assertEqual(grouped[0]["roles"][0]["acquire_hint"], "")
 
     def test_move_role_returns_false_when_role_missing_from_catalog(self):
         with self.assertLogs("bot.services.role_management_service", level="WARNING") as captured:
@@ -268,6 +270,7 @@ class RoleManagementServiceTests(unittest.TestCase):
         created = next(row for row in self.fake_db.tables["roles"] if row["name"] == "Gamma")
         self.assertEqual(created["position"], 2)
         self.assertEqual(created["description"], "Описание")
+        self.assertIsNone(created["acquire_hint"])
 
     def test_get_role_returns_empty_description_for_legacy_rows(self):
         self.fake_db.tables["roles"] = [
@@ -278,6 +281,7 @@ class RoleManagementServiceTests(unittest.TestCase):
 
         assert role is not None
         self.assertEqual(role["description"], "")
+        self.assertEqual(role["acquire_hint"], "")
 
     def test_update_role_description_updates_role(self):
         self.fake_db.tables["roles"] = [
@@ -288,6 +292,23 @@ class RoleManagementServiceTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertEqual(self.fake_db.tables["roles"][0]["description"], "Новое описание")
+
+    def test_update_role_acquire_hint_updates_role_and_logs_field(self):
+        self.fake_db.tables["roles"] = [
+            {"name": "Gamma", "category_name": "General", "position": 0, "acquire_hint": None},
+        ]
+
+        with self.assertLogs("bot.services.role_management_service", level="INFO") as captured:
+            ok = RoleManagementService.update_role_acquire_hint(
+                "Gamma",
+                "Выдается после турнира",
+                actor_id="42",
+                operation="role_edit_acquire_hint",
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(self.fake_db.tables["roles"][0]["acquire_hint"], "Выдается после турнира")
+        self.assertTrue(any("actor_id=42" in line and "field=acquire_hint" in line for line in captured.output), captured.output)
 
 
 if __name__ == "__main__":

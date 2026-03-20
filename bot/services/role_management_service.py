@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 DELETE_ROLE_REASON_DISCORD_MANAGED = "discord_managed"
 DELETE_ROLE_REASON_NOT_FOUND = "not_found"
 DELETE_ROLE_REASON_ERROR = "error"
+USER_ACQUIRE_HINT_PLACEHOLDER = "Способ получения пока не указан администратором"
 
 
 class RoleManagementService:
@@ -22,6 +23,15 @@ class RoleManagementService:
 
     @staticmethod
     def _description_text(value: object) -> str:
+        return str(value or "").strip()
+
+    @staticmethod
+    def _normalized_acquire_hint(value: str | None) -> str | None:
+        normalized = str(value or "").strip()
+        return normalized or None
+
+    @staticmethod
+    def _acquire_hint_text(value: object) -> str:
         return str(value or "").strip()
 
     @staticmethod
@@ -70,8 +80,11 @@ class RoleManagementService:
             return []
 
         select_variants = (
-            "name,category_name,description,position,is_discord_managed,discord_role_id",
+            "name,category_name,description,acquire_hint,position,is_discord_managed,discord_role_id",
+            "name,category_name,acquire_hint,position,is_discord_managed,discord_role_id",
             "name,category_name,position,is_discord_managed,discord_role_id",
+            "name,category_name,description,acquire_hint,position",
+            "name,category_name,acquire_hint,position",
             "name,category_name,description,position",
             "name,category_name,position",
         )
@@ -108,6 +121,7 @@ class RoleManagementService:
                 {
                     "name": role_name,
                     "description": RoleManagementService._description_text(row.get("description")),
+                    "acquire_hint": RoleManagementService._acquire_hint_text(row.get("acquire_hint")),
                     "position": int(row.get("position") or 0),
                     "is_discord_managed": bool(row.get("is_discord_managed")),
                     "discord_role_id": str(row.get("discord_role_id") or "").strip() or None,
@@ -335,6 +349,7 @@ class RoleManagementService:
         name: str,
         category: str,
         description: str | None = None,
+        acquire_hint: str | None = None,
         position: int | None = None,
         discord_role_id: str | None = None,
         discord_role_name: str | None = None,
@@ -356,10 +371,12 @@ class RoleManagementService:
         computed_position = int(preview.get("computed_position", 0))
         computed_last_position = int(preview.get("computed_last_position", 0))
         normalized_description = RoleManagementService._normalized_description(description)
+        normalized_acquire_hint = RoleManagementService._normalized_acquire_hint(acquire_hint)
         payload = {
             "name": role_name,
             "category_name": normalized_category,
             "description": normalized_description,
+            "acquire_hint": normalized_acquire_hint,
             "position": computed_position,
             "is_discord_managed": bool(discord_role_id),
             "discord_role_id": str(discord_role_id).strip() if discord_role_id else None,
@@ -378,15 +395,24 @@ class RoleManagementService:
                 operation,
                 computed_position,
             )
+            logger.info(
+                "create_role metadata role_name=%s actor_id=%s field=%s value_length=%s operation=%s",
+                role_name,
+                actor_id,
+                "acquire_hint",
+                len(normalized_acquire_hint or ""),
+                operation,
+            )
             return True
         except Exception:
             logger.exception(
-                "create_role failed actor_id=%s operation=%s role_name=%s category=%s description_length=%s requested_position=%s computed_last_position=%s computed_position=%s",
+                "create_role failed actor_id=%s operation=%s role_name=%s category=%s description_length=%s acquire_hint_length=%s requested_position=%s computed_last_position=%s computed_position=%s",
                 actor_id,
                 operation,
                 role_name,
                 normalized_category,
                 len(normalized_description or ""),
+                len(normalized_acquire_hint or ""),
                 position,
                 computed_last_position,
                 computed_position,
@@ -727,7 +753,8 @@ class RoleManagementService:
             return None
 
         select_variants = (
-            "name,category_name,description,is_discord_managed,discord_role_id,discord_role_name",
+            "name,category_name,description,acquire_hint,is_discord_managed,discord_role_id,discord_role_name",
+            "name,category_name,acquire_hint,is_discord_managed,discord_role_id,discord_role_name",
             "name,category_name,is_discord_managed,discord_role_id,discord_role_name",
         )
         for select_clause in select_variants:
@@ -742,6 +769,7 @@ class RoleManagementService:
                 if resp.data:
                     row = resp.data[0]
                     row["description"] = RoleManagementService._description_text(row.get("description"))
+                    row["acquire_hint"] = RoleManagementService._acquire_hint_text(row.get("acquire_hint"))
                     return row
             except Exception:
                 logger.exception("get_role failed role_name=%s select=%s", role_key, select_clause)
@@ -797,6 +825,59 @@ class RoleManagementService:
                 None,
                 len(normalized_description or ""),
                 actor_id,
+                operation,
+            )
+            return False
+
+    @staticmethod
+    def update_role_acquire_hint(
+        role_name: str,
+        acquire_hint: str | None,
+        *,
+        actor_id: str | None = None,
+        operation: str = "role_edit_acquire_hint",
+    ) -> bool:
+        if not db.supabase:
+            return False
+        role_key = str(role_name or "").strip()
+        if not role_key:
+            return False
+
+        normalized_acquire_hint = RoleManagementService._normalized_acquire_hint(acquire_hint)
+        try:
+            response = (
+                db.supabase.table("roles")
+                .update({"acquire_hint": normalized_acquire_hint})
+                .eq("name", role_key)
+                .execute()
+            )
+            if response is not None and hasattr(response, "data") and response.data == []:
+                logger.warning(
+                    "update_role_metadata skipped role_name=%s actor_id=%s operation=%s field=%s value_length=%s reason=%s",
+                    role_key,
+                    actor_id,
+                    operation,
+                    "acquire_hint",
+                    len(normalized_acquire_hint or ""),
+                    "not_found",
+                )
+                return False
+            logger.info(
+                "update_role_metadata completed actor_id=%s role_name=%s field=%s value_length=%s operation=%s",
+                actor_id,
+                role_key,
+                "acquire_hint",
+                len(normalized_acquire_hint or ""),
+                operation,
+            )
+            return True
+        except Exception:
+            logger.exception(
+                "update_role_metadata failed actor_id=%s role_name=%s field=%s value_length=%s operation=%s",
+                actor_id,
+                role_key,
+                "acquire_hint",
+                len(normalized_acquire_hint or ""),
                 operation,
             )
             return False
