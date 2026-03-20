@@ -22,6 +22,7 @@ from bot.telegram_bot.systems.commands_logic import (
 logger = logging.getLogger(__name__)
 router = Router()
 
+_TELEGRAM_MESSAGE_LIMIT = 4096
 _VISIBLE_ROLES_PAGE_SIZE = 10
 
 _EDIT_FIELD_LABELS = {
@@ -70,6 +71,39 @@ def _is_chat_send_permissions_error(error: TelegramBadRequest) -> bool:
     return "not enough rights to send" in str(error).lower()
 
 
+def _split_telegram_text(text: str, limit: int = _TELEGRAM_MESSAGE_LIMIT) -> list[str]:
+    normalized_text = text or ""
+    if len(normalized_text) <= limit:
+        return [normalized_text]
+
+    chunks: list[str] = []
+    current_chunk = ""
+    for line in normalized_text.split("\n"):
+        candidate = f"{current_chunk}\n{line}" if current_chunk else line
+        if len(candidate) <= limit:
+            current_chunk = candidate
+            continue
+
+        if current_chunk:
+            chunks.append(current_chunk)
+            current_chunk = ""
+
+        remaining_line = line
+        while len(remaining_line) > limit:
+            split_at = remaining_line.rfind(" ", 0, limit)
+            if split_at <= 0:
+                split_at = limit
+            chunks.append(remaining_line[:split_at].rstrip())
+            remaining_line = remaining_line[split_at:].lstrip()
+
+        current_chunk = remaining_line
+
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    return chunks or [normalized_text[:limit]]
+
+
 async def _safe_answer(
     message: Message,
     text: str,
@@ -91,6 +125,55 @@ async def _safe_answer(
             return False
         logger.exception("message send failed chat_id=%s", message.chat.id)
         return False
+
+
+async def _safe_answer_chunked(
+    message: Message,
+    text: str,
+    *,
+    parse_mode: ParseMode | None = None,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    command_name: str,
+) -> bool:
+    chunks = _split_telegram_text(text)
+    if len(chunks) > 1:
+        logger.warning(
+            "chunked telegram response command=%s chat_id=%s user_id=%s chunks=%s total_length=%s",
+            command_name,
+            message.chat.id,
+            message.from_user.id if message.from_user is not None else None,
+            len(chunks),
+            len(text or ""),
+        )
+
+    for idx, chunk in enumerate(chunks, start=1):
+        chunk_reply_markup = reply_markup if idx == len(chunks) else None
+        if len(chunk) > _TELEGRAM_MESSAGE_LIMIT:
+            logger.error(
+                "telegram response chunk exceeds limit command=%s chat_id=%s chunk_index=%s chunk_length=%s limit=%s",
+                command_name,
+                message.chat.id,
+                idx,
+                len(chunk),
+                _TELEGRAM_MESSAGE_LIMIT,
+            )
+            return False
+        if not await _safe_answer(
+            message,
+            chunk,
+            parse_mode=parse_mode,
+            reply_markup=chunk_reply_markup,
+        ):
+            logger.error(
+                "telegram response chunk send failed command=%s chat_id=%s chunk_index=%s total_chunks=%s",
+                command_name,
+                message.chat.id,
+                idx,
+                len(chunks),
+            )
+            return False
+
+    return True
 
 
 def _profile_settings_keyboard() -> InlineKeyboardMarkup:
@@ -523,14 +606,14 @@ async def profile_roles_command(message: Message) -> None:
         target_telegram_user_id=target_user_id,
         target_display_name=target_display_name,
     )
-    await message.answer(response, parse_mode=ParseMode.HTML)
+    await _safe_answer_chunked(message, response, parse_mode=ParseMode.HTML, command_name="/profile_roles")
 
 
 @router.message(Command("roles"))
 async def roles_catalog_command(message: Message) -> None:
     persist_telegram_identity_from_user(message.from_user)
     response = process_roles_catalog_command()
-    await message.answer(response, parse_mode=ParseMode.HTML)
+    await _safe_answer_chunked(message, response, parse_mode=ParseMode.HTML, command_name="/roles")
 
 
 @router.message(Command("link"))
