@@ -219,6 +219,61 @@ class RoleManagementServiceTests(unittest.TestCase):
         self.assertEqual(grouped[0]["roles"][0]["description"], "")
         self.assertEqual(grouped[0]["roles"][0]["acquire_hint"], "")
 
+    def test_list_public_roles_catalog_sorts_categories_and_marks_acquire_methods(self):
+        self.fake_db.tables["roles"] = [
+            {
+                "name": "Куратор",
+                "category_name": "Админские",
+                "position": 0,
+                "description": "Следит за разделом",
+                "acquire_hint": "Назначается вручную",
+                "is_discord_managed": False,
+                "discord_role_id": None,
+            },
+            {
+                "name": "Синхронизируемая",
+                "category_name": "Discord",
+                "position": 0,
+                "description": "Приходит из Discord",
+                "acquire_hint": "Поддерживайте роль в Discord",
+                "is_discord_managed": True,
+                "discord_role_id": "555",
+            },
+        ]
+        self.fake_db.tables["role_categories"] = [
+            {"name": "Админские", "position": 2},
+            {"name": "Discord", "position": 1},
+        ]
+
+        grouped = RoleManagementService.list_public_roles_catalog()
+
+        self.assertEqual([item["category"] for item in grouped], ["Discord", "Админские", "Роли за баллы"])
+        self.assertEqual(grouped[0]["roles"][0]["acquire_method_label"], "автоматически синхронизируется с Discord")
+        self.assertEqual(grouped[1]["roles"][0]["acquire_method_label"], "выдаёт администратор")
+        self.assertEqual(grouped[2]["roles"][0]["acquire_method_label"], "за баллы")
+        self.assertEqual(grouped[2]["roles"][0]["points_required"], 10)
+
+    def test_list_public_roles_catalog_backfills_legacy_points_hint_for_canonical_role(self):
+        self.fake_db.tables["roles"] = [
+            {
+                "name": "Новый волонтер",
+                "category_name": "Основные",
+                "position": 0,
+                "description": "",
+                "acquire_hint": "",
+                "is_discord_managed": False,
+                "discord_role_id": "1105906310131744868",
+            },
+        ]
+        self.fake_db.tables["role_categories"] = [{"name": "Основные", "position": 0}]
+
+        grouped = RoleManagementService.list_public_roles_catalog()
+
+        role = grouped[0]["roles"][0]
+        self.assertEqual(role["acquire_method_label"], "за баллы")
+        self.assertEqual(role["points_required"], 10)
+        self.assertEqual(role["acquire_hint"], "Накопить 10 баллов.")
+
     def test_move_role_returns_false_when_role_missing_from_catalog(self):
         with self.assertLogs("bot.services.role_management_service", level="WARNING") as captured:
             ok = RoleManagementService.move_role("Missing", "Категория", 1)

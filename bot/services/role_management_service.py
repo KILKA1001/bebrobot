@@ -1,11 +1,20 @@
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from bot.data import db
 from bot.services.accounts_service import AccountsService
 from bot.services.auth import RoleResolver
+from bot.utils.roles_and_activities import ROLE_THRESHOLDS
 
 _AUTO_DISCORD_CATEGORY = "Discord сервер (auto)"
+_LEGACY_POINTS_CATEGORY = "Роли за баллы"
+_LEGACY_POINTS_ROLE_NAMES = {
+    1212624623548768287: "Бог среди волонтеров",
+    1105906637824331788: "Легендарный среди волонтеров",
+    1137775519589466203: "Мастер волонтер",
+    1105906455233703989: "Хороший Помощник Бебр",
+    1105906310131744868: "Новый волонтер",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +22,9 @@ DELETE_ROLE_REASON_DISCORD_MANAGED = "discord_managed"
 DELETE_ROLE_REASON_NOT_FOUND = "not_found"
 DELETE_ROLE_REASON_ERROR = "error"
 USER_ACQUIRE_HINT_PLACEHOLDER = "Способ получения пока не указан администратором"
+ACQUIRE_METHOD_POINTS = "за баллы"
+ACQUIRE_METHOD_ADMIN = "выдаёт администратор"
+ACQUIRE_METHOD_DISCORD_SYNC = "автоматически синхронизируется с Discord"
 
 
 class RoleManagementService:
@@ -74,7 +86,7 @@ class RoleManagementService:
         }
 
     @staticmethod
-    def _load_roles_rows() -> list[dict[str, Any]]:
+    def _load_roles_rows(*, log_context: str | None = None) -> list[dict[str, Any]]:
         """Read role rows with backward-compatible column fallback."""
         if not db.supabase:
             return []
@@ -93,7 +105,7 @@ class RoleManagementService:
                 response = db.supabase.table("roles").select(select_clause).execute()
                 return response.data or []
             except Exception:
-                logger.exception("roles query failed select=%s", select_clause)
+                logger.exception("roles query failed command=%s select=%s", log_context or "n/a", select_clause)
         return []
 
     @staticmethod
@@ -136,7 +148,7 @@ class RoleManagementService:
         return result
 
     @staticmethod
-    def _load_external_discord_bindings() -> list[dict[str, Any]]:
+    def _load_external_discord_bindings(*, log_context: str | None = None) -> list[dict[str, Any]]:
         if not db.supabase:
             return []
         try:
@@ -149,7 +161,7 @@ class RoleManagementService:
             )
             return response.data or []
         except Exception:
-            logger.exception("external_role_bindings discord query failed")
+            logger.exception("external_role_bindings discord query failed command=%s", log_context or "n/a")
             return []
 
     @staticmethod
@@ -209,13 +221,15 @@ class RoleManagementService:
     @staticmethod
     def _sync_discord_roles_from_external_bindings(
         existing_by_role_id: dict[str, dict[str, Any]],
+        *,
+        log_context: str | None = None,
     ) -> tuple[int, set[str]]:
         if not db.supabase:
             return 0, set()
 
         upserted = 0
         synced_ids: set[str] = set()
-        for row in RoleManagementService._load_external_discord_bindings():
+        for row in RoleManagementService._load_external_discord_bindings(log_context=log_context):
             role_id = str(row.get("external_role_id") or "").strip()
             role_name = str(row.get("external_role_name") or "").strip()
             account_id = str(row.get("account_id") or "").strip() or None
@@ -242,7 +256,7 @@ class RoleManagementService:
         return upserted, synced_ids
 
     @staticmethod
-    def ensure_external_discord_roles_in_catalog() -> dict[str, int]:
+    def ensure_external_discord_roles_in_catalog(*, log_context: str | None = None) -> dict[str, int]:
         if not db.supabase:
             return {"upserted": 0}
 
@@ -259,29 +273,32 @@ class RoleManagementService:
                 if existing_role_id and existing_role_id not in existing_by_role_id:
                     existing_by_role_id[existing_role_id] = row
 
-            upserted, _ = RoleManagementService._sync_discord_roles_from_external_bindings(existing_by_role_id)
+            upserted, _ = RoleManagementService._sync_discord_roles_from_external_bindings(
+                existing_by_role_id,
+                log_context=log_context,
+            )
             if upserted:
                 logger.info("ensure_external_discord_roles_in_catalog completed upserted=%s", upserted)
             return {"upserted": upserted}
         except Exception:
-            logger.exception("ensure_external_discord_roles_in_catalog failed")
+            logger.exception("ensure_external_discord_roles_in_catalog failed command=%s", log_context or "n/a")
             return {"upserted": 0}
 
     @staticmethod
-    def list_roles_grouped() -> list[dict[str, Any]]:
+    def list_roles_grouped(*, log_context: str | None = None) -> list[dict[str, Any]]:
         if not db.supabase:
             logger.warning("list_roles_grouped skipped: supabase is not configured")
             return []
 
         try:
-            RoleManagementService.ensure_external_discord_roles_in_catalog()
+            RoleManagementService.ensure_external_discord_roles_in_catalog(log_context=log_context)
             categories_resp = db.supabase.table("role_categories").select("name,position").execute()
-            roles_rows = RoleManagementService._load_roles_rows()
+            roles_rows = RoleManagementService._load_roles_rows(log_context=log_context)
         except Exception:
-            logger.exception("list_roles_grouped failed")
+            logger.exception("list_roles_grouped failed command=%s", log_context or "n/a")
             return []
 
-        external_rows = RoleManagementService._load_external_discord_bindings()
+        external_rows = RoleManagementService._load_external_discord_bindings(log_context=log_context)
         catalog_role_ids = {
             str(row.get("discord_role_id") or "").strip()
             for row in roles_rows
@@ -301,6 +318,101 @@ class RoleManagementService:
                 )
 
         return RoleManagementService._build_grouped_roles(categories_resp.data or [], roles_rows)
+
+    @staticmethod
+    def _resolve_legacy_points_role_name(
+        role_id: int,
+        *,
+        role_name_resolver: Callable[[int], str | None] | None = None,
+        log_context: str | None = None,
+    ) -> str:
+        try:
+            resolved_name = role_name_resolver(role_id) if role_name_resolver else None
+        except Exception:
+            logger.exception(
+                "legacy points role name resolver failed command=%s role_id=%s",
+                log_context or "n/a",
+                role_id,
+            )
+            resolved_name = None
+        return str(resolved_name or _LEGACY_POINTS_ROLE_NAMES.get(role_id) or f"Legacy role {role_id}").strip()
+
+    @staticmethod
+    def list_public_roles_catalog(
+        *,
+        role_name_resolver: Callable[[int], str | None] | None = None,
+        log_context: str | None = None,
+    ) -> list[dict[str, Any]]:
+        grouped = RoleManagementService.list_roles_grouped(log_context=log_context)
+        public_grouped: list[dict[str, Any]] = []
+        roles_by_discord_id: dict[str, dict[str, Any]] = {}
+        roles_by_name: dict[str, dict[str, Any]] = {}
+        category_positions: dict[str, int] = {}
+
+        for item in grouped:
+            category_name = str(item.get("category") or "Без категории")
+            category_positions[category_name] = int(item.get("position") or 0)
+            public_item = {
+                "category": category_name,
+                "position": int(item.get("position") or 0),
+                "roles": [],
+            }
+            for role in item.get("roles", []):
+                public_role = dict(role)
+                public_role["points_required"] = None
+                public_role["acquire_method"] = (
+                    ACQUIRE_METHOD_DISCORD_SYNC if public_role.get("is_discord_managed") else ACQUIRE_METHOD_ADMIN
+                )
+                public_role["acquire_method_label"] = str(public_role["acquire_method"])
+                public_item["roles"].append(public_role)
+
+                discord_role_id = str(public_role.get("discord_role_id") or "").strip()
+                if discord_role_id:
+                    roles_by_discord_id[discord_role_id] = public_role
+                roles_by_name[str(public_role.get("name") or "").strip().lower()] = public_role
+            public_grouped.append(public_item)
+
+        legacy_roles: list[dict[str, Any]] = []
+        for index, (role_id, points_needed) in enumerate(sorted(ROLE_THRESHOLDS.items(), key=lambda item: item[1])):
+            resolved_name = RoleManagementService._resolve_legacy_points_role_name(
+                role_id,
+                role_name_resolver=role_name_resolver,
+                log_context=log_context,
+            )
+            public_role = roles_by_discord_id.get(str(role_id)) or roles_by_name.get(resolved_name.lower())
+            if public_role:
+                public_role["points_required"] = points_needed
+                public_role["acquire_method"] = ACQUIRE_METHOD_POINTS
+                public_role["acquire_method_label"] = ACQUIRE_METHOD_POINTS
+                if not str(public_role.get("acquire_hint") or "").strip():
+                    public_role["acquire_hint"] = f"Накопить {points_needed} баллов."
+                continue
+
+            legacy_roles.append(
+                {
+                    "name": resolved_name,
+                    "description": "",
+                    "acquire_hint": f"Накопить {points_needed} баллов.",
+                    "position": index,
+                    "is_discord_managed": False,
+                    "discord_role_id": str(role_id),
+                    "points_required": points_needed,
+                    "acquire_method": ACQUIRE_METHOD_POINTS,
+                    "acquire_method_label": ACQUIRE_METHOD_POINTS,
+                }
+            )
+
+        if legacy_roles:
+            public_grouped.append(
+                {
+                    "category": _LEGACY_POINTS_CATEGORY,
+                    "position": category_positions.get(_LEGACY_POINTS_CATEGORY, 9998),
+                    "roles": legacy_roles,
+                }
+            )
+
+        public_grouped.sort(key=lambda item: (int(item.get("position") or 0), str(item.get("category") or "").lower()))
+        return public_grouped
 
     @staticmethod
     def list_roles_available_for_admin_reorder() -> list[dict[str, str]]:

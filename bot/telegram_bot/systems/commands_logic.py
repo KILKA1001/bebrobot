@@ -10,6 +10,7 @@ from bot.legacy_identity_logging import (
 
 
 logger = logging.getLogger(__name__)
+ROLE_DESCRIPTION_PLACEHOLDER = "Описание пока не указано администратором"
 
 
 HELPY_TEXT = (
@@ -20,7 +21,7 @@ HELPY_TEXT = (
     "/profile_edit — открыть меню редактирования профиля\n"
     "/link <код> — привязать Telegram к аккаунту по коду из Discord\n"
     "/link_discord — получить код для привязки Discord\n"
-    "/roles — каталог ролей с описанием и подсказкой, как их получить\n"
+    "/roles — единый каталог ролей по категориям, с описанием и подсказкой по получению\n"
     "/points [reply|id] — меню управления баллами\n"
     "/balance [reply|id] — показать баланс пользователя\n"
     "/tickets [reply|id] — меню управления билетами\n"
@@ -36,9 +37,9 @@ def get_helpy_text() -> str:
 
 def process_roles_catalog_command() -> str:
     try:
-        grouped = RoleManagementService.list_roles_grouped()
+        grouped = RoleManagementService.list_public_roles_catalog(log_context="/roles")
     except Exception:
-        logger.exception("roles catalog render failed source=telegram_user_command")
+        logger.exception("roles catalog render failed command=/roles source=telegram_user_command")
         return "❌ Не удалось загрузить каталог ролей. Попробуйте позже и, если проблема повторится, сообщите администратору."
 
     if not grouped:
@@ -60,11 +61,13 @@ def process_roles_catalog_command() -> str:
             continue
         for role in roles:
             role_name = escape(str(role.get("name") or "Без названия"))
-            description = escape(str(role.get("description") or "").strip() or "Описание пока не указано администратором")
+            description = escape(str(role.get("description") or "").strip() or ROLE_DESCRIPTION_PLACEHOLDER)
+            acquire_method = escape(str(role.get("acquire_method_label") or "Не указан").strip())
             acquire_hint = escape(str(role.get("acquire_hint") or "").strip() or USER_ACQUIRE_HINT_PLACEHOLDER)
             parts.append(
                 f"\n• <b>{role_name}</b>\n"
                 f"Описание: {description}\n"
+                f"Способ получения: {acquire_method}\n"
                 f"Как получить: {acquire_hint}"
             )
     parts.append("\nЕсли хочешь примерить роль на себя или уточнить условия — напиши администратору и укажи точное название роли из списка.")

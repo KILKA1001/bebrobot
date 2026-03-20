@@ -74,6 +74,7 @@ BOT_COMMANDS = [
     BotCommand(command="profile_edit", description="Настройки и редактирование профиля"),
     BotCommand(command="link", description="Привязать Telegram по коду из Discord"),
     BotCommand(command="link_discord", description="Сгенерировать код для привязки Discord"),
+    BotCommand(command="roles", description="Каталог ролей и способов получения"),
     BotCommand(command="points", description="Меню управления баллами"),
     BotCommand(command="balance", description="Показать баланс пользователя"),
     BotCommand(command="tickets", description="Меню управления билетами"),

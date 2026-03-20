@@ -71,7 +71,7 @@ class TelegramCommandsLogicTests(unittest.TestCase):
         self.assertIn("/balance", get_helpy_text())
         self.assertIn("/tickets", get_helpy_text())
 
-    @patch("bot.telegram_bot.systems.commands_logic.RoleManagementService.list_roles_grouped")
+    @patch("bot.telegram_bot.systems.commands_logic.RoleManagementService.list_public_roles_catalog")
     def test_roles_catalog_command_renders_description_and_acquire_hint(self, mock_list_roles_grouped):
         mock_list_roles_grouped.return_value = [
             {
@@ -80,6 +80,7 @@ class TelegramCommandsLogicTests(unittest.TestCase):
                     {
                         "name": "Чемпион",
                         "description": "Победитель сезона",
+                        "acquire_method_label": "выдаёт администратор",
                         "acquire_hint": "Выиграть сезонный турнир",
                     }
                 ],
@@ -91,9 +92,10 @@ class TelegramCommandsLogicTests(unittest.TestCase):
         self.assertIn("Каталог ролей", result)
         self.assertIn("Чемпион", result)
         self.assertIn("Победитель сезона", result)
+        self.assertIn("выдаёт администратор", result)
         self.assertIn("Выиграть сезонный турнир", result)
 
-    @patch("bot.telegram_bot.systems.commands_logic.RoleManagementService.list_roles_grouped")
+    @patch("bot.telegram_bot.systems.commands_logic.RoleManagementService.list_public_roles_catalog")
     def test_roles_catalog_command_uses_placeholder_when_acquire_hint_missing(self, mock_list_roles_grouped):
         mock_list_roles_grouped.return_value = [
             {
@@ -102,6 +104,7 @@ class TelegramCommandsLogicTests(unittest.TestCase):
                     {
                         "name": "Новичок",
                         "description": "",
+                        "acquire_method_label": "за баллы",
                         "acquire_hint": "",
                     }
                 ],
@@ -112,6 +115,7 @@ class TelegramCommandsLogicTests(unittest.TestCase):
 
         self.assertIn("Новичок", result)
         self.assertIn("Описание пока не указано администратором", result)
+        self.assertIn("за баллы", result)
         self.assertIn("Способ получения пока не указан администратором", result)
 
     def test_link_command_restricted_to_private_chat(self):
