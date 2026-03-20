@@ -1290,11 +1290,19 @@ def _render_home_text(*, hidden_sections: tuple[str, ...] = tuple()) -> str:
 
 
 
+def _render_command_alias_note() -> str:
+    return (
+        "<b>Паритет команд:</b> в Telegram основная команда — <code>/roles_admin</code>, но текстовый alias <code>/rolesadmin</code> тоже поддерживается для паритета с Discord. "
+        "Команда <code>sync_discord_roles</code> сейчас запускается только в Discord через <code>/rolesadmin sync_discord_roles</code>, поэтому в Telegram интерфейсе она упоминается как внешний шаг, а не как локальная кнопка.\n\n"
+    )
+
+
 def _render_fallback_text() -> str:
     return (
         "🆘 <b>Не работают кнопки?</b>\n\n"
-        "Если Telegram-кнопки не срабатывают, отправляй команду одной строкой после <code>/roles_admin</code>. "
+        "Если Telegram-кнопки не срабатывают, отправляй команду одной строкой после <code>/roles_admin</code> или <code>/rolesadmin</code>. "
         "Для длинного описания используй разделитель <code>|</code>.\n\n"
+        f"{_render_command_alias_note()}"
         "<b>С чего начать: 2 подхода</b>\n"
         "<b>Подход 1 — настрой каталог</b>\n"
         "1. <code>/roles_admin category_create &lt;name&gt; [position]</code>\n"
@@ -1326,6 +1334,7 @@ def _render_fallback_text() -> str:
 def _render_help_text() -> str:
     return (
         "ℹ️ <b>Что делает /roles_admin</b>\n\n"
+        f"{_render_command_alias_note()}"
         "<b>С чего начать: 2 подхода</b>\n"
         "<b>Подход 1 — настрой каталог</b>\n"
         "1. <code>category_create &lt;name&gt; [position]</code> — создай или обнови категорию (<b>только Глава клуба/Главный вице</b>).\n"
@@ -1461,7 +1470,7 @@ def _can_manage_categories(provider: str, provider_user_id: str) -> bool:
     return AuthorityService.can_manage_role_categories(provider, provider_user_id)
 
 
-@router.message(Command("roles_admin"))
+@router.message(Command(commands=["roles_admin", "rolesadmin"]))
 async def roles_admin_command(message: Message) -> None:
     try:
         persist_telegram_identity_from_user(message.from_user)
@@ -1793,7 +1802,7 @@ async def roles_admin_command(message: Message) -> None:
                 )
             return
 
-        await message.answer("❌ Неверная команда или аргументы. Напишите /roles_admin для панели управления.")
+        await message.answer("❌ Неверная команда или аргументы. Напишите /roles_admin или /rolesadmin для панели управления.")
     except Exception:
         logger.exception(
             "roles_admin command failed actor_id=%s text=%s",
