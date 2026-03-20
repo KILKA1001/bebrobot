@@ -20,6 +20,10 @@ from bot.services.guiy_owner_flow_service import (
     parse_guiy_owner_text_command,
     resolve_guiy_profile_catalog,
 )
+from bot.services.guiy_publish_destinations_service import (
+    GuiyPublishDestination,
+    GuiyPublishDestinationsService,
+)
 from bot.telegram_bot.identity import persist_telegram_identity_from_user
 
 logger = logging.getLogger(__name__)
@@ -27,6 +31,7 @@ router = Router()
 
 PENDING_GUIY_OWNER_TTL_SECONDS = 900
 _VISIBLE_ROLES_PAGE_SIZE = 10
+_DESTINATIONS_PAGE_SIZE = 8
 
 
 @dataclass(slots=True)
@@ -38,10 +43,13 @@ class PendingGuiyOwnerAction:
     created_at: float
     target_chat_or_guild: str
     selected_field: str | None = None
+    target_destination_id: str | None = None
+    target_destination_label: str | None = None
 
 
 _PENDING_GUIY_OWNER_ACTIONS: dict[int, PendingGuiyOwnerAction] = {}
 _PENDING_GUIY_OWNER_VISIBLE_ROLES: dict[int, dict[str, object]] = {}
+_PENDING_GUIY_OWNER_DESTINATIONS: dict[int, dict[str, object]] = {}
 
 
 def _log_guiy_owner_info(
@@ -93,6 +101,7 @@ def _clear_pending_state(actor_user_id: int | None) -> None:
         return
     _PENDING_GUIY_OWNER_ACTIONS.pop(actor_user_id, None)
     _PENDING_GUIY_OWNER_VISIBLE_ROLES.pop(actor_user_id, None)
+    _PENDING_GUIY_OWNER_DESTINATIONS.pop(actor_user_id, None)
 
 
 def _get_non_expired_pending_action(actor_user_id: int | None) -> PendingGuiyOwnerAction | None:
@@ -148,7 +157,7 @@ def _owner_menu_text() -> str:
     return (
         "🛠️ <b>Owner-управление Гуем</b>\n"
         "Выберите действие ниже. После каждого выбора бот коротко объяснит следующий шаг и что изменится после подтверждения.\n\n"
-        "• <b>Написать от Гуя</b> — отправить новое сообщение в текущий чат.\n"
+        "• <b>Написать от Гуя</b> — выбрать группу и отправить туда новое сообщение.\n"
         "• <b>Ответить от Гуя</b> — ответить именно на сообщение Гуя, если команда открыта reply-сообщением.\n"
         "• <b>Профиль Гуя</b> — изменить поля общего профиля Гуя.\n"
         "• <b>Зарегистрировать профиль Гуя</b> — создать общий аккаунт, если его ещё нет."
@@ -158,6 +167,79 @@ def _owner_menu_text() -> str:
 def _owner_profile_text() -> str:
     spec = GUIY_OWNER_ACTION_SPECS["profile"]
     return f"👤 <b>{spec.title}</b>\n{spec.instruction}\n\nВыберите поле, которое хотите изменить."
+
+
+def _build_destination_keyboard(
+    destinations: list[GuiyPublishDestination],
+    *,
+    page: int,
+    selected_destination_id: str | None,
+) -> InlineKeyboardMarkup:
+    total_pages = max((len(destinations) - 1) // _DESTINATIONS_PAGE_SIZE + 1, 1)
+    safe_page = min(max(page, 0), total_pages - 1)
+    start = safe_page * _DESTINATIONS_PAGE_SIZE
+    page_items = destinations[start : start + _DESTINATIONS_PAGE_SIZE]
+    rows: list[list[InlineKeyboardButton]] = []
+    for item in page_items:
+        chat_id = str(item.destination_id)
+        label = item.title[:48]
+        if chat_id == str(selected_destination_id or ""):
+            label = f"✅ {label}"[:64]
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"guiy_owner_destination:select:{chat_id}")])
+
+    nav: list[InlineKeyboardButton] = []
+    if safe_page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"guiy_owner_destination:page:{safe_page - 1}"))
+    nav.append(InlineKeyboardButton(text=f"{safe_page + 1}/{total_pages}", callback_data="guiy_owner_destination:noop"))
+    if safe_page + 1 < total_pages:
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"guiy_owner_destination:page:{safe_page + 1}"))
+    rows.append(nav)
+    rows.append(
+        [
+            InlineKeyboardButton(text="✅ Подтвердить", callback_data="guiy_owner_destination:confirm"),
+            InlineKeyboardButton(text=GUIY_OWNER_ACTION_SPECS["cancel"].title, callback_data="guiy_owner:action:cancel"),
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _build_destination_text(
+    destinations: list[GuiyPublishDestination],
+    *,
+    page: int,
+    selected_destination_id: str | None,
+) -> str:
+    total_pages = max((len(destinations) - 1) // _DESTINATIONS_PAGE_SIZE + 1, 1)
+    safe_page = min(max(page, 0), total_pages - 1)
+    selected = next(
+        (item for item in destinations if item.destination_id == str(selected_destination_id or "").strip()),
+        None,
+    )
+    lines = [
+        "📍 <b>Куда писать?</b>",
+        (
+            "Выберите группу, где бот уже присутствует и недавно видел события. "
+            "Это помогает владельцу быстро понять, куда именно уйдёт сообщение от имени Гуя."
+        ),
+        f"Страница: <b>{safe_page + 1}/{total_pages}</b>",
+    ]
+    if selected is not None:
+        lines.extend(
+            [
+                "",
+                f"✅ Гуй отправит сообщение сюда: <b>{selected.title}</b>",
+                f"<i>{selected.subtitle}</i>",
+                "После подтверждения следующим сообщением отправьте текст — бот опубликует его в выбранной группе.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "Пока место не выбрано. Нажмите на нужную группу ниже, затем подтвердите выбор.",
+            ]
+        )
+    return "\n".join(lines)
 
 
 def _build_visible_roles_keyboard(catalog: list[dict[str, str]], selected_roles: list[str], page: int) -> InlineKeyboardMarkup:
@@ -207,6 +289,113 @@ def _build_visible_roles_text(selected_roles: list[str], page: int, total_pages:
 
 async def _show_owner_menu(message: Message) -> None:
     await message.answer(_owner_menu_text(), parse_mode="HTML", reply_markup=_owner_action_keyboard())
+
+
+async def _show_destination_picker(
+    message: Message,
+    *,
+    actor_user_id: int,
+    bot_user_id: str,
+    target_message_id: int | None,
+    reply_author_user_id: str | None,
+) -> None:
+    destinations = GuiyPublishDestinationsService.list_telegram_destinations()
+    if not destinations:
+        _log_guiy_owner_warning(
+            provider="telegram",
+            actor_user_id=actor_user_id,
+            selected_action="say",
+            target_chat_or_guild=message.chat.id if message.chat else None,
+            target_message_id=target_message_id,
+            guiy_account_id=None,
+            message="telegram guiy owner destination list is empty",
+        )
+        await message.answer(
+            "⚠️ <b>Пока нет доступных групп для публикации</b>\n"
+            "Чтобы список появился, добавьте бота в нужную группу, дождитесь любого события или сообщения от неё, "
+            "а затем откройте /guiy_owner снова.",
+            parse_mode="HTML",
+        )
+        return
+
+    _PENDING_GUIY_OWNER_DESTINATIONS[actor_user_id] = {
+        "destinations": destinations,
+        "page": 0,
+        "selected_destination_id": None,
+        "bot_user_id": str(bot_user_id),
+        "target_message_id": target_message_id,
+        "reply_author_user_id": reply_author_user_id,
+        "created_at": time.time(),
+        "target_chat_or_guild": str(message.chat.id if message.chat else ""),
+    }
+    await message.answer(
+        _build_destination_text(destinations, page=0, selected_destination_id=None),
+        parse_mode="HTML",
+        reply_markup=_build_destination_keyboard(destinations, page=0, selected_destination_id=None),
+    )
+
+
+async def _verify_telegram_destination_access(message: Message, pending: PendingGuiyOwnerAction) -> tuple[bool, str, str]:
+    destination_id = str(pending.target_destination_id or "").strip()
+    destination_label = str(pending.target_destination_label or destination_id or "неизвестный чат")
+    if not destination_id:
+        return False, "missing_destination", destination_label
+
+    registry_entry = GuiyPublishDestinationsService.get_telegram_destination(destination_id)
+    if registry_entry is None:
+        _log_guiy_owner_warning(
+            provider="telegram",
+            actor_user_id=message.from_user.id if message.from_user else None,
+            selected_action=pending.selected_action,
+            target_chat_or_guild=destination_id,
+            target_message_id=pending.target_message_id,
+            guiy_account_id=None,
+            message="telegram guiy owner selected stale destination missing from registry",
+        )
+        return False, "stale_destination", destination_label
+
+    try:
+        bot_user = await message.bot.get_me()
+        member = await message.bot.get_chat_member(int(destination_id), bot_user.id)
+    except Exception:
+        logger.exception(
+            "telegram guiy owner destination access lookup failed provider=%s actor_user_id=%s selected_action=%s target_chat_or_guild=%s target_message_id=%s guiy_account_id=%s",
+            "telegram",
+            getattr(message.from_user, "id", None),
+            pending.selected_action,
+            destination_id,
+            pending.target_message_id,
+            None,
+        )
+        return False, "access_lookup_failed", destination_label
+
+    status = str(getattr(member, "status", "") or "").strip()
+    if status in {"left", "kicked"}:
+        GuiyPublishDestinationsService.mark_telegram_chat_inactive(destination_id, reason=f"status={status}")
+        _log_guiy_owner_warning(
+            provider="telegram",
+            actor_user_id=message.from_user.id if message.from_user else None,
+            selected_action=pending.selected_action,
+            target_chat_or_guild=destination_id,
+            target_message_id=pending.target_message_id,
+            guiy_account_id=None,
+            message="telegram guiy owner send denied: bot is no longer in destination chat",
+        )
+        return False, "bot_not_in_chat", destination_label
+
+    can_send = getattr(member, "can_send_messages", None)
+    if can_send is False:
+        _log_guiy_owner_warning(
+            provider="telegram",
+            actor_user_id=message.from_user.id if message.from_user else None,
+            selected_action=pending.selected_action,
+            target_chat_or_guild=destination_id,
+            target_message_id=pending.target_message_id,
+            guiy_account_id=None,
+            message="telegram guiy owner send denied: missing send permissions",
+        )
+        return False, "missing_permissions", destination_label
+    return True, "ok", destination_label
 
 
 async def _run_text_fallback(message: Message, action: str, payload: str) -> None:
@@ -436,6 +625,27 @@ async def guiy_owner_action_callback(callback: CallbackQuery) -> None:
             await callback.answer("Нужно открыть меню ответом на сообщение Гуя", show_alert=True)
             return
 
+        if selected_action == "say":
+            _clear_pending_state(callback.from_user.id)
+            _log_guiy_owner_info(
+                provider="telegram",
+                actor_user_id=actor_user_id,
+                selected_action=selected_action,
+                target_chat_or_guild=target_chat_or_guild,
+                target_message_id=target_message_id,
+                guiy_account_id=None,
+                message="telegram guiy owner destination picker opened",
+            )
+            await _show_destination_picker(
+                callback.message,
+                actor_user_id=callback.from_user.id,
+                bot_user_id=str(bot_user.id),
+                target_message_id=target_message_id,
+                reply_author_user_id=reply_author_user_id,
+            )
+            await callback.answer()
+            return
+
         _PENDING_GUIY_OWNER_ACTIONS[callback.from_user.id] = PendingGuiyOwnerAction(
             selected_action=selected_action,
             bot_user_id=str(bot_user.id),
@@ -470,6 +680,123 @@ async def guiy_owner_action_callback(callback: CallbackQuery) -> None:
             None,
         )
         await callback.answer("Ошибка выбора действия", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("guiy_owner_destination:"))
+async def guiy_owner_destination_callback(callback: CallbackQuery) -> None:
+    actor_user_id = callback.from_user.id if callback.from_user else None
+    target_chat_or_guild = callback.message.chat.id if callback.message and callback.message.chat else None
+    try:
+        if callback.from_user is None or callback.message is None:
+            await callback.answer("Не удалось определить контекст", show_alert=True)
+            return
+        state = _PENDING_GUIY_OWNER_DESTINATIONS.get(callback.from_user.id)
+        if not state:
+            _log_guiy_owner_warning(
+                provider="telegram",
+                actor_user_id=actor_user_id,
+                selected_action="say",
+                target_chat_or_guild=target_chat_or_guild,
+                target_message_id=None,
+                guiy_account_id=None,
+                message="telegram guiy owner destination state missing",
+            )
+            await callback.answer("Список мест устарел. Откройте /guiy_owner заново.", show_alert=True)
+            return
+        if (time.time() - float(state.get("created_at") or 0)) > PENDING_GUIY_OWNER_TTL_SECONDS:
+            _clear_pending_state(callback.from_user.id)
+            await callback.answer("Список мест устарел. Откройте /guiy_owner заново.", show_alert=True)
+            return
+
+        destinations = [item for item in state.get("destinations", []) if isinstance(item, GuiyPublishDestination)]
+        if not destinations:
+            _clear_pending_state(callback.from_user.id)
+            await callback.answer("Список мест больше недоступен. Откройте /guiy_owner заново.", show_alert=True)
+            return
+
+        action = str(callback.data or "").split(":", 1)[1]
+        page = int(state.get("page") or 0)
+        selected_destination_id = str(state.get("selected_destination_id") or "").strip() or None
+        if action == "noop":
+            await callback.answer()
+            return
+        if action.startswith("page:"):
+            raw_page = action.split(":", 1)[1]
+            page = int(raw_page) if raw_page.lstrip("-").isdigit() else page
+        elif action.startswith("select:"):
+            selected_destination_id = action.split(":", 1)[1]
+        elif action == "confirm":
+            if not selected_destination_id:
+                await callback.answer("Сначала выберите группу.", show_alert=True)
+                return
+            selected = next((item for item in destinations if item.destination_id == selected_destination_id), None)
+            if selected is None:
+                _log_guiy_owner_warning(
+                    provider="telegram",
+                    actor_user_id=actor_user_id,
+                    selected_action="say",
+                    target_chat_or_guild=selected_destination_id,
+                    target_message_id=state.get("target_message_id"),
+                    guiy_account_id=None,
+                    message="telegram guiy owner selected destination disappeared before confirmation",
+                )
+                await callback.answer("Этот чат больше недоступен. Выберите другой.", show_alert=True)
+                return
+            pending = PendingGuiyOwnerAction(
+                selected_action="say",
+                bot_user_id=str(state.get("bot_user_id") or ""),
+                target_message_id=state.get("target_message_id"),
+                reply_author_user_id=state.get("reply_author_user_id"),
+                created_at=time.time(),
+                target_chat_or_guild=str(selected.destination_id),
+                target_destination_id=str(selected.destination_id),
+                target_destination_label=selected.display_label,
+            )
+            _PENDING_GUIY_OWNER_ACTIONS[callback.from_user.id] = pending
+            _PENDING_GUIY_OWNER_DESTINATIONS.pop(callback.from_user.id, None)
+            _log_guiy_owner_info(
+                provider="telegram",
+                actor_user_id=actor_user_id,
+                selected_action="say",
+                target_chat_or_guild=selected.destination_id,
+                target_message_id=pending.target_message_id,
+                guiy_account_id=None,
+                message="telegram guiy owner destination confirmed",
+            )
+            await callback.message.edit_text(
+                "✅ <b>Куда писать?</b>\n"
+                f"Гуй отправит сообщение сюда: <b>{selected.title}</b>\n"
+                f"<i>{selected.subtitle}</i>\n\n"
+                "Следующий шаг: отправьте одним сообщением текст, и бот опубликует его в выбранной группе.",
+                parse_mode="HTML",
+                reply_markup=None,
+            )
+            await callback.answer("Группа выбрана")
+            return
+        else:
+            await callback.answer("Неизвестное действие", show_alert=True)
+            return
+
+        state["page"] = page
+        state["selected_destination_id"] = selected_destination_id
+        _PENDING_GUIY_OWNER_DESTINATIONS[callback.from_user.id] = state
+        await callback.message.edit_text(
+            _build_destination_text(destinations, page=page, selected_destination_id=selected_destination_id),
+            parse_mode="HTML",
+            reply_markup=_build_destination_keyboard(destinations, page=page, selected_destination_id=selected_destination_id),
+        )
+        await callback.answer()
+    except Exception:
+        logger.exception(
+            "telegram guiy owner destination callback failed provider=%s actor_user_id=%s selected_action=%s target_chat_or_guild=%s target_message_id=%s guiy_account_id=%s",
+            "telegram",
+            actor_user_id,
+            "say",
+            target_chat_or_guild,
+            None,
+            None,
+        )
+        await callback.answer("Ошибка выбора группы", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("guiy_owner:field:"))
@@ -731,8 +1058,58 @@ async def guiy_owner_pending_input_handler(message: Message) -> None:
             await message.answer(result.message)
             return
         if pending.selected_action == "say":
-            await message.answer(result.outbound_text)
-            await message.answer("ℹ️ Сообщение отправлено. Изменение уже видно в текущем чате.")
+            allowed, reason, destination_label = await _verify_telegram_destination_access(message, pending)
+            if not allowed:
+                _log_guiy_owner_warning(
+                    provider="telegram",
+                    actor_user_id=actor_user_id,
+                    selected_action=pending.selected_action,
+                    target_chat_or_guild=pending.target_destination_id or pending.target_chat_or_guild,
+                    target_message_id=pending.target_message_id,
+                    guiy_account_id=result.guiy_account_id,
+                    message=f"telegram guiy owner send blocked reason={reason}",
+                )
+                await message.answer(
+                    "❌ Не удалось отправить сообщение от Гуя.\n"
+                    f"Причина: чат больше недоступен или у бота нет прав писать сюда.\n"
+                    f"Выбранное место: {destination_label}.\n"
+                    "Откройте /guiy_owner заново и выберите актуальную группу."
+                )
+                return
+            try:
+                await message.bot.send_message(int(str(pending.target_destination_id)), result.outbound_text)
+            except Exception:
+                logger.exception(
+                    "telegram guiy owner send failed provider=%s actor_user_id=%s selected_action=%s target_chat_or_guild=%s target_message_id=%s guiy_account_id=%s",
+                    "telegram",
+                    actor_user_id,
+                    pending.selected_action,
+                    pending.target_destination_id or pending.target_chat_or_guild,
+                    pending.target_message_id,
+                    result.guiy_account_id,
+                )
+                GuiyPublishDestinationsService.mark_telegram_chat_inactive(
+                    pending.target_destination_id,
+                    reason="send_failed",
+                )
+                _log_guiy_owner_warning(
+                    provider="telegram",
+                    actor_user_id=actor_user_id,
+                    selected_action=pending.selected_action,
+                    target_chat_or_guild=pending.target_destination_id or pending.target_chat_or_guild,
+                    target_message_id=pending.target_message_id,
+                    guiy_account_id=result.guiy_account_id,
+                    message="telegram guiy owner send failed after destination selection",
+                )
+                await message.answer(
+                    "❌ Не удалось отправить сообщение от Гуя: бот потерял доступ к группе или у него больше нет прав писать туда.\n"
+                    f"Выбранное место: {destination_label}."
+                )
+                return
+            await message.answer(
+                "✅ Сообщение отправлено.\n"
+                f"Гуй отправил сообщение сюда: {destination_label}."
+            )
             return
         if pending.selected_action == "reply":
             await message.answer(result.outbound_text, reply_to_message_id=result.reply_to_message_id)
