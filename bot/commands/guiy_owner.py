@@ -84,6 +84,64 @@ def _log_guiy_owner_warning(
     )
 
 
+def _build_profile_embed(registration_message: str | None = None) -> discord.Embed:
+    description_lines: list[str] = []
+    if registration_message:
+        description_lines.extend([registration_message, ""])
+    description_lines.extend([
+        GUIY_OWNER_ACTION_SPECS["profile"].instruction,
+        "",
+        "Теперь можно открыть редактирование профиля. Выберите поле ниже. Для текстовых полей откроется modal, а для ролей — picker.",
+    ])
+    return discord.Embed(
+        title="Профиль Гуя",
+        description="\n".join(description_lines),
+        color=discord.Color.blurple(),
+    )
+
+
+async def _send_profile_menu(
+    interaction: discord.Interaction,
+    *,
+    actor_id: int,
+    bot_user_id: str,
+    target_message_id: int | None,
+    auto_bootstrap: bool,
+    reply_author_user_id: str | None = None,
+    log_message: str,
+) -> None:
+    registration_message: str | None = None
+    guiy_account_id: str | None = None
+    if auto_bootstrap:
+        result = execute_guiy_owner_flow(
+            provider="discord",
+            actor_user_id=actor_id,
+            bot_user_id=bot_user_id,
+            selected_action="register_profile",
+            target_message_id=target_message_id,
+            reply_author_user_id=reply_author_user_id,
+        )
+        guiy_account_id = result.guiy_account_id
+        if not result.ok:
+            await interaction.response.send_message(result.message, ephemeral=True)
+            return
+        registration_message = result.message
+    _log_guiy_owner_info(
+        actor_user_id=actor_id,
+        selected_action="profile",
+        target_chat_or_guild=getattr(interaction.guild, "id", None) or getattr(interaction.channel, "id", None),
+        target_message_id=target_message_id,
+        guiy_account_id=guiy_account_id,
+        message=log_message,
+    )
+    await interaction.response.send_message(
+        embed=_build_profile_embed(registration_message),
+        view=GuiyOwnerProfileView(actor_id=actor_id, bot_user_id=bot_user_id, target_message_id=target_message_id),
+        ephemeral=True,
+    )
+
+
+
 async def _resolve_reply_message(ctx) -> discord.Message | None:
     reference = getattr(getattr(ctx, "message", None), "reference", None)
     if not reference or not reference.message_id or not getattr(ctx, "channel", None):
@@ -806,26 +864,14 @@ class GuiyOwnerActionsView(SafeView):
 
     @discord.ui.button(label="Профиль Гуя", style=discord.ButtonStyle.secondary)
     async def profile(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        _log_guiy_owner_info(
-            actor_user_id=interaction.user.id,
-            selected_action="profile",
-            target_chat_or_guild=getattr(interaction.guild, "id", None) or getattr(interaction.channel, "id", None),
+        await _send_profile_menu(
+            interaction,
+            actor_id=self.actor_id,
+            bot_user_id=self.bot_user_id,
             target_message_id=self.target_message_id,
-            guiy_account_id=None,
-            message="discord guiy owner profile menu opened",
-        )
-        embed = discord.Embed(
-            title="Профиль Гуя",
-            description=(
-                f"{GUIY_OWNER_ACTION_SPECS['profile'].instruction}\n\n"
-                "Выберите поле ниже. Для текстовых полей откроется modal, а для ролей — picker."
-            ),
-            color=discord.Color.blurple(),
-        )
-        await interaction.response.send_message(
-            embed=embed,
-            view=GuiyOwnerProfileView(actor_id=self.actor_id, bot_user_id=self.bot_user_id, target_message_id=self.target_message_id),
-            ephemeral=True,
+            auto_bootstrap=True,
+            reply_author_user_id=self.reply_author_user_id,
+            log_message="discord guiy owner profile menu opened",
         )
 
     @discord.ui.button(label="Зарегистрировать профиль Гуя", style=discord.ButtonStyle.success)
@@ -847,7 +893,14 @@ class GuiyOwnerActionsView(SafeView):
                 guiy_account_id=result.guiy_account_id,
                 message="discord guiy owner register action handled",
             )
-            await interaction.response.send_message(result.message, ephemeral=True)
+            if not result.ok:
+                await interaction.response.send_message(result.message, ephemeral=True)
+                return
+            await interaction.response.send_message(
+                embed=_build_profile_embed(result.message),
+                view=GuiyOwnerProfileView(actor_id=self.actor_id, bot_user_id=self.bot_user_id, target_message_id=self.target_message_id),
+                ephemeral=True,
+            )
         except Exception:
             logger.exception(
                 "discord guiy owner register failed provider=%s actor_user_id=%s selected_action=%s target_chat_or_guild=%s target_message_id=%s guiy_account_id=%s",
@@ -921,6 +974,18 @@ async def _run_text_fallback(ctx, action: str, payload: str):
     if not result.ok:
         await send_temp(ctx, result.message, delete_after=None)
         return
+    if action == "register_profile":
+        await send_temp(
+            ctx,
+            embed=_build_profile_embed(result.message),
+            view=GuiyOwnerProfileView(
+                actor_id=getattr(ctx.author, "id", None),
+                bot_user_id=str(bot_user_id or ""),
+                target_message_id=target_message_id,
+            ),
+            delete_after=None,
+        )
+        return
     if action == "say":
         await send_temp(ctx, result.outbound_text, delete_after=None)
         return
@@ -938,7 +1003,7 @@ async def guiy_owner(ctx, action: str = "", *, payload: str = ""):
         requested_action = str(action or "").strip().lower()
         requested_payload = str(payload or "").strip()
 
-    if requested_action in {"say", "reply", "profile"}:
+    if requested_action in {"say", "reply", "profile", "register_profile"}:
         await _run_text_fallback(ctx, requested_action, requested_payload)
         return
 
@@ -950,8 +1015,8 @@ async def guiy_owner(ctx, action: str = "", *, payload: str = ""):
             "Выберите действие кнопками ниже. После каждого выбора бот коротко объяснит следующий шаг и что изменится после подтверждения.\n\n"
             f"• {GUIY_OWNER_ACTION_SPECS['say'].title} — выбрать канал и отправить туда новое сообщение от лица Гуя.\n"
             f"• {GUIY_OWNER_ACTION_SPECS['reply'].title} — ответить от лица Гуя на выбранное сообщение.\n"
-            f"• {GUIY_OWNER_ACTION_SPECS['profile'].title} — открыть поля профиля Гуя.\n"
-            f"• {GUIY_OWNER_ACTION_SPECS['register_profile'].title} — создать профиль Гуя, если его ещё нет."
+            f"• {GUIY_OWNER_ACTION_SPECS['profile'].title} — автоматически проверить регистрацию общего аккаунта Гуя и сразу открыть редактирование полей.\n"
+            f"• {GUIY_OWNER_ACTION_SPECS['register_profile'].title} — вручную создать общий аккаунт, если хотите сделать это отдельным шагом заранее."
         ),
         color=discord.Color.blue(),
     )

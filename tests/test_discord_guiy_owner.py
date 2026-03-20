@@ -32,6 +32,13 @@ assert _spec and _spec.loader
 _spec.loader.exec_module(mod)
 
 
+def _button_by_label(view, label: str):
+    for child in view.children:
+        if getattr(child, "label", None) == label:
+            return child
+    raise AssertionError(f"button not found: {label}")
+
+
 class DiscordGuiyOwnerTests(unittest.IsolatedAsyncioTestCase):
     async def test_command_without_args_opens_view(self):
         ctx = SimpleNamespace(
@@ -84,6 +91,69 @@ class DiscordGuiyOwnerTests(unittest.IsolatedAsyncioTestCase):
         execute_mock.assert_called_once()
         send_mock.assert_awaited_once_with(ctx, "привет из дискорда", delete_after=None)
 
+    async def test_profile_button_auto_bootstraps_before_opening_editor(self):
+        view = mod.GuiyOwnerActionsView(actor_id=42, bot_user_id="999", target_message_id=None, reply_author_user_id=None)
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=42),
+            guild=SimpleNamespace(id=777),
+            channel=SimpleNamespace(id=555),
+            response=SimpleNamespace(send_message=AsyncMock()),
+        )
+
+        with patch.object(
+            mod,
+            "execute_guiy_owner_flow",
+            return_value=SimpleNamespace(ok=True, message="✅ Профиль Гуя зарегистрирован.\nТеперь можно открыть редактирование профиля и изменить нужные поля.", guiy_account_id="guiy-acc"),
+        ) as execute_mock:
+            await _button_by_label(view, "Профиль Гуя").callback(interaction)
+
+        execute_mock.assert_called_once()
+        kwargs = interaction.response.send_message.await_args.kwargs
+        self.assertIn("Теперь можно открыть редактирование профиля", kwargs["embed"].description)
+        self.assertIsInstance(kwargs["view"], mod.GuiyOwnerProfileView)
+
+    async def test_register_button_success_shows_profile_editor(self):
+        view = mod.GuiyOwnerActionsView(actor_id=42, bot_user_id="999", target_message_id=None, reply_author_user_id=None)
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=42),
+            guild=SimpleNamespace(id=777),
+            channel=SimpleNamespace(id=555),
+            response=SimpleNamespace(send_message=AsyncMock()),
+        )
+
+        with patch.object(
+            mod,
+            "execute_guiy_owner_flow",
+            return_value=SimpleNamespace(ok=True, message="✅ Профиль Гуя уже зарегистрирован.\nТеперь можно открыть редактирование профиля и изменить нужные поля.", guiy_account_id="guiy-acc"),
+        ):
+            await _button_by_label(view, "Зарегистрировать профиль Гуя").callback(interaction)
+
+        kwargs = interaction.response.send_message.await_args.kwargs
+        self.assertIn("Профиль Гуя уже зарегистрирован", kwargs["embed"].description)
+        self.assertIsInstance(kwargs["view"], mod.GuiyOwnerProfileView)
+
+    async def test_register_button_failure_returns_clear_error(self):
+        view = mod.GuiyOwnerActionsView(actor_id=42, bot_user_id="999", target_message_id=None, reply_author_user_id=None)
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=42),
+            guild=SimpleNamespace(id=777),
+            channel=SimpleNamespace(id=555),
+            response=SimpleNamespace(send_message=AsyncMock()),
+        )
+
+        with patch.object(
+            mod,
+            "execute_guiy_owner_flow",
+            return_value=SimpleNamespace(ok=False, message="❌ Не удалось зарегистрировать профиль Гуя. Причина: База данных недоступна.", guiy_account_id=None),
+        ):
+            await _button_by_label(view, "Зарегистрировать профиль Гуя").callback(interaction)
+
+        interaction.response.send_message.assert_awaited_once_with(
+            "❌ Не удалось зарегистрировать профиль Гуя. Причина: База данных недоступна.",
+            ephemeral=True,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
+
