@@ -267,6 +267,45 @@ class DiscordRolesAdminTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("только глава/главный вице", send_mock.await_args.args[1])
 
+    async def test_rolesadmin_access_denied_records_audit(self):
+        ctx = self._build_ctx()
+        ctx.author.guild_permissions = SimpleNamespace(administrator=False)
+
+        with (
+            patch.object(roles_admin.AuthorityService, "has_command_permission", return_value=False),
+            patch.object(roles_admin.RoleManagementService, "record_role_change_audit") as audit_mock,
+            patch.object(roles_admin, "send_temp", AsyncMock()) as send_mock,
+        ):
+            allowed = await roles_admin._ensure_roles_admin(ctx)
+
+        self.assertFalse(allowed)
+        audit_mock.assert_called_once()
+        self.assertIn("Недостаточно полномочий", send_mock.await_args.args[1])
+
+    async def test_rolesadmin_user_grant_audits_discord_sync_conflict(self):
+        member = SimpleNamespace(id=222, add_roles=AsyncMock(side_effect=RuntimeError("boom")))
+        guild_role = SimpleNamespace(id=999)
+        ctx = self._build_ctx()
+        ctx.guild = SimpleNamespace(id=222, get_role=lambda role_id: guild_role if role_id == 999 else None)
+        resolved = {"account_id": "acc-2", "label": "@target", "member": member, "provider": "discord", "provider_user_id": "222"}
+
+        with (
+            patch.object(roles_admin, "_ensure_roles_admin", AsyncMock(return_value=True)),
+            patch.object(roles_admin, "_resolve_discord_target", AsyncMock(return_value=resolved)),
+            patch.object(roles_admin.RoleManagementService, "get_role", return_value={"discord_role_id": "999"}),
+            patch.object(
+                roles_admin.RoleManagementService,
+                "apply_user_role_changes_by_account",
+                return_value={"grant_success": ["Moderator"], "grant_denied": [], "grant_failed": []},
+            ),
+            patch.object(roles_admin.RoleManagementService, "record_role_change_audit") as audit_mock,
+            patch.object(roles_admin, "send_temp", AsyncMock()) as send_mock,
+        ):
+            await roles_admin.rolesadmin_user_grant(ctx, "@target", "Moderator")
+
+        self.assertTrue(audit_mock.called)
+        self.assertIn("не удалось", send_mock.await_args.args[1])
+
     async def test_rolesadmin_role_create_sends_preview_embed_before_confirmation(self):
         ctx = self._build_ctx()
 
@@ -323,7 +362,10 @@ class DiscordRolesAdminTests(unittest.IsolatedAsyncioTestCase):
             "New",
             "Новое описание",
             actor_id=str(ctx.author.id),
+            actor_provider="discord",
+            actor_user_id=str(ctx.author.id),
             operation="role_edit_description",
+            source="discord_command",
         )
         self.assertIn("Описание роли", send_mock.await_args.args[1])
 
@@ -341,7 +383,10 @@ class DiscordRolesAdminTests(unittest.IsolatedAsyncioTestCase):
             "New",
             "Через турнир",
             actor_id=str(ctx.author.id),
+            actor_provider="discord",
+            actor_user_id=str(ctx.author.id),
             operation="role_edit_acquire_hint",
+            source="discord_command",
         )
         self.assertIn("Способ получения роли", send_mock.await_args.args[1])
 

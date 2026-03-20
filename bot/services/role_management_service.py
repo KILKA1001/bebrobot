@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from bot.data import db
@@ -31,6 +32,170 @@ ACQUIRE_METHOD_DISCORD_SYNC = "автоматически синхронизир
 
 
 class RoleManagementService:
+    @staticmethod
+    def _jsonable(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {str(key): RoleManagementService._jsonable(val) for key, val in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [RoleManagementService._jsonable(item) for item in value]
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        return str(value)
+
+    @staticmethod
+    def _load_account_identity_snapshot(account_id: str | None) -> dict[str, str | None]:
+        snapshot = {
+            "account_id": str(account_id or "").strip() or None,
+            "discord_user_id": None,
+            "telegram_user_id": None,
+        }
+        account_key = str(account_id or "").strip()
+        if not account_key or not db.supabase:
+            return snapshot
+        try:
+            response = (
+                db.supabase.table("account_identities")
+                .select("provider,provider_user_id")
+                .eq("account_id", account_key)
+                .execute()
+            )
+            for row in response.data or []:
+                provider = str(row.get("provider") or "").strip().lower()
+                provider_user_id = str(row.get("provider_user_id") or "").strip() or None
+                if provider == "discord" and provider_user_id:
+                    snapshot["discord_user_id"] = provider_user_id
+                elif provider == "telegram" and provider_user_id:
+                    snapshot["telegram_user_id"] = provider_user_id
+        except Exception:
+            logger.exception("role audit failed to load account identities account_id=%s", account_key)
+        return snapshot
+
+    @staticmethod
+    def _resolve_audit_identity(
+        *,
+        provider: str | None = None,
+        user_id: str | None = None,
+        account_id: str | None = None,
+    ) -> dict[str, str | None]:
+        normalized_provider = str(provider or "").strip().lower() or None
+        normalized_user_id = str(user_id or "").strip() or None
+        resolved_account_id = str(account_id or "").strip() or None
+        if not resolved_account_id and normalized_provider and normalized_user_id:
+            try:
+                resolved_account_id = AccountsService.resolve_account_id(normalized_provider, normalized_user_id)
+            except Exception:
+                logger.exception(
+                    "role audit failed to resolve account provider=%s provider_user_id=%s",
+                    normalized_provider,
+                    normalized_user_id,
+                )
+        snapshot = RoleManagementService._load_account_identity_snapshot(resolved_account_id)
+        return {
+            "account_id": resolved_account_id,
+            "provider": normalized_provider,
+            "provider_user_id": normalized_user_id,
+            "discord_user_id": snapshot.get("discord_user_id"),
+            "telegram_user_id": snapshot.get("telegram_user_id"),
+        }
+
+    @staticmethod
+    def record_role_change_audit(
+        *,
+        action: str,
+        role_name: str | None,
+        source: str | None,
+        actor_provider: str | None = None,
+        actor_user_id: str | None = None,
+        actor_account_id: str | None = None,
+        target_provider: str | None = None,
+        target_user_id: str | None = None,
+        target_account_id: str | None = None,
+        before: Any = None,
+        after: Any = None,
+        status: str = "success",
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        actor = RoleManagementService._resolve_audit_identity(
+            provider=actor_provider,
+            user_id=actor_user_id,
+            account_id=actor_account_id,
+        )
+        target = RoleManagementService._resolve_audit_identity(
+            provider=target_provider,
+            user_id=target_user_id,
+            account_id=target_account_id,
+        )
+        normalized_action = str(action or "").strip() or "unknown"
+        normalized_role_name = str(role_name or "").strip() or "*"
+        normalized_source = str(source or "").strip() or "unknown"
+        normalized_status = str(status or "").strip() or "success"
+        normalized_error_code = str(error_code or "").strip() or None
+        normalized_error_message = str(error_message or "").strip() or None
+        before_value = RoleManagementService._jsonable(before)
+        after_value = RoleManagementService._jsonable(after)
+
+        log_method = logger.info if normalized_status == "success" else logger.warning
+        log_method(
+            "role_audit actor_account_id=%s actor_provider=%s actor_user_id=%s target_account_id=%s target_provider=%s target_user_id=%s action=%s role_name=%s source=%s status=%s before=%s after=%s error_code=%s error_message=%s",
+            actor.get("account_id"),
+            actor.get("provider"),
+            actor.get("provider_user_id"),
+            target.get("account_id"),
+            target.get("provider"),
+            target.get("provider_user_id"),
+            normalized_action,
+            normalized_role_name,
+            normalized_source,
+            normalized_status,
+            before_value,
+            after_value,
+            normalized_error_code,
+            normalized_error_message,
+        )
+
+        if not db.supabase:
+            logger.warning("role audit skipped: supabase is not configured action=%s role_name=%s", normalized_action, normalized_role_name)
+            return
+
+        payload = {
+            "actor_user_id": actor.get("provider_user_id") or "",
+            "target_user_id": target.get("provider_user_id") or "",
+            "action": normalized_action,
+            "role_id": normalized_role_name,
+            "role_name": normalized_role_name,
+            "source": normalized_source,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "reason": normalized_error_message or normalized_error_code,
+            "actor_account_id": actor.get("account_id"),
+            "actor_provider": actor.get("provider"),
+            "actor_provider_user_id": actor.get("provider_user_id"),
+            "target_account_id": target.get("account_id"),
+            "target_provider": target.get("provider"),
+            "target_provider_user_id": target.get("provider_user_id"),
+            "before_value": before_value,
+            "after_value": after_value,
+            "status": normalized_status,
+            "error_code": normalized_error_code,
+            "error_message": normalized_error_message,
+        }
+        try:
+            db.supabase.table("role_change_audit").insert(payload).execute()
+        except Exception:
+            legacy_payload = {
+                "actor_user_id": actor.get("provider_user_id") or "",
+                "target_user_id": target.get("provider_user_id") or "",
+                "action": normalized_action,
+                "role_id": normalized_role_name,
+                "source": normalized_source,
+                "created_at": payload["created_at"],
+                "reason": normalized_error_message or normalized_error_code,
+            }
+            try:
+                db.supabase.table("role_change_audit").insert(legacy_payload).execute()
+            except Exception:
+                logger.exception("role audit insert failed payload=%s", payload)
+
     @staticmethod
     def _normalize_role_names(role_names: list[str] | tuple[str, ...] | set[str] | None) -> list[str]:
         seen: set[str] = set()
@@ -573,7 +738,11 @@ class RoleManagementService:
         discord_role_name: str | None = None,
         *,
         actor_id: str | None = None,
+        actor_provider: str | None = None,
+        actor_user_id: str | None = None,
+        actor_account_id: str | None = None,
         operation: str = "role_create",
+        source: str = "unknown",
     ) -> bool:
         role_name = str(name or "").strip()
         if not role_name:
@@ -590,6 +759,7 @@ class RoleManagementService:
         computed_last_position = int(preview.get("computed_last_position", 0))
         normalized_description = RoleManagementService._normalized_description(description)
         normalized_acquire_hint = RoleManagementService._normalized_acquire_hint(acquire_hint)
+        before_role = RoleManagementService.get_role(role_name) or {}
         payload = {
             "name": role_name,
             "category_name": normalized_category,
@@ -605,29 +775,55 @@ class RoleManagementService:
         try:
             db.supabase.table("role_categories").upsert({"name": normalized_category, "position": 0}).execute()
             db.supabase.table("roles").upsert(payload, on_conflict="name").execute()
+            after_role = RoleManagementService.get_role(role_name) or dict(payload)
+            audit_action = "role_edit" if before_role else "role_create"
             logger.info(
-                "create_role completed role_name=%s category=%s description_length=%s actor_id=%s operation=%s computed_position=%s",
+                "create_role completed role_name=%s category=%s description_length=%s actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s operation=%s source=%s computed_position=%s before=%s after=%s",
                 role_name,
                 normalized_category,
                 len(normalized_description or ""),
                 actor_id,
+                actor_provider,
+                actor_user_id,
+                actor_account_id,
                 operation,
+                source,
                 computed_position,
+                RoleManagementService._jsonable(before_role),
+                RoleManagementService._jsonable(after_role),
             )
             logger.info(
-                "create_role metadata role_name=%s actor_id=%s field=%s value_length=%s operation=%s",
+                "create_role metadata role_name=%s actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s field=%s value_length=%s operation=%s source=%s",
                 role_name,
                 actor_id,
+                actor_provider,
+                actor_user_id,
+                actor_account_id,
                 "acquire_hint",
                 len(normalized_acquire_hint or ""),
                 operation,
+                source,
+            )
+            RoleManagementService.record_role_change_audit(
+                action=audit_action,
+                role_name=role_name,
+                source=source,
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id or actor_id,
+                actor_account_id=actor_account_id,
+                before=before_role,
+                after=after_role,
             )
             return True
         except Exception:
             logger.exception(
-                "create_role failed actor_id=%s operation=%s role_name=%s category=%s description_length=%s acquire_hint_length=%s requested_position=%s computed_last_position=%s computed_position=%s",
+                "create_role failed actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s operation=%s source=%s role_name=%s category=%s description_length=%s acquire_hint_length=%s requested_position=%s computed_last_position=%s computed_position=%s",
                 actor_id,
+                actor_provider,
+                actor_user_id,
+                actor_account_id,
                 operation,
+                source,
                 role_name,
                 normalized_category,
                 len(normalized_description or ""),
@@ -636,6 +832,19 @@ class RoleManagementService:
                 computed_last_position,
                 computed_position,
             )
+            RoleManagementService.record_role_change_audit(
+                action="role_create_failed",
+                role_name=role_name,
+                source=source,
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id or actor_id,
+                actor_account_id=actor_account_id,
+                before=before_role,
+                after=payload,
+                status="error",
+                error_code="db_write_failed",
+                error_message="create_role failed",
+            )
             return False
 
     @staticmethod
@@ -643,8 +852,12 @@ class RoleManagementService:
         name: str,
         *,
         actor_id: str | None = None,
+        actor_provider: str | None = None,
+        actor_user_id: str | None = None,
+        actor_account_id: str | None = None,
         guild_id: str | None = None,
         telegram_user_id: str | None = None,
+        source: str = "unknown",
     ) -> dict[str, Any]:
         role_name = str(name or "").strip()
         if not role_name or not db.supabase:
@@ -660,11 +873,28 @@ class RoleManagementService:
             role = (role_row.data or [None])[0]
             if not role:
                 logger.warning(
-                    "delete_role skipped role missing role_name=%s actor_id=%s guild_id=%s telegram_user_id=%s",
+                    "delete_role skipped role missing role_name=%s actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s guild_id=%s telegram_user_id=%s source=%s",
                     role_name,
                     actor_id,
+                    actor_provider,
+                    actor_user_id,
+                    actor_account_id,
                     guild_id,
                     telegram_user_id,
+                    source,
+                )
+                RoleManagementService.record_role_change_audit(
+                    action="role_delete_denied",
+                    role_name=role_name,
+                    source=source,
+                    actor_provider=actor_provider,
+                    actor_user_id=actor_user_id or actor_id or telegram_user_id,
+                    actor_account_id=actor_account_id,
+                    before={"exists": False},
+                    after={"exists": False},
+                    status="denied",
+                    error_code=DELETE_ROLE_REASON_NOT_FOUND,
+                    error_message="role not found",
                 )
                 return RoleManagementService._delete_role_result(
                     False,
@@ -676,12 +906,29 @@ class RoleManagementService:
             is_discord_managed = bool(role.get("is_discord_managed"))
             if is_discord_managed:
                 logger.warning(
-                    "delete_role denied discord-managed role_name=%s discord_role_id=%s actor_id=%s guild_id=%s telegram_user_id=%s",
+                    "delete_role denied discord-managed role_name=%s discord_role_id=%s actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s guild_id=%s telegram_user_id=%s source=%s",
                     role_name,
                     discord_role_id,
                     actor_id,
+                    actor_provider,
+                    actor_user_id,
+                    actor_account_id,
                     guild_id,
                     telegram_user_id,
+                    source,
+                )
+                RoleManagementService.record_role_change_audit(
+                    action="role_delete_denied",
+                    role_name=role_name,
+                    source=source,
+                    actor_provider=actor_provider,
+                    actor_user_id=actor_user_id or actor_id or telegram_user_id,
+                    actor_account_id=actor_account_id,
+                    before=role,
+                    after=role,
+                    status="denied",
+                    error_code=DELETE_ROLE_REASON_DISCORD_MANAGED,
+                    error_message="discord managed role cannot be deleted",
                 )
                 return RoleManagementService._delete_role_result(
                     False,
@@ -693,6 +940,16 @@ class RoleManagementService:
 
             db.supabase.table("roles").delete().eq("name", role_name).execute()
             db.supabase.table("account_role_assignments").delete().eq("role_name", role_name).execute()
+            RoleManagementService.record_role_change_audit(
+                action="role_delete",
+                role_name=role_name,
+                source=source,
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id or actor_id or telegram_user_id,
+                actor_account_id=actor_account_id,
+                before=role,
+                after={"deleted": True},
+            )
             return RoleManagementService._delete_role_result(
                 True,
                 role_name=role_name,
@@ -701,11 +958,28 @@ class RoleManagementService:
             )
         except Exception:
             logger.exception(
-                "delete_role failed role_name=%s actor_id=%s guild_id=%s telegram_user_id=%s",
+                "delete_role failed role_name=%s actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s guild_id=%s telegram_user_id=%s source=%s",
                 role_name,
                 actor_id,
+                actor_provider,
+                actor_user_id,
+                actor_account_id,
                 guild_id,
                 telegram_user_id,
+                source,
+            )
+            RoleManagementService.record_role_change_audit(
+                action="role_delete_failed",
+                role_name=role_name,
+                source=source,
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id or actor_id or telegram_user_id,
+                actor_account_id=actor_account_id,
+                before={"role_name": role_name},
+                after=None,
+                status="error",
+                error_code=DELETE_ROLE_REASON_ERROR,
+                error_message="delete_role failed",
             )
             return RoleManagementService._delete_role_result(False, reason=DELETE_ROLE_REASON_ERROR, role_name=role_name)
 
@@ -909,10 +1183,14 @@ class RoleManagementService:
         account_id: str,
         *,
         actor_id: str | None = None,
+        actor_account_id: str | None = None,
         actor_provider: str | None = None,
         actor_user_id: str | None = None,
+        target_provider: str | None = None,
+        target_user_id: str | None = None,
         grant_roles: list[str] | tuple[str, ...] | set[str] | None = None,
         revoke_roles: list[str] | tuple[str, ...] | set[str] | None = None,
+        source: str = "unknown",
     ) -> dict[str, Any]:
         account_key = str(account_id or "").strip()
         if not account_key:
@@ -931,10 +1209,32 @@ class RoleManagementService:
         conflicting = set(normalized_grants) & set(normalized_revokes)
         if conflicting:
             logger.warning(
-                "apply_user_role_changes_by_account skipped conflicting roles actor_id=%s target_account_id=%s roles=%s",
+                "apply_user_role_changes_by_account skipped conflicting roles actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s target_account_id=%s target_provider=%s target_user_id=%s source=%s roles=%s",
                 actor_id,
+                actor_provider,
+                actor_user_id,
+                actor_account_id,
                 account_key,
+                target_provider,
+                target_user_id,
+                source,
                 sorted(conflicting),
+            )
+            RoleManagementService.record_role_change_audit(
+                action="role_batch_conflict",
+                role_name="*batch*",
+                source=source,
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id or actor_id,
+                actor_account_id=actor_account_id,
+                target_provider=target_provider,
+                target_user_id=target_user_id,
+                target_account_id=account_key,
+                before={"grant_roles": normalized_grants, "revoke_roles": normalized_revokes},
+                after={"conflicting_roles": sorted(conflicting)},
+                status="conflict",
+                error_code="conflicting_roles",
+                error_message="same role requested for grant and revoke in one batch",
             )
             normalized_grants = [item for item in normalized_grants if item not in conflicting]
             normalized_revokes = [item for item in normalized_revokes if item not in conflicting]
@@ -957,16 +1257,42 @@ class RoleManagementService:
                     account_key,
                     role_name,
                     category=str(role_info.get("category_name") or "").strip() or None,
+                    actor_account_id=actor_account_id,
                     actor_provider=actor_provider,
                     actor_user_id=actor_user_id or actor_id,
+                    target_provider=target_provider,
+                    target_user_id=target_user_id,
+                    source=source,
                 )
             except Exception:
                 grant_result = RoleManagementService._role_action_result(False, role_name=role_name)
                 logger.exception(
-                    "apply_user_role_changes_by_account grant crashed actor_id=%s target_account_id=%s role_name=%s",
+                    "apply_user_role_changes_by_account grant crashed actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s target_account_id=%s target_provider=%s target_user_id=%s role_name=%s source=%s",
                     actor_id,
+                    actor_provider,
+                    actor_user_id,
+                    actor_account_id,
                     account_key,
+                    target_provider,
+                    target_user_id,
                     role_name,
+                    source,
+                )
+                RoleManagementService.record_role_change_audit(
+                    action="role_grant_failed",
+                    role_name=role_name,
+                    source=source,
+                    actor_provider=actor_provider,
+                    actor_user_id=actor_user_id or actor_id,
+                    actor_account_id=actor_account_id,
+                    target_provider=target_provider,
+                    target_user_id=target_user_id,
+                    target_account_id=account_key,
+                    before={"assigned": False},
+                    after={"assigned": False},
+                    status="error",
+                    error_code="grant_crashed",
+                    error_message="grant crashed before service returned",
                 )
             ok = bool(grant_result.get("ok"))
             if ok:
@@ -997,16 +1323,42 @@ class RoleManagementService:
                 revoke_result = RoleManagementService.revoke_user_role_by_account(
                     account_key,
                     role_name,
+                    actor_account_id=actor_account_id,
                     actor_provider=actor_provider,
                     actor_user_id=actor_user_id or actor_id,
+                    target_provider=target_provider,
+                    target_user_id=target_user_id,
+                    source=source,
                 )
             except Exception:
                 revoke_result = RoleManagementService._role_action_result(False, role_name=role_name)
                 logger.exception(
-                    "apply_user_role_changes_by_account revoke crashed actor_id=%s target_account_id=%s role_name=%s",
+                    "apply_user_role_changes_by_account revoke crashed actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s target_account_id=%s target_provider=%s target_user_id=%s role_name=%s source=%s",
                     actor_id,
+                    actor_provider,
+                    actor_user_id,
+                    actor_account_id,
                     account_key,
+                    target_provider,
+                    target_user_id,
                     role_name,
+                    source,
+                )
+                RoleManagementService.record_role_change_audit(
+                    action="role_revoke_failed",
+                    role_name=role_name,
+                    source=source,
+                    actor_provider=actor_provider,
+                    actor_user_id=actor_user_id or actor_id,
+                    actor_account_id=actor_account_id,
+                    target_provider=target_provider,
+                    target_user_id=target_user_id,
+                    target_account_id=account_key,
+                    before={"assigned": True},
+                    after={"assigned": True},
+                    status="error",
+                    error_code="revoke_crashed",
+                    error_message="revoke crashed before service returned",
                 )
             ok = bool(revoke_result.get("ok"))
             if ok:
@@ -1032,6 +1384,24 @@ class RoleManagementService:
                 error=None if ok else str(revoke_result.get("reason") or "service_returned_false"),
             )
 
+        if normalized_grants or normalized_revokes:
+            RoleManagementService.record_role_change_audit(
+                action="role_batch_change",
+                role_name="*batch*",
+                source=source,
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id or actor_id,
+                actor_account_id=actor_account_id,
+                target_provider=target_provider,
+                target_user_id=target_user_id,
+                target_account_id=account_key,
+                before={"grant_roles": normalized_grants, "revoke_roles": normalized_revokes},
+                after=result,
+                status="success" if result.get("ok") else "partial",
+                error_code=None if result.get("ok") else "partial_failure",
+                error_message=None if result.get("ok") else "batch completed with errors",
+            )
+
         return result
 
     @staticmethod
@@ -1040,8 +1410,12 @@ class RoleManagementService:
         role_name: str,
         category: str | None = None,
         *,
+        actor_account_id: str | None = None,
         actor_provider: str | None = None,
         actor_user_id: str | None = None,
+        target_provider: str | None = None,
+        target_user_id: str | None = None,
+        source: str = "unknown",
     ) -> dict[str, Any]:
         if not db.supabase:
             return RoleManagementService._role_action_result(False, role_name=role_name)
@@ -1058,6 +1432,22 @@ class RoleManagementService:
                 action="grant",
             )
             if not guard_result["ok"]:
+                RoleManagementService.record_role_change_audit(
+                    action="role_grant_denied",
+                    role_name=role_key,
+                    source=source,
+                    actor_provider=actor_provider,
+                    actor_user_id=actor_user_id,
+                    actor_account_id=actor_account_id,
+                    target_provider=target_provider,
+                    target_user_id=target_user_id,
+                    target_account_id=account_key,
+                    before={"assigned": False},
+                    after={"assigned": False},
+                    status="denied",
+                    error_code=str(guard_result.get("reason") or "denied"),
+                    error_message=str(guard_result.get("message") or "role grant denied"),
+                )
                 return guard_result
             metadata = {"category": RoleManagementService._normalized_category(category)} if category else {}
             db.supabase.table("account_role_assignments").upsert(
@@ -1070,12 +1460,44 @@ class RoleManagementService:
                 },
                 on_conflict="account_id,role_name,source",
             ).execute()
+            RoleManagementService.record_role_change_audit(
+                action="role_grant",
+                role_name=role_key,
+                source=source,
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id,
+                actor_account_id=actor_account_id,
+                target_provider=target_provider,
+                target_user_id=target_user_id,
+                target_account_id=account_key,
+                before={"assigned": False, "category": metadata.get("category")},
+                after={"assigned": True, "category": metadata.get("category")},
+            )
             return RoleManagementService._role_action_result(True, role_name=role_key)
         except Exception:
             logger.exception(
-                "assign_user_role_by_account failed account_id=%s role=%s",
+                "assign_user_role_by_account failed account_id=%s target_provider=%s target_user_id=%s role=%s source=%s",
                 account_key,
+                target_provider,
+                target_user_id,
                 role_key,
+                source,
+            )
+            RoleManagementService.record_role_change_audit(
+                action="role_grant_failed",
+                role_name=role_key,
+                source=source,
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id,
+                actor_account_id=actor_account_id,
+                target_provider=target_provider,
+                target_user_id=target_user_id,
+                target_account_id=account_key,
+                before={"assigned": False},
+                after={"assigned": False},
+                status="error",
+                error_code="db_write_failed",
+                error_message="assign_user_role_by_account failed",
             )
             return RoleManagementService._role_action_result(False, role_name=role_key)
 
@@ -1106,8 +1528,12 @@ class RoleManagementService:
         account_id: str,
         role_name: str,
         *,
+        actor_account_id: str | None = None,
         actor_provider: str | None = None,
         actor_user_id: str | None = None,
+        target_provider: str | None = None,
+        target_user_id: str | None = None,
+        source: str = "unknown",
     ) -> dict[str, Any]:
         if not db.supabase:
             return RoleManagementService._role_action_result(False, role_name=role_name)
@@ -1124,14 +1550,62 @@ class RoleManagementService:
                 action="revoke",
             )
             if not guard_result["ok"]:
+                RoleManagementService.record_role_change_audit(
+                    action="role_revoke_denied",
+                    role_name=role_key,
+                    source=source,
+                    actor_provider=actor_provider,
+                    actor_user_id=actor_user_id,
+                    actor_account_id=actor_account_id,
+                    target_provider=target_provider,
+                    target_user_id=target_user_id,
+                    target_account_id=account_key,
+                    before={"assigned": True},
+                    after={"assigned": True},
+                    status="denied",
+                    error_code=str(guard_result.get("reason") or "denied"),
+                    error_message=str(guard_result.get("message") or "role revoke denied"),
+                )
                 return guard_result
             db.supabase.table("account_role_assignments").delete().eq("account_id", account_key).eq("role_name", role_key).execute()
+            RoleManagementService.record_role_change_audit(
+                action="role_revoke",
+                role_name=role_key,
+                source=source,
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id,
+                actor_account_id=actor_account_id,
+                target_provider=target_provider,
+                target_user_id=target_user_id,
+                target_account_id=account_key,
+                before={"assigned": True},
+                after={"assigned": False},
+            )
             return RoleManagementService._role_action_result(True, role_name=role_key)
         except Exception:
             logger.exception(
-                "revoke_user_role_by_account failed account_id=%s role=%s",
+                "revoke_user_role_by_account failed account_id=%s target_provider=%s target_user_id=%s role=%s source=%s",
                 account_key,
+                target_provider,
+                target_user_id,
                 role_key,
+                source,
+            )
+            RoleManagementService.record_role_change_audit(
+                action="role_revoke_failed",
+                role_name=role_key,
+                source=source,
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id,
+                actor_account_id=actor_account_id,
+                target_provider=target_provider,
+                target_user_id=target_user_id,
+                target_account_id=account_key,
+                before={"assigned": True},
+                after={"assigned": True},
+                status="error",
+                error_code="db_write_failed",
+                error_message="revoke_user_role_by_account failed",
             )
             return RoleManagementService._role_action_result(False, role_name=role_key)
 
@@ -1175,7 +1649,11 @@ class RoleManagementService:
         description: str | None,
         *,
         actor_id: str | None = None,
+        actor_provider: str | None = None,
+        actor_user_id: str | None = None,
+        actor_account_id: str | None = None,
         operation: str = "role_edit_description",
+        source: str = "unknown",
     ) -> bool:
         if not db.supabase:
             return False
@@ -1184,6 +1662,7 @@ class RoleManagementService:
             return False
 
         normalized_description = RoleManagementService._normalized_description(description)
+        before_role = RoleManagementService.get_role(role_key) or {}
         try:
             response = (
                 db.supabase.table("roles")
@@ -1193,33 +1672,83 @@ class RoleManagementService:
             )
             if response is not None and hasattr(response, "data") and response.data == []:
                 logger.warning(
-                    "update_role_description skipped role_name=%s category=%s description_length=%s actor_id=%s operation=%s reason=%s",
+                    "update_role_description skipped role_name=%s category=%s description_length=%s actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s operation=%s source=%s reason=%s",
                     role_key,
                     None,
                     len(normalized_description or ""),
                     actor_id,
+                    actor_provider,
+                    actor_user_id,
+                    actor_account_id,
                     operation,
+                    source,
                     "not_found",
+                )
+                RoleManagementService.record_role_change_audit(
+                    action="role_edit_description_denied",
+                    role_name=role_key,
+                    source=source,
+                    actor_provider=actor_provider,
+                    actor_user_id=actor_user_id or actor_id,
+                    actor_account_id=actor_account_id,
+                    before=before_role or {"exists": False},
+                    after={"description": normalized_description},
+                    status="denied",
+                    error_code="not_found",
+                    error_message="role not found for description update",
                 )
                 return False
             role = RoleManagementService.get_role(role_key) or {}
             logger.info(
-                "update_role_description completed role_name=%s category=%s description_length=%s actor_id=%s operation=%s",
+                "update_role_description completed role_name=%s category=%s description_length=%s actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s operation=%s source=%s before=%s after=%s",
                 role_key,
                 role.get("category_name"),
                 len(normalized_description or ""),
                 actor_id,
+                actor_provider,
+                actor_user_id,
+                actor_account_id,
                 operation,
+                source,
+                RoleManagementService._jsonable(before_role),
+                RoleManagementService._jsonable(role),
+            )
+            RoleManagementService.record_role_change_audit(
+                action="role_edit_description",
+                role_name=role_key,
+                source=source,
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id or actor_id,
+                actor_account_id=actor_account_id,
+                before=before_role,
+                after=role,
             )
             return True
         except Exception:
             logger.exception(
-                "update_role_description failed role_name=%s category=%s description_length=%s actor_id=%s operation=%s",
+                "update_role_description failed role_name=%s category=%s description_length=%s actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s operation=%s source=%s",
                 role_key,
                 None,
                 len(normalized_description or ""),
                 actor_id,
+                actor_provider,
+                actor_user_id,
+                actor_account_id,
                 operation,
+                source,
+            )
+            RoleManagementService.record_role_change_audit(
+                action="role_edit_description_failed",
+                role_name=role_key,
+                source=source,
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id or actor_id,
+                actor_account_id=actor_account_id,
+                before=before_role,
+                after={"description": normalized_description},
+                status="error",
+                error_code="db_write_failed",
+                error_message="update_role_description failed",
             )
             return False
 
@@ -1229,7 +1758,11 @@ class RoleManagementService:
         acquire_hint: str | None,
         *,
         actor_id: str | None = None,
+        actor_provider: str | None = None,
+        actor_user_id: str | None = None,
+        actor_account_id: str | None = None,
         operation: str = "role_edit_acquire_hint",
+        source: str = "unknown",
     ) -> bool:
         if not db.supabase:
             return False
@@ -1238,6 +1771,7 @@ class RoleManagementService:
             return False
 
         normalized_acquire_hint = RoleManagementService._normalized_acquire_hint(acquire_hint)
+        before_role = RoleManagementService.get_role(role_key) or {}
         try:
             response = (
                 db.supabase.table("roles")
@@ -1247,32 +1781,83 @@ class RoleManagementService:
             )
             if response is not None and hasattr(response, "data") and response.data == []:
                 logger.warning(
-                    "update_role_metadata skipped role_name=%s actor_id=%s operation=%s field=%s value_length=%s reason=%s",
+                    "update_role_metadata skipped role_name=%s actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s operation=%s source=%s field=%s value_length=%s reason=%s",
                     role_key,
                     actor_id,
+                    actor_provider,
+                    actor_user_id,
+                    actor_account_id,
                     operation,
+                    source,
                     "acquire_hint",
                     len(normalized_acquire_hint or ""),
                     "not_found",
                 )
+                RoleManagementService.record_role_change_audit(
+                    action="role_edit_acquire_hint_denied",
+                    role_name=role_key,
+                    source=source,
+                    actor_provider=actor_provider,
+                    actor_user_id=actor_user_id or actor_id,
+                    actor_account_id=actor_account_id,
+                    before=before_role or {"exists": False},
+                    after={"acquire_hint": normalized_acquire_hint},
+                    status="denied",
+                    error_code="not_found",
+                    error_message="role not found for acquire_hint update",
+                )
                 return False
+            role = RoleManagementService.get_role(role_key) or {}
             logger.info(
-                "update_role_metadata completed actor_id=%s role_name=%s field=%s value_length=%s operation=%s",
+                "update_role_metadata completed actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s role_name=%s field=%s value_length=%s operation=%s source=%s before=%s after=%s",
                 actor_id,
+                actor_provider,
+                actor_user_id,
+                actor_account_id,
                 role_key,
                 "acquire_hint",
                 len(normalized_acquire_hint or ""),
                 operation,
+                source,
+                RoleManagementService._jsonable(before_role),
+                RoleManagementService._jsonable(role),
+            )
+            RoleManagementService.record_role_change_audit(
+                action="role_edit_acquire_hint",
+                role_name=role_key,
+                source=source,
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id or actor_id,
+                actor_account_id=actor_account_id,
+                before=before_role,
+                after=role,
             )
             return True
         except Exception:
             logger.exception(
-                "update_role_metadata failed actor_id=%s role_name=%s field=%s value_length=%s operation=%s",
+                "update_role_metadata failed actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s role_name=%s field=%s value_length=%s operation=%s source=%s",
                 actor_id,
+                actor_provider,
+                actor_user_id,
+                actor_account_id,
                 role_key,
                 "acquire_hint",
                 len(normalized_acquire_hint or ""),
                 operation,
+                source,
+            )
+            RoleManagementService.record_role_change_audit(
+                action="role_edit_acquire_hint_failed",
+                role_name=role_key,
+                source=source,
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id or actor_id,
+                actor_account_id=actor_account_id,
+                before=before_role,
+                after={"acquire_hint": normalized_acquire_hint},
+                status="error",
+                error_code="db_write_failed",
+                error_message="update_role_acquire_hint failed",
             )
             return False
 
