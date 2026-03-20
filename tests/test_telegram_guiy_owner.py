@@ -31,7 +31,10 @@ class TelegramGuiyOwnerCommandTests(unittest.IsolatedAsyncioTestCase):
         )
         command = SimpleNamespace(args=None)
 
-        with patch("bot.telegram_bot.commands.guiy_owner.persist_telegram_identity_from_user"):
+        with (
+            patch("bot.telegram_bot.commands.guiy_owner.persist_telegram_identity_from_user"),
+            patch("bot.telegram_bot.commands.guiy_owner.time.time", return_value=1_001.0),
+        ):
             await guiy_owner_command(message, command)
 
         self.assertEqual(message.answer.await_count, 1)
@@ -71,6 +74,36 @@ class TelegramGuiyOwnerCommandTests(unittest.IsolatedAsyncioTestCase):
 
         execute_mock.assert_called_once()
         message.answer.assert_awaited_once_with("привет от гуя")
+
+    async def test_text_cancel_clears_pending_owner_state(self):
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=42, is_bot=False),
+            reply_to_message=None,
+            bot=SimpleNamespace(get_me=AsyncMock()),
+            answer=AsyncMock(),
+            chat=SimpleNamespace(id=100),
+        )
+        command = SimpleNamespace(args="cancel")
+        _PENDING_GUIY_OWNER_ACTIONS[42] = PendingGuiyOwnerAction(
+            selected_action="say",
+            bot_user_id="999",
+            target_message_id=None,
+            reply_author_user_id=None,
+            created_at=1_000.0,
+            target_chat_or_guild="-1001",
+            control_chat_id="100",
+            target_destination_id="-1001",
+        )
+
+        with (
+            patch("bot.telegram_bot.commands.guiy_owner.persist_telegram_identity_from_user"),
+            patch("bot.telegram_bot.commands.guiy_owner.time.time", return_value=1_001.0),
+        ):
+            await guiy_owner_command(message, command)
+
+        self.assertNotIn(42, _PENDING_GUIY_OWNER_ACTIONS)
+        message.answer.assert_awaited_once()
+        self.assertIn("отключён вручную", message.answer.await_args.args[0].lower())
 
 
     async def test_profile_menu_auto_bootstraps_and_opens_field_buttons(self):

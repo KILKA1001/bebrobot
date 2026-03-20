@@ -995,6 +995,23 @@ async def _run_text_fallback(ctx, action: str, payload: str):
     await send_temp(ctx, result.message, delete_after=None)
 
 
+async def _cancel_owner_flow_via_text(ctx) -> None:
+    _log_guiy_owner_info(
+        actor_user_id=getattr(ctx.author, "id", None),
+        selected_action="cancel",
+        target_chat_or_guild=getattr(ctx.guild, "id", None) or getattr(ctx.channel, "id", None),
+        target_message_id=getattr(getattr(ctx, "message", None), "id", None),
+        guiy_account_id=None,
+        message="discord guiy owner flow cancel requested via text command",
+    )
+    await send_temp(
+        ctx,
+        "ℹ️ В Discord owner-меню работает через кнопки и modals, поэтому отдельного глобального режима ожидания, как в Telegram, здесь нет.\n"
+        "Если хотите закрыть текущее меню — просто нажмите кнопку «Отмена», а затем при необходимости откройте `guiy_owner` заново.",
+        delete_after=None,
+    )
+
+
 @bot.command(name="guiy_owner", hidden=True)
 async def guiy_owner(ctx, action: str = "", *, payload: str = ""):
     _persist_discord_identity(ctx.author)
@@ -1002,6 +1019,10 @@ async def guiy_owner(ctx, action: str = "", *, payload: str = ""):
     if action:
         requested_action = str(action or "").strip().lower()
         requested_payload = str(payload or "").strip()
+
+    if requested_action == "cancel":
+        await _cancel_owner_flow_via_text(ctx)
+        return
 
     if requested_action in {"say", "reply", "profile", "register_profile"}:
         await _run_text_fallback(ctx, requested_action, requested_payload)

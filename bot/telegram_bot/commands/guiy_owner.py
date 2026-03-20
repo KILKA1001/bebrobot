@@ -105,6 +105,45 @@ def _clear_pending_state(actor_user_id: int | None) -> None:
     _PENDING_GUIY_OWNER_DESTINATIONS.pop(actor_user_id, None)
 
 
+def _has_any_pending_state(actor_user_id: int | None) -> bool:
+    if actor_user_id is None:
+        return False
+    _get_non_expired_pending_action(actor_user_id)
+    return (
+        actor_user_id in _PENDING_GUIY_OWNER_ACTIONS
+        or actor_user_id in _PENDING_GUIY_OWNER_VISIBLE_ROLES
+        or actor_user_id in _PENDING_GUIY_OWNER_DESTINATIONS
+    )
+
+
+async def _cancel_owner_flow_via_message(message: Message) -> None:
+    actor_user_id = message.from_user.id if message.from_user else None
+    had_pending_state = _has_any_pending_state(actor_user_id)
+    _clear_pending_state(actor_user_id)
+    _log_guiy_owner_info(
+        provider="telegram",
+        actor_user_id=actor_user_id,
+        selected_action="cancel",
+        target_chat_or_guild=message.chat.id if message.chat else None,
+        target_message_id=None,
+        guiy_account_id=None,
+        message="telegram guiy owner flow canceled via text command",
+    )
+    if had_pending_state:
+        await message.answer(
+            "✅ <b>Owner-сценарий отключён вручную</b>\n"
+            "Режим ожидания очищен. Теперь команды и обычные сообщения снова обрабатываются в штатном режиме.\n"
+            "Если захотите запустить сценарий заново — откройте /guiy_owner.",
+            parse_mode="HTML",
+        )
+        return
+    await message.answer(
+        "ℹ️ <b>Активного owner-сценария нет</b>\n"
+        "Сейчас ничего не ждёт ввода. Если нужно открыть owner-меню заново — используйте /guiy_owner.",
+        parse_mode="HTML",
+    )
+
+
 def _get_non_expired_pending_action(actor_user_id: int | None) -> PendingGuiyOwnerAction | None:
     if actor_user_id is None:
         return None
@@ -563,6 +602,10 @@ async def guiy_owner_command(message: Message, command: CommandObject) -> None:
     persist_telegram_identity_from_user(message.from_user)
     persist_telegram_identity_from_user(message.reply_to_message.from_user if message.reply_to_message else None)
     action, payload = parse_guiy_owner_text_command(command.args)
+
+    if action == "cancel":
+        await _cancel_owner_flow_via_message(message)
+        return
 
     if action in {"say", "reply", "register_profile"}:
         await _run_text_fallback(message, action, payload)
