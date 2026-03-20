@@ -54,6 +54,53 @@ def _render_user_lookup_hint() -> str:
     )
 
 
+def _log_role_position_error(
+    *,
+    actor_id: int | None,
+    guild_id: int | None,
+    operation: str,
+    role_name: str | None,
+    category: str | None,
+    requested_position: int | None,
+    computed_last_position: int | None,
+    message: str,
+) -> None:
+    logger.warning(
+        "%s actor_id=%s guild_id=%s operation=%s role_name=%s category=%s requested_position=%s computed_last_position=%s source=%s",
+        message,
+        actor_id,
+        guild_id,
+        operation,
+        role_name,
+        category,
+        requested_position,
+        computed_last_position,
+        "discord_hybrid",
+    )
+
+
+def _build_role_position_preview_embed(
+    *,
+    title: str,
+    role_name: str,
+    preview: dict[str, Any],
+) -> discord.Embed:
+    embed = discord.Embed(title=title, color=discord.Color.blurple())
+    embed.description = (
+        f"Роль: **{role_name}**\n"
+        f"Категория: **{preview.get('category')}**\n"
+        f"Расчёт позиции: **{preview.get('position_description')}**\n"
+        "Если позицию не указывать в `role_create` или `role_move`, роль будет добавлена последней."
+    )
+    roles = list(preview.get("current_roles") or [])
+    embed.add_field(
+        name="Текущий порядок ролей",
+        value="\n".join(f"• #{idx}. {item['name']}" for idx, item in enumerate(roles, start=1)) or "• Категория пока пустая.",
+        inline=False,
+    )
+    return embed
+
+
 def _catalog_role_exists(role_name: str) -> bool:
     role_key = str(role_name or "").strip()
     if not role_key:
@@ -305,6 +352,8 @@ def _rolesadmin_help_embed() -> discord.Embed:
             "`/rolesadmin role_move <role_name> <category> [position]` — переместить роль\n"
             "`/rolesadmin role_order <role_name> <category> <position>` — изменить порядок роли\n"
             "`/rolesadmin role_delete <name>` — удалить роль\n"
+            "Перед `role_create` / `role_move` / `role_order` бот показывает embed со списком ролей категории и рассчитанной позицией вставки.\n"
+            "Если позицию не указывать в `role_create` или `role_move`, роль добавится последней.\n"
             "Внешние Discord-роли удалять нельзя: их можно только перемещать и сортировать."
         ),
         inline=False,
@@ -427,19 +476,40 @@ async def rolesadmin_role_create(
     name: str,
     category: str,
     discord_role: discord.Role | None = None,
-    position: int = 0,
+    position: int | None = None,
 ):
     if not await _ensure_roles_admin(ctx):
         return
+    preview = RoleManagementService.get_category_role_positioning(category, requested_position=position)
+    await send_temp(
+        ctx,
+        embed=_build_role_position_preview_embed(
+            title="🧭 Предпросмотр создания роли",
+            role_name=name,
+            preview=preview,
+        ),
+    )
     if RoleManagementService.create_role(
         name,
         category,
         position=position,
         discord_role_id=str(discord_role.id) if discord_role else None,
         discord_role_name=discord_role.name if discord_role else None,
+        actor_id=str(ctx.author.id),
+        operation="role_create",
     ):
         await send_temp(ctx, f"✅ Роль **{name}** создана в категории **{category}**.")
     else:
+        _log_role_position_error(
+            actor_id=ctx.author.id,
+            guild_id=ctx.guild.id if ctx.guild else None,
+            operation="role_create",
+            role_name=name,
+            category=category,
+            requested_position=position,
+            computed_last_position=int(preview.get("computed_last_position", 0)),
+            message="rolesadmin role_create failed",
+        )
         await send_temp(ctx, "❌ Не удалось создать роль (смотри логи).")
 
 
@@ -459,43 +529,57 @@ async def rolesadmin_role_delete(ctx: commands.Context, name: str):
 
 
 @rolesadmin.command(name="role_move", description="Переместить роль в другую категорию")
-async def rolesadmin_role_move(ctx: commands.Context, role_name: str, category: str, position: int = 0):
+async def rolesadmin_role_move(ctx: commands.Context, role_name: str, category: str, position: int | None = None):
     if not await _ensure_roles_admin(ctx):
         return
     sync_ok = await _sync_ctx_discord_roles_catalog(ctx, operation="role_move")
+    preview = RoleManagementService.get_category_role_positioning(
+        category,
+        requested_position=position,
+        exclude_role_name=role_name,
+    )
+    await send_temp(
+        ctx,
+        embed=_build_role_position_preview_embed(
+            title="🧭 Предпросмотр перемещения роли",
+            role_name=role_name,
+            preview=preview,
+        ),
+    )
     if not _catalog_role_exists(role_name):
-        logger.warning(
-            "rolesadmin role_move denied role missing from canonical catalog actor_id=%s guild_id=%s operation=%s source=%s role_name=%s category=%s provider=%s provider_user_id=%s reason=%s",
-            ctx.author.id,
-            ctx.guild.id if ctx.guild else None,
-            "role_move",
-            "discord_hybrid",
-            role_name,
-            category,
-            None,
-            None,
-            "missing_from_canonical_catalog",
+        _log_role_position_error(
+            actor_id=ctx.author.id,
+            guild_id=ctx.guild.id if ctx.guild else None,
+            operation="role_move",
+            role_name=role_name,
+            category=category,
+            requested_position=position,
+            computed_last_position=int(preview.get("computed_last_position", 0)),
+            message="rolesadmin role_move denied role missing from canonical catalog",
         )
         message = _canonical_role_missing_message()
         if not sync_ok:
             message += " Автосинхронизация тоже не подтвердила каталог — попробуй ещё раз после `/rolesadmin sync_discord_roles`."
         await send_temp(ctx, message)
         return
-    if RoleManagementService.move_role(role_name, category, position):
+    if RoleManagementService.move_role(
+        role_name,
+        category,
+        position,
+        actor_id=str(ctx.author.id),
+        operation="role_move",
+    ):
         await send_temp(ctx, f"✅ Роль **{role_name}** перемещена в **{category}**.")
     else:
-        logger.warning(
-            "rolesadmin role_move failed actor_id=%s guild_id=%s operation=%s source=%s role_name=%s category=%s provider=%s provider_user_id=%s reason=%s position=%s",
-            ctx.author.id,
-            ctx.guild.id if ctx.guild else None,
-            "role_move",
-            "discord_hybrid",
-            role_name,
-            category,
-            None,
-            None,
-            "move_role_returned_false_after_validation",
-            position,
+        _log_role_position_error(
+            actor_id=ctx.author.id,
+            guild_id=ctx.guild.id if ctx.guild else None,
+            operation="role_move",
+            role_name=role_name,
+            category=category,
+            requested_position=position,
+            computed_last_position=int(preview.get("computed_last_position", 0)),
+            message="rolesadmin role_move failed",
         )
         await send_temp(ctx, "❌ Не удалось переместить роль. Проверь синхронизацию каталога и логи.")
 
@@ -505,39 +589,53 @@ async def rolesadmin_role_order(ctx: commands.Context, role_name: str, category:
     if not await _ensure_roles_admin(ctx):
         return
     sync_ok = await _sync_ctx_discord_roles_catalog(ctx, operation="role_order")
+    preview = RoleManagementService.get_category_role_positioning(
+        category,
+        requested_position=position,
+        exclude_role_name=role_name,
+    )
+    await send_temp(
+        ctx,
+        embed=_build_role_position_preview_embed(
+            title="🧭 Предпросмотр порядка роли",
+            role_name=role_name,
+            preview=preview,
+        ),
+    )
     if not _catalog_role_exists(role_name):
-        logger.warning(
-            "rolesadmin role_order denied role missing from canonical catalog actor_id=%s guild_id=%s operation=%s source=%s role_name=%s category=%s provider=%s provider_user_id=%s reason=%s",
-            ctx.author.id,
-            ctx.guild.id if ctx.guild else None,
-            "role_order",
-            "discord_hybrid",
-            role_name,
-            category,
-            None,
-            None,
-            "missing_from_canonical_catalog",
+        _log_role_position_error(
+            actor_id=ctx.author.id,
+            guild_id=ctx.guild.id if ctx.guild else None,
+            operation="role_order",
+            role_name=role_name,
+            category=category,
+            requested_position=position,
+            computed_last_position=int(preview.get("computed_last_position", 0)),
+            message="rolesadmin role_order denied role missing from canonical catalog",
         )
         message = _canonical_role_missing_message()
         if not sync_ok:
             message += " Автосинхронизация тоже не подтвердила каталог — попробуй ещё раз после `/rolesadmin sync_discord_roles`."
         await send_temp(ctx, message)
         return
-    if RoleManagementService.move_role(role_name, category, position):
+    if RoleManagementService.move_role(
+        role_name,
+        category,
+        position,
+        actor_id=str(ctx.author.id),
+        operation="role_order",
+    ):
         await send_temp(ctx, f"✅ Порядок роли **{role_name}** обновлён: категория **{category}**, позиция **{position}**.")
     else:
-        logger.warning(
-            "rolesadmin role_order failed actor_id=%s guild_id=%s operation=%s source=%s role_name=%s category=%s provider=%s provider_user_id=%s reason=%s position=%s",
-            ctx.author.id,
-            ctx.guild.id if ctx.guild else None,
-            "role_order",
-            "discord_hybrid",
-            role_name,
-            category,
-            None,
-            None,
-            "move_role_returned_false_after_validation",
-            position,
+        _log_role_position_error(
+            actor_id=ctx.author.id,
+            guild_id=ctx.guild.id if ctx.guild else None,
+            operation="role_order",
+            role_name=role_name,
+            category=category,
+            requested_position=position,
+            computed_last_position=int(preview.get("computed_last_position", 0)),
+            message="rolesadmin role_order failed",
         )
         await send_temp(ctx, "❌ Не удалось обновить порядок роли. Проверь синхронизацию каталога и логи.")
 

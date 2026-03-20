@@ -161,6 +161,16 @@ class DiscordRolesAdminTests(unittest.IsolatedAsyncioTestCase):
             patch.object(roles_admin, "_ensure_roles_admin", AsyncMock(return_value=True)),
             patch.object(roles_admin, "_sync_ctx_discord_roles_catalog", AsyncMock(return_value=True)),
             patch.object(roles_admin, "_catalog_role_exists", return_value=True),
+            patch.object(
+                roles_admin.RoleManagementService,
+                "get_category_role_positioning",
+                return_value={
+                    "category": "Cat",
+                    "current_roles": [{"name": "Existing"}],
+                    "computed_last_position": 1,
+                    "position_description": "будет добавлено в конец (#2)",
+                },
+            ),
             patch.object(roles_admin.RoleManagementService, "move_role", return_value=True) as move_mock,
             patch.object(roles_admin, "send_temp", AsyncMock()) as send_mock,
         ):
@@ -168,6 +178,34 @@ class DiscordRolesAdminTests(unittest.IsolatedAsyncioTestCase):
             await roles_admin.rolesadmin_role_order(ctx, "External", "Cat", 3)
 
         self.assertEqual(move_mock.call_count, 2)
-        messages = [call.args[1] for call in send_mock.await_args_list]
+        embeds = [call.kwargs["embed"] for call in send_mock.await_args_list if "embed" in call.kwargs]
+        self.assertEqual(embeds[0].title, "🧭 Предпросмотр перемещения роли")
+        self.assertIn("будет добавлено в конец (#2)", embeds[0].description)
+        self.assertEqual(embeds[1].title, "🧭 Предпросмотр порядка роли")
+        messages = [call.args[1] for call in send_mock.await_args_list if len(call.args) > 1]
         self.assertTrue(any("перемещена" in message for message in messages))
         self.assertTrue(any("обновлён" in message for message in messages))
+
+    async def test_rolesadmin_role_create_sends_preview_embed_before_confirmation(self):
+        ctx = self._build_ctx()
+
+        with (
+            patch.object(roles_admin, "_ensure_roles_admin", AsyncMock(return_value=True)),
+            patch.object(
+                roles_admin.RoleManagementService,
+                "get_category_role_positioning",
+                return_value={
+                    "category": "General",
+                    "current_roles": [{"name": "Alpha"}],
+                    "computed_last_position": 1,
+                    "position_description": "будет добавлено в конец (#2)",
+                },
+            ),
+            patch.object(roles_admin.RoleManagementService, "create_role", return_value=True),
+            patch.object(roles_admin, "send_temp", AsyncMock()) as send_mock,
+        ):
+            await roles_admin.rolesadmin_role_create(ctx, "New", "General", None, None)
+
+        first_embed = send_mock.await_args_list[0].kwargs["embed"]
+        self.assertEqual(first_embed.title, "🧭 Предпросмотр создания роли")
+        self.assertIn("Если позицию не указывать", first_embed.description)

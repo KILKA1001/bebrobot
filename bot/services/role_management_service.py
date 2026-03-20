@@ -16,6 +16,28 @@ DELETE_ROLE_REASON_ERROR = "error"
 
 class RoleManagementService:
     @staticmethod
+    def _log_role_position_error(
+        message: str,
+        *,
+        actor_id: str | None = None,
+        operation: str | None = None,
+        role_name: str | None = None,
+        category: str | None = None,
+        requested_position: int | None = None,
+        computed_last_position: int | None = None,
+    ) -> None:
+        logger.warning(
+            "%s actor_id=%s operation=%s role_name=%s category=%s requested_position=%s computed_last_position=%s",
+            message,
+            actor_id,
+            operation,
+            role_name,
+            category,
+            requested_position,
+            computed_last_position,
+        )
+
+    @staticmethod
     def _delete_role_result(
         ok: bool,
         *,
@@ -305,9 +327,12 @@ class RoleManagementService:
     def create_role(
         name: str,
         category: str,
-        position: int = 0,
+        position: int | None = None,
         discord_role_id: str | None = None,
         discord_role_name: str | None = None,
+        *,
+        actor_id: str | None = None,
+        operation: str = "role_create",
     ) -> bool:
         role_name = str(name or "").strip()
         if not role_name:
@@ -316,10 +341,16 @@ class RoleManagementService:
             return False
 
         normalized_category = RoleManagementService._normalized_category(category)
+        preview = RoleManagementService.get_category_role_positioning(
+            normalized_category,
+            requested_position=position,
+        )
+        computed_position = int(preview.get("computed_position", 0))
+        computed_last_position = int(preview.get("computed_last_position", 0))
         payload = {
             "name": role_name,
             "category_name": normalized_category,
-            "position": int(position),
+            "position": computed_position,
             "is_discord_managed": bool(discord_role_id),
             "discord_role_id": str(discord_role_id).strip() if discord_role_id else None,
             "discord_role_name": str(discord_role_name).strip() if discord_role_name else None,
@@ -330,7 +361,16 @@ class RoleManagementService:
             db.supabase.table("roles").upsert(payload, on_conflict="name").execute()
             return True
         except Exception:
-            logger.exception("create_role failed role_name=%s category=%s", role_name, normalized_category)
+            logger.exception(
+                "create_role failed actor_id=%s operation=%s role_name=%s category=%s requested_position=%s computed_last_position=%s computed_position=%s",
+                actor_id,
+                operation,
+                role_name,
+                normalized_category,
+                position,
+                computed_last_position,
+                computed_position,
+            )
             return False
 
     @staticmethod
@@ -405,40 +445,152 @@ class RoleManagementService:
             return RoleManagementService._delete_role_result(False, reason=DELETE_ROLE_REASON_ERROR, role_name=role_name)
 
     @staticmethod
-    def move_role(role_name: str, category: str, position: int = 0) -> bool:
+    def move_role(
+        role_name: str,
+        category: str,
+        position: int | None = None,
+        *,
+        actor_id: str | None = None,
+        operation: str = "role_move",
+    ) -> bool:
         name = str(role_name or "").strip()
         normalized_category = RoleManagementService._normalized_category(category)
         if not name or not db.supabase:
             return False
         try:
             existing_role = RoleManagementService.get_role(name)
+            preview = RoleManagementService.get_category_role_positioning(
+                normalized_category,
+                requested_position=position,
+                exclude_role_name=name,
+            )
+            computed_position = int(preview.get("computed_position", 0))
+            computed_last_position = int(preview.get("computed_last_position", 0))
             if not existing_role:
-                logger.warning(
-                    "move_role denied role missing from canonical catalog role_name=%s category=%s position=%s",
-                    name,
-                    normalized_category,
-                    position,
+                RoleManagementService._log_role_position_error(
+                    "move_role denied role missing from canonical catalog",
+                    actor_id=actor_id,
+                    operation=operation,
+                    role_name=name,
+                    category=normalized_category,
+                    requested_position=position,
+                    computed_last_position=computed_last_position,
                 )
                 return False
             db.supabase.table("role_categories").upsert({"name": normalized_category, "position": 0}).execute()
             response = (
                 db.supabase.table("roles")
-                .update({"category_name": normalized_category, "position": int(position)})
+                .update({"category_name": normalized_category, "position": computed_position})
                 .eq("name", name)
                 .execute()
             )
             if existing_role and response is not None and hasattr(response, "data") and response.data == []:
-                logger.warning(
-                    "move_role update returned no rows role_name=%s category=%s position=%s",
-                    name,
-                    normalized_category,
-                    position,
+                RoleManagementService._log_role_position_error(
+                    "move_role update returned no rows",
+                    actor_id=actor_id,
+                    operation=operation,
+                    role_name=name,
+                    category=normalized_category,
+                    requested_position=position,
+                    computed_last_position=computed_last_position,
                 )
                 return False
             return True
         except Exception:
-            logger.exception("move_role failed role_name=%s category=%s position=%s", name, normalized_category, position)
+            preview = RoleManagementService.get_category_role_positioning(
+                normalized_category,
+                requested_position=position,
+                exclude_role_name=name,
+            )
+            logger.exception(
+                "move_role failed actor_id=%s operation=%s role_name=%s category=%s requested_position=%s computed_last_position=%s computed_position=%s",
+                actor_id,
+                operation,
+                name,
+                normalized_category,
+                position,
+                int(preview.get('computed_last_position', 0)),
+                int(preview.get('computed_position', 0)),
+            )
             return False
+
+    @staticmethod
+    def get_category_role_positioning(
+        category: str,
+        *,
+        requested_position: int | None = None,
+        exclude_role_name: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_category = RoleManagementService._normalized_category(category)
+        grouped = RoleManagementService.list_roles_grouped()
+        category_item = next(
+            (item for item in grouped if str(item.get("category") or "") == normalized_category),
+            None,
+        )
+
+        current_roles: list[dict[str, Any]] = []
+        for item in list((category_item or {}).get("roles", [])):
+            role_name = str(item.get("name") or "").strip()
+            if not role_name:
+                continue
+            if exclude_role_name and role_name == str(exclude_role_name).strip():
+                continue
+            current_roles.append(
+                {
+                    "name": role_name,
+                    "position": int(item.get("position") or 0),
+                    "is_discord_managed": bool(item.get("is_discord_managed")),
+                    "discord_role_id": str(item.get("discord_role_id") or "").strip() or None,
+                }
+            )
+
+        computed_last_position = len(current_roles)
+        if requested_position is None:
+            computed_position = computed_last_position
+        else:
+            computed_position = max(0, min(int(requested_position), computed_last_position))
+
+        insertion_positions: list[dict[str, Any]] = []
+        for index in range(computed_last_position + 1):
+            human_index = index + 1
+            if computed_last_position == 0:
+                description = "категория пуста, роль станет первой (#1)"
+            elif index == 0:
+                description = "будет добавлено в начало (#1)"
+            elif index == computed_last_position:
+                description = f"будет добавлено в конец (#{human_index})"
+            else:
+                before_role = current_roles[index]["name"]
+                description = f"будет добавлено на позицию #{human_index} перед «{before_role}»"
+            insertion_positions.append(
+                {
+                    "position": index,
+                    "human_index": human_index,
+                    "description": description,
+                }
+            )
+
+        if computed_last_position == 0:
+            position_description = "категория пуста, роль будет первой (#1)"
+        elif computed_position == 0:
+            position_description = "будет добавлено в начало (#1)"
+        elif computed_position >= computed_last_position:
+            position_description = f"будет добавлено в конец (#{computed_last_position + 1})"
+        else:
+            position_description = (
+                f"будет добавлено на позицию #{computed_position + 1} "
+                f"перед «{current_roles[computed_position]['name']}»"
+            )
+
+        return {
+            "category": normalized_category,
+            "current_roles": current_roles,
+            "computed_last_position": computed_last_position,
+            "requested_position": requested_position,
+            "computed_position": computed_position,
+            "position_description": position_description,
+            "insertion_positions": insertion_positions,
+        }
 
     @staticmethod
     def get_user_roles(provider: str, provider_user_id: str) -> list[dict[str, str | None]]:

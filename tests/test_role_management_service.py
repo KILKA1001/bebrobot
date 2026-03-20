@@ -227,7 +227,34 @@ class RoleManagementServiceTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertEqual(self.fake_db.tables["roles"][0]["category_name"], "Новая категория")
-        self.assertEqual(self.fake_db.tables["roles"][0]["position"], 3)
+        self.assertEqual(self.fake_db.tables["roles"][0]["position"], 0)
+
+    def test_get_category_role_positioning_returns_roles_and_end_description(self):
+        self.fake_db.tables["roles"] = [
+            {"name": "Alpha", "category_name": "General", "position": 0},
+            {"name": "Beta", "category_name": "General", "position": 1},
+        ]
+        self.fake_db.tables["role_categories"] = [{"name": "General", "position": 0}]
+
+        preview = RoleManagementService.get_category_role_positioning("General")
+
+        self.assertEqual(preview["category"], "General")
+        self.assertEqual([item["name"] for item in preview["current_roles"]], ["Alpha", "Beta"])
+        self.assertEqual(preview["computed_last_position"], 2)
+        self.assertEqual(preview["computed_position"], 2)
+        self.assertEqual(preview["position_description"], "будет добавлено в конец (#3)")
+
+    def test_create_role_without_position_uses_end_of_category(self):
+        self.fake_db.tables["roles"] = [
+            {"name": "Alpha", "category_name": "General", "position": 0},
+            {"name": "Beta", "category_name": "General", "position": 1},
+        ]
+
+        ok = RoleManagementService.create_role("Gamma", "General", position=None)
+
+        self.assertTrue(ok)
+        created = next(row for row in self.fake_db.tables["roles"] if row["name"] == "Gamma")
+        self.assertEqual(created["position"], 2)
 
 
 if __name__ == "__main__":
