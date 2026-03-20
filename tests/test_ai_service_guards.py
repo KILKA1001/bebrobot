@@ -86,12 +86,21 @@ class GuiyAIGuardsTests(unittest.TestCase):
         self.assertIn("цепью на шее", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
 
     def test_default_prompt_keeps_stepfather_conflict_nonviolent(self):
-        self.assertIn("не угрожает реальным насилием", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
+        self.assertIn("очень редко угрожает реальным насилием", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
         self.assertIn("словесный подзатыльник", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
 
     def test_default_prompt_describes_young_ambitious_defensive_persona(self):
         self.assertIn("очень молодой, амбициозный", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
         self.assertIn("умеет постоять за себя и за своего отца словом", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
+
+    def test_default_prompt_omits_disputed_zucchini_phrase(self):
+        self.assertNotIn("кабачок — это огурец-переросток", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
+
+    def test_default_prompt_keeps_guiy_image_without_cucumber_spam(self):
+        prompt = ai_service.DEFAULT_GUIY_SYSTEM_PROMPT
+        self.assertIn("любит огурцы", prompt)
+        self.assertIn("не делает из них тему каждого разговора", prompt)
+        self.assertIn("примерно в 5–10% ответов", prompt)
 
     def test_default_prompt_allows_rare_spanish_russian_slang_joke(self):
         self.assertIn("Очень редко, только ради короткой шутки", ai_service.DEFAULT_GUIY_SYSTEM_PROMPT)
@@ -347,6 +356,21 @@ class GuiyAIGuardsTests(unittest.TestCase):
         reply = asyncio.run(generate_guiy_reply("Гуй, ты тут?"))
         self.assertNotIn("Гуй:", reply)
         self.assertEqual(reply, "Я очень устал, не мешай мне спать.")
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_generate_reply_fallback_stays_low_lore(self):
+        reply = asyncio.run(generate_guiy_reply("Гуй, ты тут?"))
+        self.assertNotRegex(reply.lower(), r"огур|эмоч|олег|азал|бебр")
+
+    @patch.dict("os.environ", {"GROQ_API_KEY": "x"}, clear=True)
+    @patch("bot.services.ai_service.asyncio.sleep", new_callable=AsyncMock)
+    @patch("bot.services.ai_service.random.uniform", return_value=3.4)
+    @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, return_value="Я не Гуй, я модель")
+    def test_generate_reply_role_break_guard_answer_stays_low_lore(self, mock_generate, _mock_uniform, _mock_sleep):
+        reply = asyncio.run(generate_guiy_reply("Гуй, ответь нормально"))
+        self.assertEqual(reply, "Слышь, без смены роли. Говори по делу.")
+        self.assertNotRegex(reply.lower(), r"огур|эмоч|олег|азал|бебр")
+        self.assertEqual(mock_generate.await_count, 2)
 
 
     def test_extract_retry_after_from_body(self):
