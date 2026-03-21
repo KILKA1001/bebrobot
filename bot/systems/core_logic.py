@@ -1,4 +1,5 @@
 import discord
+from dataclasses import dataclass
 from typing import Optional
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
@@ -12,7 +13,7 @@ from bot.legacy_identity_logging import (
     log_legacy_identity_path_detected,
     log_legacy_schema_fallback,
 )
-from bot.services import AccountsService
+from bot.services import AccountsService, AuthorityService
 from bot.utils.roles_and_activities import ROLE_THRESHOLDS
 from bot.utils import (
     send_temp,
@@ -589,16 +590,92 @@ async def tophistory(ctx, month: Optional[int] = None, year: Optional[int] = Non
     except Exception as e:
         await send_temp(ctx, f"❌ Ошибка при получении данных: {e}")
 
+@dataclass(frozen=True)
+class HelpVisibilityContext:
+    level: int = 0
+    titles: tuple[str, ...] = tuple()
+    is_administrator: bool = False
+
+
+def _normalize_help_titles(titles: tuple[str, ...]) -> set[str]:
+    return {str(title).strip().lower() for title in titles}
+
+
+def _resolve_help_visibility(user: discord.Member | discord.User | None) -> HelpVisibilityContext:
+    if user is None:
+        return HelpVisibilityContext()
+
+    is_administrator = bool(getattr(getattr(user, "guild_permissions", None), "administrator", False))
+    try:
+        authority = AuthorityService.resolve_authority("discord", str(user.id))
+    except Exception:
+        logger.exception("discord help authority resolve failed actor_id=%s", getattr(user, "id", None))
+        return HelpVisibilityContext(is_administrator=is_administrator)
+
+    return HelpVisibilityContext(
+        level=authority.level,
+        titles=authority.titles,
+        is_administrator=is_administrator,
+    )
+
+
+def _help_can_manage_points(visibility: HelpVisibilityContext) -> bool:
+    return visibility.is_administrator or visibility.level >= 80
+
+
+def _help_can_create_fines(visibility: HelpVisibilityContext) -> bool:
+    return visibility.is_administrator or visibility.level >= 30
+
+
+def _help_can_manage_fines(visibility: HelpVisibilityContext) -> bool:
+    return visibility.is_administrator or visibility.level >= 80
+
+
+def _help_can_manage_bank(visibility: HelpVisibilityContext) -> bool:
+    return visibility.is_administrator or visibility.level >= 100
+
+
+def _help_can_manage_tournaments(visibility: HelpVisibilityContext) -> bool:
+    return visibility.is_administrator or visibility.level >= 80
+
+
+def _help_can_manage_roles_admin(visibility: HelpVisibilityContext) -> bool:
+    return visibility.is_administrator or visibility.level >= 80
+
+
+def _help_can_manage_tickets(visibility: HelpVisibilityContext) -> bool:
+    if visibility.is_administrator:
+        return True
+    normalized = _normalize_help_titles(visibility.titles)
+    return bool({"глава клуба", "главный вице"} & normalized) or visibility.level >= 100
+
+
+def _has_privileged_help_commands(visibility: HelpVisibilityContext) -> bool:
+    return any(
+        (
+            _help_can_manage_points(visibility),
+            _help_can_create_fines(visibility),
+            _help_can_manage_bank(visibility),
+            _help_can_manage_tournaments(visibility),
+            _help_can_manage_roles_admin(visibility),
+            _help_can_manage_tickets(visibility),
+        )
+    )
+
+
 class HelpView(SafeView):
     def __init__(self, user: discord.Member):
         super().__init__(timeout=120)
         self.user = user
+        self.visibility = _resolve_help_visibility(user)
+        if not _has_privileged_help_commands(self.visibility):
+            self.remove_item(self.admin_category_btn)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.user.id
 
     async def update_embed(self, interaction: discord.Interaction, category: str):
-        embed = get_help_embed(category)
+        embed = get_help_embed(category, visibility=self.visibility)
         await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="📊 Баллы", style=discord.ButtonStyle.blurple, row=0)
@@ -617,94 +694,172 @@ class HelpView(SafeView):
     async def misc_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.update_embed(interaction, "misc")
 
-    @discord.ui.button(label="🛡️ Админ-панель", style=discord.ButtonStyle.red, row=1)
+    @discord.ui.button(label="🛡️ Доступные мод-команды", style=discord.ButtonStyle.red, row=1)
     async def admin_category_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ Только для администраторов", ephemeral=True)
+        if not _has_privileged_help_commands(self.visibility):
+            await interaction.response.send_message("❌ Для вашего звания дополнительных мод-команд сейчас нет.", ephemeral=True)
             return
-        embed = discord.Embed(title="🛡️ Админ-панель", description="Выберите категорию:", color=discord.Color.red())
-        await interaction.response.edit_message(embed=embed, view=AdminCategoryView(self.user))
+        embed = discord.Embed(
+            title="🛡️ Команды по вашему званию",
+            description="Ниже показаны только те модераторские команды, которые доступны именно вам.",
+            color=discord.Color.red(),
+        )
+        await interaction.response.edit_message(embed=embed, view=AdminCategoryView(self.user, visibility=self.visibility))
 
-def get_help_embed(category: str) -> discord.Embed:
+
+def get_help_embed(category: str, visibility: HelpVisibilityContext | None = None) -> discord.Embed:
+    visibility = visibility or HelpVisibilityContext()
     embed = discord.Embed(title="🛠️ Справка: категории команд", color=discord.Color.blue())
 
     if category == "points":
+        lines = [
+            "`/balance [@пользователь]` — показать текущий баланс.",
+            "`/leaderboard` — топ пользователей по баллам.",
+            "`/history [@пользователь] [страница]` — история изменений баллов.",
+        ]
+        if _help_can_manage_points(visibility):
+            lines.extend(
+                [
+                    "",
+                    "**Дополнительно доступно по вашему званию:**",
+                    "`/points [@пользователь]` — открыть меню изменения баллов с подсказками по шагам.",
+                ]
+            )
         embed.title = "📊 Баллы и рейтинг"
-        embed.description = (
-            "`/balance [@пользователь]` — показать текущий баланс\n"
-            "`/leaderboard` — топ пользователей по баллам\n"
-            "`/history [@пользователь] [страница]` — история изменений баллов"
-        )
+        embed.description = "\n".join(lines)
     elif category == "roles":
+        lines = [
+            "1. `/roles` — открой каталог ролей и прочитай блоки `Способ получения` и `Как получить`.",
+            "2. Если у роли указано `выдаёт администратор`, попроси выдачу вручную у админа.",
+            "3. Если у роли указано `автоматически`, `за баллы` или похожее условие, выполни его и проверь каталог ещё раз.",
+            "4. `/activities` — посмотри, какие активности дают баллы для автоматических ролей и прогресса.",
+        ]
+        if _help_can_manage_roles_admin(visibility):
+            lines.extend(
+                [
+                    "",
+                    "**Дополнительно доступно по вашему званию:**",
+                    "`/rolesadmin` — открыть панель управления ролями и категориями.",
+                ]
+            )
         embed.title = "🏅 Роли и активности"
-        embed.description = (
-            "1. `/roles` — открой каталог ролей и прочитай блоки `Способ получения` и `Как получить`.\n"
-            "2. Если у роли указано `выдаёт администратор`, попроси выдачу вручную у админа.\n"
-            "3. Если у роли указано `автоматически`, `за баллы` или похожее условие, выполни его и проверь каталог ещё раз.\n"
-            "4. `/activities` — посмотри, какие активности дают баллы для автоматических ролей и прогресса."
-        )
+        embed.description = "\n".join(lines)
     elif category == "fines":
+        lines = [
+            "`/myfines` — ваши активные штрафы.",
+            "`/finehistory [@пользователь] [страница]` — история штрафов.",
+            "`/finedetails ID` — детали конкретного штрафа.",
+        ]
+        if _help_can_create_fines(visibility):
+            lines.extend(
+                [
+                    "",
+                    "**Дополнительно доступно по вашему званию:**",
+                    "`/fine @пользователь сумма тип [причина]` — назначить штраф.",
+                ]
+            )
+        if _help_can_manage_fines(visibility):
+            lines.extend(
+                [
+                    "`/editfine ID сумма тип дата причина` — изменить параметры штрафа.",
+                    "`/cancel_fine ID` — отменить штраф.",
+                    "`/topfines` — список топ-должников.",
+                    "`/allfines` — список всех активных штрафов.",
+                ]
+            )
         embed.title = "📉 Штрафы"
-        embed.description = (
-            "`/myfines` — ваши активные штрафы\n"
-            "`/finehistory [@пользователь] [страница]` — история штрафов\n"
-            "`/finedetails ID` — детали конкретного штрафа"
-        )
+        embed.description = "\n".join(lines)
     elif category == "misc":
+        lines = [
+            "`/ping` — проверить, работает ли бот.",
+            "`/helpy` — открыть меню справки.",
+            "`/tophistory [месяц] [год]` — история топов месяца.",
+            "`/mapinfo id` — информация о карте по ID (ID — последняя цифра в названии карты).",
+            "`/jointournament id` — заявиться на турнир.",
+            "`/tournamenthistory [n]` — последние турниры.",
+        ]
+        if _help_can_manage_tournaments(visibility):
+            lines.extend(
+                [
+                    "",
+                    "**Дополнительно доступно по вашему званию:**",
+                    "`/createtournament` — создать турнир.",
+                    "`/managetournament id` — открыть панель управления турниром.",
+                ]
+            )
         embed.title = "🧪 Прочее"
-        embed.description = (
-            "`/ping` — проверить, работает ли бот\n"
-            "`/helpy` — открыть меню справки\n"
-            "`/tophistory [месяц] [год]` — история топов месяца\n"
-            "`/mapinfo id` — информация о карте по ID (ID — последняя цифра в названии карты)\n"
-            "`/jointournament id` — заявиться на турнир\n"
-            "`/tournamenthistory [n]` — последние турниры"
-        )
+        embed.description = "\n".join(lines)
     elif category == "admin_points":
-        embed.title = "⚙️ Админ: Баллы и билеты"
+        embed.title = "⚙️ Мод-команды: баллы"
         embed.description = (
-            "`/addpoints @пользователь сумма [причина]` — начислить баллы\n"
-            "`/removepoints @пользователь сумма [причина]` — снять баллы\n"
-            "`/undo @пользователь [кол-во]` — отменить последние действия\n"
-            "`/awardmonthtop [месяц] [год]` — бонусы за топ месяца\n"
-            "`/addticket @пользователь тип кол-во [причина]` — выдать билет\n"
-            "`/removeticket @пользователь тип кол-во [причина]` — списать билет"
+            "`/addpoints @пользователь сумма [причина]` — начислить баллы.\n"
+            "`/removepoints @пользователь сумма [причина]` — снять баллы.\n"
+            "`/undo @пользователь [кол-во]` — отменить последние действия.\n"
+            "`/awardmonthtop [месяц] [год]` — бонусы за топ месяца."
         )
     elif category == "admin_fines":
-        embed.title = "📉 Админ: Управление штрафами"
-        embed.description = (
-            "`/fine @пользователь сумма тип [причина]` — выдать штраф (тип: 1 — обычный, 2 — усиленный)\n"
-            "`/editfine ID сумма тип дата причина` — изменить параметры штрафа (дата в формате ДД.ММ.ГГГГ)\n"
-            "`/cancel_fine ID` — отменить штраф\n"
-            "`/topfines` — список топ-должников по сумме штрафов\n"
-            "`/allfines` — список всех активных штрафов"
-        )
+        embed.title = "📉 Мод-команды: штрафы"
+        description = ["`/fine @пользователь сумма тип [причина]` — выдать штраф."]
+        if _help_can_manage_fines(visibility):
+            description.extend(
+                [
+                    "`/editfine ID сумма тип дата причина` — изменить параметры штрафа.",
+                    "`/cancel_fine ID` — отменить штраф.",
+                    "`/topfines` — список топ-должников по сумме штрафов.",
+                    "`/allfines` — список всех активных штрафов.",
+                ]
+            )
+        embed.description = "\n".join(description)
     elif category == "admin_bank":
-        embed.title = "🏦 Админ: Управление банком"
+        embed.title = "🏦 Мод-команды: банк"
         embed.description = (
-            "`/bank` — баланс банка\n"
-            "`/bankadd сумма причина` — добавить баллы в банк\n"
-            "`/bankspend сумма причина` — потратить баллы из банка\n"
-            "`/bankhistory` — история операций"
+            "`/bank` — баланс банка.\n"
+            "`/bankadd сумма причина` — добавить баллы в банк.\n"
+            "`/bankspend сумма причина` — потратить баллы из банка.\n"
+            "`/bankhistory` — история операций."
         )
     elif category == "admin_tournaments":
-        embed.title = "🏟 Админ: Турниры"
+        embed.title = "🏟 Мод-команды: турниры"
         embed.description = (
-            "`/createtournament` — создать турнир\n"
-            "`/managetournament id` — панель управления (кнопка 👥 покажет участников; `id` — номер турнира)"
+            "`/createtournament` — создать турнир.\n"
+            "`/managetournament id` — панель управления (кнопка 👥 покажет участников; `id` — номер турнира)."
         )
+    elif category == "admin_tickets":
+        embed.title = "🎟️ Мод-команды: билеты"
+        embed.description = (
+            "`/addticket @пользователь тип [причина]` — выдать билет.\n"
+            "`/removeticket @пользователь тип [причина]` — списать билет."
+        )
+    elif category == "admin_roles":
+        embed.title = "🏅 Мод-команды: роли"
+        embed.description = "`/rolesadmin` — открыть панель управления ролями и категориями."
     return embed
 
+
 class AdminCategoryView(SafeView):
-    def __init__(self, user: discord.Member):
+    def __init__(self, user: discord.Member, visibility: HelpVisibilityContext | None = None):
         super().__init__(timeout=120)
         self.user = user
+        self.visibility = visibility or _resolve_help_visibility(user)
+
+        if not _help_can_manage_points(self.visibility):
+            self.remove_item(self.points_admin)
+        if not _help_can_create_fines(self.visibility):
+            self.remove_item(self.fines_admin)
+        if not _help_can_manage_bank(self.visibility):
+            self.remove_item(self.bank_admin)
+        if not _help_can_manage_tournaments(self.visibility):
+            self.remove_item(self.tournaments_admin)
+        if not _help_can_manage_tickets(self.visibility):
+            self.remove_item(self.tickets_admin)
+        if not _help_can_manage_roles_admin(self.visibility):
+            self.remove_item(self.roles_admin)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.user.id
 
     async def send_category(self, interaction, category: str):
-        embed = get_help_embed(category)
+        embed = get_help_embed(category, visibility=self.visibility)
         await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="⚙️ Баллы", style=discord.ButtonStyle.blurple, row=0)
@@ -715,17 +870,25 @@ class AdminCategoryView(SafeView):
     async def fines_admin(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.send_category(interaction, "admin_fines")
 
-    @discord.ui.button(label="🏦 Банк", style=discord.ButtonStyle.green, row=0)
+    @discord.ui.button(label="🎟️ Билеты", style=discord.ButtonStyle.blurple, row=0)
+    async def tickets_admin(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.send_category(interaction, "admin_tickets")
+
+    @discord.ui.button(label="🏦 Банк", style=discord.ButtonStyle.green, row=1)
     async def bank_admin(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.send_category(interaction, "admin_bank")
 
-    @discord.ui.button(label="🏟 Турниры", style=discord.ButtonStyle.green, row=0)
+    @discord.ui.button(label="🏟 Турниры", style=discord.ButtonStyle.green, row=1)
     async def tournaments_admin(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.send_category(interaction, "admin_tournaments")
 
-    @discord.ui.button(label="🔙 Назад", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="🏅 Роли", style=discord.ButtonStyle.gray, row=1)
+    async def roles_admin(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.send_category(interaction, "admin_roles")
+
+    @discord.ui.button(label="🔙 Назад", style=discord.ButtonStyle.secondary, row=2)
     async def back_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = get_help_embed("points")
+        embed = get_help_embed("points", visibility=self.visibility)
         await interaction.response.edit_message(embed=embed, view=HelpView(self.user))
 
 class LeaderboardView(SafeView):

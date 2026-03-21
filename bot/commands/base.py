@@ -297,7 +297,7 @@ async def tophistory_cmd(
 @bot.hybrid_command(name="helpy", description="Показать список команд")
 async def helpy_cmd(ctx):
     view = HelpView(ctx.author)
-    embed = get_help_embed("points")
+    embed = get_help_embed("points", visibility=view.visibility)
     await send_temp(ctx, embed=embed, view=view)
 
 

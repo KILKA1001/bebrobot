@@ -1,38 +1,83 @@
 import logging
 from html import escape
 
-from bot.services import AccountsService, RoleManagementService
-from bot.services.role_management_service import USER_ACQUIRE_HINT_PLACEHOLDER
 from bot.legacy_identity_logging import (
     log_identity_resolve_error,
     log_transport_identity_error,
 )
+from bot.services import AccountsService, AuthorityService, RoleManagementService
+from bot.services.role_management_service import USER_ACQUIRE_HINT_PLACEHOLDER
 
 
 logger = logging.getLogger(__name__)
 ROLE_DESCRIPTION_PLACEHOLDER = "Описание пока не указано администратором"
 
 
-HELPY_TEXT = (
-    "📚 Список команд:\n"
-    "/register — зарегистрировать общий аккаунт\n"
-    "/profile — показать профиль общего аккаунта\n"
-    "/profile_roles — показать все роли пользователя по категориям\n"
-    "/profile_edit — открыть меню редактирования профиля\n"
-    "/link <код> — привязать Telegram к аккаунту по коду из Discord\n"
-    "/link_discord — получить код для привязки Discord\n"
-    "/roles — единый каталог ролей по категориям, с описанием и подсказкой по получению\n"
-    "/points [reply|id] — меню управления баллами\n"
-    "/balance [reply|id] — показать баланс пользователя\n"
-    "/tickets [reply|id] — меню управления билетами\n"
-    "/roles_admin / /rolesadmin — панель ролей с кнопками и встроенной справкой (в Telegram меню показывает /roles_admin, alias /rolesadmin нужен для паритета с Discord)\n"
-    "/helpy — показать это сообщение"
+_PUBLIC_HELP_COMMANDS: tuple[str, ...] = (
+    "/register — зарегистрировать общий аккаунт",
+    "/profile — показать профиль общего аккаунта",
+    "/profile_roles — показать все роли пользователя по категориям",
+    "/profile_edit — открыть меню редактирования профиля",
+    "/link <код> — привязать Telegram к аккаунту по коду из Discord",
+    "/link_discord — получить код для привязки Discord",
+    "/roles — единый каталог ролей по категориям, с описанием и подсказкой по получению",
+    "/balance [reply|id] — показать баланс пользователя",
+    "/helpy — показать это сообщение",
+)
+
+_POINTS_HELP_LINE = "/points [reply|id] — меню управления баллами"
+_TICKETS_HELP_LINE = "/tickets [reply|id] — меню управления билетами"
+_ROLES_ADMIN_HELP_LINE = (
+    "/roles_admin / /rolesadmin — панель ролей с кнопками и встроенной справкой "
+    "(в Telegram меню показывает /roles_admin, alias /rolesadmin нужен для паритета с Discord)"
 )
 
 
+def _can_manage_points(actor_level: int) -> bool:
+    return actor_level >= 80
 
-def get_helpy_text() -> str:
-    return HELPY_TEXT
+
+def _can_manage_tickets(actor_titles: tuple[str, ...], actor_level: int) -> bool:
+    normalized = {str(title).strip().lower() for title in actor_titles}
+    if {"глава клуба", "главный вице"} & normalized:
+        return True
+    return actor_level >= 100
+
+
+def _build_helpy_text(*, actor_level: int = 0, actor_titles: tuple[str, ...] = tuple()) -> str:
+    lines = ["📚 Список команд:", *_PUBLIC_HELP_COMMANDS]
+
+    privileged_lines: list[str] = []
+    if _can_manage_points(actor_level):
+        privileged_lines.append(_POINTS_HELP_LINE)
+    if _can_manage_tickets(actor_titles, actor_level):
+        privileged_lines.append(_TICKETS_HELP_LINE)
+    if actor_level >= 80:
+        privileged_lines.append(_ROLES_ADMIN_HELP_LINE)
+
+    if privileged_lines:
+        lines.append("")
+        lines.append("🔐 Дополнительно доступно по вашему званию:")
+        lines.extend(privileged_lines)
+
+    lines.append("")
+    lines.append(
+        "ℹ️ В help показываются только доступные вам команды. Owner-команды специально скрыты и здесь не отображаются."
+    )
+    return "\n".join(lines)
+
+
+def get_helpy_text(telegram_user_id: int | None = None) -> str:
+    if telegram_user_id is None:
+        return _build_helpy_text()
+
+    try:
+        authority = AuthorityService.resolve_authority("telegram", str(telegram_user_id))
+    except Exception:
+        logger.exception("telegram help authority resolve failed actor_id=%s", telegram_user_id)
+        return _build_helpy_text()
+
+    return _build_helpy_text(actor_level=authority.level, actor_titles=authority.titles)
 
 
 def process_roles_catalog_command() -> str:
