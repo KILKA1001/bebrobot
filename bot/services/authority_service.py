@@ -2,6 +2,7 @@ import logging
 from dataclasses import dataclass
 
 from bot.services.accounts_service import AccountsService
+from bot.services.profile_titles import normalize_protected_profile_title
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ COMMAND_LEVELS: dict[str, int] = {
 class AuthorityService:
     @staticmethod
     def _normalized_titles(titles: tuple[str, ...]) -> set[str]:
-        return {str(title).strip().lower() for title in titles}
+        return {normalize_protected_profile_title(title) for title in titles if str(title).strip()}
 
     @staticmethod
     def is_super_admin(actor_provider: str, actor_user_id: str) -> bool:
@@ -78,7 +79,7 @@ class AuthorityService:
             titles = tuple(AccountsService.get_account_titles(account_id))
             max_weight = 0
             for title in titles:
-                weight = TITLE_WEIGHTS.get(str(title).strip().lower(), 0)
+                weight = TITLE_WEIGHTS.get(normalize_protected_profile_title(title), 0)
                 if weight > max_weight:
                     max_weight = weight
             return AuthorityResult(level=max_weight, rank_weight=max_weight, titles=titles)
@@ -158,7 +159,7 @@ class AuthorityService:
     @staticmethod
     def can_manage_role(actor_provider: str, actor_user_id: str, target_role: str) -> bool:
         actor = AuthorityService.resolve_authority(actor_provider, actor_user_id)
-        role_key = str(target_role).strip().lower()
+        role_key = normalize_protected_profile_title(target_role)
         target_level = ROLE_LEVELS.get(role_key, 0)
 
         if role_key in SUPER_ADMIN_ROLE_KEYS and actor.level < SUPER_ADMIN_LEVEL:

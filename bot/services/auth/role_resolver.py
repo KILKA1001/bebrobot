@@ -7,6 +7,7 @@ from typing import Any
 
 from bot.data import db
 from bot.domain.auth import AssignmentSource, Permission, Role, UserRoleAssignment
+from bot.services.profile_titles import is_protected_profile_title
 
 logger = logging.getLogger(__name__)
 
@@ -118,11 +119,21 @@ class RoleResolver:
 
         result: list[UserRoleAssignment] = []
         for row in response.data or []:
+            role_name = str(row.get("role_name") or "").strip()
             source_raw = str(row.get("source") or "custom").lower()
             source: AssignmentSource = source_raw if source_raw in {"custom", "discord", "telegram", "system"} else "custom"
+            if role_name and is_protected_profile_title(role_name):
+                logger.warning(
+                    "role resolver: filtered protected profile title assignment account_id=%s role_name=%s source=%s origin_label=%s",
+                    account_id,
+                    role_name,
+                    source,
+                    str(row.get("origin_label") or "").strip() or None,
+                )
+                continue
             result.append(
                 UserRoleAssignment(
-                    role_name=str(row.get("role_name") or "").strip(),
+                    role_name=role_name,
                     source=source,
                     external_id=str(row.get("external_id") or "").strip() or None,
                     expires_at=RoleResolver._parse_datetime(row.get("expires_at")),
@@ -440,7 +451,7 @@ class RoleResolver:
             return {}
 
         existing = {str(row.get("name")).strip().lower() for row in (roles_resp.data or []) if row.get("name")}
-        wanted = {name.strip().lower() for name in role_names}
+        wanted = {name.strip().lower() for name in role_names if not is_protected_profile_title(name)}
 
         role_map: dict[str, Role] = {
             key: Role(name=key, permissions=[])
@@ -449,10 +460,19 @@ class RoleResolver:
         }
 
         for row in role_permission_resp.data or []:
-            role_name = str(row.get("role_name") or "").strip().lower()
+            raw_role_name = str(row.get("role_name") or "").strip()
+            role_name = raw_role_name.lower()
             permission_name = str(row.get("permission_name") or "").strip()
             effect_raw = str(row.get("effect") or "allow").strip().lower()
             effect = "deny" if effect_raw == "deny" else "allow"
+            if raw_role_name and is_protected_profile_title(raw_role_name):
+                logger.warning(
+                    "role resolver: ignored permission binding for protected profile title role_name=%s permission_name=%s effect=%s",
+                    raw_role_name,
+                    permission_name or None,
+                    effect,
+                )
+                continue
             if role_name and permission_name and role_name in role_map:
                 role_map[role_name].permissions.append(Permission(name=permission_name, effect=effect))
         return role_map
@@ -467,7 +487,11 @@ class RoleResolver:
             logger.warning("role resolver: roles metadata read failed error=%s", error)
             return {}
 
-        wanted = {assignment.role_name.strip().lower() for assignment in assignments if assignment.role_name.strip()}
+        wanted = {
+            assignment.role_name.strip().lower()
+            for assignment in assignments
+            if assignment.role_name.strip() and not is_protected_profile_title(assignment.role_name)
+        }
         metadata: dict[str, dict[str, str]] = {}
         for row in roles_resp.data or []:
             role_name = str(row.get("name") or "").strip()

@@ -6,6 +6,7 @@ from bot.services.role_management_service import (
     DELETE_ROLE_REASON_DISCORD_MANAGED,
     DELETE_ROLE_REASON_NOT_FOUND,
     PRIVILEGED_DISCORD_ROLE_MESSAGE,
+    PROTECTED_PROFILE_TITLE_ROLE_MESSAGE,
     ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE,
     RoleManagementService,
 )
@@ -127,6 +128,7 @@ class _FakeDb:
         self.tables = {
             "roles": [],
             "account_role_assignments": [],
+            "role_permissions": [],
             "external_role_bindings": [],
             "role_categories": [],
             "account_identities": [],
@@ -176,6 +178,10 @@ class RoleManagementServiceTests(unittest.TestCase):
             {"account_id": "acc-1", "role_name": "Custom", "source": "custom"},
             {"account_id": "acc-2", "role_name": "Other", "source": "custom"},
         ]
+        self.fake_db.tables["role_permissions"] = [
+            {"role_name": "Custom", "permission_name": "tickets.manage", "effect": "allow"},
+            {"role_name": "Other", "permission_name": "chat.post", "effect": "allow"},
+        ]
 
         result = RoleManagementService.delete_role(
             "Custom",
@@ -188,6 +194,10 @@ class RoleManagementServiceTests(unittest.TestCase):
         self.assertEqual(
             self.fake_db.tables["account_role_assignments"],
             [{"account_id": "acc-2", "role_name": "Other", "source": "custom"}],
+        )
+        self.assertEqual(
+            self.fake_db.tables["role_permissions"],
+            [{"role_name": "Other", "permission_name": "chat.post", "effect": "allow"}],
         )
 
     def test_delete_role_returns_not_found_without_false_success(self):
@@ -507,6 +517,105 @@ class RoleManagementServiceTests(unittest.TestCase):
         conflict_row = next(row for row in self.fake_db.tables["role_change_audit"] if row["action"] == "role_batch_conflict")
         self.assertEqual(conflict_row["status"], "conflict")
         self.assertEqual(conflict_row["source"], "discord_button")
+
+    def test_sync_discord_guild_roles_removes_dependencies_before_role_row(self):
+        self.fake_db.tables["roles"] = [
+            {
+                "name": "Legacy Discord",
+                "category_name": "Discord сервер (auto)",
+                "position": 0,
+                "is_discord_managed": True,
+                "discord_role_id": "old-role",
+            }
+        ]
+        self.fake_db.tables["account_role_assignments"] = [
+            {"account_id": "acc-1", "role_name": "Legacy Discord", "source": "discord"}
+        ]
+        self.fake_db.tables["role_permissions"] = [
+            {"role_name": "Legacy Discord", "permission_name": "tickets.manage", "effect": "allow"}
+        ]
+
+        result = RoleManagementService.sync_discord_guild_roles([])
+
+        self.assertEqual(result["removed"], 1)
+        self.assertEqual(self.fake_db.tables["roles"], [])
+        self.assertEqual(self.fake_db.tables["account_role_assignments"], [])
+        self.assertEqual(self.fake_db.tables["role_permissions"], [])
+
+
+    def test_list_roles_grouped_filters_protected_profile_titles_from_catalog(self):
+        self.fake_db.tables["roles"] = [
+            {"name": "Глава клуба", "category_name": "Админские", "position": 0},
+            {"name": "Куратор", "category_name": "Админские", "position": 1},
+        ]
+        self.fake_db.tables["role_categories"] = [{"name": "Админские", "position": 0}]
+
+        with self.assertLogs("bot.services.role_management_service", level="WARNING") as captured:
+            grouped = RoleManagementService.list_roles_grouped(log_context="unit_test")
+
+        self.assertEqual([role["name"] for role in grouped[0]["roles"]], ["Куратор"])
+        self.assertTrue(
+            any("filtered protected profile title from catalog" in message for message in captured.output),
+            captured.output,
+        )
+
+    def test_create_role_denies_protected_profile_title(self):
+        with self.assertLogs("bot.services.role_management_service", level="WARNING") as captured:
+            ok = RoleManagementService.create_role("Глава клуба", "Админские", actor_id="42", source="test")
+
+        self.assertFalse(ok)
+        self.assertEqual(self.fake_db.tables["roles"], [])
+        self.assertTrue(
+            any("create_role denied protected profile title" in message for message in captured.output),
+            captured.output,
+        )
+
+    def test_assign_user_role_by_account_denies_protected_profile_title(self):
+        with self.assertLogs("bot.services.role_management_service", level="WARNING") as captured:
+            result = RoleManagementService.assign_user_role_by_account(
+                "acc-1",
+                "Глава клуба",
+                actor_provider="discord",
+                actor_user_id="42",
+                target_provider="discord",
+                target_user_id="77",
+                source="test",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "protected_profile_title")
+        self.assertEqual(result["message"], PROTECTED_PROFILE_TITLE_ROLE_MESSAGE)
+        self.assertEqual(self.fake_db.tables["account_role_assignments"], [])
+        self.assertTrue(
+            any("assign_user_role_by_account denied protected profile title" in message for message in captured.output),
+            captured.output,
+        )
+        audit_row = next(row for row in self.fake_db.tables["role_change_audit"] if row["action"] == "role_grant_denied")
+        self.assertEqual(audit_row["error_code"], "protected_profile_title")
+
+    def test_revoke_user_role_by_account_denies_protected_profile_title(self):
+        self.fake_db.tables["account_role_assignments"] = [{"account_id": "acc-1", "role_name": "Глава клуба", "source": "custom"}]
+
+        with self.assertLogs("bot.services.role_management_service", level="WARNING") as captured:
+            result = RoleManagementService.revoke_user_role_by_account(
+                "acc-1",
+                "Глава клуба",
+                actor_provider="discord",
+                actor_user_id="42",
+                target_provider="discord",
+                target_user_id="77",
+                source="test",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "protected_profile_title")
+        self.assertEqual(len(self.fake_db.tables["account_role_assignments"]), 1)
+        self.assertTrue(
+            any("revoke_user_role_by_account denied protected profile title" in message for message in captured.output),
+            captured.output,
+        )
+        audit_row = next(row for row in self.fake_db.tables["role_change_audit"] if row["action"] == "role_revoke_denied")
+        self.assertEqual(audit_row["error_code"], "protected_profile_title")
 
 
 if __name__ == "__main__":

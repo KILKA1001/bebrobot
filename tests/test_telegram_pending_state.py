@@ -47,4 +47,5 @@ def test_points_permission_requires_vice_city_or_higher():
 def test_own_edit_allowed_only_for_head_club_and_main_vice():
     assert engagement._can_manage_own_engagement(("Вице города",)) is False
     assert engagement._can_manage_own_engagement(("Глава клуба",)) is True
+    assert engagement._can_manage_own_engagement(("Глава клубов",)) is True
     assert engagement._can_manage_own_engagement(("Главный вице",)) is True

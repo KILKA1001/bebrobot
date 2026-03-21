@@ -5,6 +5,7 @@ from typing import Any, Callable
 from bot.data import db
 from bot.services.accounts_service import AccountsService
 from bot.services.authority_service import AuthorityService
+from bot.services.profile_titles import is_protected_profile_title
 from bot.services.auth import RoleResolver
 from bot.utils.roles_and_activities import ROLE_THRESHOLDS
 
@@ -26,6 +27,7 @@ DELETE_ROLE_REASON_ERROR = "error"
 ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE = "privileged_discord_role"
 PRIVILEGED_DISCORD_ROLE_MESSAGE = "Эту Discord-роль может выдавать только глава/главный вице."
 USER_ACQUIRE_HINT_PLACEHOLDER = "Способ получения пока не указан администратором"
+PROTECTED_PROFILE_TITLE_ROLE_MESSAGE = "Это звание управляется через profile_title_roles → accounts.titles и не должно выдаваться как обычная роль."
 ACQUIRE_METHOD_POINTS = "за баллы"
 ACQUIRE_METHOD_ADMIN = "выдаёт администратор"
 ACQUIRE_METHOD_DISCORD_SYNC = "автоматически синхронизируется с Discord"
@@ -352,6 +354,19 @@ class RoleManagementService:
         }
 
     @staticmethod
+    def _delete_role_dependencies(role_name: str, *, log_context: str) -> None:
+        normalized_role_name = str(role_name or "").strip()
+        if not normalized_role_name or not db.supabase:
+            return
+        try:
+            db.supabase.table("account_role_assignments").delete().eq("role_name", normalized_role_name).execute()
+            db.supabase.table("role_permissions").delete().eq("role_name", normalized_role_name).execute()
+            logger.info("%s deleted dependent role rows role_name=%s", log_context, normalized_role_name)
+        except Exception:
+            logger.exception("%s failed to delete dependent role rows role_name=%s", log_context, normalized_role_name)
+            raise
+
+    @staticmethod
     def _load_roles_rows(*, log_context: str | None = None) -> list[dict[str, Any]]:
         """Read role rows with backward-compatible column fallback."""
         if not db.supabase:
@@ -372,7 +387,19 @@ class RoleManagementService:
         for select_clause in select_variants:
             try:
                 response = db.supabase.table("roles").select(select_clause).execute()
-                return response.data or []
+                rows = response.data or []
+                filtered_rows: list[dict[str, Any]] = []
+                for row in rows:
+                    role_name = str(row.get("name") or "").strip()
+                    if role_name and is_protected_profile_title(role_name):
+                        logger.warning(
+                            "roles query filtered protected profile title from catalog command=%s role_name=%s",
+                            log_context or "n/a",
+                            role_name,
+                        )
+                        continue
+                    filtered_rows.append(row)
+                return filtered_rows
             except Exception:
                 logger.exception("roles query failed command=%s select=%s", log_context or "n/a", select_clause)
         return []
@@ -795,6 +822,18 @@ class RoleManagementService:
         role_name = str(name or "").strip()
         if not role_name:
             return False
+        if is_protected_profile_title(role_name):
+            logger.warning(
+                "create_role denied protected profile title role_name=%s actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s operation=%s source=%s",
+                role_name,
+                actor_id,
+                actor_provider,
+                actor_user_id,
+                actor_account_id,
+                operation,
+                source,
+            )
+            return False
         if not db.supabase:
             return False
 
@@ -990,8 +1029,8 @@ class RoleManagementService:
                     is_discord_managed=True,
                 )
 
+            RoleManagementService._delete_role_dependencies(role_name, log_context="delete_role")
             db.supabase.table("roles").delete().eq("name", role_name).execute()
-            db.supabase.table("account_role_assignments").delete().eq("role_name", role_name).execute()
             RoleManagementService.record_role_change_audit(
                 action="role_delete",
                 role_name=role_name,
@@ -1490,6 +1529,39 @@ class RoleManagementService:
             return RoleManagementService._role_action_result(False, role_name=role_key or role_name)
 
         try:
+            if is_protected_profile_title(role_key):
+                logger.warning(
+                    "assign_user_role_by_account denied protected profile title account_id=%s role_name=%s actor_provider=%s actor_user_id=%s target_provider=%s target_user_id=%s source=%s",
+                    account_key,
+                    role_key,
+                    actor_provider,
+                    actor_user_id,
+                    target_provider,
+                    target_user_id,
+                    source,
+                )
+                RoleManagementService.record_role_change_audit(
+                    action="role_grant_denied",
+                    role_name=role_key,
+                    source=source,
+                    actor_provider=actor_provider,
+                    actor_user_id=actor_user_id,
+                    actor_account_id=actor_account_id,
+                    target_provider=target_provider,
+                    target_user_id=target_user_id,
+                    target_account_id=account_key,
+                    before={"assigned": False},
+                    after={"assigned": False},
+                    status="denied",
+                    error_code="protected_profile_title",
+                    error_message=PROTECTED_PROFILE_TITLE_ROLE_MESSAGE,
+                )
+                return RoleManagementService._role_action_result(
+                    False,
+                    reason="protected_profile_title",
+                    message=PROTECTED_PROFILE_TITLE_ROLE_MESSAGE,
+                    role_name=role_key,
+                )
             guard_result = RoleManagementService._check_privileged_discord_role_access(
                 actor_provider=actor_provider,
                 actor_user_id=actor_user_id,
@@ -1608,6 +1680,39 @@ class RoleManagementService:
             return RoleManagementService._role_action_result(False, role_name=role_key or role_name)
 
         try:
+            if is_protected_profile_title(role_key):
+                logger.warning(
+                    "revoke_user_role_by_account denied protected profile title account_id=%s role_name=%s actor_provider=%s actor_user_id=%s target_provider=%s target_user_id=%s source=%s",
+                    account_key,
+                    role_key,
+                    actor_provider,
+                    actor_user_id,
+                    target_provider,
+                    target_user_id,
+                    source,
+                )
+                RoleManagementService.record_role_change_audit(
+                    action="role_revoke_denied",
+                    role_name=role_key,
+                    source=source,
+                    actor_provider=actor_provider,
+                    actor_user_id=actor_user_id,
+                    actor_account_id=actor_account_id,
+                    target_provider=target_provider,
+                    target_user_id=target_user_id,
+                    target_account_id=account_key,
+                    before={"assigned": True},
+                    after={"assigned": True},
+                    status="denied",
+                    error_code="protected_profile_title",
+                    error_message=PROTECTED_PROFILE_TITLE_ROLE_MESSAGE,
+                )
+                return RoleManagementService._role_action_result(
+                    False,
+                    reason="protected_profile_title",
+                    message=PROTECTED_PROFILE_TITLE_ROLE_MESSAGE,
+                    role_name=role_key,
+                )
             guard_result = RoleManagementService._check_privileged_discord_role_access(
                 actor_provider=actor_provider,
                 actor_user_id=actor_user_id,
@@ -1987,8 +2092,8 @@ class RoleManagementService:
                 role_id = str(row.get("discord_role_id") or "").strip()
                 role_name = str(row.get("name") or "").strip()
                 if role_id and role_id not in active_ids and role_name:
+                    RoleManagementService._delete_role_dependencies(role_name, log_context="sync_discord_guild_roles")
                     db.supabase.table("roles").delete().eq("name", role_name).execute()
-                    db.supabase.table("account_role_assignments").delete().eq("role_name", role_name).execute()
                     removed += 1
 
             logger.info(
