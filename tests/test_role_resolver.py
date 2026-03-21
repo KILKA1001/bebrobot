@@ -379,6 +379,31 @@ class RoleResolverTests(unittest.TestCase):
             captured.output,
         )
 
+    def test_title_assignment_conflict_with_role_does_not_apply_role_permissions(self):
+        now = datetime.now(timezone.utc)
+        self.fake_db.tables["accounts"] = [
+            {
+                "id": "acc-1",
+                "titles": ["Старший куратор"],
+                "titles_source": "discord",
+                "titles_updated_at": now.isoformat(),
+            }
+        ]
+        self.fake_db.tables["roles"] = [{"name": "Старший куратор"}]
+        self.fake_db.tables["role_permissions"] = [
+            {"role_name": "Старший куратор", "permission_name": "tickets.manage", "effect": "allow"}
+        ]
+
+        with self.assertLogs("bot.services.auth.role_resolver", level="WARNING") as captured:
+            result = RoleResolver.resolve_for_account("acc-1")
+
+        self.assertEqual(result.roles[0]["name"], "Старший куратор")
+        self.assertEqual(result.permissions, {"allow": [], "deny": []})
+        self.assertTrue(
+            any("title assignment conflicts with catalog role" in message for message in captured.output),
+            captured.output,
+        )
+
     def test_ignores_permission_binding_for_protected_profile_title(self):
         now = datetime.now(timezone.utc)
         self.fake_db.tables["accounts"] = [
