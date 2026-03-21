@@ -646,7 +646,7 @@ def _help_can_manage_roles_admin(visibility: HelpVisibilityContext) -> bool:
 def _help_can_manage_tickets(visibility: HelpVisibilityContext) -> bool:
     if visibility.is_administrator:
         return True
-    normalized = _normalize_help_titles(visibility.titles)
+    normalized = {normalize_protected_profile_title(title) for title in visibility.titles if str(title).strip()}
     return bool({"глава клуба", "главный вице"} & normalized) or visibility.level >= 100
 
 

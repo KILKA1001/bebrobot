@@ -354,6 +354,19 @@ class RoleManagementService:
         }
 
     @staticmethod
+    def _delete_role_dependencies(role_name: str, *, log_context: str) -> None:
+        normalized_role_name = str(role_name or "").strip()
+        if not normalized_role_name or not db.supabase:
+            return
+        try:
+            db.supabase.table("account_role_assignments").delete().eq("role_name", normalized_role_name).execute()
+            db.supabase.table("role_permissions").delete().eq("role_name", normalized_role_name).execute()
+            logger.info("%s deleted dependent role rows role_name=%s", log_context, normalized_role_name)
+        except Exception:
+            logger.exception("%s failed to delete dependent role rows role_name=%s", log_context, normalized_role_name)
+            raise
+
+    @staticmethod
     def _load_roles_rows(*, log_context: str | None = None) -> list[dict[str, Any]]:
         """Read role rows with backward-compatible column fallback."""
         if not db.supabase:
@@ -1016,8 +1029,8 @@ class RoleManagementService:
                     is_discord_managed=True,
                 )
 
+            RoleManagementService._delete_role_dependencies(role_name, log_context="delete_role")
             db.supabase.table("roles").delete().eq("name", role_name).execute()
-            db.supabase.table("account_role_assignments").delete().eq("role_name", role_name).execute()
             RoleManagementService.record_role_change_audit(
                 action="role_delete",
                 role_name=role_name,
@@ -2079,8 +2092,8 @@ class RoleManagementService:
                 role_id = str(row.get("discord_role_id") or "").strip()
                 role_name = str(row.get("name") or "").strip()
                 if role_id and role_id not in active_ids and role_name:
+                    RoleManagementService._delete_role_dependencies(role_name, log_context="sync_discord_guild_roles")
                     db.supabase.table("roles").delete().eq("name", role_name).execute()
-                    db.supabase.table("account_role_assignments").delete().eq("role_name", role_name).execute()
                     removed += 1
 
             logger.info(

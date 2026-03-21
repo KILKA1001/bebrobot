@@ -6,6 +6,7 @@ from discord.ext import commands
 
 from bot.commands import bot
 from bot.services import AccountsService, AuthorityService, PointsService, TicketsService
+from bot.services.profile_titles import normalize_protected_profile_title
 from bot.utils import send_temp, safe_defer, safe_edit_original_response
 from bot.utils.blocking_io import run_blocking_io
 
@@ -15,7 +16,7 @@ ROLE_UPDATE_TEXT = "🛠️ Сохраняю изменение роли…"
 
 
 def _can_manage_tickets(authority) -> bool:
-    normalized = {str(title).strip().lower() for title in authority.titles}
+    normalized = {normalize_protected_profile_title(title) for title in authority.titles if str(title).strip()}
     if "глава клуба" in normalized or "главный вице" in normalized:
         return True
     return authority.level >= 100
@@ -26,7 +27,7 @@ def _can_manage_points(authority) -> bool:
 
 
 def _can_manage_own_engagement(authority) -> bool:
-    normalized = {str(title).strip().lower() for title in authority.titles}
+    normalized = {normalize_protected_profile_title(title) for title in authority.titles if str(title).strip()}
     return bool(normalized & {"глава клуба", "главный вице"})
 
 

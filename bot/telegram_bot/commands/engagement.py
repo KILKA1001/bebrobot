@@ -10,6 +10,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from bot.data import db
 from bot.services import AccountsService, AuthorityService, PointsService, TicketsService
+from bot.services.profile_titles import normalize_protected_profile_title
 from bot.telegram_bot.identity import persist_telegram_identity_from_user
 from bot.utils.blocking_io import run_blocking_io
 
@@ -61,7 +62,7 @@ def has_pending_action(telegram_user_id: int | None) -> bool:
 
 
 def _can_manage_tickets(actor_titles: tuple[str, ...], actor_level: int) -> bool:
-    normalized = {str(title).strip().lower() for title in actor_titles}
+    normalized = {normalize_protected_profile_title(title) for title in actor_titles if str(title).strip()}
     if "глава клуба" in normalized or "главный вице" in normalized:
         return True
     return actor_level >= 100
@@ -72,7 +73,7 @@ def _can_manage_points(actor_level: int) -> bool:
 
 
 def _can_manage_own_engagement(actor_titles: tuple[str, ...]) -> bool:
-    normalized = {str(title).strip().lower() for title in actor_titles}
+    normalized = {normalize_protected_profile_title(title) for title in actor_titles if str(title).strip()}
     return bool(normalized & {"глава клуба", "главный вице"})
 
 

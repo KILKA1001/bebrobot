@@ -6,6 +6,7 @@ from bot.legacy_identity_logging import (
     log_transport_identity_error,
 )
 from bot.services import AccountsService, AuthorityService, RoleManagementService
+from bot.services.profile_titles import normalize_protected_profile_title
 from bot.services.role_management_service import USER_ACQUIRE_HINT_PLACEHOLDER
 
 
@@ -38,7 +39,7 @@ def _can_manage_points(actor_level: int) -> bool:
 
 
 def _can_manage_tickets(actor_titles: tuple[str, ...], actor_level: int) -> bool:
-    normalized = {str(title).strip().lower() for title in actor_titles}
+    normalized = {normalize_protected_profile_title(title) for title in actor_titles if str(title).strip()}
     if {"глава клуба", "главный вице"} & normalized:
         return True
     return actor_level >= 100

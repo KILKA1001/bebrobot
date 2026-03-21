@@ -113,6 +113,18 @@ class AuthorityServiceTests(unittest.TestCase):
         mock_titles.return_value = ["Вице города"]
 
         self.assertTrue(AuthorityService.can_manage_role("telegram", "42", "оператор"))
+    @patch("bot.services.authority_service.AccountsService.get_account_titles")
+    @patch("bot.services.authority_service.AccountsService.resolve_account_id")
+    def test_head_clubs_alias_is_treated_as_head_club(self, mock_resolve, mock_titles):
+        mock_resolve.return_value = "acc-head-alias"
+        mock_titles.return_value = ["Глава клубов"]
+
+        result = AuthorityService.resolve_authority("discord", "500")
+
+        self.assertEqual(result.level, 100)
+        self.assertTrue(AuthorityService.can_manage_self("discord", "500"))
+        self.assertTrue(AuthorityService.can_manage_role("discord", "500", "глава клуба"))
+
 
 if __name__ == "__main__":
     unittest.main()
