@@ -430,7 +430,7 @@ class RoleResolver:
                 role_name=title,
                 source=source,
                 external_id=None,
-                metadata={"source": "accounts.titles"},
+                metadata={"source": "accounts.titles", "is_title": True},
                 origin_label="Звание из профиля",
                 synced_at=synced_at,
             )
@@ -441,7 +441,8 @@ class RoleResolver:
     def _load_roles(assignments: list[UserRoleAssignment]) -> dict[str, Role]:
         if not db.supabase or not assignments:
             return {}
-        role_names = [assignment.role_name for assignment in assignments]
+        permission_assignments = [assignment for assignment in assignments if not RoleResolver._is_title_assignment(assignment)]
+        role_names = [assignment.role_name for assignment in permission_assignments]
 
         try:
             roles_resp = db.supabase.table("roles").select("name").execute()
@@ -452,6 +453,7 @@ class RoleResolver:
 
         existing = {str(row.get("name")).strip().lower() for row in (roles_resp.data or []) if row.get("name")}
         wanted = {name.strip().lower() for name in role_names if not is_protected_profile_title(name)}
+        RoleResolver._log_title_role_conflicts(assignments, existing)
 
         role_map: dict[str, Role] = {
             key: Role(name=key, permissions=[])
@@ -476,6 +478,28 @@ class RoleResolver:
             if role_name and permission_name and role_name in role_map:
                 role_map[role_name].permissions.append(Permission(name=permission_name, effect=effect))
         return role_map
+
+    @staticmethod
+    def _is_title_assignment(assignment: UserRoleAssignment) -> bool:
+        metadata = assignment.metadata if isinstance(assignment.metadata, dict) else {}
+        return bool(metadata.get("is_title")) or str(metadata.get("source") or "").strip().lower() == "accounts.titles"
+
+    @staticmethod
+    def _log_title_role_conflicts(assignments: list[UserRoleAssignment], existing_roles: set[str]) -> None:
+        for assignment in assignments:
+            if not RoleResolver._is_title_assignment(assignment):
+                continue
+            role_name = assignment.role_name.strip()
+            if not role_name:
+                continue
+            if role_name.lower() in existing_roles:
+                logger.warning(
+                    "role resolver: title assignment conflicts with catalog role role_name=%s source=%s origin_label=%s metadata_source=%s",
+                    role_name,
+                    assignment.source,
+                    assignment.origin_label,
+                    str((assignment.metadata or {}).get("source") or "").strip() or None,
+                )
 
     @staticmethod
     def _load_role_catalog_metadata(assignments: list[UserRoleAssignment]) -> dict[str, dict[str, str]]:
@@ -512,6 +536,8 @@ class RoleResolver:
         state: dict[str, tuple[str, int]] = {}
 
         for assignment in assignments:
+            if RoleResolver._is_title_assignment(assignment):
+                continue
             role_key = assignment.role_name.lower()
             role = roles.get(role_key)
             if role is None:
