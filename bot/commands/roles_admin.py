@@ -1129,7 +1129,7 @@ async def rolesadmin_role_create(
             role_acquire_hint=acquire_hint,
         ),
     )
-    if RoleManagementService.create_role(
+    create_result = RoleManagementService.create_role_result(
         name,
         category,
         description=description,
@@ -1142,7 +1142,8 @@ async def rolesadmin_role_create(
         actor_user_id=str(ctx.author.id),
         operation="role_create",
         source="discord_command",
-    ):
+    )
+    if create_result.get("ok"):
         description_note = f" Описание: {description}." if str(description or "").strip() else ""
         acquire_hint_note = f" Как получить: {acquire_hint}." if str(acquire_hint or "").strip() else ""
         await send_temp(ctx, f"✅ Роль **{name}** создана в категории **{category}**.{description_note}{acquire_hint_note}")
@@ -1157,7 +1158,7 @@ async def rolesadmin_role_create(
             computed_last_position=int(preview.get("computed_last_position", 0)),
             message="rolesadmin role_create failed",
         )
-        await send_temp(ctx, "❌ Не удалось создать роль (смотри логи).")
+        await send_temp(ctx, f"❌ {create_result.get('message') or 'Не удалось создать роль (смотри логи).'}")
 
 
 @rolesadmin.command(name="role_edit_description", description="Обновить описание роли")

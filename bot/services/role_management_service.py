@@ -28,6 +28,7 @@ ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE = "privileged_discord_role"
 PRIVILEGED_DISCORD_ROLE_MESSAGE = "Эту Discord-роль может выдавать только глава/главный вице."
 USER_ACQUIRE_HINT_PLACEHOLDER = "Способ получения пока не указан администратором"
 PROTECTED_PROFILE_TITLE_ROLE_MESSAGE = "Это звание управляется через profile_title_roles → accounts.titles и не должно выдаваться как обычная роль."
+ROLE_NAME_CONFLICT_PROFILE_TITLE_MESSAGE = "Название совпадает с активным званием из profile_title_roles. Используй другое имя для каталожной роли: это уже звание, а не обычная роль каталога."
 ACQUIRE_METHOD_POINTS = "за баллы"
 ACQUIRE_METHOD_ADMIN = "выдаёт администратор"
 ACQUIRE_METHOD_DISCORD_SYNC = "автоматически синхронизируется с Discord"
@@ -232,6 +233,42 @@ class RoleManagementService:
         )
 
     @staticmethod
+    def _create_role_result(
+        ok: bool,
+        *,
+        reason: str | None = None,
+        message: str | None = None,
+        role_name: str | None = None,
+        discord_role_id: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "ok": ok,
+            "reason": reason,
+            "message": message,
+            "role_name": role_name,
+            "discord_role_id": discord_role_id,
+        }
+
+    @staticmethod
+    def _find_active_profile_title_role_conflict(role_name: str) -> dict[str, Any] | None:
+        normalized_role_name = str(role_name or "").strip()
+        if not normalized_role_name or not db.supabase:
+            return None
+        try:
+            response = (
+                db.supabase.table("profile_title_roles")
+                .select("title_name,discord_role_id,is_active")
+                .eq("title_name", normalized_role_name)
+                .eq("is_active", True)
+                .limit(1)
+                .execute()
+            )
+            rows = list(response.data or [])
+            return dict(rows[0]) if rows else None
+        except Exception:
+            logger.exception("profile_title_roles conflict lookup failed role_name=%s", normalized_role_name)
+            return None
+
     def _role_action_result(
         ok: bool,
         *,
@@ -803,7 +840,7 @@ class RoleManagementService:
             return False
 
     @staticmethod
-    def create_role(
+    def create_role_result(
         name: str,
         category: str,
         description: str | None = None,
@@ -818,10 +855,10 @@ class RoleManagementService:
         actor_account_id: str | None = None,
         operation: str = "role_create",
         source: str = "unknown",
-    ) -> bool:
+    ) -> dict[str, Any]:
         role_name = str(name or "").strip()
         if not role_name:
-            return False
+            return RoleManagementService._create_role_result(False)
         if is_protected_profile_title(role_name):
             logger.warning(
                 "create_role denied protected profile title role_name=%s actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s operation=%s source=%s",
@@ -833,9 +870,14 @@ class RoleManagementService:
                 operation,
                 source,
             )
-            return False
+            return RoleManagementService._create_role_result(
+                False,
+                reason="protected_profile_title",
+                message=PROTECTED_PROFILE_TITLE_ROLE_MESSAGE,
+                role_name=role_name,
+            )
         if not db.supabase:
-            return False
+            return RoleManagementService._create_role_result(False, role_name=role_name)
 
         normalized_category = RoleManagementService._normalized_category(category)
         preview = RoleManagementService.get_category_role_positioning(
@@ -858,6 +900,51 @@ class RoleManagementService:
             "discord_role_name": str(discord_role_name).strip() if discord_role_name else None,
             "is_privileged_discord_role": False,
         }
+
+        conflict = RoleManagementService._find_active_profile_title_role_conflict(role_name)
+        if conflict:
+            logger.warning(
+                "create_role denied active profile title conflict role_name=%s actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s operation=%s source=%s title_discord_role_id=%s",
+                role_name,
+                actor_id,
+                actor_provider,
+                actor_user_id,
+                actor_account_id,
+                operation,
+                source,
+                conflict.get("discord_role_id"),
+            )
+            RoleManagementService.record_role_change_audit(
+                action="role_create_denied",
+                role_name=role_name,
+                source=source,
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id or actor_id,
+                actor_account_id=actor_account_id,
+                before=before_role or {"exists": False},
+                after=payload,
+                status="denied",
+                error_code="profile_title_conflict",
+                error_message=ROLE_NAME_CONFLICT_PROFILE_TITLE_MESSAGE,
+            )
+            return RoleManagementService._create_role_result(
+                False,
+                reason="profile_title_conflict",
+                message=ROLE_NAME_CONFLICT_PROFILE_TITLE_MESSAGE,
+                role_name=role_name,
+                discord_role_id=str(conflict.get("discord_role_id") or "").strip() or None,
+            )
+
+        logger.info(
+            "create_role validated profile title uniqueness role_name=%s actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s operation=%s source=%s",
+            role_name,
+            actor_id,
+            actor_provider,
+            actor_user_id,
+            actor_account_id,
+            operation,
+            source,
+        )
 
         try:
             RoleManagementService._ensure_category_exists(
@@ -905,7 +992,7 @@ class RoleManagementService:
                 before=before_role,
                 after=after_role,
             )
-            return True
+            return RoleManagementService._create_role_result(True, role_name=role_name, discord_role_id=payload["discord_role_id"])
         except Exception:
             logger.exception(
                 "create_role failed actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s operation=%s source=%s role_name=%s category=%s description_length=%s acquire_hint_length=%s requested_position=%s computed_last_position=%s computed_position=%s",
@@ -936,7 +1023,42 @@ class RoleManagementService:
                 error_code="db_write_failed",
                 error_message="create_role failed",
             )
-            return False
+            return RoleManagementService._create_role_result(False, role_name=role_name)
+
+    @staticmethod
+    def create_role(
+        name: str,
+        category: str,
+        description: str | None = None,
+        acquire_hint: str | None = None,
+        position: int | None = None,
+        discord_role_id: str | None = None,
+        discord_role_name: str | None = None,
+        *,
+        actor_id: str | None = None,
+        actor_provider: str | None = None,
+        actor_user_id: str | None = None,
+        actor_account_id: str | None = None,
+        operation: str = "role_create",
+        source: str = "unknown",
+    ) -> bool:
+        return bool(
+            RoleManagementService.create_role_result(
+                name,
+                category,
+                description=description,
+                acquire_hint=acquire_hint,
+                position=position,
+                discord_role_id=discord_role_id,
+                discord_role_name=discord_role_name,
+                actor_id=actor_id,
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id,
+                actor_account_id=actor_account_id,
+                operation=operation,
+                source=source,
+            ).get("ok")
+        )
 
     @staticmethod
     def delete_role(

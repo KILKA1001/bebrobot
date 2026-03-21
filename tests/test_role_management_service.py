@@ -7,6 +7,7 @@ from bot.services.role_management_service import (
     DELETE_ROLE_REASON_NOT_FOUND,
     PRIVILEGED_DISCORD_ROLE_MESSAGE,
     PROTECTED_PROFILE_TITLE_ROLE_MESSAGE,
+    ROLE_NAME_CONFLICT_PROFILE_TITLE_MESSAGE,
     ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE,
     RoleManagementService,
 )
@@ -132,6 +133,7 @@ class _FakeDb:
             "external_role_bindings": [],
             "role_categories": [],
             "account_identities": [],
+            "profile_title_roles": [],
             "role_change_audit": [],
         }
         self.supabase = _FakeSupabase(self)
@@ -567,6 +569,53 @@ class RoleManagementServiceTests(unittest.TestCase):
         self.assertEqual(self.fake_db.tables["roles"], [])
         self.assertTrue(
             any("create_role denied protected profile title" in message for message in captured.output),
+            captured.output,
+        )
+
+    def test_create_role_result_denies_name_that_conflicts_with_active_profile_title(self):
+        self.fake_db.tables["profile_title_roles"] = [
+            {"discord_role_id": "777", "title_name": "Легенда района", "is_active": True},
+            {"discord_role_id": "888", "title_name": "Легенда района", "is_active": False},
+        ]
+
+        with self.assertLogs("bot.services.role_management_service", level="INFO") as captured:
+            result = RoleManagementService.create_role_result(
+                "Легенда района",
+                "Каталог",
+                actor_id="42",
+                actor_provider="telegram",
+                actor_user_id="42",
+                source="telegram_command",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "profile_title_conflict")
+        self.assertEqual(result["message"], ROLE_NAME_CONFLICT_PROFILE_TITLE_MESSAGE)
+        self.assertEqual(result["discord_role_id"], "777")
+        self.assertEqual(self.fake_db.tables["roles"], [])
+        self.assertTrue(
+            any("create_role denied active profile title conflict" in message and "actor_provider=telegram" in message and "source=telegram_command" in message for message in captured.output),
+            captured.output,
+        )
+        audit_row = next(row for row in self.fake_db.tables["role_change_audit"] if row["action"] == "role_create_denied")
+        self.assertEqual(audit_row["error_code"], "profile_title_conflict")
+        self.assertEqual(audit_row["error_message"], ROLE_NAME_CONFLICT_PROFILE_TITLE_MESSAGE)
+
+    def test_create_role_result_logs_validation_pass_before_upsert(self):
+        with self.assertLogs("bot.services.role_management_service", level="INFO") as captured:
+            result = RoleManagementService.create_role_result(
+                "Gamma",
+                "General",
+                description="Описание",
+                actor_id="42",
+                actor_provider="discord",
+                actor_user_id="42",
+                source="discord_command",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(
+            any("create_role validated profile title uniqueness" in message and "actor_provider=discord" in message and "source=discord_command" in message for message in captured.output),
             captured.output,
         )
 

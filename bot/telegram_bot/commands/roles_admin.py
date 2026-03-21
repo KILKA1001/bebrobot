@@ -1634,7 +1634,7 @@ async def roles_admin_command(message: Message) -> None:
                 category=parsed["category"],
                 source="fallback_text_command",
             )
-            ok = RoleManagementService.create_role(
+            create_result = RoleManagementService.create_role_result(
                 parsed["role_name"],
                 parsed["category"],
                 description=parsed["description"],
@@ -1647,7 +1647,7 @@ async def roles_admin_command(message: Message) -> None:
                 operation="role_create",
                 source="telegram_command",
             )
-            await message.answer("✅ Роль создана." if ok else "❌ Не удалось создать роль (смотри логи).")
+            await message.answer("✅ Роль создана." if create_result.get("ok") else f"❌ {create_result.get('message') or 'Не удалось создать роль (смотри логи).'}")
             return
 
         if subcommand == "role_edit_description":
@@ -2873,7 +2873,7 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                 category=parsed["category"],
                 source="button_text_fallback",
             )
-            ok = RoleManagementService.create_role(
+            create_result = RoleManagementService.create_role_result(
                 parsed["role_name"],
                 parsed["category"],
                 description=parsed["description"],
@@ -2886,7 +2886,7 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                 operation="role_create",
                 source="telegram_pending_text",
             )
-            await message.answer("✅ Роль создана." if ok else "❌ Не удалось создать роль (смотри логи).")
+            await message.answer("✅ Роль создана." if create_result.get("ok") else f"❌ {create_result.get('message') or 'Не удалось создать роль (смотри логи).'}")
         elif op == "role_edit_description":
             if len(args) < 2:
                 await message.answer("❌ Формат: Название роли | Описание")
@@ -2936,7 +2936,7 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                 source="button_selected_category",
                 created_new=bool(pending.payload.get("created_new_category")),
             )
-            ok = RoleManagementService.create_role(
+            create_result = RoleManagementService.create_role_result(
                 parsed["role_name"],
                 category,
                 description=parsed["description"],
@@ -2949,7 +2949,7 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                 operation="role_create",
                 source="telegram_button",
             )
-            await message.answer("✅ Роль создана." if ok else "❌ Не удалось создать роль (смотри логи).")
+            await message.answer("✅ Роль создана." if create_result.get("ok") else f"❌ {create_result.get('message') or 'Не удалось создать роль (смотри логи).'}")
         elif op == "role_create_new_category_name":
             if not _can_manage_categories("telegram", str(message.from_user.id)):
                 logger.warning(
