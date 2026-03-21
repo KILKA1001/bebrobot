@@ -348,6 +348,61 @@ class RoleResolverTests(unittest.TestCase):
 
         self.assertEqual(result.roles[0]["category"], "Новая категория")
 
+    def test_filters_protected_profile_title_assignment_in_favor_of_accounts_titles(self):
+        now = datetime.now(timezone.utc)
+        self.fake_db.tables["account_role_assignments"] = [
+            {
+                "account_id": "acc-1",
+                "role_name": "Глава клуба",
+                "source": "custom",
+                "origin_label": "legacy role",
+                "synced_at": now.isoformat(),
+            }
+        ]
+        self.fake_db.tables["accounts"] = [
+            {
+                "id": "acc-1",
+                "titles": ["Глава клуба"],
+                "titles_source": "discord",
+                "titles_updated_at": now.isoformat(),
+            }
+        ]
+
+        with self.assertLogs("bot.services.auth.role_resolver", level="WARNING") as captured:
+            result = RoleResolver.resolve_for_account("acc-1")
+
+        self.assertEqual(len(result.roles), 1)
+        self.assertEqual(result.roles[0]["name"], "Глава клуба")
+        self.assertEqual(result.roles[0]["origin_label"], "Звание из профиля")
+        self.assertTrue(
+            any("filtered protected profile title assignment" in message for message in captured.output),
+            captured.output,
+        )
+
+    def test_ignores_permission_binding_for_protected_profile_title(self):
+        now = datetime.now(timezone.utc)
+        self.fake_db.tables["accounts"] = [
+            {
+                "id": "acc-1",
+                "titles": ["Главный вице"],
+                "titles_source": "discord",
+                "titles_updated_at": now.isoformat(),
+            }
+        ]
+        self.fake_db.tables["roles"] = [{"name": "Главный вице"}]
+        self.fake_db.tables["role_permissions"] = [
+            {"role_name": "Главный вице", "permission_name": "tickets.manage", "effect": "allow"}
+        ]
+
+        with self.assertLogs("bot.services.auth.role_resolver", level="WARNING") as captured:
+            result = RoleResolver.resolve_for_account("acc-1")
+
+        self.assertEqual(result.permissions, {"allow": [], "deny": []})
+        self.assertTrue(
+            any("ignored permission binding for protected profile title" in message for message in captured.output),
+            captured.output,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
