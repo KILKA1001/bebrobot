@@ -221,6 +221,22 @@ class RoleManagementServiceTests(unittest.TestCase):
         self.assertEqual(grouped[0]["roles"][0]["acquire_hint"], "")
         self.assertTrue(self.fake_db.tables["roles"])
 
+    def test_list_roles_grouped_preserves_existing_category_position_during_external_sync(self):
+        self.fake_db.tables["external_role_bindings"] = [
+            {
+                "account_id": "acc-1",
+                "source": "discord",
+                "external_role_id": "role-1",
+                "external_role_name": "External role",
+                "deleted_at": None,
+            }
+        ]
+        self.fake_db.tables["role_categories"] = [{"name": "Discord сервер (auto)", "position": 0}]
+
+        RoleManagementService.list_roles_grouped()
+
+        self.assertEqual(self.fake_db.tables["role_categories"][0]["position"], 0)
+
     def test_list_roles_grouped_keeps_backward_compatibility_without_description(self):
         self.fake_db.tables["roles"] = [
             {"name": "Legacy", "category_name": "General", "position": 0},
@@ -421,6 +437,15 @@ class RoleManagementServiceTests(unittest.TestCase):
         self.assertTrue(ok)
         created = next(row for row in self.fake_db.tables["roles"] if row["name"] == "Gamma")
         self.assertEqual(created["position"], 2)
+
+    def test_create_role_preserves_existing_category_position(self):
+        self.fake_db.tables["role_categories"] = [{"name": "General", "position": 7}]
+
+        ok = RoleManagementService.create_role("Gamma", "General", description="Описание", position=0)
+
+        self.assertTrue(ok)
+        created = next(row for row in self.fake_db.tables["roles"] if row["name"] == "Gamma")
+        self.assertEqual(self.fake_db.tables["role_categories"][0]["position"], 7)
         self.assertEqual(created["description"], "Описание")
         self.assertIsNone(created["acquire_hint"])
 
