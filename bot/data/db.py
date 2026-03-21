@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 import traceback
 import asyncio
 import uuid
+import time
 from bot.legacy_identity_logging import (
     log_identity_resolve_error,
     log_legacy_identity_fallback_used,
@@ -159,6 +160,31 @@ class Database:
         self.quick_pay_streak = {}
         self.guild_id = int(os.getenv("GUILD_ID", 0))
         self.fast_payer_role_id = int(os.getenv("FAST_PAYER_ROLE_ID", 0))
+
+    def _log_db_timing(
+        self,
+        *,
+        table: str,
+        operation: str,
+        started_at: float,
+        account_id: Optional[str] = None,
+        interaction_user_id: Optional[int] = None,
+        fine_id: Optional[int] = None,
+        tournament_id: Optional[int] = None,
+        rpc_name: Optional[str] = None,
+    ) -> None:
+        elapsed_ms = round((time.perf_counter() - started_at) * 1000, 2)
+        logger.info(
+            "db timing table=%s rpc_name=%s operation=%s elapsed_ms=%s account_id=%s interaction_user_id=%s fine_id=%s tournament_id=%s",
+            table,
+            rpc_name,
+            operation,
+            elapsed_ms,
+            account_id,
+            interaction_user_id,
+            fine_id,
+            tournament_id,
+        )
         
     def _ensure_tables(self):
         """Проверяет существование обязательных таблиц"""
@@ -603,7 +629,15 @@ class Database:
                 rpc_errors = []
                 for rpc_payload in rpc_payload_variants:
                     try:
+                        rpc_started_at = time.perf_counter()
                         rpc_response = self.supabase.rpc("apply_points_action", rpc_payload).execute()
+                        self._log_db_timing(
+                            table="actions",
+                            rpc_name="apply_points_action",
+                            operation="rpc",
+                            started_at=rpc_started_at,
+                            account_id=resolved_account_id,
+                        )
                         break
                     except Exception as rpc_variant_error:
                         rpc_errors.append(str(rpc_variant_error))
@@ -644,7 +678,14 @@ class Database:
                     "op_key": op_key,
                 }
                 try:
+                    insert_started_at = time.perf_counter()
                     response = self.supabase.table("actions").insert(action).execute()
+                    self._log_db_timing(
+                        table="actions",
+                        operation="insert",
+                        started_at=insert_started_at,
+                        account_id=resolved_account_id,
+                    )
                 except Exception as insert_error:
                     logger.error(
                         "❌ add_action fallback: не удалось вставить запись actions после обновления scores; откат баллов. account_id=%s op_key=%s error=%s",
@@ -700,12 +741,19 @@ class Database:
                     raise ValueError("Пустой ответ от Supabase")
                 action_row = response.data[0]
             else:
+                action_select_started_at = time.perf_counter()
                 action_resp = (
                     self.supabase.table("actions")
                     .select("*")
                     .eq("op_key", op_key)
                     .limit(1)
                     .execute()
+                )
+                self._log_db_timing(
+                    table="actions",
+                    operation="select",
+                    started_at=action_select_started_at,
+                    account_id=resolved_account_id,
                 )
                 action_row = action_resp.data[0] if action_resp.data else {
                     "account_id": resolved_account_id,
@@ -719,13 +767,27 @@ class Database:
                 if not action_row.get("author_account_id"):
                     action_row["author_account_id"] = author_account_id
                     try:
+                        author_update_started_at = time.perf_counter()
                         self.supabase.table("actions").update({"author_account_id": author_account_id}).eq("op_key", op_key).execute()
+                        self._log_db_timing(
+                            table="actions",
+                            operation="update",
+                            started_at=author_update_started_at,
+                            account_id=resolved_account_id,
+                        )
                     except Exception as author_update_error:
                         logger.error("❌ add_action: не удалось сохранить author_account_id op_key=%s error=%s", op_key, author_update_error)
 
             if is_undo:
                 try:
+                    undo_started_at = time.perf_counter()
                     self.supabase.table("actions").update({"is_undo": True}).eq("op_key", op_key).execute()
+                    self._log_db_timing(
+                        table="actions",
+                        operation="update",
+                        started_at=undo_started_at,
+                        account_id=resolved_account_id,
+                    )
                     action_row["is_undo"] = True
                 except Exception as undo_error:
                     logger.error("❌ Не удалось выставить is_undo для op_key=%s: %s", op_key, undo_error)
@@ -1022,7 +1084,15 @@ class Database:
                 "author_id": 0,
                 "author_account_id": author_account_id,
             }
+            payment_started_at = time.perf_counter()
             self.supabase.table("fine_payments").insert(payment_payload).execute()
+            self._log_db_timing(
+                table="fine_payments",
+                operation="insert",
+                started_at=payment_started_at,
+                account_id=account_id,
+                fine_id=fine_id,
+            )
 
             if not is_test:
                 self.add_to_bank(amount)
@@ -1062,12 +1132,28 @@ class Database:
                         update_data["was_on_time"] = False
 
                 try:
+                    fine_update_started_at = time.perf_counter()
                     self.supabase.table("fines").update(update_data).eq("id", fine_id).execute()
+                    self._log_db_timing(
+                        table="fines",
+                        operation="update",
+                        started_at=fine_update_started_at,
+                        account_id=account_id,
+                        fine_id=fine_id,
+                    )
                 except APIError as e:
                     if "was_on_time" in str(e) and getattr(e, "code", "") == "PGRST204":
                         self.has_was_on_time = False
                         update_data.pop("was_on_time", None)
+                        fine_retry_started_at = time.perf_counter()
                         self.supabase.table("fines").update(update_data).eq("id", fine_id).execute()
+                        self._log_db_timing(
+                            table="fines",
+                            operation="update",
+                            started_at=fine_retry_started_at,
+                            account_id=account_id,
+                            fine_id=fine_id,
+                        )
                     else:
                         raise
 
@@ -1133,10 +1219,18 @@ class Database:
             original_due = datetime.fromisoformat(fine["due_date"])
             new_due = original_due + timedelta(days=days)
 
+            update_started_at = time.perf_counter()
             self.supabase.table("fines").update({
                 "due_date": new_due.isoformat(),
                 "postponed_until": datetime.now(timezone.utc).isoformat()
             }).eq("id", fine_id).execute()
+            self._log_db_timing(
+                table="fines",
+                operation="update",
+                started_at=update_started_at,
+                account_id=fine.get("account_id"),
+                fine_id=fine_id,
+            )
 
             fine["due_date"] = new_due.isoformat()
             fine["postponed_until"] = datetime.now(timezone.utc).isoformat()

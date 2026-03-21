@@ -1,4 +1,5 @@
 import logging
+import asyncio
 
 import discord
 
@@ -9,10 +10,12 @@ from bot.systems.linking_logic import (
     issue_discord_telegram_link_code,
     register_discord_account,
 )
-from bot.utils import send_temp
+from bot.utils import send_temp, safe_defer, safe_edit_original_response
 
 logger = logging.getLogger(__name__)
 MAX_ROLE_PICKER_PAGE_SIZE = 8
+PROFILE_PROCESSING_TEXT = "⏳ Обрабатываю…"
+ROLE_SAVE_TEXT = "🛠️ Сохраняю изменение роли…"
 
 
 def _is_private_context(ctx) -> bool:
@@ -57,14 +60,17 @@ class ProfileEditModal(discord.ui.Modal):
         try:
             _persist_discord_identity(interaction.user)
             value = str(self.value_input.value or "").strip()
-            success, payload = AccountsService.update_profile_field(
+            await safe_defer(interaction, ephemeral=True)
+            await safe_edit_original_response(interaction, content=PROFILE_PROCESSING_TEXT)
+            success, payload = await asyncio.to_thread(
+                AccountsService.update_profile_field,
                 "discord",
                 str(interaction.user.id),
                 self.field_name,
                 value,
             )
             prefix = "✅" if success else "❌"
-            await interaction.response.send_message(f"{prefix} {payload}", ephemeral=True)
+            await interaction.followup.send(f"{prefix} {payload}", ephemeral=True)
         except Exception:
             logger.exception(
                 "discord profile edit modal submit failed user_id=%s field=%s",
@@ -188,12 +194,23 @@ class VisibleRolesPickerView(discord.ui.View):
     async def _save_callback(self, interaction: discord.Interaction):
         try:
             value = ", ".join(self.selected_roles)
-            success, payload = AccountsService.update_profile_field("discord", str(interaction.user.id), "visible_roles", value)
+            await safe_defer(interaction, ephemeral=True)
+            await safe_edit_original_response(interaction, content=ROLE_SAVE_TEXT, view=None)
+            success, payload = await asyncio.to_thread(
+                AccountsService.update_profile_field,
+                "discord",
+                str(interaction.user.id),
+                "visible_roles",
+                value,
+            )
             prefix = "✅" if success else "❌"
-            await interaction.response.edit_message(content=f"{prefix} {payload}", view=None)
+            await safe_edit_original_response(interaction, content=f"{prefix} {payload}", view=None)
         except Exception:
             logger.exception("discord visible roles save failed user_id=%s", interaction.user.id)
-            await interaction.response.send_message("❌ Не удалось сохранить роли.", ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Не удалось сохранить роли.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Не удалось сохранить роли.", ephemeral=True)
 
     async def _clear_callback(self, interaction: discord.Interaction):
         try:
@@ -241,7 +258,14 @@ class ProfileEditView(discord.ui.View):
     async def edit_visible_roles(self, interaction: discord.Interaction, _button: discord.ui.Button):
         try:
             display_name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "name", None)
-            profile = AccountsService.get_profile("discord", str(interaction.user.id), display_name=display_name) or {}
+            await safe_defer(interaction, ephemeral=True)
+            await safe_edit_original_response(interaction, content=ROLE_SAVE_TEXT)
+            profile = await asyncio.to_thread(
+                AccountsService.get_profile,
+                "discord",
+                str(interaction.user.id),
+                display_name,
+            ) or {}
             roles_by_category = profile.get("roles_by_category") or {}
             role_catalog: list[dict[str, str]] = []
             for category_name in sorted(roles_by_category.keys(), key=lambda value: str(value).lower()):
@@ -257,27 +281,30 @@ class ProfileEditView(discord.ui.View):
                     role_catalog.append({"category": str(category_name).strip(), "role": role_name})
             visible_roles = [str(name).strip() for name in profile.get("visible_roles", []) if str(name).strip()]
             if not role_catalog:
-                await interaction.response.send_message(
-                    "❌ Нет доступных ролей для выбора. Проверьте /profile_roles.",
-                    ephemeral=True,
+                await safe_edit_original_response(
+                    interaction,
+                    content="❌ Нет доступных ролей для выбора. Проверьте /profile_roles.",
                 )
                 return
 
             view = VisibleRolesPickerView(interaction.user.id, role_catalog, visible_roles)
-            await interaction.response.send_message(
+            await safe_edit_original_response(
+                interaction,
                 view._content_text(),
                 view=view,
-                ephemeral=True,
             )
         except Exception:
             logger.exception("discord visible roles picker open failed user_id=%s", getattr(interaction.user, "id", None))
-            await interaction.response.send_message("❌ Не удалось открыть выбор ролей.", ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Не удалось открыть выбор ролей.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Не удалось открыть выбор ролей.", ephemeral=True)
 
 
 @bot.hybrid_command(name="register_account", description="Зарегистрировать общий аккаунт")
 async def register_account(ctx):
     _persist_discord_identity(ctx.author)
-    success, payload = register_discord_account(ctx.author.id)
+    success, payload = await asyncio.to_thread(register_discord_account, ctx.author.id)
     prefix = "✅" if success else "❌"
     await send_temp(ctx, f"{prefix} {payload}", delete_after=None)
 
@@ -289,7 +316,7 @@ async def link_telegram(ctx):
         await send_temp(ctx, "❌ Команда привязки доступна только в личных сообщениях с ботом.", delete_after=None)
         return
 
-    success, payload = issue_discord_telegram_link_code(ctx.author.id)
+    success, payload = await asyncio.to_thread(issue_discord_telegram_link_code, ctx.author.id)
     if not success:
         await send_temp(ctx, f"❌ {payload}", delete_after=None)
         return
@@ -313,7 +340,7 @@ async def link(ctx, code: str):
         await send_temp(ctx, "❌ Команда привязки доступна только в личных сообщениях с ботом.", delete_after=None)
         return
 
-    success, payload = consume_discord_link_code(ctx.author.id, code)
+    success, payload = await asyncio.to_thread(consume_discord_link_code, ctx.author.id, code)
     prefix = "✅" if success else "❌"
     await send_temp(ctx, f"{prefix} {payload}", delete_after=None)
 
@@ -333,7 +360,7 @@ async def profile(ctx):
 
     display_name = getattr(target_user, "display_name", None) or getattr(target_user, "name", None)
     _persist_discord_identity(target_user)
-    data = AccountsService.get_profile("discord", str(target_user.id), display_name=display_name)
+    data = await asyncio.to_thread(AccountsService.get_profile, "discord", str(target_user.id), display_name)
     if not data:
         await send_temp(ctx, "❌ Профиль не найден. Сначала выполните `/register_account`.", delete_after=None)
         return
@@ -391,7 +418,7 @@ async def profile_roles(ctx):
 
     display_name = getattr(target_user, "display_name", None) or getattr(target_user, "name", None)
     _persist_discord_identity(target_user)
-    data = AccountsService.get_profile("discord", str(target_user.id), display_name=display_name)
+    data = await asyncio.to_thread(AccountsService.get_profile, "discord", str(target_user.id), display_name)
     if not data:
         await send_temp(ctx, "❌ Профиль не найден. Сначала выполните `/register_account`.", delete_after=None)
         return

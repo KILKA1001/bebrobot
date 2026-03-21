@@ -1,11 +1,13 @@
 import random
 import logging
+import time
 from typing import List, Dict, Optional
 import asyncio
 import math
 import discord
 from discord import ui, Embed, ButtonStyle
 from bot.utils import SafeView, safe_send, format_moscow_time
+from bot.utils import safe_defer, safe_edit_original_response
 import os
 from bot.data import db
 from discord.ext import commands
@@ -45,6 +47,26 @@ from bot.systems.core_logic import _get_balance_snapshot, _resolve_account_id_fr
 from bot.legacy_identity_logging import log_legacy_identity_fallback_used
 
 logger = logging.getLogger(__name__)
+TOURNAMENT_PROCESSING_TEXT = "⏳ Обрабатываю…"
+
+
+def _log_tournament_db_duration(
+    *,
+    table: str,
+    operation: str,
+    started_at: float,
+    tournament_id: int,
+    interaction_user_id: int | None = None,
+) -> None:
+    elapsed_ms = round((time.perf_counter() - started_at) * 1000, 2)
+    logger.info(
+        "tournament db operation table=%s operation=%s elapsed_ms=%s tournament_id=%s interaction_user_id=%s",
+        table,
+        operation,
+        elapsed_ms,
+        tournament_id,
+        interaction_user_id,
+    )
 
 # Уже уведомлённые о завершении регистрации турниры
 expired_notified: set[int] = set()
@@ -1726,18 +1748,37 @@ class RegistrationView(SafeView):
         )
 
     async def register(self, interaction: discord.Interaction):
+        await safe_defer(interaction, ephemeral=True)
+        await safe_edit_original_response(interaction, content=TOURNAMENT_PROCESSING_TEXT)
         if is_auto_team(self.tid):
-            ok = assign_auto_team(self.tid, interaction.user.id)
+            started_at = time.perf_counter()
+            ok = await asyncio.to_thread(assign_auto_team, self.tid, interaction.user.id)
+            _log_tournament_db_duration(
+                table="tournament_participants",
+                operation="assign_auto_team",
+                started_at=started_at,
+                tournament_id=self.tid,
+                interaction_user_id=interaction.user.id,
+            )
         else:
-            ok = db_add_participant(self.tid, interaction.user.id)
+            started_at = time.perf_counter()
+            ok = await asyncio.to_thread(db_add_participant, self.tid, interaction.user.id)
+            _log_tournament_db_duration(
+                table="tournament_participants",
+                operation="insert",
+                started_at=started_at,
+                tournament_id=self.tid,
+                interaction_user_id=interaction.user.id,
+            )
         if not ok:
-            return await interaction.response.send_message(
-                "⚠️ Вы уже зарегистрированы или турнир не существует.", ephemeral=True
+            return await safe_edit_original_response(
+                interaction,
+                content="⚠️ Вы уже зарегистрированы или турнир не существует.",
             )
         # приватный ответ
-        await interaction.response.send_message(
+        await safe_edit_original_response(
+            interaction,
             f"✅ {interaction.user.mention}, вы зарегистрированы в турнире #{self.tid}.",
-            ephemeral=True,
         )
         # обновляем кнопку
         self._build_button()
@@ -1745,7 +1786,15 @@ class RegistrationView(SafeView):
         await interaction.message.edit(view=self)
 
         # Если достигнуто максимальное число участников — уведомляем автора
-        raw = db_list_participants_full(self.tid)
+        raw_started_at = time.perf_counter()
+        raw = await asyncio.to_thread(db_list_participants_full, self.tid)
+        _log_tournament_db_duration(
+            table="tournament_participants",
+            operation="select",
+            started_at=raw_started_at,
+            tournament_id=self.tid,
+            interaction_user_id=interaction.user.id,
+        )
         if len(raw) >= self.max:
             admin_id = get_tournament_author(self.tid)
 
@@ -1795,22 +1844,43 @@ class ParticipationConfirmView(SafeView):
 
     @ui.button(label="Да, буду участвовать", style=ButtonStyle.success)
     async def confirm(self, interaction: Interaction, button: ui.Button):
-        confirm_participant(self.tournament_id, self.user_id)
+        await safe_defer(interaction, ephemeral=True)
+        await safe_edit_original_response(interaction, content=TOURNAMENT_PROCESSING_TEXT)
+        started_at = time.perf_counter()
+        await asyncio.to_thread(confirm_participant, self.tournament_id, self.user_id)
+        _log_tournament_db_duration(
+            table="tournament_participants",
+            operation="confirm_participant",
+            started_at=started_at,
+            tournament_id=self.tournament_id,
+            interaction_user_id=interaction.user.id,
+        )
 
         from bot.commands.tournament import confirmed_participants
 
         confirmed_participants.setdefault(self.tournament_id, set()).add(self.user_id)
 
-        await interaction.response.send_message("Участие подтверждено!", ephemeral=True)
+        await safe_edit_original_response(interaction, content="Участие подтверждено!")
         self.stop()
 
     @ui.button(label="Нет, передумал", style=ButtonStyle.danger)
     async def decline(self, interaction: Interaction, button: ui.Button):
-
-        tournament_db.remove_discord_participant(self.tournament_id, self.user_id)
-        await interaction.response.send_message(
-            "Вы отказались от участия.", ephemeral=True
+        await safe_defer(interaction, ephemeral=True)
+        await safe_edit_original_response(interaction, content=TOURNAMENT_PROCESSING_TEXT)
+        started_at = time.perf_counter()
+        await asyncio.to_thread(
+            tournament_db.remove_discord_participant,
+            self.tournament_id,
+            self.user_id,
         )
+        _log_tournament_db_duration(
+            table="tournament_participants",
+            operation="delete",
+            started_at=started_at,
+            tournament_id=self.tournament_id,
+            interaction_user_id=interaction.user.id,
+        )
+        await safe_edit_original_response(interaction, content="Вы отказались от участия.")
         admin = interaction.client.get_user(self.admin_id) if self.admin_id else None
         if admin:
             try:
@@ -2235,20 +2305,30 @@ class ExtendDateModal(ui.Modal, title="Новая дата"):
 
         try:
             dt = datetime.strptime(str(self.new_date), "%d.%m.%Y %H:%M")
-            if update_start_time(self.tid, dt.isoformat()):
+            await safe_defer(interaction, ephemeral=True)
+            await safe_edit_original_response(interaction, content=TOURNAMENT_PROCESSING_TEXT)
+            started_at = time.perf_counter()
+            updated = await asyncio.to_thread(update_start_time, self.tid, dt.isoformat())
+            _log_tournament_db_duration(
+                table="tournaments",
+                operation="update_start_time",
+                started_at=started_at,
+                tournament_id=self.tid,
+                interaction_user_id=interaction.user.id,
+            )
+            if updated:
                 expired_notified.discard(self.tid)
-                await interaction.response.send_message(
-                    f"✅ Регистрация продлена до {format_moscow_time(dt)}",
-                    ephemeral=True,
+                await safe_edit_original_response(
+                    interaction,
+                    content=f"✅ Регистрация продлена до {format_moscow_time(dt)}",
                 )
             else:
-                await interaction.response.send_message(
-                    "❌ Не удалось сохранить дату", ephemeral=True
-                )
+                await safe_edit_original_response(interaction, content="❌ Не удалось сохранить дату")
         except Exception:
-            await interaction.response.send_message(
-                "❌ Неверный формат даты", ephemeral=True
-            )
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Неверный формат даты", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Неверный формат даты", ephemeral=True)
         finally:
             self.stop()
 
@@ -2262,23 +2342,36 @@ class ExtendRegistrationView(SafeView):
     async def plus_day(self, interaction: Interaction, button: ui.Button):
         from datetime import datetime, timedelta
 
-        info = get_tournament_info(self.tid) or {}
+        await safe_defer(interaction, ephemeral=True)
+        await safe_edit_original_response(interaction, content=TOURNAMENT_PROCESSING_TEXT)
+        info_started_at = time.perf_counter()
+        info = await asyncio.to_thread(get_tournament_info, self.tid) or {}
+        _log_tournament_db_duration(
+            table="tournaments",
+            operation="select",
+            started_at=info_started_at,
+            tournament_id=self.tid,
+            interaction_user_id=interaction.user.id,
+        )
         start = info.get("start_time")
         try:
             dt = datetime.fromisoformat(start) + timedelta(days=1)
-            ok = update_start_time(self.tid, dt.isoformat())
+            update_started_at = time.perf_counter()
+            ok = await asyncio.to_thread(update_start_time, self.tid, dt.isoformat())
+            _log_tournament_db_duration(
+                table="tournaments",
+                operation="update_start_time",
+                started_at=update_started_at,
+                tournament_id=self.tid,
+                interaction_user_id=interaction.user.id,
+            )
             if ok:
                 expired_notified.discard(self.tid)
-                await interaction.response.send_message(
-                    f"✅ Новое время: {format_moscow_time(dt)}",
-                    ephemeral=True,
-                )
+                await safe_edit_original_response(interaction, content=f"✅ Новое время: {format_moscow_time(dt)}")
             else:
-                await interaction.response.send_message(
-                    "❌ Не удалось обновить время", ephemeral=True
-                )
+                await safe_edit_original_response(interaction, content="❌ Не удалось обновить время")
         except Exception:
-            await interaction.response.send_message("❌ Ошибка даты", ephemeral=True)
+            await safe_edit_original_response(interaction, content="❌ Ошибка даты")
         self.stop()
 
     @ui.button(label="Указать дату", style=ButtonStyle.secondary)
