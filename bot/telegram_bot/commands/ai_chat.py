@@ -4,7 +4,7 @@ from aiogram import F, Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
-from bot.services.ai_service import generate_guiy_reply
+from bot.services.ai_service import _build_media_input, generate_guiy_reply
 from bot.telegram_bot.commands.engagement import has_pending_action
 from bot.telegram_bot.commands.linking import has_pending_profile_edit
 from bot.telegram_bot.identity import persist_telegram_identity_from_user
@@ -47,13 +47,15 @@ def _is_name_trigger(text: str) -> bool:
     return is_guiy_name_trigger(text)
 
 
-async def _generate_and_send_reply(message: Message, text: str) -> None:
+async def _generate_and_send_reply(message: Message, text: str, *, media_inputs: list[dict[str, str]] | None = None) -> None:
     sender_id = message.from_user.id if message.from_user else None
+    resolved_media_inputs = media_inputs if media_inputs is not None else await _extract_media_inputs(message)
     reply = await generate_guiy_reply(
         text,
         provider="telegram",
         user_id=sender_id,
         conversation_id=message.chat.id,
+        media_inputs=resolved_media_inputs,
     )
     if not reply:
         logger.warning(
@@ -109,6 +111,73 @@ async def _generate_and_send_reply(message: Message, text: str) -> None:
         await message.answer(reply)
 
 
+async def _extract_media_inputs(message: Message) -> list[dict[str, str]]:
+    media_inputs: list[dict[str, str]] = []
+    caption = message.caption or ""
+
+    if message.photo:
+        largest_photo = max(message.photo, key=lambda item: item.file_size or 0)
+        try:
+            file_info = await message.bot.get_file(largest_photo.file_id)
+            payload = await message.bot.download_file(file_info.file_path)
+            media_input = _build_media_input(
+                payload=payload.read(),
+                mime_type="image/jpeg",
+                source=f"telegram:photo:{largest_photo.file_id}",
+                caption=caption,
+            )
+            if media_input:
+                media_inputs.append(media_input)
+                logger.info(
+                    "telegram ai media collected kind=photo chat_id=%s user_id=%s file_id=%s bytes=%s",
+                    message.chat.id,
+                    message.from_user.id if message.from_user else None,
+                    largest_photo.file_id,
+                    largest_photo.file_size,
+                )
+        except Exception:
+            logger.exception(
+                "telegram ai failed to download photo chat_id=%s user_id=%s file_id=%s",
+                message.chat.id,
+                message.from_user.id if message.from_user else None,
+                largest_photo.file_id,
+            )
+
+    if message.document and str(message.document.mime_type or "").startswith("image/"):
+        try:
+            file_info = await message.bot.get_file(message.document.file_id)
+            payload = await message.bot.download_file(file_info.file_path)
+            media_input = _build_media_input(
+                payload=payload.read(),
+                mime_type=message.document.mime_type,
+                source=f"telegram:document:{message.document.file_id}",
+                caption=caption,
+            )
+            if media_input:
+                media_inputs.append(media_input)
+                logger.info(
+                    "telegram ai media collected kind=document chat_id=%s user_id=%s file_id=%s mime_type=%s bytes=%s",
+                    message.chat.id,
+                    message.from_user.id if message.from_user else None,
+                    message.document.file_id,
+                    message.document.mime_type,
+                    message.document.file_size,
+                )
+        except Exception:
+            logger.exception(
+                "telegram ai failed to download image document chat_id=%s user_id=%s file_id=%s",
+                message.chat.id,
+                message.from_user.id if message.from_user else None,
+                message.document.file_id,
+            )
+
+    return media_inputs
+
+
+def _telegram_message_text_for_ai(message: Message) -> str:
+    return (message.text or message.caption or "").strip()
+
+
 @router.message(Command("guiy"))
 async def guiy_command(message: Message, command: CommandObject) -> None:
     persist_telegram_identity_from_user(message.from_user)
@@ -162,8 +231,9 @@ def _is_bot_mentioned(message: Message, bot_id: int | None, bot_username: str | 
 @router.message(F.text)
 async def handle_guiy_chat(message: Message) -> None:
     persist_telegram_identity_from_user(message.from_user)
-    text = (message.text or "").strip()
-    if not text:
+    text = _telegram_message_text_for_ai(message)
+    media_inputs = await _extract_media_inputs(message)
+    if not text and not media_inputs:
         return
 
     if _is_command_text(text):
@@ -227,10 +297,15 @@ async def handle_guiy_chat(message: Message) -> None:
             is_bot_mention,
             text[:160],
         )
-        await _generate_and_send_reply(message, text)
+        await _generate_and_send_reply(message, text, media_inputs=media_inputs)
     except Exception:
         logger.exception(
             "telegram ai reply failed chat_id=%s user_id=%s",
             message.chat.id,
             sender_id,
         )
+
+
+@router.message(F.photo | F.document)
+async def handle_guiy_media_chat(message: Message) -> None:
+    await handle_guiy_chat(message)

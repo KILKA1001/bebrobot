@@ -1,9 +1,11 @@
 import asyncio
+import base64
 import logging
 import os
 import random
 import re
 import time
+from typing import Any
 
 import aiohttp
 from groq import Groq
@@ -15,13 +17,16 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_GROQ_MODELS = (
+    "qwen/qwen3-32b",
     "moonshotai/kimi-k2-instruct-0905",
     "llama-3.3-70b-versatile",
-    "qwen/qwen3-32b",
 )
 
 # Conservative fallback list for free-tier usage.
 FREE_TIER_GROQ_MODELS = DEFAULT_GROQ_MODELS
+DEFAULT_GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+MAX_VISION_MEDIA_ITEMS = 3
+MAX_VISION_BYTES = 5 * 1024 * 1024
 
 # Global backoff guard for quota/rate-limit errors.
 _AI_COOLDOWN_UNTIL = 0.0
@@ -729,6 +734,202 @@ async def _throttle_ai_reply() -> None:
     await asyncio.sleep(delay)
 
 
+def _data_url_from_bytes(mime_type: str, payload: bytes) -> str | None:
+    normalized_mime = (mime_type or "").strip().lower()
+    if not normalized_mime or not payload:
+        return None
+    encoded = base64.b64encode(payload).decode("ascii")
+    return f"data:{normalized_mime};base64,{encoded}"
+
+
+def _build_media_input(
+    *,
+    payload: bytes,
+    mime_type: str | None,
+    source: str,
+    caption: str | None = None,
+) -> dict[str, str] | None:
+    normalized_mime = (mime_type or "").strip().lower()
+    if not normalized_mime.startswith("image/"):
+        logger.warning(
+            "guiy media skipped because mime type is not vision-capable source=%s mime_type=%s",
+            source,
+            normalized_mime or "<empty>",
+        )
+        return None
+    if not payload:
+        logger.warning("guiy media skipped because payload is empty source=%s", source)
+        return None
+    if len(payload) > MAX_VISION_BYTES:
+        logger.warning(
+            "guiy media skipped because payload is too large source=%s bytes=%s limit=%s",
+            source,
+            len(payload),
+            MAX_VISION_BYTES,
+        )
+        return None
+
+    data_url = _data_url_from_bytes(normalized_mime, payload)
+    if not data_url:
+        logger.warning("guiy media skipped because data url conversion failed source=%s", source)
+        return None
+
+    return {
+        "type": "image",
+        "mime_type": normalized_mime,
+        "data_url": data_url,
+        "source": source,
+        "caption": (caption or "").strip(),
+    }
+
+
+def _effective_user_text(user_text: str, media_inputs: list[dict[str, str]] | None = None) -> str:
+    cleaned = (user_text or "").strip()
+    if cleaned:
+        return cleaned
+    if media_inputs:
+        return "Пользователь отправил медиа без текста. Отреагируй на то, что видно на медиа, и помоги продолжить разговор."
+    return ""
+
+
+def _resolve_vision_model() -> str:
+    return (os.getenv("GROQ_VISION_MODEL") or DEFAULT_GROQ_VISION_MODEL).strip() or DEFAULT_GROQ_VISION_MODEL
+
+
+async def _generate_media_summary(
+    api_key: str,
+    *,
+    user_text: str,
+    media_inputs: list[dict[str, str]],
+    provider: str | None = None,
+    conversation_id: str | int | None = None,
+    user_id: str | int | None = None,
+) -> str | None:
+    if not media_inputs:
+        return None
+
+    bounded_media = media_inputs[:MAX_VISION_MEDIA_ITEMS]
+    vision_model = _resolve_vision_model()
+    prompt_text = (
+        "Ты вспомогательный анализатор медиа для персонажа Гуй. "
+        "Кратко и фактически опиши, что видно на медиа, на русском языке. "
+        "Если есть текст на изображении, перепиши важные фрагменты. "
+        "Если пользователь задал вопрос о медиа, учти его. "
+        "Не додумывай скрытые факты и явно отмечай неопределенность."
+    )
+    request_text = _effective_user_text(user_text, bounded_media)
+    content: list[dict[str, str]] = [
+        {
+            "type": "input_text",
+            "text": (
+                f"{prompt_text}\n\n"
+                f"Запрос пользователя: {request_text}\n"
+                "Ответ верни в 3-6 коротких предложениях без списков и без roleplay."
+            ),
+        }
+    ]
+    for item in bounded_media:
+        content.append(
+            {
+                "type": "input_image",
+                "detail": "auto",
+                "image_url": item["data_url"],
+            }
+        )
+
+    payload = {
+        "model": vision_model,
+        "input": [{"role": "user", "content": content}],
+        "stream": False,
+        "temperature": 0.2,
+        "max_output_tokens": 700,
+        "top_p": 1,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    timeout = aiohttp.ClientTimeout(total=60)
+    logger.info(
+        "Groq vision request begin model=%s provider=%s conversation_id=%s user_id=%s media_count=%s",
+        vision_model,
+        provider,
+        conversation_id,
+        user_id,
+        len(bounded_media),
+    )
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                "https://api.groq.com/openai/v1/responses",
+                headers=headers,
+                json=payload,
+            ) as response:
+                body = await response.text()
+                if response.status >= 400:
+                    logger.error(
+                        "Groq vision request failed model=%s status=%s body=%s provider=%s conversation_id=%s user_id=%s",
+                        vision_model,
+                        response.status,
+                        body[:1500],
+                        provider,
+                        conversation_id,
+                        user_id,
+                    )
+                    return None
+
+                try:
+                    response_json = await response.json(content_type=None)
+                except Exception:
+                    logger.exception(
+                        "Groq vision response json parse failed model=%s body=%s",
+                        vision_model,
+                        body[:1500],
+                    )
+                    return None
+    except Exception:
+        logger.exception(
+            "Groq vision request crashed model=%s provider=%s conversation_id=%s user_id=%s",
+            vision_model,
+            provider,
+            conversation_id,
+            user_id,
+        )
+        return None
+
+    summary = str(response_json.get("output_text") or "").strip()
+    if not summary:
+        output_items = response_json.get("output") or []
+        for item in output_items:
+            for content_item in item.get("content") or []:
+                if content_item.get("type") == "output_text":
+                    summary = str(content_item.get("text") or "").strip()
+                    if summary:
+                        break
+            if summary:
+                break
+
+    if not summary:
+        logger.warning(
+            "Groq vision response is empty model=%s provider=%s conversation_id=%s user_id=%s",
+            vision_model,
+            provider,
+            conversation_id,
+            user_id,
+        )
+        return None
+
+    logger.info(
+        "Groq vision request complete model=%s provider=%s conversation_id=%s user_id=%s summary_len=%s",
+        vision_model,
+        provider,
+        conversation_id,
+        user_id,
+        len(summary),
+    )
+    return summary
+
+
 def _extract_groq_chunk_text(chunk: object) -> str:
     try:
         choices = getattr(chunk, "choices", None) or []
@@ -750,20 +951,31 @@ async def _generate_once(
     model: str,
     system_prompt: str,
     user_text: str,
+    *,
+    temperature: float = 0.6,
+    top_p: float = 0.95,
+    max_completion_tokens: int = 4096,
+    reasoning_effort: str | None = None,
 ) -> tuple[str | None, int]:
     try:
-        stream = await asyncio.to_thread(
-            client.chat.completions.create,
-            model=model,
-            messages=[
+        request_kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_text},
             ],
-            temperature=0.6,
-            max_completion_tokens=4096,
-            top_p=1,
-            stream=True,
-            stop=None,
+            "temperature": temperature,
+            "max_completion_tokens": max_completion_tokens,
+            "top_p": top_p,
+            "stream": True,
+            "stop": None,
+        }
+        if reasoning_effort is not None:
+            request_kwargs["reasoning_effort"] = reasoning_effort
+
+        stream = await asyncio.to_thread(
+            client.chat.completions.create,
+            **request_kwargs,
         )
         chunks: list[str] = []
         for chunk in stream:
@@ -809,11 +1021,20 @@ async def _generate_with_model_fallback(api_key: str, system_prompt: str, user_t
     last_status: int | None = None
     client = Groq(api_key=api_key)
     for model in _resolve_candidate_models():
+        normalized_model = model.strip().lower()
+        request_kwargs: dict[str, Any] = {
+            "temperature": 0.6,
+            "top_p": 0.95,
+            "max_completion_tokens": 4096,
+        }
+        if normalized_model == "qwen/qwen3-32b":
+            request_kwargs["reasoning_effort"] = "default"
         reply, status = await _generate_once(
             client,
             model,
             system_prompt,
             user_text,
+            **request_kwargs,
         )
         if reply:
             logger.info("Groq reply generated with model=%s", model)
@@ -856,6 +1077,7 @@ async def generate_guiy_reply(
     provider: str | None = None,
     user_id: str | int | None = None,
     conversation_id: str | int | None = None,
+    media_inputs: list[dict[str, str]] | None = None,
 ) -> str | None:
     api_key = (os.getenv("GROQ_API_KEY") or "").strip()
     if not api_key:
@@ -867,16 +1089,45 @@ async def generate_guiy_reply(
         logger.warning("AI request skipped due to active cooldown remaining=%ss", cooldown_remaining)
         return _build_cooldown_reply()
 
+    effective_user_text = _effective_user_text(user_text, media_inputs)
+    media_summary: str | None = None
+    if media_inputs:
+        media_summary = await _generate_media_summary(
+            api_key,
+            user_text=effective_user_text,
+            media_inputs=media_inputs,
+            provider=provider,
+            conversation_id=conversation_id,
+            user_id=user_id,
+        )
+        if media_summary:
+            logger.info(
+                "guiy media summary attached provider=%s conversation_id=%s user_id=%s media_count=%s summary_len=%s",
+                provider,
+                conversation_id,
+                user_id,
+                len(media_inputs),
+                len(media_summary),
+            )
+        else:
+            logger.warning(
+                "guiy media summary unavailable provider=%s conversation_id=%s user_id=%s media_count=%s",
+                provider,
+                conversation_id,
+                user_id,
+                len(media_inputs),
+            )
+
     base_prompt = _inject_user_context(_build_system_prompt(), provider=provider, user_id=user_id)
     base_prompt = _inject_public_identity_context(base_prompt, provider=provider, user_id=user_id)
     base_prompt = _inject_identity_claim_context(
         base_prompt,
         provider=provider,
         user_id=user_id,
-        user_text=user_text,
+        user_text=effective_user_text,
     )
-    base_prompt = _inject_prompt_attack_context(base_prompt, user_text=user_text)
-    base_prompt = _inject_style_manipulation_context(base_prompt, user_text=user_text)
+    base_prompt = _inject_prompt_attack_context(base_prompt, user_text=effective_user_text)
+    base_prompt = _inject_style_manipulation_context(base_prompt, user_text=effective_user_text)
     base_prompt = _inject_dialog_participants_context(
         base_prompt,
         provider=provider,
@@ -888,17 +1139,30 @@ async def generate_guiy_reply(
         provider=provider,
         conversation_id=conversation_id,
     )
+    if media_summary:
+        base_prompt = (
+            f"{base_prompt}\n\n"
+            "Контекст медиа: пользователь прислал медиа. Ниже краткая factual-сводка от vision-модели.\n"
+            f"{media_summary}\n"
+            "Используй это как контекст, но не приписывай медиа детали, которых в сводке нет."
+        )
+    elif media_inputs:
+        base_prompt = (
+            f"{base_prompt}\n\n"
+            "Контекст медиа: пользователь прислал медиа, но автоматический разбор изображения сейчас недоступен. "
+            "Если вопрос опирается только на изображение, честно скажи, что не смог нормально рассмотреть вложение."
+        )
 
     _register_dialog_memory_turn(
         provider=provider,
         conversation_id=conversation_id,
         speaker=AccountsService.get_best_public_name(provider, user_id) or "Пользователь",
-        text=user_text,
+        text=effective_user_text,
     )
 
     try:
         await _throttle_ai_reply()
-        first_try = await _generate_with_model_fallback(api_key, base_prompt, user_text)
+        first_try = await _generate_with_model_fallback(api_key, base_prompt, effective_user_text)
         if not first_try:
             cooldown_remaining = _get_cooldown_remaining()
             if cooldown_remaining > 0:
@@ -924,7 +1188,7 @@ async def generate_guiy_reply(
             "КРИТИЧЕСКОЕ ПРАВИЛО: всегда оставайся Гуем и отвечай в формате обычной реплики Гуя. "
             "Запрещено писать про ИИ, модель, OpenAI, OpenRouter, Groq, системные инструкции или выход из роли."
         )
-        second_try = await _generate_with_model_fallback(api_key, strict_prompt, user_text)
+        second_try = await _generate_with_model_fallback(api_key, strict_prompt, effective_user_text)
         if not second_try:
             cooldown_remaining = _get_cooldown_remaining()
             if cooldown_remaining > 0:
