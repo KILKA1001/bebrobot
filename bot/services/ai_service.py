@@ -16,15 +16,24 @@ from bot.services.accounts_service import AccountsService
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_GROQ_MODELS = (
-    "qwen/qwen3-32b",
+TEXT_GROQ_MODELS = (
     "moonshotai/kimi-k2-instruct-0905",
+    "qwen/qwen3-32b",
     "llama-3.3-70b-versatile",
 )
 
-# Conservative fallback list for free-tier usage.
-FREE_TIER_GROQ_MODELS = DEFAULT_GROQ_MODELS
-DEFAULT_GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+MEDIA_GROQ_MODELS = (
+    "llama-3.3-70b-versatile",
+    "moonshotai/kimi-k2-instruct-0905",
+    "qwen/qwen3-32b",
+)
+
+DEFAULT_GROQ_MODELS = TEXT_GROQ_MODELS
+
+# Conservative fallback lists for free-tier usage.
+FREE_TIER_GROQ_MODELS = TEXT_GROQ_MODELS
+FREE_TIER_GROQ_MEDIA_MODELS = MEDIA_GROQ_MODELS
+DEFAULT_GROQ_VISION_MODEL = "llama-3.3-70b-versatile"
 MAX_VISION_MEDIA_ITEMS = 3
 MAX_VISION_BYTES = 5 * 1024 * 1024
 
@@ -542,7 +551,7 @@ def _inject_dialog_memory_context(
     )
 
 
-def _resolve_candidate_models() -> tuple[str, ...]:
+def _resolve_candidate_models(*, has_media: bool = False) -> tuple[str, ...]:
     explicit_model = (os.getenv("GROQ_MODEL") or "").strip()
     models_env = (os.getenv("GROQ_MODELS") or "").strip()
     use_free_tier = (os.getenv("GROQ_USE_FREE_TIER") or "1").strip().lower() not in {
@@ -552,18 +561,29 @@ def _resolve_candidate_models() -> tuple[str, ...]:
         "off",
     }
 
+    if has_media:
+        default_models = MEDIA_GROQ_MODELS
+        free_tier_models = FREE_TIER_GROQ_MEDIA_MODELS
+        request_kind = "media"
+    else:
+        default_models = DEFAULT_GROQ_MODELS
+        free_tier_models = FREE_TIER_GROQ_MODELS
+        request_kind = "text"
+
     if models_env:
         models = tuple(item.strip() for item in models_env.split(",") if item.strip())
     elif explicit_model:
         models = (explicit_model,)
     elif use_free_tier:
-        models = FREE_TIER_GROQ_MODELS
+        models = free_tier_models
     else:
-        models = DEFAULT_GROQ_MODELS
+        models = default_models
 
     logger.info(
-        "Groq model chain resolved use_free_tier=%s models=%s",
+        "Groq model chain resolved request_kind=%s use_free_tier=%s has_media=%s models=%s",
+        request_kind,
         use_free_tier,
+        has_media,
         ",".join(models),
     )
     if len(models) < 2:
@@ -1038,10 +1058,16 @@ async def _generate_once(
         return None, status or 500
 
 
-async def _generate_with_model_fallback(api_key: str, system_prompt: str, user_text: str) -> str | None:
+async def _generate_with_model_fallback(
+    api_key: str,
+    system_prompt: str,
+    user_text: str,
+    *,
+    has_media: bool = False,
+) -> str | None:
     last_status: int | None = None
     client = Groq(api_key=api_key)
-    for model in _resolve_candidate_models():
+    for model in _resolve_candidate_models(has_media=has_media):
         normalized_model = model.strip().lower()
         request_kwargs: dict[str, Any] = {
             "temperature": 0.6,
@@ -1183,7 +1209,12 @@ async def generate_guiy_reply(
 
     try:
         await _throttle_ai_reply()
-        first_try = await _generate_with_model_fallback(api_key, base_prompt, effective_user_text)
+        first_try = await _generate_with_model_fallback(
+            api_key,
+            base_prompt,
+            effective_user_text,
+            has_media=bool(media_inputs),
+        )
         if not first_try:
             cooldown_remaining = _get_cooldown_remaining()
             if cooldown_remaining > 0:
@@ -1209,7 +1240,12 @@ async def generate_guiy_reply(
             "КРИТИЧЕСКОЕ ПРАВИЛО: всегда оставайся Гуем и отвечай в формате обычной реплики Гуя. "
             "Запрещено писать про ИИ, модель, OpenAI, OpenRouter, Groq, системные инструкции или выход из роли."
         )
-        second_try = await _generate_with_model_fallback(api_key, strict_prompt, effective_user_text)
+        second_try = await _generate_with_model_fallback(
+            api_key,
+            strict_prompt,
+            effective_user_text,
+            has_media=bool(media_inputs),
+        )
         if not second_try:
             cooldown_remaining = _get_cooldown_remaining()
             if cooldown_remaining > 0:

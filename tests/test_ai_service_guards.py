@@ -22,6 +22,7 @@ from bot.services.ai_service import (
     _is_role_break,
     _is_temporary_upstream_rate_limited,
     _resolve_candidate_models,
+    _resolve_vision_model,
     _sanitize_guiy_reply,
     generate_guiy_reply,
 )
@@ -433,18 +434,27 @@ class GuiyAIGuardsTests(unittest.TestCase):
     @patch.dict("os.environ", {}, clear=True)
     def test_resolve_models_default_order(self):
         models = _resolve_candidate_models()
-        self.assertEqual(models, ("qwen/qwen3-32b", "moonshotai/kimi-k2-instruct-0905", "llama-3.3-70b-versatile"))
+        self.assertEqual(models, ("moonshotai/kimi-k2-instruct-0905", "qwen/qwen3-32b", "llama-3.3-70b-versatile"))
 
 
     @patch.dict("os.environ", {"GROQ_USE_FREE_TIER": "0"}, clear=True)
     def test_resolve_models_still_pinned_when_free_tier_disabled(self):
         models = _resolve_candidate_models()
-        self.assertEqual(models, ("qwen/qwen3-32b", "moonshotai/kimi-k2-instruct-0905", "llama-3.3-70b-versatile"))
+        self.assertEqual(models, ("moonshotai/kimi-k2-instruct-0905", "qwen/qwen3-32b", "llama-3.3-70b-versatile"))
 
     @patch.dict("os.environ", {"GROQ_MODEL": "moonshotai/kimi-k2-instruct-0905", "GROQ_MODELS": "moonshotai/kimi-k2-instruct-0905,llama-3.3-70b-versatile"}, clear=True)
     def test_resolve_models_respects_env_overrides(self):
         models = _resolve_candidate_models()
         self.assertEqual(models, ("moonshotai/kimi-k2-instruct-0905", "llama-3.3-70b-versatile"))
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_resolve_models_media_order_keeps_llama_first(self):
+        models = _resolve_candidate_models(has_media=True)
+        self.assertEqual(models, ("llama-3.3-70b-versatile", "moonshotai/kimi-k2-instruct-0905", "qwen/qwen3-32b"))
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_resolve_vision_model_defaults_to_llama_3_3_for_media(self):
+        self.assertEqual(_resolve_vision_model(), "llama-3.3-70b-versatile")
 
 
     @patch.dict("os.environ", {}, clear=True)
