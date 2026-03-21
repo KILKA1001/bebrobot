@@ -605,6 +605,27 @@ def _sanitize_guiy_reply(reply_text: str) -> str:
         return ""
 
     original = cleaned
+    think_block_pattern = re.compile(r"(?is)<think>.*?</think>")
+    think_blocks = think_block_pattern.findall(cleaned)
+    if think_blocks:
+        cleaned = think_block_pattern.sub(" ", cleaned)
+        logger.error(
+            "guiy reply leaked internal reasoning blocks count=%s original_len=%s",
+            len(think_blocks),
+            len(original),
+        )
+
+    orphan_think_tag_pattern = re.compile(r"(?i)</?think>")
+    if orphan_think_tag_pattern.search(cleaned):
+        cleaned = orphan_think_tag_pattern.sub(" ", cleaned)
+        logger.error(
+            "guiy reply contained orphan think tags after sanitization original_len=%s interim_len=%s",
+            len(original),
+            len(cleaned),
+        )
+
+    cleaned = re.sub(r"(?:\n){2,}", "\n", cleaned)
+    cleaned = re.sub(r"[ 	]{2,}", " ", cleaned).strip()
     lines = cleaned.splitlines()
     sanitized_lines: list[str] = []
     for line in lines:

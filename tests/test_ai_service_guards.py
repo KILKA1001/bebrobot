@@ -63,6 +63,23 @@ class GuiyAIGuardsTests(unittest.TestCase):
             _sanitize_guiy_reply(raw),
             "Сформулируй нормально, отвечу по-русски и по делу.",
         )
+    def test_sanitize_guiy_reply_removes_internal_think_block(self):
+        raw = "<think>Скрытый текст</think>Нормальный ответ по делу"
+        self.assertEqual(_sanitize_guiy_reply(raw), "Нормальный ответ по делу")
+
+    def test_sanitize_guiy_reply_removes_multiline_think_block_with_literal_newlines(self):
+        raw = (
+            "<think>\n"
+            "Сначала модель зачем-то думает вслух.\n"
+            "Потом продолжает.\n"
+            "</think>\n"
+            "Материки: Евразия, Африка, Северная Америка, Южная Америка, Антарктида, Австралия."
+        )
+        self.assertEqual(
+            _sanitize_guiy_reply(raw),
+            "Материки: Евразия, Африка, Северная Америка, Южная Америка, Антарктида, Австралия.",
+        )
+
 
     def test_is_command_text_for_known_command(self):
         self.assertTrue(_is_command_text("/points 123"))
