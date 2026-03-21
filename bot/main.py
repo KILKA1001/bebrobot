@@ -15,7 +15,7 @@ import uuid
 from dotenv import load_dotenv
 
 from bot.telegram_bot.config import TELEGRAM_BOT_TOKEN_ENV, get_telegram_bot_token
-from bot.services.ai_service import generate_guiy_reply
+from bot.services.ai_service import _build_media_input, generate_guiy_reply
 
 
 load_dotenv()
@@ -473,6 +473,46 @@ async def on_message(message: discord.Message):
             return
 
         content = (message.content or "").strip()
+        media_inputs: list[dict[str, str]] = []
+        if getattr(message, "attachments", None):
+            for attachment in message.attachments[:3]:
+                content_type = str(getattr(attachment, "content_type", "") or "").lower()
+                if not content_type.startswith("image/"):
+                    logging.info(
+                        "discord ai attachment skipped because mime type is not image channel_id=%s author_id=%s attachment_id=%s content_type=%s filename=%s",
+                        getattr(message.channel, "id", None),
+                        getattr(message.author, "id", None),
+                        getattr(attachment, "id", None),
+                        content_type,
+                        getattr(attachment, "filename", None),
+                    )
+                    continue
+                try:
+                    payload = await attachment.read()
+                    media_input = _build_media_input(
+                        payload=payload,
+                        mime_type=content_type,
+                        source=f"discord:attachment:{getattr(attachment, 'id', 'unknown')}",
+                    )
+                    if media_input:
+                        media_inputs.append(media_input)
+                        logging.info(
+                            "discord ai attachment collected channel_id=%s author_id=%s attachment_id=%s filename=%s content_type=%s bytes=%s",
+                            getattr(message.channel, "id", None),
+                            getattr(message.author, "id", None),
+                            getattr(attachment, "id", None),
+                            getattr(attachment, "filename", None),
+                            content_type,
+                            len(payload),
+                        )
+                except Exception:
+                    logging.exception(
+                        "discord ai attachment read failed channel_id=%s author_id=%s attachment_id=%s filename=%s",
+                        getattr(message.channel, "id", None),
+                        getattr(message.author, "id", None),
+                        getattr(attachment, "id", None),
+                        getattr(attachment, "filename", None),
+                    )
 
         is_reply_to_bot = False
         if message.reference and message.reference.message_id:
@@ -501,15 +541,18 @@ async def on_message(message: discord.Message):
                 is_reply_to_bot = True
 
         is_named = is_guiy_name_trigger(content)
+        is_bot_mentioned = bool(bot.user and bot.user in getattr(message, "mentions", []))
 
-        if is_named or is_reply_to_bot:
+        if is_named or is_reply_to_bot or is_bot_mentioned:
             logging.info(
-                "discord ai trigger matched guild_id=%s channel_id=%s author_id=%s is_named=%s is_reply_to_bot=%s text=%s",
+                "discord ai trigger matched guild_id=%s channel_id=%s author_id=%s is_named=%s is_reply_to_bot=%s is_bot_mentioned=%s media_count=%s text=%s",
                 getattr(message.guild, "id", None),
                 getattr(message.channel, "id", None),
                 getattr(message.author, "id", None),
                 is_named,
                 is_reply_to_bot,
+                is_bot_mentioned,
+                len(media_inputs),
                 content[:160],
             )
             reply = await generate_guiy_reply(
@@ -517,6 +560,7 @@ async def on_message(message: discord.Message):
                 provider="discord",
                 user_id=getattr(message.author, "id", None),
                 conversation_id=getattr(message.channel, "id", None),
+                media_inputs=media_inputs,
             )
             if reply:
                 typing_delay = calculate_typing_delay_seconds(reply)

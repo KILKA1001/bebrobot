@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, patch
 
 from bot.services import ai_service
 from bot.services.ai_service import (
+    _build_media_input,
+    _effective_user_text,
     _extract_retry_after_seconds,
     _force_guiy_prefix,
     _inject_dialog_memory_context,
@@ -142,6 +144,32 @@ class GuiyAIGuardsTests(unittest.TestCase):
 
     def test_calculate_typing_delay_has_maximum_for_large_text(self):
         self.assertEqual(calculate_typing_delay_seconds("x" * 3000), 9.0)
+
+    def test_build_media_input_accepts_image_payload(self):
+        media = _build_media_input(
+            payload=b"fake-image",
+            mime_type="image/png",
+            source="test:image",
+            caption="смотри",
+        )
+        self.assertIsNotNone(media)
+        self.assertEqual(media["mime_type"], "image/png")
+        self.assertTrue(media["data_url"].startswith("data:image/png;base64,"))
+
+    def test_build_media_input_rejects_non_image_payload(self):
+        media = _build_media_input(
+            payload=b"not-an-image",
+            mime_type="video/mp4",
+            source="test:video",
+        )
+        self.assertIsNone(media)
+
+    def test_effective_user_text_falls_back_for_media_only_message(self):
+        text = _effective_user_text(
+            "",
+            [{"type": "image", "mime_type": "image/png", "data_url": "data:", "source": "x", "caption": ""}],
+        )
+        self.assertIn("Пользователь отправил медиа без текста", text)
 
 
     @patch.dict("os.environ", {"GUIY_FATHER_TELEGRAM_IDS": "100,200"}, clear=True)
@@ -388,13 +416,13 @@ class GuiyAIGuardsTests(unittest.TestCase):
     @patch.dict("os.environ", {}, clear=True)
     def test_resolve_models_default_order(self):
         models = _resolve_candidate_models()
-        self.assertEqual(models, ("moonshotai/kimi-k2-instruct-0905", "llama-3.3-70b-versatile", "qwen/qwen3-32b"))
+        self.assertEqual(models, ("qwen/qwen3-32b", "moonshotai/kimi-k2-instruct-0905", "llama-3.3-70b-versatile"))
 
 
     @patch.dict("os.environ", {"GROQ_USE_FREE_TIER": "0"}, clear=True)
     def test_resolve_models_still_pinned_when_free_tier_disabled(self):
         models = _resolve_candidate_models()
-        self.assertEqual(models, ("moonshotai/kimi-k2-instruct-0905", "llama-3.3-70b-versatile", "qwen/qwen3-32b"))
+        self.assertEqual(models, ("qwen/qwen3-32b", "moonshotai/kimi-k2-instruct-0905", "llama-3.3-70b-versatile"))
 
     @patch.dict("os.environ", {"GROQ_MODEL": "moonshotai/kimi-k2-instruct-0905", "GROQ_MODELS": "moonshotai/kimi-k2-instruct-0905,llama-3.3-70b-versatile"}, clear=True)
     def test_resolve_models_respects_env_overrides(self):
