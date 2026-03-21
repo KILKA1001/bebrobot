@@ -18,6 +18,7 @@ from bot.telegram_bot.systems.commands_logic import (
     process_roles_catalog_command,
     process_register_command,
 )
+from bot.utils.blocking_io import run_blocking_io
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -112,7 +113,12 @@ async def _safe_answer(
     reply_markup: InlineKeyboardMarkup | None = None,
 ) -> bool:
     try:
-        await message.answer(text, parse_mode=parse_mode, reply_markup=reply_markup)
+        kwargs: dict[str, object] = {}
+        if parse_mode is not None:
+            kwargs["parse_mode"] = parse_mode.value if isinstance(parse_mode, ParseMode) else parse_mode
+        if reply_markup is not None:
+            kwargs["reply_markup"] = reply_markup
+        await message.answer(text, **kwargs)
         return True
     except TelegramBadRequest as error:
         if _is_chat_send_permissions_error(error):
@@ -253,7 +259,12 @@ async def helpy_command(message: Message) -> None:
 async def register_command(message: Message) -> None:
     persist_telegram_identity_from_user(message.from_user)
     telegram_user_id = message.from_user.id if message.from_user is not None else None
-    response = process_register_command(telegram_user_id)
+    response = await run_blocking_io(
+        "telegram.register.process_command",
+        process_register_command,
+        telegram_user_id,
+        logger=logger,
+    )
     await message.answer(response)
 
 
@@ -268,11 +279,14 @@ async def profile_command(message: Message) -> None:
     target_user_id = target_user.id if target_user is not None else telegram_user_id
     target_display_name = target_user.full_name if target_user is not None else display_name
 
-    response = process_profile_command(
+    response = await run_blocking_io(
+        "telegram.profile.process_command",
+        process_profile_command,
         telegram_user_id,
         display_name=display_name,
         target_telegram_user_id=target_user_id,
         target_display_name=target_display_name,
+        logger=logger,
     )
 
     if target_user_id is None:
@@ -384,7 +398,14 @@ async def profile_edit_field_callback(callback: CallbackQuery) -> None:
         helper_text = "Чтобы очистить поле, отправьте символ <code>-</code>."
         if field_name == "visible_roles":
             display_name = callback.from_user.full_name if callback.from_user is not None else None
-            profile_data = AccountsService.get_profile("telegram", str(callback.from_user.id), display_name=display_name)
+            profile_data = await run_blocking_io(
+                "telegram.profile_edit.get_profile",
+                AccountsService.get_profile,
+                "telegram",
+                str(callback.from_user.id),
+                display_name=display_name,
+                logger=logger,
+            )
             roles_by_category = (profile_data or {}).get("roles_by_category") or {}
             catalog = _normalize_visible_roles_catalog(roles_by_category)
             visible_roles = [str(name).strip() for name in (profile_data or {}).get("visible_roles", []) if str(name).strip()]
@@ -473,7 +494,15 @@ async def profile_visible_roles_callback(callback: CallbackQuery) -> None:
             return
         if action == "save":
             value = ", ".join(selected_roles)
-            success, payload = AccountsService.update_profile_field("telegram", str(callback.from_user.id), "visible_roles", value)
+            success, payload = await run_blocking_io(
+                "telegram.profile_visible_roles.update_profile_field",
+                AccountsService.update_profile_field,
+                "telegram",
+                str(callback.from_user.id),
+                "visible_roles",
+                value,
+                logger=logger,
+            )
             _PENDING_VISIBLE_ROLES.pop(callback.from_user.id, None)
             prefix = "✅" if success else "❌"
             if callback.message:
@@ -558,11 +587,14 @@ async def profile_edit_value_handler(message: Message) -> None:
         if value == "-":
             value = ""
 
-        success, payload = AccountsService.update_profile_field(
+        success, payload = await run_blocking_io(
+            "telegram.profile_edit.update_profile_field",
+            AccountsService.update_profile_field,
             "telegram",
             str(message.from_user.id),
             pending_field,
             value,
+            logger=logger,
         )
 
         _PENDING_EDIT_FIELD.pop(message.from_user.id, None)
@@ -571,9 +603,12 @@ async def profile_edit_value_handler(message: Message) -> None:
         await message.answer(f"{prefix} {payload}")
 
         if success:
-            profile_text = process_profile_command(
+            profile_text = await run_blocking_io(
+                "telegram.profile_edit.process_profile_command",
+                process_profile_command,
                 telegram_user_id=message.from_user.id,
                 display_name=message.from_user.full_name,
+                logger=logger,
             )
             await message.answer(
                 profile_text,
@@ -600,11 +635,14 @@ async def profile_roles_command(message: Message) -> None:
     target_user_id = target_user.id if target_user is not None else telegram_user_id
     target_display_name = target_user.full_name if target_user is not None else display_name
 
-    response = process_profile_roles_command(
+    response = await run_blocking_io(
+        "telegram.profile_roles.process_command",
+        process_profile_roles_command,
         telegram_user_id,
         display_name=display_name,
         target_telegram_user_id=target_user_id,
         target_display_name=target_display_name,
+        logger=logger,
     )
     await _safe_answer_chunked(message, response, parse_mode=ParseMode.HTML, command_name="/profile_roles")
 
@@ -612,7 +650,11 @@ async def profile_roles_command(message: Message) -> None:
 @router.message(Command("roles"))
 async def roles_catalog_command(message: Message) -> None:
     persist_telegram_identity_from_user(message.from_user)
-    response = process_roles_catalog_command()
+    response = await run_blocking_io(
+        "telegram.roles.process_command",
+        process_roles_catalog_command,
+        logger=logger,
+    )
     await _safe_answer_chunked(message, response, parse_mode=ParseMode.HTML, command_name="/roles")
 
 
@@ -621,7 +663,14 @@ async def link_command(message: Message) -> None:
     persist_telegram_identity_from_user(message.from_user)
     telegram_user_id = message.from_user.id if message.from_user is not None else None
     is_private_chat = message.chat.type == "private"
-    response = process_link_command(message.text or "", telegram_user_id, is_private_chat=is_private_chat)
+    response = await run_blocking_io(
+        "telegram.link.process_command",
+        process_link_command,
+        message.text or "",
+        telegram_user_id,
+        is_private_chat=is_private_chat,
+        logger=logger,
+    )
     await message.answer(response)
 
 
@@ -630,5 +679,11 @@ async def link_discord_command(message: Message) -> None:
     persist_telegram_identity_from_user(message.from_user)
     telegram_user_id = message.from_user.id if message.from_user is not None else None
     is_private_chat = message.chat.type == "private"
-    response = process_link_discord_command(telegram_user_id, is_private_chat=is_private_chat)
+    response = await run_blocking_io(
+        "telegram.link_discord.process_command",
+        process_link_discord_command,
+        telegram_user_id,
+        is_private_chat=is_private_chat,
+        logger=logger,
+    )
     await message.answer(response)

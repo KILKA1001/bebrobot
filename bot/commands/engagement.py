@@ -7,6 +7,7 @@ from discord.ext import commands
 from bot.commands import bot
 from bot.services import AccountsService, AuthorityService, PointsService, TicketsService
 from bot.utils import send_temp, safe_defer, safe_edit_original_response
+from bot.utils.blocking_io import run_blocking_io
 
 logger = logging.getLogger(__name__)
 PROCESSING_TEXT = "⏳ Обрабатываю…"
@@ -78,23 +79,27 @@ class PointsActionModal(discord.ui.Modal):
             await safe_edit_original_response(interaction, content=PROCESSING_TEXT)
 
             if self.operation == "add":
-                ok = await asyncio.to_thread(
+                ok = await run_blocking_io(
+                    "discord.points_modal.add_points",
                     PointsService.add_points_by_identity,
                     "discord",
                     str(self.target.id),
                     amount,
                     reason,
                     self.actor_id,
+                    logger=logger,
                 )
                 action_text = "начислены"
             else:
-                ok = await asyncio.to_thread(
+                ok = await run_blocking_io(
+                    "discord.points_modal.remove_points",
                     PointsService.remove_points_by_identity,
                     "discord",
                     str(self.target.id),
                     amount,
                     reason,
                     self.actor_id,
+                    logger=logger,
                 )
                 action_text = "списаны"
             if not ok:
