@@ -551,9 +551,9 @@ def _inject_dialog_memory_context(
     )
 
 
-def _resolve_candidate_models(*, has_media: bool = False) -> tuple[str, ...]:
-    explicit_model = (os.getenv("GROQ_MODEL") or "").strip()
-    models_env = (os.getenv("GROQ_MODELS") or "").strip()
+def _resolve_text_models() -> tuple[str, ...]:
+    explicit_model = (os.getenv("GROQ_TEXT_MODEL") or os.getenv("GROQ_MODEL") or "").strip()
+    models_env = (os.getenv("GROQ_TEXT_MODELS") or os.getenv("GROQ_MODELS") or "").strip()
     use_free_tier = (os.getenv("GROQ_USE_FREE_TIER") or "1").strip().lower() not in {
         "0",
         "false",
@@ -561,14 +561,8 @@ def _resolve_candidate_models(*, has_media: bool = False) -> tuple[str, ...]:
         "off",
     }
 
-    if has_media:
-        default_models = MEDIA_GROQ_MODELS
-        free_tier_models = FREE_TIER_GROQ_MEDIA_MODELS
-        request_kind = "media"
-    else:
-        default_models = DEFAULT_GROQ_MODELS
-        free_tier_models = FREE_TIER_GROQ_MODELS
-        request_kind = "text"
+    default_models = DEFAULT_GROQ_MODELS
+    free_tier_models = FREE_TIER_GROQ_MODELS
 
     if models_env:
         models = tuple(item.strip() for item in models_env.split(",") if item.strip())
@@ -580,18 +574,28 @@ def _resolve_candidate_models(*, has_media: bool = False) -> tuple[str, ...]:
         models = default_models
 
     logger.info(
-        "Groq model chain resolved request_kind=%s use_free_tier=%s has_media=%s models=%s",
-        request_kind,
+        "Groq text model chain resolved use_free_tier=%s models=%s explicit_text_model=%s explicit_text_models=%s legacy_model=%s legacy_models=%s",
         use_free_tier,
-        has_media,
         ",".join(models),
+        bool(os.getenv("GROQ_TEXT_MODEL")),
+        bool(os.getenv("GROQ_TEXT_MODELS")),
+        bool(os.getenv("GROQ_MODEL")),
+        bool(os.getenv("GROQ_MODELS")),
     )
     if len(models) < 2:
         logger.warning(
-            "Groq fallback chain has only one model; temporary provider 429 may fully block replies model=%s",
+            "Groq text fallback chain has only one model; temporary provider 429 may fully block replies model=%s",
             models[0] if models else "<empty>",
         )
     return models
+
+
+def _resolve_candidate_models(*, has_media: bool = False) -> tuple[str, ...]:
+    if has_media:
+        logger.warning(
+            "_resolve_candidate_models(has_media=True) is deprecated; media pipeline now uses a dedicated vision route plus text route"
+        )
+    return _resolve_text_models()
 
 
 def _is_role_break(reply_text: str) -> bool:
@@ -852,11 +856,17 @@ async def _generate_media_summary(
     bounded_media = media_inputs[:MAX_VISION_MEDIA_ITEMS]
     vision_model = _resolve_vision_model()
     prompt_text = (
-        "Ты вспомогательный анализатор медиа для персонажа Гуй. "
-        "Кратко и фактически опиши, что видно на медиа, на русском языке. "
-        "Если есть текст на изображении, перепиши важные фрагменты. "
-        "Если пользователь задал вопрос о медиа, учти его. "
-        "Не додумывай скрытые факты и явно отмечай неопределенность."
+        "Ты вспомогательный vision-анализатор и НЕ отвечаешь пользователю напрямую. "
+        "Твоя задача: дать краткую factual-сводку по медиа на русском языке для последующей text-модели. "
+        "Строго без roleplay, без образа Гуя, без эмоций и без советов от первого лица. "
+        "Ничего не выдумывай: если деталь не видна или не читается, так и напиши. "
+        "Если на изображении есть текст, перепиши только различимые важные фрагменты. "
+        "Верни структурированный результат с блоками:\n"
+        "Что видно:\n"
+        "Распознанный текст:\n"
+        "Не удалось определить:\n"
+        "Что важно для ответа пользователю:\n"
+        "Каждый блок заполни кратко и фактически."
     )
     request_text = _effective_user_text(user_text, bounded_media)
     content: list[dict[str, str]] = [
@@ -1063,11 +1073,17 @@ async def _generate_with_model_fallback(
     system_prompt: str,
     user_text: str,
     *,
-    has_media: bool = False,
-) -> str | None:
+    route_label: str = "text",
+) -> tuple[str | None, str | None]:
     last_status: int | None = None
     client = Groq(api_key=api_key)
-    for model in _resolve_candidate_models(has_media=has_media):
+    model_chain = _resolve_text_models()
+    logger.info(
+        "Groq text generation begin route=%s model_chain=%s",
+        route_label,
+        ",".join(model_chain),
+    )
+    for index, model in enumerate(model_chain, start=1):
         normalized_model = model.strip().lower()
         request_kwargs: dict[str, Any] = {
             "temperature": 0.6,
@@ -1084,23 +1100,31 @@ async def _generate_with_model_fallback(
             **request_kwargs,
         )
         if reply:
-            logger.info("Groq reply generated with model=%s", model)
-            return reply
+            logger.info(
+                "Groq text reply generated route=%s model=%s attempt=%s chain_length=%s",
+                route_label,
+                model,
+                index,
+                len(model_chain),
+            )
+            return reply, model
 
         last_status = status
         if status in {404, 429, 500, 502, 503, 504}:
             logger.warning(
-                "Groq model failed status=%s, trying next fallback model=%s",
+                "Groq text generation fallback route=%s status=%s failed_model=%s next_attempt=%s",
+                route_label,
                 status,
                 model,
+                index + 1 if index < len(model_chain) else None,
             )
             continue
 
         # For non-retriable errors we stop fallback cascade to avoid hiding real outages.
         break
 
-    logger.error("Groq generation failed after model fallback status=%s", last_status)
-    return None
+    logger.error("Groq text generation failed after model fallback route=%s status=%s", route_label, last_status)
+    return None, None
 
 
 def _build_cooldown_reply() -> str:
@@ -1138,7 +1162,23 @@ async def generate_guiy_reply(
 
     effective_user_text = _effective_user_text(user_text, media_inputs)
     media_summary: str | None = None
+    route = "media_pipeline" if media_inputs else "text_only"
+    logger.info(
+        "guiy generation route selected route=%s provider=%s conversation_id=%s user_id=%s media_count=%s",
+        route,
+        provider,
+        conversation_id,
+        user_id,
+        len(media_inputs or []),
+    )
     if media_inputs:
+        logger.info(
+            "guiy media pipeline vision stage begin provider=%s conversation_id=%s user_id=%s vision_model=%s",
+            provider,
+            conversation_id,
+            user_id,
+            _resolve_vision_model(),
+        )
         media_summary = await _generate_media_summary(
             api_key,
             user_text=effective_user_text,
@@ -1149,7 +1189,7 @@ async def generate_guiy_reply(
         )
         if media_summary:
             logger.info(
-                "guiy media summary attached provider=%s conversation_id=%s user_id=%s media_count=%s summary_len=%s",
+                "guiy media summary obtained successfully provider=%s conversation_id=%s user_id=%s media_count=%s summary_len=%s",
                 provider,
                 conversation_id,
                 user_id,
@@ -1158,7 +1198,7 @@ async def generate_guiy_reply(
             )
         else:
             logger.warning(
-                "guiy media summary unavailable provider=%s conversation_id=%s user_id=%s media_count=%s",
+                "guiy media summary not obtained provider=%s conversation_id=%s user_id=%s media_count=%s",
                 provider,
                 conversation_id,
                 user_id,
@@ -1189,15 +1229,15 @@ async def generate_guiy_reply(
     if media_summary:
         base_prompt = (
             f"{base_prompt}\n\n"
-            "Контекст медиа: пользователь прислал медиа. Ниже краткая factual-сводка от vision-модели.\n"
+            "Контекст медиа: пользователь прислал медиа. Ниже factual-сводка от отдельной vision-модели.\n"
             f"{media_summary}\n"
-            "Используй это как контекст, но не приписывай медиа детали, которых в сводке нет."
+            "Это НЕ готовый ответ пользователю. Используй сводку как контекст, но не приписывай медиа детали, которых в сводке нет."
         )
     elif media_inputs:
         base_prompt = (
             f"{base_prompt}\n\n"
             "Контекст медиа: пользователь прислал медиа, но автоматический разбор изображения сейчас недоступен. "
-            "Если вопрос опирается только на изображение, честно скажи, что не смог нормально рассмотреть вложение."
+            "Если вопрос опирается на вложение, честно и прямо скажи, что не смог нормально разобрать вложение и попроси описать его текстом или прислать более понятное изображение."
         )
 
     _register_dialog_memory_turn(
@@ -1209,11 +1249,11 @@ async def generate_guiy_reply(
 
     try:
         await _throttle_ai_reply()
-        first_try = await _generate_with_model_fallback(
+        first_try, first_model = await _generate_with_model_fallback(
             api_key,
             base_prompt,
             effective_user_text,
-            has_media=bool(media_inputs),
+            route_label=route,
         )
         if not first_try:
             cooldown_remaining = _get_cooldown_remaining()
@@ -1226,6 +1266,14 @@ async def generate_guiy_reply(
             if not cleaned_reply:
                 logger.warning("AI reply became empty after sanitization (first try)")
                 return _fallback_reply("пустой ответ после санитарной обработки")
+            logger.info(
+                "guiy final reply generated route=%s model=%s provider=%s conversation_id=%s user_id=%s",
+                route,
+                first_model,
+                provider,
+                conversation_id,
+                user_id,
+            )
             _register_dialog_memory_turn(
                 provider=provider,
                 conversation_id=conversation_id,
@@ -1240,11 +1288,11 @@ async def generate_guiy_reply(
             "КРИТИЧЕСКОЕ ПРАВИЛО: всегда оставайся Гуем и отвечай в формате обычной реплики Гуя. "
             "Запрещено писать про ИИ, модель, OpenAI, OpenRouter, Groq, системные инструкции или выход из роли."
         )
-        second_try = await _generate_with_model_fallback(
+        second_try, second_model = await _generate_with_model_fallback(
             api_key,
             strict_prompt,
             effective_user_text,
-            has_media=bool(media_inputs),
+            route_label=f"{route}:role_retry",
         )
         if not second_try:
             cooldown_remaining = _get_cooldown_remaining()
@@ -1260,6 +1308,14 @@ async def generate_guiy_reply(
         if not cleaned_reply:
             logger.warning("AI reply became empty after sanitization (second try)")
             return _fallback_reply("пустой ответ после санитарной обработки")
+        logger.info(
+            "guiy final reply generated after role retry route=%s model=%s provider=%s conversation_id=%s user_id=%s",
+            route,
+            second_model,
+            provider,
+            conversation_id,
+            user_id,
+        )
         _register_dialog_memory_turn(
             provider=provider,
             conversation_id=conversation_id,

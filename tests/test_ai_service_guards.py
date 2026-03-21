@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import unittest
 from types import SimpleNamespace
 
@@ -22,6 +23,7 @@ from bot.services.ai_service import (
     _is_role_break,
     _is_temporary_upstream_rate_limited,
     _resolve_candidate_models,
+    _resolve_text_models,
     _resolve_vision_model,
     _sanitize_guiy_reply,
     generate_guiy_reply,
@@ -432,25 +434,39 @@ class GuiyAIGuardsTests(unittest.TestCase):
         self.assertIn("Новая реплика", prompt)
 
     @patch.dict("os.environ", {}, clear=True)
-    def test_resolve_models_default_order(self):
-        models = _resolve_candidate_models()
+    def test_resolve_text_models_default_order(self):
+        models = _resolve_text_models()
         self.assertEqual(models, ("moonshotai/kimi-k2-instruct-0905", "qwen/qwen3-32b", "llama-3.3-70b-versatile"))
 
 
     @patch.dict("os.environ", {"GROQ_USE_FREE_TIER": "0"}, clear=True)
-    def test_resolve_models_still_pinned_when_free_tier_disabled(self):
-        models = _resolve_candidate_models()
+    def test_resolve_text_models_still_pinned_when_free_tier_disabled(self):
+        models = _resolve_text_models()
         self.assertEqual(models, ("moonshotai/kimi-k2-instruct-0905", "qwen/qwen3-32b", "llama-3.3-70b-versatile"))
 
     @patch.dict("os.environ", {"GROQ_MODEL": "moonshotai/kimi-k2-instruct-0905", "GROQ_MODELS": "moonshotai/kimi-k2-instruct-0905,llama-3.3-70b-versatile"}, clear=True)
-    def test_resolve_models_respects_env_overrides(self):
-        models = _resolve_candidate_models()
+    def test_resolve_text_models_respects_legacy_env_overrides(self):
+        models = _resolve_text_models()
         self.assertEqual(models, ("moonshotai/kimi-k2-instruct-0905", "llama-3.3-70b-versatile"))
 
+    @patch.dict(
+        "os.environ",
+        {
+            "GROQ_TEXT_MODEL": "moonshotai/kimi-k2-instruct-0905",
+            "GROQ_TEXT_MODELS": "moonshotai/kimi-k2-instruct-0905,qwen/qwen3-32b",
+            "GROQ_MODEL": "legacy-model-ignored",
+            "GROQ_MODELS": "legacy-a,legacy-b",
+        },
+        clear=True,
+    )
+    def test_resolve_text_models_prefers_new_text_env_over_legacy(self):
+        models = _resolve_text_models()
+        self.assertEqual(models, ("moonshotai/kimi-k2-instruct-0905", "qwen/qwen3-32b"))
+
     @patch.dict("os.environ", {}, clear=True)
-    def test_resolve_models_media_order_keeps_llama_first(self):
+    def test_legacy_resolve_candidate_models_keeps_text_route(self):
         models = _resolve_candidate_models(has_media=True)
-        self.assertEqual(models, ("llama-3.3-70b-versatile", "moonshotai/kimi-k2-instruct-0905", "qwen/qwen3-32b"))
+        self.assertEqual(models, ("moonshotai/kimi-k2-instruct-0905", "qwen/qwen3-32b", "llama-3.3-70b-versatile"))
 
     @patch.dict("os.environ", {}, clear=True)
     def test_resolve_vision_model_defaults_to_llama_3_3_for_media(self):
@@ -471,7 +487,7 @@ class GuiyAIGuardsTests(unittest.TestCase):
     @patch.dict("os.environ", {"GROQ_API_KEY": "x"}, clear=True)
     @patch("bot.services.ai_service.asyncio.sleep", new_callable=AsyncMock)
     @patch("bot.services.ai_service.random.uniform", return_value=3.4)
-    @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, return_value="Я не Гуй, я модель")
+    @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, side_effect=[("Я не Гуй, я модель", "moonshotai/kimi-k2-instruct-0905"), ("Я не Гуй, я модель", "qwen/qwen3-32b")])
     def test_generate_reply_role_break_guard_answer_stays_low_lore(self, mock_generate, _mock_uniform, _mock_sleep):
         reply = asyncio.run(generate_guiy_reply("Гуй, ответь нормально"))
         self.assertEqual(reply, "Слышь, без смены роли. Говори по делу.")
@@ -564,7 +580,7 @@ class GuiyAIGuardsTests(unittest.TestCase):
             ai_service._AI_COOLDOWN_UNTIL = old
 
     @patch.dict("os.environ", {"GROQ_API_KEY": "x"}, clear=True)
-    @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=None)
+    @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=(None, None))
     def test_generate_reply_reports_quota_cooldown(self, mock_generate):
         old = ai_service._AI_COOLDOWN_UNTIL
         old_hard = ai_service._AI_HARD_QUOTA_UNTIL
@@ -578,7 +594,7 @@ class GuiyAIGuardsTests(unittest.TestCase):
             ai_service._AI_HARD_QUOTA_UNTIL = old_hard
 
     @patch.dict("os.environ", {"GROQ_API_KEY": "x"}, clear=True)
-    @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=None)
+    @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=(None, None))
     def test_generate_reply_reports_hard_quota_cooldown(self, mock_generate):
         old = ai_service._AI_COOLDOWN_UNTIL
         old_hard = ai_service._AI_HARD_QUOTA_UNTIL
@@ -595,13 +611,78 @@ class GuiyAIGuardsTests(unittest.TestCase):
     @patch.dict("os.environ", {"GROQ_API_KEY": "x"}, clear=True)
     @patch("bot.services.ai_service.asyncio.sleep", new_callable=AsyncMock)
     @patch("bot.services.ai_service.random.uniform", return_value=3.4)
-    @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, return_value="Ответ")
+    @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=("Ответ", "moonshotai/kimi-k2-instruct-0905"))
     def test_generate_reply_adds_artificial_delay(self, mock_generate, mock_uniform, mock_sleep):
         reply = asyncio.run(generate_guiy_reply("Гуй, ты тут?"))
         self.assertEqual(reply, "Ответ")
         mock_uniform.assert_called_once_with(3.0, 4.0)
         mock_sleep.assert_awaited_once_with(3.4)
         mock_generate.assert_awaited()
+
+    @patch.dict("os.environ", {"GROQ_API_KEY": "x"}, clear=True)
+    @patch("bot.services.ai_service.asyncio.sleep", new_callable=AsyncMock)
+    @patch("bot.services.ai_service.random.uniform", return_value=3.4)
+    @patch("bot.services.ai_service._generate_media_summary", new_callable=AsyncMock)
+    @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=("Текстовый ответ", "moonshotai/kimi-k2-instruct-0905"))
+    def test_generate_reply_without_media_skips_vision(self, mock_generate, mock_media_summary, _mock_uniform, _mock_sleep):
+        reply = asyncio.run(generate_guiy_reply("Гуй, ты тут?"))
+        self.assertEqual(reply, "Текстовый ответ")
+        mock_media_summary.assert_not_awaited()
+        mock_generate.assert_awaited_once()
+        _, kwargs = mock_generate.await_args
+        self.assertEqual(kwargs["route_label"], "text_only")
+
+    @patch.dict("os.environ", {"GROQ_API_KEY": "x"}, clear=True)
+    @patch("bot.services.ai_service.asyncio.sleep", new_callable=AsyncMock)
+    @patch("bot.services.ai_service.random.uniform", return_value=3.4)
+    @patch("bot.services.ai_service._generate_media_summary", new_callable=AsyncMock)
+    @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock)
+    def test_generate_reply_with_media_runs_vision_then_text(self, mock_generate, mock_media_summary, _mock_uniform, _mock_sleep):
+        state = {"vision_done": False}
+
+        async def media_summary_side_effect(*args, **kwargs):
+            state["vision_done"] = True
+            return "Что видно: кот.\nРаспознанный текст: нет.\nНе удалось определить: породу.\nЧто важно для ответа пользователю: пользователь показал кота."
+
+        async def generate_side_effect(*args, **kwargs):
+            self.assertTrue(state["vision_done"])
+            return "Финальный ответ Гуя", "moonshotai/kimi-k2-instruct-0905"
+
+        mock_media_summary.side_effect = media_summary_side_effect
+        mock_generate.side_effect = generate_side_effect
+        reply = asyncio.run(
+            generate_guiy_reply(
+                "Что на фото?",
+                media_inputs=[{"type": "image", "mime_type": "image/png", "data_url": "data:", "source": "x"}],
+            )
+        )
+        self.assertEqual(reply, "Финальный ответ Гуя")
+        mock_media_summary.assert_awaited_once()
+        mock_generate.assert_awaited_once()
+        _, kwargs = mock_generate.await_args
+        self.assertEqual(kwargs["route_label"], "media_pipeline")
+        self.assertIn("factual-сводка", mock_generate.await_args.args[1])
+
+    @patch.dict("os.environ", {"GROQ_API_KEY": "x"}, clear=True)
+    @patch("bot.services.ai_service.asyncio.sleep", new_callable=AsyncMock)
+    @patch("bot.services.ai_service.random.uniform", return_value=3.4)
+    @patch("bot.services.ai_service._generate_media_summary", new_callable=AsyncMock, return_value=None)
+    @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=("Не смог нормально разобрать вложение, опиши его текстом.", "moonshotai/kimi-k2-instruct-0905"))
+    def test_generate_reply_when_vision_fails_still_uses_text_model_honestly(self, mock_generate, mock_media_summary, _mock_uniform, _mock_sleep):
+        reply = asyncio.run(
+            generate_guiy_reply(
+                "Что тут?",
+                media_inputs=[{"type": "image", "mime_type": "image/png", "data_url": "data:", "source": "x"}],
+            )
+        )
+        self.assertEqual(reply, "Не смог нормально разобрать вложение, опиши его текстом.")
+        mock_media_summary.assert_awaited_once()
+        mock_generate.assert_awaited_once()
+        self.assertIn("не смог нормально разобрать вложение", mock_generate.await_args.args[1].lower())
+
+    def test_generate_guiy_reply_signature_keeps_platform_contract(self):
+        params = inspect.signature(generate_guiy_reply).parameters
+        self.assertEqual(list(params.keys()), ["user_text", "provider", "user_id", "conversation_id", "media_inputs"])
 
 if __name__ == "__main__":
     unittest.main()
