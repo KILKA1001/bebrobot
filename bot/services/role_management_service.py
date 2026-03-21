@@ -383,6 +383,44 @@ class RoleManagementService:
         return value or "Без категории"
 
     @staticmethod
+    def _ensure_category_exists(
+        name: str | None,
+        *,
+        default_position: int = 0,
+        log_context: str = "ensure_category_exists",
+    ) -> bool:
+        category = RoleManagementService._normalized_category(name)
+        if not db.supabase:
+            logger.warning("%s skipped: supabase is not configured category=%s", log_context, category)
+            return False
+
+        try:
+            response = (
+                db.supabase.table("role_categories")
+                .select("name,position")
+                .eq("name", category)
+                .limit(1)
+                .execute()
+            )
+            existing = list(response.data or [])
+            if existing:
+                logger.info(
+                    "%s preserved existing category position category=%s position=%s default_position=%s",
+                    log_context,
+                    category,
+                    int((existing[0] or {}).get("position") or 0),
+                    int(default_position),
+                )
+                return True
+
+            db.supabase.table("role_categories").insert({"name": category, "position": int(default_position)}).execute()
+            logger.info("%s created missing category category=%s position=%s", log_context, category, int(default_position))
+            return True
+        except Exception:
+            logger.exception("%s failed category=%s default_position=%s", log_context, category, default_position)
+            return False
+
+    @staticmethod
     def _build_grouped_roles(
         categories_rows: list[dict[str, Any]] | None,
         roles_rows: list[dict[str, Any]] | None,
@@ -472,7 +510,11 @@ class RoleManagementService:
         }
 
         try:
-            db.supabase.table("role_categories").upsert({"name": payload["category_name"], "position": 9999}).execute()
+            RoleManagementService._ensure_category_exists(
+                payload["category_name"],
+                default_position=9999,
+                log_context="_upsert_discord_catalog_role",
+            )
             if existing:
                 db.supabase.table("roles").update(payload).eq("discord_role_id", role_id).execute()
             else:
@@ -704,6 +746,7 @@ class RoleManagementService:
             return False
         try:
             db.supabase.table("role_categories").upsert({"name": category, "position": int(position)}).execute()
+            logger.info("create_category completed category=%s position=%s", category, int(position))
             return True
         except Exception:
             logger.exception("create_category failed category=%s position=%s", category, position)
@@ -719,9 +762,14 @@ class RoleManagementService:
         if not db.supabase:
             return False
         try:
-            db.supabase.table("role_categories").upsert({"name": fallback, "position": 999}).execute()
+            RoleManagementService._ensure_category_exists(
+                fallback,
+                default_position=999,
+                log_context="delete_category_fallback",
+            )
             db.supabase.table("roles").update({"category_name": fallback}).eq("category_name", category).execute()
             db.supabase.table("role_categories").delete().eq("name", category).execute()
+            logger.info("delete_category completed category=%s fallback_category=%s", category, fallback)
             return True
         except Exception:
             logger.exception("delete_category failed category=%s", category)
@@ -773,7 +821,11 @@ class RoleManagementService:
         }
 
         try:
-            db.supabase.table("role_categories").upsert({"name": normalized_category, "position": 0}).execute()
+            RoleManagementService._ensure_category_exists(
+                normalized_category,
+                default_position=0,
+                log_context="create_role_category",
+            )
             db.supabase.table("roles").upsert(payload, on_conflict="name").execute()
             after_role = RoleManagementService.get_role(role_name) or dict(payload)
             audit_action = "role_edit" if before_role else "role_create"
@@ -1016,7 +1068,11 @@ class RoleManagementService:
                     computed_last_position=computed_last_position,
                 )
                 return False
-            db.supabase.table("role_categories").upsert({"name": normalized_category, "position": 0}).execute()
+            RoleManagementService._ensure_category_exists(
+                normalized_category,
+                default_position=0,
+                log_context="move_role_category",
+            )
             response = (
                 db.supabase.table("roles")
                 .update({"category_name": normalized_category, "position": computed_position})
@@ -1034,6 +1090,15 @@ class RoleManagementService:
                     computed_last_position=computed_last_position,
                 )
                 return False
+            logger.info(
+                "move_role completed actor_id=%s operation=%s role_name=%s category=%s requested_position=%s computed_position=%s",
+                actor_id,
+                operation,
+                name,
+                normalized_category,
+                position,
+                computed_position,
+            )
             return True
         except Exception:
             preview = RoleManagementService.get_category_role_positioning(
