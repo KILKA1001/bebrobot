@@ -11,6 +11,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from bot.data import db
 from bot.services import AccountsService, AuthorityService, PointsService, TicketsService
 from bot.telegram_bot.identity import persist_telegram_identity_from_user
+from bot.utils.blocking_io import run_blocking_io
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -233,12 +234,23 @@ async def balance_command(message: Message) -> None:
             await message.answer("❌ Не удалось определить цель. Используйте ответ на сообщение или id пользователя.")
             return
 
-        profile = AccountsService.get_profile("telegram", str(target_id))
+        profile = await run_blocking_io(
+            "telegram.balance.get_profile",
+            AccountsService.get_profile,
+            "telegram",
+            str(target_id),
+            logger=logger,
+        )
         if not profile:
             await message.answer("❌ Профиль не найден. Сначала выполните /register")
             return
 
-        points, tickets_normal, tickets_gold = _get_score_snapshot(profile["account_id"])
+        points, tickets_normal, tickets_gold = await run_blocking_io(
+            "telegram.balance.score_snapshot",
+            _get_score_snapshot,
+            profile["account_id"],
+            logger=logger,
+        )
         await message.answer(
             "💰 <b>Баланс пользователя</b>\n"
             f"Пользователь: <a href=\"tg://user?id={target_id}\">{profile['custom_nick']}</a>\n"
@@ -269,7 +281,13 @@ async def points_menu_command(message: Message) -> None:
             await message.answer("❌ Не удалось определить цель. Используйте ответ на сообщение или id пользователя.")
             return
 
-        authority = AuthorityService.resolve_authority("telegram", actor_id)
+        authority = await run_blocking_io(
+            "telegram.points.resolve_authority",
+            AuthorityService.resolve_authority,
+            "telegram",
+            actor_id,
+            logger=logger,
+        )
         if not _can_manage_points(authority.level):
             await message.answer("Недоступно по вашему званию.")
             return
@@ -279,16 +297,35 @@ async def points_menu_command(message: Message) -> None:
                 logger.warning("tickets menu self-edit denied actor_id=%s", actor_id)
                 await message.answer("❌ Нельзя редактировать себя. Доступно только Главе клуба и Главному вице.")
                 return
-        elif not AuthorityService.can_manage_target("telegram", actor_id, "telegram", str(target_id)):
+        elif not await run_blocking_io(
+            "telegram.points.can_manage_target",
+            AuthorityService.can_manage_target,
+            "telegram",
+            actor_id,
+            "telegram",
+            str(target_id),
+            logger=logger,
+        ):
             await message.answer("❌ Нельзя взаимодействовать с пользователем с равным/более высоким званием.")
             return
 
-        profile = AccountsService.get_profile("telegram", str(target_id))
+        profile = await run_blocking_io(
+            "telegram.points.get_profile",
+            AccountsService.get_profile,
+            "telegram",
+            str(target_id),
+            logger=logger,
+        )
         if not profile:
             await message.answer("❌ Целевой пользователь не зарегистрирован в системе.")
             return
 
-        points, tickets_normal, tickets_gold = _get_score_snapshot(profile["account_id"])
+        points, tickets_normal, tickets_gold = await run_blocking_io(
+            "telegram.points.score_snapshot",
+            _get_score_snapshot,
+            profile["account_id"],
+            logger=logger,
+        )
         await message.answer(
             "🎛️ <b>Меню баллов</b>\n"
             f"Пользователь: <a href=\"tg://user?id={target_id}\">{profile['custom_nick']}</a>\n"
@@ -316,7 +353,13 @@ async def tickets_menu_command(message: Message) -> None:
             await message.answer("❌ Не удалось определить цель. Используйте ответ на сообщение или id пользователя.")
             return
 
-        authority = AuthorityService.resolve_authority("telegram", actor_id)
+        authority = await run_blocking_io(
+            "telegram.tickets.resolve_authority",
+            AuthorityService.resolve_authority,
+            "telegram",
+            actor_id,
+            logger=logger,
+        )
         if not _can_manage_tickets(authority.titles, authority.level):
             await message.answer("Недоступно по вашему званию.")
             return
@@ -326,16 +369,35 @@ async def tickets_menu_command(message: Message) -> None:
                 logger.warning("points menu self-edit denied actor_id=%s", actor_id)
                 await message.answer("❌ Нельзя редактировать себя. Доступно только Главе клуба и Главному вице.")
                 return
-        elif not AuthorityService.can_manage_target("telegram", actor_id, "telegram", str(target_id)):
+        elif not await run_blocking_io(
+            "telegram.tickets.can_manage_target",
+            AuthorityService.can_manage_target,
+            "telegram",
+            actor_id,
+            "telegram",
+            str(target_id),
+            logger=logger,
+        ):
             await message.answer("❌ Нельзя взаимодействовать с пользователем с равным/более высоким званием.")
             return
 
-        profile = AccountsService.get_profile("telegram", str(target_id))
+        profile = await run_blocking_io(
+            "telegram.tickets.get_profile",
+            AccountsService.get_profile,
+            "telegram",
+            str(target_id),
+            logger=logger,
+        )
         if not profile:
             await message.answer("❌ Целевой пользователь не зарегистрирован в системе.")
             return
 
-        points, tickets_normal, tickets_gold = _get_score_snapshot(profile["account_id"])
+        points, tickets_normal, tickets_gold = await run_blocking_io(
+            "telegram.tickets.score_snapshot",
+            _get_score_snapshot,
+            profile["account_id"],
+            logger=logger,
+        )
         await message.answer(
             "🎟️ <b>Меню билетов</b>\n"
             f"Пользователь: <a href=\"tg://user?id={target_id}\">{profile['custom_nick']}</a>\n"
@@ -368,7 +430,13 @@ async def points_callback(callback: CallbackQuery) -> None:
             return
         actor_id = str(callback.from_user.id)
 
-        authority = AuthorityService.resolve_authority("telegram", actor_id)
+        authority = await run_blocking_io(
+            "telegram.points_callback.resolve_authority",
+            AuthorityService.resolve_authority,
+            "telegram",
+            actor_id,
+            logger=logger,
+        )
         if not _can_manage_points(authority.level):
             logger.warning("points callback denied by authority actor_id=%s action=%s", actor_id, action)
             await callback.answer("Недоступно по вашему званию.", show_alert=True)
@@ -379,7 +447,15 @@ async def points_callback(callback: CallbackQuery) -> None:
                 logger.warning("points callback self-edit denied actor_id=%s", actor_id)
                 await callback.answer("Нельзя редактировать себя.", show_alert=True)
                 return
-        elif not AuthorityService.can_manage_target("telegram", actor_id, "telegram", str(target_id)):
+        elif not await run_blocking_io(
+            "telegram.points_callback.can_manage_target",
+            AuthorityService.can_manage_target,
+            "telegram",
+            actor_id,
+            "telegram",
+            str(target_id),
+            logger=logger,
+        ):
             logger.warning("points callback denied by hierarchy actor_id=%s target_id=%s", actor_id, target_id)
             await callback.answer("Нельзя взаимодействовать с равным/старшим званием.", show_alert=True)
             return
@@ -439,7 +515,13 @@ async def tickets_callback(callback: CallbackQuery) -> None:
             return
         actor_id = str(callback.from_user.id)
 
-        authority = AuthorityService.resolve_authority("telegram", actor_id)
+        authority = await run_blocking_io(
+            "telegram.tickets_callback.resolve_authority",
+            AuthorityService.resolve_authority,
+            "telegram",
+            actor_id,
+            logger=logger,
+        )
         if not _can_manage_tickets(authority.titles, authority.level):
             logger.warning("tickets callback denied by authority actor_id=%s action=%s", actor_id, action)
             await callback.answer("Недоступно по вашему званию.", show_alert=True)
@@ -450,7 +532,15 @@ async def tickets_callback(callback: CallbackQuery) -> None:
                 logger.warning("tickets callback self-edit denied actor_id=%s", actor_id)
                 await callback.answer("Нельзя редактировать себя.", show_alert=True)
                 return
-        elif not AuthorityService.can_manage_target("telegram", actor_id, "telegram", str(target_id)):
+        elif not await run_blocking_io(
+            "telegram.tickets_callback.can_manage_target",
+            AuthorityService.can_manage_target,
+            "telegram",
+            actor_id,
+            "telegram",
+            str(target_id),
+            logger=logger,
+        ):
             logger.warning("tickets callback denied by hierarchy actor_id=%s target_id=%s", actor_id, target_id)
             await callback.answer("Нельзя взаимодействовать с равным/старшим званием.", show_alert=True)
             return
@@ -505,7 +595,13 @@ async def pending_action_handler(message: Message) -> None:
 
     pending = _PENDING_ACTIONS.get(message.from_user.id)
     try:
-        authority = AuthorityService.resolve_authority("telegram", str(message.from_user.id))
+        authority = await run_blocking_io(
+            "telegram.pending_action.resolve_authority",
+            AuthorityService.resolve_authority,
+            "telegram",
+            str(message.from_user.id),
+            logger=logger,
+        )
         if pending.domain == "points" and not _can_manage_points(authority.level):
             logger.warning("pending points action denied by authority actor_id=%s", message.from_user.id)
             await message.answer("❌ Недостаточно полномочий для редактирования баллов.")
@@ -526,11 +622,14 @@ async def pending_action_handler(message: Message) -> None:
                 await message.answer("❌ Нельзя редактировать себя. Доступно только Главе клуба и Главному вице.")
                 _PENDING_ACTIONS.pop(message.from_user.id, None)
                 return
-        elif not AuthorityService.can_manage_target(
+        elif not await run_blocking_io(
+            "telegram.pending_action.can_manage_target",
+            AuthorityService.can_manage_target,
             "telegram",
             str(message.from_user.id),
             "telegram",
             str(pending.target_provider_user_id),
+            logger=logger,
         ):
             logger.warning(
                 "pending action denied by hierarchy actor_id=%s target_id=%s domain=%s",
@@ -558,13 +657,27 @@ async def pending_action_handler(message: Message) -> None:
                 await _respond_in_flow(message, pending, "❌ Количество баллов должно быть больше 0.")
                 return
             if pending.operation == "add":
-                ok = PointsService.add_points_by_identity(
-                    "telegram", pending.target_provider_user_id, amount, reason_raw, int(pending.actor_provider_user_id)
+                ok = await run_blocking_io(
+                    "telegram.pending_action.add_points",
+                    PointsService.add_points_by_identity,
+                    "telegram",
+                    pending.target_provider_user_id,
+                    amount,
+                    reason_raw,
+                    int(pending.actor_provider_user_id),
+                    logger=logger,
                 )
                 action_text = "начислены"
             else:
-                ok = PointsService.remove_points_by_identity(
-                    "telegram", pending.target_provider_user_id, amount, reason_raw, int(pending.actor_provider_user_id)
+                ok = await run_blocking_io(
+                    "telegram.pending_action.remove_points",
+                    PointsService.remove_points_by_identity,
+                    "telegram",
+                    pending.target_provider_user_id,
+                    amount,
+                    reason_raw,
+                    int(pending.actor_provider_user_id),
+                    logger=logger,
                 )
                 action_text = "списаны"
             if not ok:
@@ -587,13 +700,29 @@ async def pending_action_handler(message: Message) -> None:
             }
             ticket_type, is_add = mapping[pending.operation]
             if is_add:
-                ok = TicketsService.give_ticket_by_identity(
-                    "telegram", pending.target_provider_user_id, ticket_type, amount, reason_raw, int(pending.actor_provider_user_id)
+                ok = await run_blocking_io(
+                    "telegram.pending_action.give_ticket",
+                    TicketsService.give_ticket_by_identity,
+                    "telegram",
+                    pending.target_provider_user_id,
+                    ticket_type,
+                    amount,
+                    reason_raw,
+                    int(pending.actor_provider_user_id),
+                    logger=logger,
                 )
                 verb = "начислены"
             else:
-                ok = TicketsService.remove_ticket_by_identity(
-                    "telegram", pending.target_provider_user_id, ticket_type, amount, reason_raw, int(pending.actor_provider_user_id)
+                ok = await run_blocking_io(
+                    "telegram.pending_action.remove_ticket",
+                    TicketsService.remove_ticket_by_identity,
+                    "telegram",
+                    pending.target_provider_user_id,
+                    ticket_type,
+                    amount,
+                    reason_raw,
+                    int(pending.actor_provider_user_id),
+                    logger=logger,
                 )
                 verb = "списаны"
 
