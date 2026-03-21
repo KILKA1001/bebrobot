@@ -338,7 +338,7 @@ class DiscordRolesAdminTests(unittest.IsolatedAsyncioTestCase):
                     "position_description": "будет добавлено в конец (#2)",
                 },
             ),
-            patch.object(roles_admin.RoleManagementService, "create_role", return_value=True),
+            patch.object(roles_admin.RoleManagementService, "create_role_result", return_value={"ok": True}),
             patch.object(roles_admin, "send_temp", AsyncMock()) as send_mock,
         ):
             await roles_admin.rolesadmin_role_create(ctx, "General", "New", "Описание", "Через турнир", None, None)
@@ -447,3 +447,33 @@ class DiscordRolesAdminTests(unittest.IsolatedAsyncioTestCase):
         embed = send_mock.await_args.kwargs["embed"]
         self.assertIn("Уже выбрано ролей: **0**", embed.description)
         self.assertIn("Выбор можно продолжать по другим категориям", embed.description)
+    async def test_rolesadmin_role_create_shows_profile_title_conflict_message(self):
+        ctx = self._build_ctx()
+
+        with (
+            patch.object(roles_admin, "_ensure_roles_admin", AsyncMock(return_value=True)),
+            patch.object(
+                roles_admin.RoleManagementService,
+                "get_category_role_positioning",
+                return_value={
+                    "category": "General",
+                    "current_roles": [{"name": "Alpha"}],
+                    "computed_last_position": 1,
+                    "position_description": "будет добавлено в конец (#2)",
+                },
+            ),
+            patch.object(
+                roles_admin.RoleManagementService,
+                "create_role_result",
+                return_value={
+                    "ok": False,
+                    "reason": "profile_title_conflict",
+                    "message": "Название совпадает с активным званием. Это уже звание, а не каталожная роль.",
+                },
+            ),
+            patch.object(roles_admin, "send_temp", AsyncMock()) as send_mock,
+        ):
+            await roles_admin.rolesadmin_role_create(ctx, "General", "New", "Описание", "Через турнир", None, None)
+
+        self.assertIn("Это уже звание, а не каталожная роль", send_mock.await_args_list[-1].args[1])
+

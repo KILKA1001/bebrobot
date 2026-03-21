@@ -542,5 +542,62 @@ class TelegramRolesAdminCategoryFirstFlowTests(unittest.IsolatedAsyncioTestCase)
         self.assertNotIn(42, _PENDING_ACTIONS)
 
 
+class TelegramRolesAdminCreateRoleConflictTests(unittest.IsolatedAsyncioTestCase):
+    async def test_roles_admin_command_role_create_shows_profile_title_conflict_message(self):
+        message = SimpleNamespace(
+            text="/roles_admin role_create Каталог | Легенда района | Описание",
+            from_user=SimpleNamespace(id=42, username="admin", full_name="Admin", is_bot=False),
+            reply_to_message=None,
+            chat=SimpleNamespace(id=99),
+            answer=AsyncMock(),
+        )
+
+        with (
+            patch("bot.telegram_bot.commands.roles_admin.persist_telegram_identity_from_user"),
+            patch("bot.telegram_bot.commands.roles_admin._ensure_roles_admin", AsyncMock(return_value=True)),
+            patch(
+                "bot.telegram_bot.commands.roles_admin.RoleManagementService.create_role_result",
+                return_value={
+                    "ok": False,
+                    "reason": "profile_title_conflict",
+                    "message": "Название совпадает с активным званием. Это уже звание, а не каталожная роль.",
+                },
+            ),
+        ):
+            await roles_admin_command(message)
+
+        self.assertIn("Это уже звание, а не каталожная роль", message.answer.await_args.args[0])
+
+    async def test_roles_admin_pending_role_create_shows_profile_title_conflict_message(self):
+        _PENDING_ACTIONS[42] = PendingRolesAdminAction(
+            operation="role_create_enter_name",
+            created_at=1.0,
+            payload={"category": "Каталог", "created_new_category": False},
+        )
+        message = SimpleNamespace(
+            text="Легенда района | Описание",
+            from_user=SimpleNamespace(id=42, username="admin", full_name="Admin", is_bot=False),
+            reply_to_message=None,
+            chat=SimpleNamespace(id=99),
+            answer=AsyncMock(),
+        )
+
+        with (
+            patch("bot.telegram_bot.commands.roles_admin.persist_telegram_identity_from_user"),
+            patch(
+                "bot.telegram_bot.commands.roles_admin.RoleManagementService.create_role_result",
+                return_value={
+                    "ok": False,
+                    "reason": "profile_title_conflict",
+                    "message": "Название совпадает с активным званием. Это уже звание, а не каталожная роль.",
+                },
+            ),
+        ):
+            await roles_admin_pending_action_handler(message)
+
+        self.assertIn("Это уже звание, а не каталожная роль", message.answer.await_args.args[0])
+        _PENDING_ACTIONS.pop(42, None)
+
+
 if __name__ == "__main__":
     unittest.main()
