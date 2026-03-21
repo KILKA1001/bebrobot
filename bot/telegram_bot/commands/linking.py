@@ -252,7 +252,9 @@ def _build_visible_roles_text(selected_roles: list[str], page: int, total_pages:
 
 @router.message(Command("helpy"))
 async def helpy_command(message: Message) -> None:
-    await message.answer(get_helpy_text())
+    persist_telegram_identity_from_user(message.from_user)
+    actor_id = message.from_user.id if message.from_user is not None else None
+    await message.answer(get_helpy_text(actor_id))
 
 
 @router.message(Command("register"))

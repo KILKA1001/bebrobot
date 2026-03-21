@@ -1,4 +1,6 @@
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from bot.telegram_bot.main import BOT_COMMANDS, OWNER_PRIVATE_COMMANDS
 from bot.telegram_bot.systems.commands_logic import get_helpy_text
@@ -19,10 +21,15 @@ def test_telegram_command_registry_exposes_roles_parity_commands() -> None:
 
 
 def test_telegram_help_text_marks_rolesadmin_alias_and_limits() -> None:
-    helpy_text = get_helpy_text()
+    with patch(
+        "bot.telegram_bot.systems.commands_logic.AuthorityService.resolve_authority",
+        return_value=SimpleNamespace(level=80, titles=("Вице города",)),
+    ):
+        helpy_text = get_helpy_text(telegram_user_id=42)
     roles_admin_help = render_telegram_roles_admin_help()
 
     assert "/roles_admin / /rolesadmin" in helpy_text
+    assert "/guiy_owner" not in helpy_text
     assert "sync_discord_roles" in roles_admin_help
     assert "текстовый alias <code>/rolesadmin</code>" in roles_admin_help
     assert "пакетный выбор" in roles_admin_help
