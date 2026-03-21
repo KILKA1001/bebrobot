@@ -5,6 +5,7 @@ from bot.utils import (
     safe_send,
     format_moscow_date,
     safe_defer,
+    safe_edit_original_response,
     safe_response_send,
     safe_followup_send,
 )
@@ -20,9 +21,33 @@ from collections import defaultdict
 import asyncio
 import os
 import logging
+import time
 
 latest_report_message_id = None
 logger = logging.getLogger(__name__)
+PROCESSING_TEXT = "⏳ Обрабатываю…"
+PAYMENT_RECORDING_TEXT = "💳 Платёж записывается…"
+
+
+def _log_db_duration(
+    *,
+    table: str,
+    operation: str,
+    started_at: float,
+    account_id: str | None = None,
+    interaction_user_id: int | None = None,
+    fine_id: int | None = None,
+) -> None:
+    elapsed_ms = round((time.perf_counter() - started_at) * 1000, 2)
+    logger.info(
+        "fines db operation table=%s operation=%s elapsed_ms=%s account_id=%s interaction_user_id=%s fine_id=%s",
+        table,
+        operation,
+        elapsed_ms,
+        account_id,
+        interaction_user_id,
+        fine_id,
+    )
 
 # Статус штрафа
 def get_fine_status(fine: dict) -> str:
@@ -100,12 +125,19 @@ def _load_points_by_account(account_id: str) -> float:
         return 0.0
     if db.supabase:
         try:
+            started_at = time.perf_counter()
             response = (
                 db.supabase.table("scores")
                 .select("points")
                 .eq("account_id", str(account_id))
                 .limit(1)
                 .execute()
+            )
+            _log_db_duration(
+                table="scores",
+                operation="select",
+                started_at=started_at,
+                account_id=str(account_id),
             )
             rows = response.data or []
             if rows:
@@ -114,6 +146,81 @@ def _load_points_by_account(account_id: str) -> float:
             logger.exception("payment balance lookup failed account_id=%s error=%s", account_id, exc)
     points_from_actions = AccountsService._load_points_from_actions(str(account_id), None)
     return float(points_from_actions or 0)
+
+
+def _process_payment_sync(
+    *,
+    user_id: int,
+    fine: dict,
+    percent: float,
+) -> tuple[bool, str, float | None, dict | None]:
+    account_id = _resolve_payment_account_id(user_id, handler="process_payment")
+    if not account_id:
+        logger.error("process_payment: unresolved account_id for discord_user_id=%s", user_id)
+        return False, "❌ Не удалось определить ваш аккаунт.", None, None
+
+    user_points = _load_points_by_account(account_id)
+    amount_remaining = fine["amount"] - fine.get("paid_amount", 0)
+    to_pay = round(amount_remaining * percent, 2)
+    if user_points < to_pay:
+        return False, f"❌ У вас недостаточно баллов для оплаты {to_pay} баллов.", None, None
+    if not db.supabase:
+        return False, "❌ Supabase не инициализирован.", None, None
+
+    payment_started_at = time.perf_counter()
+    success = db.record_payment_by_account(
+        account_id=account_id,
+        fine_id=fine["id"],
+        amount=to_pay,
+        author_account_id=account_id,
+    )
+    _log_db_duration(
+        table="fine_payments",
+        operation="record_payment_by_account",
+        started_at=payment_started_at,
+        account_id=account_id,
+        interaction_user_id=user_id,
+        fine_id=fine["id"],
+    )
+    if not success:
+        return False, "❌ Ошибка при записи оплаты.", None, None
+
+    fine_snapshot = dict(fine)
+    fine_snapshot["paid_amount"] = round(fine.get("paid_amount", 0) + to_pay, 2)
+    if fine_snapshot["paid_amount"] >= fine_snapshot["amount"]:
+        fine_snapshot["is_paid"] = True
+
+    if db.supabase:
+        started_at = time.perf_counter()
+        db.supabase.table("fines").update(
+            {
+                "paid_amount": fine_snapshot["paid_amount"],
+                "is_paid": fine_snapshot.get("is_paid", False),
+            }
+        ).eq("id", fine["id"]).execute()
+        _log_db_duration(
+            table="fines",
+            operation="update",
+            started_at=started_at,
+            account_id=account_id,
+            interaction_user_id=user_id,
+            fine_id=fine["id"],
+        )
+
+    return True, f"✅ Вы оплатили {to_pay} баллов штрафа #{fine['id']}", to_pay, fine_snapshot
+
+
+def _apply_postponement_sync(*, fine_id: int, days: int, interaction_user_id: int) -> bool:
+    started_at = time.perf_counter()
+    success = db.apply_postponement(fine_id, days=days)
+    _log_db_duration(
+        table="fines",
+        operation="apply_postponement",
+        started_at=started_at,
+        interaction_user_id=interaction_user_id,
+        fine_id=fine_id,
+    )
+    return success
 
 
 class FineView(SafeView):
@@ -132,14 +239,21 @@ class FineView(SafeView):
     @discord.ui.button(label="📅 Отсрочка", style=discord.ButtonStyle.blurple)
     async def postpone(self, interaction: discord.Interaction, button: Button):
         await safe_defer(interaction, ephemeral=True)
+        await safe_edit_original_response(interaction, content="📅 Обрабатываю отсрочку…", view=None)
         member = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
         is_admin = member.guild_permissions.administrator if member else False
 
-        if not is_admin and not db.can_postpone(interaction.user.id):
+        can_postpone = True if is_admin else await asyncio.to_thread(db.can_postpone, interaction.user.id)
+        if not can_postpone:
             await safe_followup_send(interaction, "❌ Отсрочка уже использована за последние 2 месяца", ephemeral=True)
             return
 
-        success = db.apply_postponement(self.fine['id'], days=7)
+        success = await asyncio.to_thread(
+            _apply_postponement_sync,
+            fine_id=self.fine["id"],
+            days=7,
+            interaction_user_id=interaction.user.id,
+        )
         if success:
             self.fine['due_date'] = (datetime.fromisoformat(self.fine['due_date']) + timedelta(days=7)).isoformat()
             self.fine['postponed_until'] = datetime.now(timezone.utc).isoformat()
@@ -154,39 +268,16 @@ class FineView(SafeView):
 
 async def process_payment(interaction: discord.Interaction, fine: dict, percent: float):
     user_id = interaction.user.id
-    account_id = _resolve_payment_account_id(user_id, handler="process_payment")
-    if not account_id:
-        logger.error("process_payment: unresolved account_id for discord_user_id=%s", user_id)
-        await safe_followup_send(interaction, "❌ Не удалось определить ваш аккаунт.", ephemeral=True)
-        return
-    user_points = _load_points_by_account(account_id)
-    amount_remaining = fine['amount'] - fine.get('paid_amount', 0)
-    to_pay = round(amount_remaining * percent, 2)
-
-    if user_points < to_pay:
-        await safe_followup_send(interaction, f"❌ У вас недостаточно баллов для оплаты {to_pay} баллов.", ephemeral=True)
-        return
-
-    if not db.supabase:
-        await safe_followup_send(interaction, "❌ Supabase не инициализирован.", ephemeral=True)
-        return
-
-    success = db.record_payment_by_account(account_id=account_id, fine_id=fine['id'], amount=to_pay, author_account_id=account_id)
-    if not success:
-        await safe_followup_send(interaction, "❌ Ошибка при записи оплаты.", ephemeral=True)
-        return
-
-    fine['paid_amount'] = round(fine.get('paid_amount', 0) + to_pay, 2)
-    if fine['paid_amount'] >= fine['amount']:
-        fine['is_paid'] = True
-
-    if db.supabase:
-        db.supabase.table("fines").update({
-            "paid_amount": fine['paid_amount'],
-            "is_paid": fine.get('is_paid', False)
-        }).eq("id", fine['id']).execute()
-
-    await safe_followup_send(interaction, f"✅ Вы оплатили {to_pay} баллов штрафа #{fine['id']}", ephemeral=True)
+    await safe_edit_original_response(interaction, content=PAYMENT_RECORDING_TEXT, view=None)
+    ok, message, _to_pay, fine_snapshot = await asyncio.to_thread(
+        _process_payment_sync,
+        user_id=user_id,
+        fine=fine,
+        percent=percent,
+    )
+    if fine_snapshot:
+        fine.update(fine_snapshot)
+    await safe_followup_send(interaction, message, ephemeral=True)
 
 
 
@@ -226,18 +317,38 @@ class PaymentMenuView(SafeView):
                 await safe_followup_send(interaction, f"❌ От 0 до {remaining:.2f} баллов", ephemeral=True)
                 return
 
-            caller_account_id = _resolve_payment_account_id(interaction.user.id, handler="PaymentMenuView.pay_custom")
+            await safe_followup_send(interaction, PROCESSING_TEXT, ephemeral=True)
+            caller_account_id = await asyncio.to_thread(
+                _resolve_payment_account_id,
+                interaction.user.id,
+                handler="PaymentMenuView.pay_custom",
+            )
             if not caller_account_id:
                 logger.error("custom payment: unresolved account_id discord_user_id=%s", interaction.user.id)
                 await safe_followup_send(interaction, "❌ Не удалось определить ваш аккаунт.", ephemeral=True)
                 return
-            if _load_points_by_account(caller_account_id) < amount:
+            if await asyncio.to_thread(_load_points_by_account, caller_account_id) < amount:
                 await safe_followup_send(interaction, "❌ Недостаточно баллов", ephemeral=True)
                 return
 
-            success = db.record_payment_by_account(caller_account_id, self.fine["id"], amount, caller_account_id)
+            payment_started_at = time.perf_counter()
+            success = await asyncio.to_thread(
+                db.record_payment_by_account,
+                caller_account_id,
+                self.fine["id"],
+                amount,
+                caller_account_id,
+            )
+            _log_db_duration(
+                table="fine_payments",
+                operation="record_payment_by_account",
+                started_at=payment_started_at,
+                account_id=caller_account_id,
+                interaction_user_id=interaction.user.id,
+                fine_id=self.fine["id"],
+            )
             if success:
-                updated = db.get_fine_by_id(self.fine["id"])
+                updated = await asyncio.to_thread(db.get_fine_by_id, self.fine["id"])
                 if updated:
                     self.fine.update(updated)
                 await safe_followup_send(interaction, f"✅ Оплачено {amount:.2f} баллов", ephemeral=True)

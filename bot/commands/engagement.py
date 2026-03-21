@@ -1,13 +1,16 @@
 import logging
+import asyncio
 
 import discord
 from discord.ext import commands
 
 from bot.commands import bot
 from bot.services import AccountsService, AuthorityService, PointsService, TicketsService
-from bot.utils import send_temp
+from bot.utils import send_temp, safe_defer, safe_edit_original_response
 
 logger = logging.getLogger(__name__)
+PROCESSING_TEXT = "⏳ Обрабатываю…"
+ROLE_UPDATE_TEXT = "🛠️ Сохраняю изменение роли…"
 
 
 def _can_manage_tickets(authority) -> bool:
@@ -71,11 +74,28 @@ class PointsActionModal(discord.ui.Modal):
                 await interaction.response.send_message("❌ Причина обязательна.", ephemeral=True)
                 return
 
+            await safe_defer(interaction, ephemeral=True)
+            await safe_edit_original_response(interaction, content=PROCESSING_TEXT)
+
             if self.operation == "add":
-                ok = PointsService.add_points_by_identity("discord", str(self.target.id), amount, reason, self.actor_id)
+                ok = await asyncio.to_thread(
+                    PointsService.add_points_by_identity,
+                    "discord",
+                    str(self.target.id),
+                    amount,
+                    reason,
+                    self.actor_id,
+                )
                 action_text = "начислены"
             else:
-                ok = PointsService.remove_points_by_identity("discord", str(self.target.id), amount, reason, self.actor_id)
+                ok = await asyncio.to_thread(
+                    PointsService.remove_points_by_identity,
+                    "discord",
+                    str(self.target.id),
+                    amount,
+                    reason,
+                    self.actor_id,
+                )
                 action_text = "списаны"
             if not ok:
                 logger.error(
@@ -84,13 +104,13 @@ class PointsActionModal(discord.ui.Modal):
                     self.target.id,
                     self.operation,
                 )
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "❌ Не удалось обновить баллы. Проверьте привязку аккаунтов.",
                     ephemeral=True,
                 )
                 return
 
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"✅ Баллы успешно {action_text}: {amount:.2f}. Причина: {reason}",
                 ephemeral=True,
             )
@@ -101,14 +121,20 @@ class PointsActionModal(discord.ui.Modal):
                 self.target.id,
                 self.amount.value,
             )
-            await interaction.response.send_message("❌ Ошибка формата количества.", ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Ошибка формата количества.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Ошибка формата количества.", ephemeral=True)
         except Exception:
             logger.exception(
                 "points modal submit failed actor_id=%s target_id=%s",
                 self.actor_id,
                 self.target.id,
             )
-            await interaction.response.send_message("❌ Ошибка выполнения операции.", ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Ошибка выполнения операции.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Ошибка выполнения операции.", ephemeral=True)
 
 
 class TicketsActionModal(discord.ui.Modal):
@@ -134,6 +160,9 @@ class TicketsActionModal(discord.ui.Modal):
                 await interaction.response.send_message("❌ Причина обязательна.", ephemeral=True)
                 return
 
+            await safe_defer(interaction, ephemeral=True)
+            await safe_edit_original_response(interaction, content=ROLE_UPDATE_TEXT)
+
             mapping = {
                 "add_normal": ("normal", True),
                 "remove_normal": ("normal", False),
@@ -143,7 +172,8 @@ class TicketsActionModal(discord.ui.Modal):
             ticket_type, is_add = mapping[self.operation]
 
             if is_add:
-                ok = TicketsService.give_ticket_by_identity(
+                ok = await asyncio.to_thread(
+                    TicketsService.give_ticket_by_identity,
                     "discord",
                     str(self.target.id),
                     ticket_type,
@@ -153,7 +183,8 @@ class TicketsActionModal(discord.ui.Modal):
                 )
                 verb = "начислены"
             else:
-                ok = TicketsService.remove_ticket_by_identity(
+                ok = await asyncio.to_thread(
+                    TicketsService.remove_ticket_by_identity,
                     "discord",
                     str(self.target.id),
                     ticket_type,
@@ -169,13 +200,13 @@ class TicketsActionModal(discord.ui.Modal):
                     self.target.id,
                     self.operation,
                 )
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "❌ Не удалось обновить билеты. Проверьте привязку аккаунтов.",
                     ephemeral=True,
                 )
                 return
 
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"✅ Билеты успешно {verb}: 1. Причина: {reason}",
                 ephemeral=True,
             )
@@ -186,7 +217,10 @@ class TicketsActionModal(discord.ui.Modal):
                 self.target.id,
                 self.operation,
             )
-            await interaction.response.send_message("❌ Ошибка выполнения операции.", ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Ошибка выполнения операции.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Ошибка выполнения операции.", ephemeral=True)
 
 
 class EngagementMenuView(discord.ui.View):
@@ -308,7 +342,7 @@ async def points_menu(ctx, member: discord.Member = None):
             await send_temp(ctx, "❌ Целевой пользователь не зарегистрирован в системе.")
             return
 
-        points, tickets_normal, tickets_gold = _score_snapshot(profile["account_id"])
+        points, tickets_normal, tickets_gold = await asyncio.to_thread(_score_snapshot, profile["account_id"])
         embed = discord.Embed(title="🎛️ Меню баллов", color=discord.Color.blue())
         embed.add_field(name="Пользователь", value=target.mention, inline=False)
         embed.add_field(name="Текущий баланс", value=f"**{points:.2f}**", inline=False)
@@ -350,7 +384,7 @@ async def tickets_menu(ctx, member: discord.Member = None):
             await send_temp(ctx, "❌ Целевой пользователь не зарегистрирован в системе.")
             return
 
-        points, tickets_normal, tickets_gold = _score_snapshot(profile["account_id"])
+        points, tickets_normal, tickets_gold = await asyncio.to_thread(_score_snapshot, profile["account_id"])
         embed = discord.Embed(title="🎟️ Меню билетов", color=discord.Color.blue())
         embed.add_field(name="Пользователь", value=target.mention, inline=False)
         embed.add_field(name="Баллы", value=f"**{points:.2f}**", inline=False)
