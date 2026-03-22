@@ -43,7 +43,6 @@ class RoleManagementService:
     PUBLIC_ROLE_CATALOG_PAGE_SIZE = 8
     ROLE_CATALOG_CACHE_TTL_SEC = int(os.getenv("ROLE_CATALOG_CACHE_TTL_SEC", "30"))
     _grouped_roles_cache: tuple[float, list[dict[str, Any]]] | None = None
-    _role_lookup_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
 
     @staticmethod
     def _catalog_cache_ttl_sec() -> int:
@@ -72,68 +71,40 @@ class RoleManagementService:
         ttl_sec = RoleManagementService._catalog_cache_ttl_sec()
         cached_grouped = RoleManagementService._cache_copy(grouped)
         RoleManagementService._grouped_roles_cache = (time.monotonic() + ttl_sec, cached_grouped)
-
-        roles_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
-        expires_at = time.monotonic() + ttl_sec
-        for item in grouped:
-            category_name = RoleManagementService._normalized_category(item.get("category"))
-            for role in item.get("roles", []):
-                role_name = str(role.get("name") or "").strip()
-                if not role_name:
-                    continue
-                roles_cache[role_name] = (
-                    expires_at,
-                    {
-                        "name": role_name,
-                        "category_name": category_name,
-                        "description": RoleManagementService._description_text(role.get("description")),
-                        "acquire_hint": RoleManagementService._acquire_hint_text(role.get("acquire_hint")),
-                        "is_discord_managed": bool(role.get("is_discord_managed")),
-                        "discord_role_id": str(role.get("discord_role_id") or "").strip() or None,
-                        "discord_role_name": str(role.get("discord_role_name") or "").strip() or None,
-                        "is_privileged_discord_role": bool(role.get("is_privileged_discord_role")),
-                    },
-                )
-        RoleManagementService._role_lookup_cache = roles_cache
-        logger.debug(
-            "role catalog caches refreshed categories=%s roles=%s ttl_sec=%s",
-            len(grouped),
-            len(roles_cache),
-            ttl_sec,
-        )
+        total_roles = sum(len(item.get("roles") or []) for item in grouped)
+        logger.debug("role catalog grouped cache refreshed categories=%s roles=%s ttl_sec=%s", len(grouped), total_roles, ttl_sec)
 
     @staticmethod
-    def _get_cached_role(role_name: str) -> dict[str, Any] | None | object:
+    def _find_role_in_grouped_cache(role_name: str) -> dict[str, Any] | None:
         role_key = str(role_name or "").strip()
         if not role_key:
             return None
-        cached = RoleManagementService._role_lookup_cache.get(role_key)
-        if cached is None:
-            return _ROLE_CACHE_MISS
-        expires_at, role = cached
-        now = time.monotonic()
-        if expires_at <= now:
-            RoleManagementService._role_lookup_cache.pop(role_key, None)
-            logger.debug("role lookup cache expired role_name=%s", role_key)
-            return _ROLE_CACHE_MISS
-        logger.debug("role lookup cache hit role_name=%s", role_key)
-        return RoleManagementService._cache_copy(role)
-
-    @staticmethod
-    def _set_cached_role(role_name: str, role: dict[str, Any] | None) -> None:
-        role_key = str(role_name or "").strip()
-        if not role_key:
-            return
-        ttl_sec = RoleManagementService._catalog_cache_ttl_sec()
-        RoleManagementService._role_lookup_cache[role_key] = (
-            time.monotonic() + ttl_sec,
-            RoleManagementService._cache_copy(role),
-        )
+        grouped = RoleManagementService._get_cached_grouped_roles()
+        if grouped is None:
+            return None
+        for item in grouped:
+            category_name = RoleManagementService._normalized_category(item.get("category"))
+            for role in item.get("roles", []):
+                cached_role_name = str(role.get("name") or "").strip()
+                if cached_role_name != role_key:
+                    continue
+                logger.debug("role lookup served from grouped cache role_name=%s", role_key)
+                return {
+                    "name": cached_role_name,
+                    "category_name": category_name,
+                    "description": RoleManagementService._description_text(role.get("description")),
+                    "acquire_hint": RoleManagementService._acquire_hint_text(role.get("acquire_hint")),
+                    "is_discord_managed": bool(role.get("is_discord_managed")),
+                    "discord_role_id": str(role.get("discord_role_id") or "").strip() or None,
+                    "discord_role_name": str(role.get("discord_role_name") or "").strip() or None,
+                    "is_privileged_discord_role": bool(role.get("is_privileged_discord_role")),
+                }
+        logger.debug("role lookup cache miss role_name=%s", role_key)
+        return None
 
     @staticmethod
     def invalidate_catalog_cache(*, reason: str | None = None) -> None:
         RoleManagementService._grouped_roles_cache = None
-        RoleManagementService._role_lookup_cache = {}
         logger.debug("role catalog caches invalidated reason=%s", str(reason or "unspecified"))
 
     @staticmethod
@@ -2035,8 +2006,8 @@ class RoleManagementService:
         if not role_key:
             return None
 
-        cached_role = RoleManagementService._get_cached_role(role_key)
-        if cached_role is not _ROLE_CACHE_MISS:
+        cached_role = RoleManagementService._find_role_in_grouped_cache(role_key)
+        if cached_role is not None:
             return cached_role
 
         select_variants = (

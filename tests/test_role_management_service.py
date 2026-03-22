@@ -152,12 +152,10 @@ class RoleManagementServiceTests(unittest.TestCase):
         self.fake_db = _FakeDb()
         self.patcher = patch("bot.services.role_management_service.db", self.fake_db)
         self.patcher.start()
-        RoleManagementService._grouped_roles_cache = None
-        RoleManagementService._role_lookup_cache = {}
+        RoleManagementService.invalidate_catalog_cache(reason="test_setup")
 
     def tearDown(self):
-        RoleManagementService._grouped_roles_cache = None
-        RoleManagementService._role_lookup_cache = {}
+        RoleManagementService.invalidate_catalog_cache(reason="test_teardown")
         self.patcher.stop()
 
     def test_delete_role_denies_discord_managed_role_and_keeps_assignments(self):
