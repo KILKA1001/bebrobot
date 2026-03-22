@@ -278,7 +278,7 @@ def _build_visible_roles_text(selected_roles: list[str], page: int, total_pages:
 
 
 def _build_roles_catalog_keyboard(page_data: dict[str, object]) -> InlineKeyboardMarkup:
-    current_page = max(int(page_data.get("page") or 1), 1)
+    current_page = max(int(page_data.get("page_index") or 0) + 1, 1)
     total_pages = max(int(page_data.get("total_pages") or 1), 1)
     previous_page = max(current_page - 1, 1)
     next_page = min(current_page + 1, total_pages)
@@ -305,8 +305,8 @@ def _build_roles_catalog_keyboard(page_data: dict[str, object]) -> InlineKeyboar
 def _log_roles_catalog_page_too_long(page_data: dict[str, object], text: str) -> None:
     logger.error(
         "roles catalog telegram page exceeds message limit page=%s category_count=%s role_count=%s text_len=%s",
-        page_data.get("page"),
-        page_data.get("category_count"),
+        int(page_data.get("page_index") or 0) + 1,
+        page_data.get("section_count"),
         page_data.get("role_count"),
         len(text or ""),
     )
@@ -774,8 +774,8 @@ async def roles_catalog_callback(callback: CallbackQuery) -> None:
         if page_data is not None:
             logger.error(
                 "roles catalog telegram callback render failed page=%s category_count=%s role_count=%s text_len=%s action=%s",
-                page_data.get("page"),
-                page_data.get("category_count"),
+                int(page_data.get("page_index") or 0) + 1,
+                page_data.get("section_count"),
                 page_data.get("role_count"),
                 len(response_text or ""),
                 action,

@@ -14,7 +14,7 @@ _SPEC.loader.exec_module(base)
 
 class DiscordRolesCatalogRenderTests(IsolatedAsyncioTestCase):
     async def test_roles_command_renders_grouped_catalog_with_acquire_method(self):
-        ctx = SimpleNamespace(guild=SimpleNamespace(id=321))
+        ctx = SimpleNamespace(guild=SimpleNamespace(id=321), author=SimpleNamespace(id=111))
         send_temp = AsyncMock()
 
         with patch.object(
@@ -47,7 +47,7 @@ class DiscordRolesCatalogRenderTests(IsolatedAsyncioTestCase):
         assert "Выиграть финал сезона" in embed.fields[0].value
 
     async def test_roles_command_renders_placeholders_for_empty_description_and_hint(self):
-        ctx = SimpleNamespace(guild=SimpleNamespace(id=321))
+        ctx = SimpleNamespace(guild=SimpleNamespace(id=321), author=SimpleNamespace(id=111))
         send_temp = AsyncMock()
 
         with patch.object(
@@ -73,3 +73,34 @@ class DiscordRolesCatalogRenderTests(IsolatedAsyncioTestCase):
         assert "Описание пока не указано администратором" in embed.fields[0].value
         assert "за баллы" in embed.fields[0].value
         assert "Способ получения пока не указан администратором" in embed.fields[0].value
+
+
+    async def test_build_embed_uses_shared_page_structure(self):
+        page_data = {
+            "page_index": 1,
+            "total_pages": 3,
+            "section_count": 1,
+            "role_count": 1,
+            "sections": [
+                {
+                    "category": "Турниры",
+                    "section_index": 1,
+                    "section_count": 2,
+                    "is_category_continuation": True,
+                    "continues_on_next_page": False,
+                    "items": [
+                        {
+                            "name": "Чемпион",
+                            "description": "Победитель сезона",
+                            "acquire_method_label": "выдаёт администратор",
+                            "acquire_hint": "Выиграть финал сезона",
+                        }
+                    ],
+                }
+            ],
+        }
+
+        embed = base._build_discord_roles_catalog_embed(page_data)
+
+        assert "2/3" in embed.description
+        assert embed.fields[0].name == "Турниры (продолжение 2/2)"

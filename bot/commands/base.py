@@ -33,6 +33,7 @@ from bot.systems.roles_catalog_shared import (
     ROLES_CATALOG_TITLE,
     build_roles_catalog_intro_lines,
     format_roles_catalog_category_title,
+    prepare_public_roles_catalog_pages,
 )
 from bot import COMMAND_PREFIX
 
@@ -142,7 +143,7 @@ def _prepare_discord_roles_catalog_pages(guild: discord.Guild | None) -> dict[st
 
     return {
         "status": "ok",
-        "pages": RoleManagementService.paginate_public_roles_catalog(grouped),
+        "pages": prepare_public_roles_catalog_pages(grouped, max_roles_per_page=8, log_context="discord:/roles"),
         "message": "",
     }
 
@@ -156,7 +157,7 @@ def _validate_roles_catalog_embed_limits(
     if len(description) > DISCORD_EMBED_DESCRIPTION_LIMIT:
         logger.error(
             "roles catalog discord embed description exceeds limit page=%s total_pages=%s description_len=%s limit=%s",
-            page_data.get("page"),
+            int(page_data.get("page_index") or 0) + 1,
             page_data.get("total_pages"),
             len(description),
             DISCORD_EMBED_DESCRIPTION_LIMIT,
@@ -166,7 +167,7 @@ def _validate_roles_catalog_embed_limits(
     if len(fields) > DISCORD_EMBED_FIELD_COUNT_LIMIT:
         logger.error(
             "roles catalog discord embed field count exceeds limit page=%s field_count=%s limit=%s",
-            page_data.get("page"),
+            int(page_data.get("page_index") or 0) + 1,
             len(fields),
             DISCORD_EMBED_FIELD_COUNT_LIMIT,
         )
@@ -176,10 +177,10 @@ def _validate_roles_catalog_embed_limits(
         if len(field_name) > DISCORD_EMBED_FIELD_NAME_LIMIT or len(field_value) > DISCORD_EMBED_FIELD_VALUE_LIMIT:
             logger.error(
                 "roles catalog discord embed field exceeds limit page=%s field_name_len=%s field_value_len=%s category_count=%s role_count=%s limit_name=%s limit_value=%s",
-                page_data.get("page"),
+                int(page_data.get("page_index") or 0) + 1,
                 len(field_name),
                 len(field_value),
-                page_data.get("category_count"),
+                page_data.get("section_count"),
                 page_data.get("role_count"),
                 DISCORD_EMBED_FIELD_NAME_LIMIT,
                 DISCORD_EMBED_FIELD_VALUE_LIMIT,
@@ -188,7 +189,7 @@ def _validate_roles_catalog_embed_limits(
 
 
 def _build_discord_roles_catalog_embed(page_data: dict[str, Any]) -> discord.Embed:
-    current_page = max(int(page_data.get("page") or 1), 1)
+    current_page = max(int(page_data.get("page_index") or 0) + 1, 1)
     total_pages = max(int(page_data.get("total_pages") or 1), 1)
     description_lines: list[str] = []
     for line in build_roles_catalog_intro_lines(current_page=current_page, total_pages=total_pages):
@@ -200,9 +201,9 @@ def _build_discord_roles_catalog_embed(page_data: dict[str, Any]) -> discord.Emb
     description = "\n".join(description_lines)
 
     fields: list[tuple[str, str]] = []
-    for item in page_data.get("blocks") or []:
+    for item in page_data.get("sections") or []:
         field_name = format_roles_catalog_category_title(item)
-        roles = item.get("roles") or []
+        roles = item.get("items") or []
         if not roles:
             fields.append((field_name, "Пока нет ролей."))
             continue
@@ -301,9 +302,9 @@ class RolesCatalogDiscordView(discord.ui.View):
             logger.exception(
                 "roles catalog discord page build failed guild_id=%s page=%s total_pages=%s category_count=%s role_count=%s",
                 self.guild.id if self.guild else None,
-                page_data.get("page"),
+                int(page_data.get("page_index") or 0) + 1,
                 page_data.get("total_pages"),
-                page_data.get("category_count"),
+                page_data.get("section_count"),
                 page_data.get("role_count"),
             )
             raise
@@ -364,7 +365,7 @@ async def roles_list(ctx):
         logger.exception(
             "roles catalog discord initial page build failed guild_id=%s page=%s",
             ctx.guild.id if ctx.guild else None,
-            pages[0].get("page"),
+            int(pages[0].get("page_index") or 0) + 1,
         )
         await send_temp(ctx, ROLES_CATALOG_ERROR_TEXT)
         return
