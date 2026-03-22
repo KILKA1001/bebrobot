@@ -29,13 +29,16 @@ DELETE_ROLE_REASON_DISCORD_MANAGED = "discord_managed"
 DELETE_ROLE_REASON_NOT_FOUND = "not_found"
 DELETE_ROLE_REASON_ERROR = "error"
 ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE = "privileged_discord_role"
+ROLE_ASSIGNMENT_REASON_SYNC_ONLY_DISCORD_ROLE = "sync_only_discord_role"
 PRIVILEGED_DISCORD_ROLE_MESSAGE = "Эту Discord-роль может выдавать только глава/главный вице."
+SYNC_ONLY_DISCORD_ROLE_MESSAGE = "Эта скрытая Discord-роль управляется только через сам Discord и не меняется командами бота."
 USER_ACQUIRE_HINT_PLACEHOLDER = "Способ получения пока не указан администратором"
 PROTECTED_PROFILE_TITLE_ROLE_MESSAGE = "Это звание управляется через profile_title_roles → accounts.titles и не должно выдаваться как обычная роль."
 ROLE_NAME_CONFLICT_PROFILE_TITLE_MESSAGE = "Название совпадает с активным званием из profile_title_roles. Используй другое имя для каталожной роли: это уже звание, а не обычная роль каталога."
 ACQUIRE_METHOD_POINTS = "за баллы"
 ACQUIRE_METHOD_ADMIN = "выдаёт администратор"
 ACQUIRE_METHOD_DISCORD_SYNC = "автоматически синхронизируется с Discord"
+ROLE_PUBLIC_VISIBILITY_COLUMN = "show_in_roles_catalog"
 _ROLE_CACHE_MISS = object()
 
 
@@ -129,6 +132,9 @@ class RoleManagementService:
                     "discord_role_id": str(role.get("discord_role_id") or "").strip() or None,
                     "discord_role_name": str(role.get("discord_role_name") or "").strip() or None,
                     "is_privileged_discord_role": bool(role.get("is_privileged_discord_role")),
+                    ROLE_PUBLIC_VISIBILITY_COLUMN: RoleManagementService._public_catalog_visibility(
+                        role.get(ROLE_PUBLIC_VISIBILITY_COLUMN)
+                    ),
                 }
         logger.debug("role lookup cache miss role_name=%s", role_key)
         return None
@@ -143,6 +149,19 @@ class RoleManagementService:
             str(reason or "unspecified"),
             cleared_role_entries,
         )
+
+    @staticmethod
+    def _public_catalog_visibility(value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        normalized = str(value).strip().lower()
+        if not normalized:
+            return True
+        return normalized not in {"0", "false", "f", "no", "n", "off"}
 
     @staticmethod
     def _jsonable(value: Any) -> Any:
@@ -395,6 +414,47 @@ class RoleManagementService:
         }
 
     @staticmethod
+    def _check_sync_only_discord_role_access(
+        *,
+        actor_provider: str | None,
+        actor_user_id: str | None,
+        role_name: str,
+        role_info: dict[str, Any] | None = None,
+        action: str,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        role = dict(role_info or RoleManagementService.get_role(role_name) or {})
+        discord_role_id = str(role.get("discord_role_id") or "").strip() or None
+        is_discord_managed = bool(role.get("is_discord_managed"))
+        is_hidden_from_catalog = not RoleManagementService._public_catalog_visibility(
+            role.get(ROLE_PUBLIC_VISIBILITY_COLUMN)
+        )
+        if not is_discord_managed or not discord_role_id or not is_hidden_from_catalog:
+            return RoleManagementService._role_action_result(
+                True,
+                role_name=role_name,
+                discord_role_id=discord_role_id,
+            )
+
+        logger.warning(
+            "sync_only_discord_role_access_denied actor_id=%s actor_provider=%s target_role=%s discord_role_id=%s action=%s source=%s visibility_column=%s",
+            str(actor_user_id or "").strip() or None,
+            str(actor_provider or "").strip() or None,
+            role_name,
+            discord_role_id,
+            action,
+            str(source or "").strip() or None,
+            ROLE_PUBLIC_VISIBILITY_COLUMN,
+        )
+        return RoleManagementService._role_action_result(
+            False,
+            reason=ROLE_ASSIGNMENT_REASON_SYNC_ONLY_DISCORD_ROLE,
+            message=SYNC_ONLY_DISCORD_ROLE_MESSAGE,
+            role_name=role_name,
+            discord_role_id=discord_role_id,
+        )
+
+    @staticmethod
     def _check_privileged_discord_role_access(
         *,
         actor_provider: str | None,
@@ -519,6 +579,12 @@ class RoleManagementService:
             return []
 
         select_variants = (
+            "name,category_name,description,acquire_hint,position,is_discord_managed,discord_role_id,is_privileged_discord_role,show_in_roles_catalog",
+            "name,category_name,acquire_hint,position,is_discord_managed,discord_role_id,is_privileged_discord_role,show_in_roles_catalog",
+            "name,category_name,position,is_discord_managed,discord_role_id,is_privileged_discord_role,show_in_roles_catalog",
+            "name,category_name,description,acquire_hint,position,is_discord_managed,discord_role_id,show_in_roles_catalog",
+            "name,category_name,acquire_hint,position,is_discord_managed,discord_role_id,show_in_roles_catalog",
+            "name,category_name,position,is_discord_managed,discord_role_id,show_in_roles_catalog",
             "name,category_name,description,acquire_hint,position,is_discord_managed,discord_role_id,is_privileged_discord_role",
             "name,category_name,acquire_hint,position,is_discord_managed,discord_role_id,is_privileged_discord_role",
             "name,category_name,position,is_discord_managed,discord_role_id,is_privileged_discord_role",
@@ -626,6 +692,9 @@ class RoleManagementService:
                     "is_discord_managed": bool(row.get("is_discord_managed")),
                     "discord_role_id": str(row.get("discord_role_id") or "").strip() or None,
                     "is_privileged_discord_role": bool(row.get("is_privileged_discord_role")),
+                    ROLE_PUBLIC_VISIBILITY_COLUMN: RoleManagementService._public_catalog_visibility(
+                        row.get(ROLE_PUBLIC_VISIBILITY_COLUMN)
+                    ),
                 }
             )
 
@@ -689,6 +758,9 @@ class RoleManagementService:
             "discord_role_id": role_id,
             "discord_role_name": role_name,
             "is_privileged_discord_role": bool((existing or {}).get("is_privileged_discord_role")),
+            ROLE_PUBLIC_VISIBILITY_COLUMN: RoleManagementService._public_catalog_visibility(
+                (existing or {}).get(ROLE_PUBLIC_VISIBILITY_COLUMN)
+            ),
         }
 
         try:
@@ -750,6 +822,9 @@ class RoleManagementService:
                     "discord_role_id": role_id,
                     "category_name": (existing or {}).get("category_name") or _AUTO_DISCORD_CATEGORY,
                     "position": int((existing or {}).get("position") or 0),
+                    ROLE_PUBLIC_VISIBILITY_COLUMN: RoleManagementService._public_catalog_visibility(
+                        (existing or {}).get(ROLE_PUBLIC_VISIBILITY_COLUMN)
+                    ),
                 }
         return upserted, synced_ids
 
@@ -761,7 +836,7 @@ class RoleManagementService:
         try:
             existing_managed_resp = (
                 db.supabase.table("roles")
-                .select("name,discord_role_id,category_name,position")
+                .select("name,discord_role_id,category_name,position,show_in_roles_catalog")
                 .eq("is_discord_managed", True)
                 .execute()
             )
@@ -859,6 +934,7 @@ class RoleManagementService:
     ) -> list[dict[str, Any]]:
         grouped = RoleManagementService.list_roles_grouped(log_context=log_context)
         public_grouped: list[dict[str, Any]] = []
+        hidden_roles_count = 0
         roles_by_discord_id: dict[str, dict[str, Any]] = {}
         roles_by_name: dict[str, dict[str, Any]] = {}
         category_positions: dict[str, int] = {}
@@ -872,6 +948,18 @@ class RoleManagementService:
                 "roles": [],
             }
             for role in item.get("roles", []):
+                if not RoleManagementService._public_catalog_visibility(role.get(ROLE_PUBLIC_VISIBILITY_COLUMN)):
+                    hidden_roles_count += 1
+                    logger.info(
+                        "public roles catalog filtered hidden role command=%s category=%s role_name=%s discord_managed=%s discord_role_id=%s visibility_column=%s",
+                        log_context or "n/a",
+                        category_name,
+                        str(role.get("name") or "").strip() or None,
+                        bool(role.get("is_discord_managed")),
+                        str(role.get("discord_role_id") or "").strip() or None,
+                        ROLE_PUBLIC_VISIBILITY_COLUMN,
+                    )
+                    continue
                 public_role = dict(role)
                 public_role["points_required"] = None
                 public_role["acquire_method"] = (
@@ -884,7 +972,8 @@ class RoleManagementService:
                 if discord_role_id:
                     roles_by_discord_id[discord_role_id] = public_role
                 roles_by_name[str(public_role.get("name") or "").strip().lower()] = public_role
-            public_grouped.append(public_item)
+            if public_item["roles"]:
+                public_grouped.append(public_item)
 
         legacy_roles: list[dict[str, Any]] = []
         for index, (role_id, points_needed) in enumerate(sorted(ROLE_THRESHOLDS.items(), key=lambda item: item[1])):
@@ -926,6 +1015,13 @@ class RoleManagementService:
             )
 
         public_grouped.sort(key=lambda item: (int(item.get("position") or 0), str(item.get("category") or "").lower()))
+        if hidden_roles_count:
+            logger.info(
+                "public roles catalog hidden roles filtered command=%s hidden_roles=%s visible_categories=%s",
+                log_context or "n/a",
+                hidden_roles_count,
+                len(public_grouped),
+            )
         return public_grouped
 
     @staticmethod
@@ -1050,6 +1146,9 @@ class RoleManagementService:
             "discord_role_id": str(discord_role_id).strip() if discord_role_id else None,
             "discord_role_name": str(discord_role_name).strip() if discord_role_name else None,
             "is_privileged_discord_role": False,
+            ROLE_PUBLIC_VISIBILITY_COLUMN: RoleManagementService._public_catalog_visibility(
+                before_role.get(ROLE_PUBLIC_VISIBILITY_COLUMN)
+            ),
         }
 
         conflict = RoleManagementService._find_active_profile_title_role_conflict(role_name)
@@ -1838,6 +1937,31 @@ class RoleManagementService:
                     message=PROTECTED_PROFILE_TITLE_ROLE_MESSAGE,
                     role_name=role_key,
                 )
+            guard_result = RoleManagementService._check_sync_only_discord_role_access(
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id,
+                role_name=role_key,
+                action="grant",
+                source=source,
+            )
+            if not guard_result["ok"]:
+                RoleManagementService.record_role_change_audit(
+                    action="role_grant_denied",
+                    role_name=role_key,
+                    source=source,
+                    actor_provider=actor_provider,
+                    actor_user_id=actor_user_id,
+                    actor_account_id=actor_account_id,
+                    target_provider=target_provider,
+                    target_user_id=target_user_id,
+                    target_account_id=account_key,
+                    before={"assigned": False},
+                    after={"assigned": False},
+                    status="denied",
+                    error_code=str(guard_result.get("reason") or "denied"),
+                    error_message=str(guard_result.get("message") or "role grant denied"),
+                )
+                return guard_result
             guard_result = RoleManagementService._check_privileged_discord_role_access(
                 actor_provider=actor_provider,
                 actor_user_id=actor_user_id,
@@ -1989,6 +2113,31 @@ class RoleManagementService:
                     message=PROTECTED_PROFILE_TITLE_ROLE_MESSAGE,
                     role_name=role_key,
                 )
+            guard_result = RoleManagementService._check_sync_only_discord_role_access(
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id,
+                role_name=role_key,
+                action="revoke",
+                source=source,
+            )
+            if not guard_result["ok"]:
+                RoleManagementService.record_role_change_audit(
+                    action="role_revoke_denied",
+                    role_name=role_key,
+                    source=source,
+                    actor_provider=actor_provider,
+                    actor_user_id=actor_user_id,
+                    actor_account_id=actor_account_id,
+                    target_provider=target_provider,
+                    target_user_id=target_user_id,
+                    target_account_id=account_key,
+                    before={"assigned": True},
+                    after={"assigned": True},
+                    status="denied",
+                    error_code=str(guard_result.get("reason") or "denied"),
+                    error_message=str(guard_result.get("message") or "role revoke denied"),
+                )
+                return guard_result
             guard_result = RoleManagementService._check_privileged_discord_role_access(
                 actor_provider=actor_provider,
                 actor_user_id=actor_user_id,
@@ -2073,6 +2222,12 @@ class RoleManagementService:
             return cached_role
 
         select_variants = (
+            "name,category_name,description,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role,show_in_roles_catalog",
+            "name,category_name,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role,show_in_roles_catalog",
+            "name,category_name,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role,show_in_roles_catalog",
+            "name,category_name,description,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,show_in_roles_catalog",
+            "name,category_name,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,show_in_roles_catalog",
+            "name,category_name,is_discord_managed,discord_role_id,discord_role_name,show_in_roles_catalog",
             "name,category_name,description,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role",
             "name,category_name,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role",
             "name,category_name,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role",
@@ -2093,6 +2248,9 @@ class RoleManagementService:
                     row = resp.data[0]
                     row["description"] = RoleManagementService._description_text(row.get("description"))
                     row["acquire_hint"] = RoleManagementService._acquire_hint_text(row.get("acquire_hint"))
+                    row[ROLE_PUBLIC_VISIBILITY_COLUMN] = RoleManagementService._public_catalog_visibility(
+                        row.get(ROLE_PUBLIC_VISIBILITY_COLUMN)
+                    )
                     RoleManagementService._set_cached_role(role_key, row)
                     return row
             except Exception:
@@ -2332,7 +2490,7 @@ class RoleManagementService:
             db.supabase.table("role_categories").upsert({"name": _AUTO_DISCORD_CATEGORY, "position": 9999}).execute()
             existing_managed_resp = (
                 db.supabase.table("roles")
-                .select("name,discord_role_id,category_name,position")
+                .select("name,discord_role_id,category_name,position,show_in_roles_catalog")
                 .eq("is_discord_managed", True)
                 .execute()
             )
@@ -2374,6 +2532,9 @@ class RoleManagementService:
                         "discord_role_id": role_id,
                         "category_name": (existing or {}).get("category_name") or _AUTO_DISCORD_CATEGORY,
                         "position": int((existing or {}).get("position") or int(role.get("position") or 0)),
+                        ROLE_PUBLIC_VISIBILITY_COLUMN: RoleManagementService._public_catalog_visibility(
+                            (existing or {}).get(ROLE_PUBLIC_VISIBILITY_COLUMN)
+                        ),
                     }
 
             external_upserted, external_active_ids = RoleManagementService._sync_discord_roles_from_external_bindings(
@@ -2385,7 +2546,7 @@ class RoleManagementService:
 
             existing_resp = (
                 db.supabase.table("roles")
-                .select("name,discord_role_id,category_name")
+                .select("name,discord_role_id,category_name,show_in_roles_catalog")
                 .eq("is_discord_managed", True)
                 .execute()
             )

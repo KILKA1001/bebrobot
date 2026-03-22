@@ -425,6 +425,35 @@ class TelegramRolesAdminTargetResolutionTests(unittest.TestCase):
 
 
 class TelegramRolesAdminCommandTests(unittest.IsolatedAsyncioTestCase):
+    async def test_roles_admin_user_grant_shows_sync_only_discord_role_message(self):
+        from_user = SimpleNamespace(id=42, username="vice", full_name="Vice User", is_bot=False)
+        message = SimpleNamespace(
+            text="/roles_admin user_grant ds:target Bot Hidden",
+            from_user=from_user,
+            reply_to_message=None,
+            answer=AsyncMock(),
+        )
+        resolved = {"account_id": "acc-2", "label": "ds:target", "provider": "discord", "provider_user_id": "222"}
+
+        with (
+            patch("bot.telegram_bot.commands.roles_admin.persist_telegram_identity_from_user"),
+            patch("bot.telegram_bot.commands.roles_admin._ensure_roles_admin", AsyncMock(return_value=True)),
+            patch("bot.telegram_bot.commands.roles_admin._sync_discord_roles_catalog", AsyncMock(return_value=True)),
+            patch("bot.telegram_bot.commands.roles_admin._resolve_telegram_target", return_value=resolved),
+            patch("bot.telegram_bot.commands.roles_admin.RoleManagementService.get_role", return_value={"category_name": "Discord"}),
+            patch(
+                "bot.telegram_bot.commands.roles_admin.RoleManagementService.assign_user_role_by_account",
+                return_value={
+                    "ok": False,
+                    "reason": "sync_only_discord_role",
+                    "message": "Эта скрытая Discord-роль управляется только через сам Discord и не меняется командами бота.",
+                },
+            ),
+        ):
+            await roles_admin_command(message)
+
+        self.assertIn("только через сам Discord", message.answer.await_args.args[0])
+
     async def test_roles_admin_user_grant_shows_privileged_discord_role_message_for_vice(self):
         from_user = SimpleNamespace(id=42, username="vice", full_name="Vice User", is_bot=False)
         message = SimpleNamespace(

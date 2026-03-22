@@ -16,6 +16,8 @@ from bot.services.role_management_service import (
     DELETE_ROLE_REASON_NOT_FOUND,
     PRIVILEGED_DISCORD_ROLE_MESSAGE,
     ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE,
+    ROLE_ASSIGNMENT_REASON_SYNC_ONLY_DISCORD_ROLE,
+    SYNC_ONLY_DISCORD_ROLE_MESSAGE,
     USER_ACQUIRE_HINT_PLACEHOLDER,
 )
 
@@ -98,6 +100,8 @@ def _canonical_role_missing_message() -> str:
 def _role_assignment_error_message(result: dict[str, object], *, default_message: str) -> str:
     if result.get("reason") == ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE:
         return f"❌ {result.get('message') or PRIVILEGED_DISCORD_ROLE_MESSAGE}"
+    if result.get("reason") == ROLE_ASSIGNMENT_REASON_SYNC_ONLY_DISCORD_ROLE:
+        return f"❌ {result.get('message') or SYNC_ONLY_DISCORD_ROLE_MESSAGE}"
     return default_message
 
 
@@ -2507,6 +2511,8 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             for denied in [*(result.get("grant_denied") or []), *(result.get("revoke_denied") or [])]:
                 if denied.get("reason") == ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE:
                     success_lines.append(f"❌ {denied.get('message') or PRIVILEGED_DISCORD_ROLE_MESSAGE}")
+                elif denied.get("reason") == ROLE_ASSIGNMENT_REASON_SYNC_ONLY_DISCORD_ROLE:
+                    success_lines.append(f"❌ {denied.get('message') or SYNC_ONLY_DISCORD_ROLE_MESSAGE}")
             if result.get("conflicting_roles"):
                 success_lines.append("⚠️ Пропущены конфликтующие роли: " + ", ".join(result["conflicting_roles"]))
             await _safe_edit_message_text(
