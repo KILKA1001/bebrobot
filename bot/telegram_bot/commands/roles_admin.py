@@ -1402,13 +1402,35 @@ async def _safe_callback_answer(
     *,
     show_alert: bool = False,
 ) -> None:
+    actor_id = callback.from_user.id if callback.from_user else None
     try:
         await callback.answer(text, show_alert=show_alert)
+    except TelegramBadRequest as error:
+        error_text = str(error)
+        error_text_lower = error_text.lower()
+        if "query is too old" in error_text_lower or "query id is invalid" in error_text_lower:
+            logger.warning(
+                "roles_admin callback answer skipped expired query callback_data=%s actor_id=%s text=%s show_alert=%s error=%s",
+                callback.data,
+                actor_id,
+                text,
+                show_alert,
+                error_text,
+            )
+            return
+        logger.exception(
+            "roles_admin callback answer bad request callback_data=%s actor_id=%s text=%s show_alert=%s error=%s",
+            callback.data,
+            actor_id,
+            text,
+            show_alert,
+            error_text,
+        )
     except Exception:
         logger.exception(
             "roles_admin callback answer failed callback_data=%s actor_id=%s text=%s show_alert=%s",
             callback.data,
-            callback.from_user.id if callback.from_user else None,
+            actor_id,
             text,
             show_alert,
         )
@@ -1889,12 +1911,12 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
     try:
         persist_telegram_identity_from_user(callback.from_user)
         if not callback.data or not callback.from_user or not callback.message:
-            await callback.answer("Некорректный callback", show_alert=True)
+            await _safe_callback_answer(callback, "Некорректный callback", show_alert=True)
             return
 
         parts = callback.data.split(":")
         if len(parts) < 3:
-            await callback.answer("Некорректный callback", show_alert=True)
+            await _safe_callback_answer(callback, "Некорректный callback", show_alert=True)
             return
 
         owner_id = int(parts[1]) if parts[1].isdigit() else 0
@@ -1907,7 +1929,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 callback.from_user.id,
                 owner_id,
             )
-            await callback.answer("Эта панель открыта другим администратором.", show_alert=True)
+            await _safe_callback_answer(callback, "Эта панель открыта другим администратором.", show_alert=True)
             return
 
         action = parts[2]
@@ -1927,7 +1949,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 parse_mode="HTML",
                 reply_markup=_build_home_keyboard(owner_id, can_manage_categories=actor_can_manage_categories),
             )
-            await callback.answer()
+            await _safe_callback_answer(callback)
             return
 
         if action == "fallback":
@@ -1945,7 +1967,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 parse_mode="HTML",
                 reply_markup=_build_home_keyboard(owner_id, can_manage_categories=actor_can_manage_categories),
             )
-            await callback.answer()
+            await _safe_callback_answer(callback)
             return
 
         if action == "home":
@@ -1961,7 +1983,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 parse_mode="HTML",
                 reply_markup=_build_home_keyboard(owner_id, can_manage_categories=actor_can_manage_categories),
             )
-            await callback.answer()
+            await _safe_callback_answer(callback)
             return
 
         if action == "list":
@@ -1971,7 +1993,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 parse_mode="HTML",
                 reply_markup=_build_list_keyboard(grouped, owner_id, page),
             )
-            await callback.answer()
+            await _safe_callback_answer(callback)
             return
 
         if action == "actions":
@@ -1985,7 +2007,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     list(visibility.hidden_sections),
                     section,
                 )
-                await callback.answer("Раздел скрыт: категориями может управлять только Глава клуба или Главный вице.", show_alert=True)
+                await _safe_callback_answer(callback, "Раздел скрыт: категориями может управлять только Глава клуба или Главный вице.", show_alert=True)
                 return
             _log_roles_admin_navigation(
                 actor_id=callback.from_user.id,
@@ -2003,13 +2025,13 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     can_manage_categories=actor_can_manage_categories,
                 ),
             )
-            await callback.answer()
+            await _safe_callback_answer(callback)
             return
 
         if action == "start":
             operation = parts[3] if len(parts) > 3 else ""
             if operation.startswith("category_") and not actor_can_manage_categories:
-                await callback.answer("Категориями может управлять только Глава клуба или Главный вице.", show_alert=True)
+                await _safe_callback_answer(callback, "Категориями может управлять только Глава клуба или Главный вице.", show_alert=True)
                 return
             if operation in {"user_grant", "user_revoke"}:
                 flow_action = "grant" if operation == "user_grant" else "revoke"
@@ -2018,7 +2040,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     created_at=time.time(),
                     payload={"action": flow_action},
                 )
-                await callback.answer("Сначала выберите пользователя", show_alert=True)
+                await _safe_callback_answer(callback, "Сначала выберите пользователя", show_alert=True)
                 await callback.message.reply(
                     (
                         "👤 Сначала укажите пользователя: <code>@username</code>, <code>username</code>, "
@@ -2044,7 +2066,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                         allow_create_new=actor_can_manage_categories,
                     ),
                 )
-                await callback.answer()
+                await _safe_callback_answer(callback)
                 return
             if operation in {"role_move", "role_order", "role_delete", "role_edit_acquire_hint"}:
                 flattened_roles = _flatten_roles(grouped)
@@ -2062,16 +2084,16 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                         if operation == "role_delete"
                         else "В каталоге ролей пока нет ни одной роли"
                     )
-                    await callback.answer(empty_message, show_alert=True)
+                    await _safe_callback_answer(callback, empty_message, show_alert=True)
                     return
                 await _safe_edit_message_text(callback, 
                     "Выберите роль:",
                     reply_markup=_build_pick_role_keyboard(grouped, owner_id, operation, 0),
                 )
-                await callback.answer()
+                await _safe_callback_answer(callback)
                 return
             _PENDING_ACTIONS[callback.from_user.id] = PendingRolesAdminAction(operation=operation, created_at=time.time())
-            await callback.answer("Ожидаю ввод параметров", show_alert=True)
+            await _safe_callback_answer(callback, "Ожидаю ввод параметров", show_alert=True)
             await callback.message.reply(_operation_hint(operation), parse_mode="HTML")
             return
 
@@ -2082,7 +2104,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             if operation == "role_delete":
                 flattened_roles = [item for item in flattened_roles if not item.get("is_discord_managed")]
             if not flattened_roles:
-                await callback.answer(
+                await _safe_callback_answer(callback, 
                     "Нет кастомных ролей для удаления: внешние Discord-роли можно только перемещать и сортировать."
                     if operation == "role_delete"
                     else "В каталоге ролей пока нет ни одной роли",
@@ -2093,19 +2115,19 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 "Выберите роль:",
                 reply_markup=_build_pick_role_keyboard(grouped, owner_id, operation, page),
             )
-            await callback.answer()
+            await _safe_callback_answer(callback)
             return
 
         if action == "pick_category":
             operation = parts[3] if len(parts) > 3 else ""
             category_idx = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else -1
             if category_idx < 0 or category_idx >= len(grouped):
-                await callback.answer("Категория не найдена", show_alert=True)
+                await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
                 return
             category_name = str(grouped[category_idx]["category"])
             if operation == "category_delete":
                 ok = RoleManagementService.delete_category(category_name)
-                await callback.answer("Категория удалена" if ok else "Не удалось удалить категорию", show_alert=not ok)
+                await _safe_callback_answer(callback, "Категория удалена" if ok else "Не удалось удалить категорию", show_alert=not ok)
                 await _safe_edit_message_text(
                     callback,
                     _render_actions_text("categories", hidden_sections=visibility.hidden_sections),
@@ -2138,7 +2160,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     parse_mode="HTML",
                     reply_markup=_build_position_choice_keyboard(owner_id, "category_order", preview),
                 )
-                await callback.answer()
+                await _safe_callback_answer(callback)
                 return
             if operation == "role_create":
                 _log_role_create_category_selection(
@@ -2165,12 +2187,12 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                         can_manage_categories=actor_can_manage_categories,
                     ),
                 )
-                await callback.answer()
+                await _safe_callback_answer(callback)
                 return
             if operation in {"role_move_target", "role_order_target"}:
                 pending = _PENDING_ACTIONS.get(callback.from_user.id)
                 if not pending or not pending.payload or not pending.payload.get("role"):
-                    await callback.answer("Сессия устарела, начните заново", show_alert=True)
+                    await _safe_callback_answer(callback, "Сессия устарела, начните заново", show_alert=True)
                     return
                 available_roles = {item["role"] for item in RoleManagementService.list_roles_available_for_admin_reorder()}
                 if pending.payload["role"] not in available_roles:
@@ -2190,7 +2212,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                         message="roles_admin pending role target denied role missing from canonical catalog",
                     )
                     _PENDING_ACTIONS.pop(callback.from_user.id, None)
-                    await callback.answer("Роль больше не найдена в каталоге", show_alert=True)
+                    await _safe_callback_answer(callback, "Роль больше не найдена в каталоге", show_alert=True)
                     await callback.message.reply(_canonical_role_missing_message())
                     return
                 pending.operation = "role_pick_position"
@@ -2212,14 +2234,14 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     parse_mode="HTML",
                     reply_markup=_build_position_choice_keyboard(owner_id, "role_position", preview),
                 )
-            await callback.answer()
+            await _safe_callback_answer(callback)
             return
 
         if action == "user_role_categories":
             flow_action = parts[3] if len(parts) > 3 else ""
             pending = _get_user_role_flow_pending(callback.from_user.id if callback.from_user else None)
             if not pending or str((pending.payload or {}).get("action") or "") != flow_action:
-                await callback.answer("Панель выбора устарела, начните заново.", show_alert=True)
+                await _safe_callback_answer(callback, "Панель выбора устарела, начните заново.", show_alert=True)
                 return
             payload = pending.payload or {}
             await _safe_edit_message_text(
@@ -2237,7 +2259,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     _normalize_role_names(payload.get("selected_roles")),
                 ),
             )
-            await callback.answer()
+            await _safe_callback_answer(callback)
             return
 
         if action == "user_role_category":
@@ -2245,10 +2267,10 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             category_idx = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else -1
             pending = _get_user_role_flow_pending(callback.from_user.id if callback.from_user else None)
             if not pending or str((pending.payload or {}).get("action") or "") != flow_action:
-                await callback.answer("Панель выбора устарела, начните заново.", show_alert=True)
+                await _safe_callback_answer(callback, "Панель выбора устарела, начните заново.", show_alert=True)
                 return
             if category_idx < 0 or category_idx >= len(grouped):
-                await callback.answer("Категория не найдена", show_alert=True)
+                await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
                 return
             payload = pending.payload or {}
             payload["selected_roles"] = _normalize_role_names(payload.get("selected_roles"))
@@ -2272,7 +2294,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     0,
                 ),
             )
-            await callback.answer()
+            await _safe_callback_answer(callback)
             return
 
         if action == "user_role_page":
@@ -2281,10 +2303,10 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             page = int(parts[5]) if len(parts) > 5 and parts[5].isdigit() else 0
             pending = _get_user_role_flow_pending(callback.from_user.id if callback.from_user else None)
             if not pending or str((pending.payload or {}).get("action") or "") != flow_action:
-                await callback.answer("Панель выбора устарела, начните заново.", show_alert=True)
+                await _safe_callback_answer(callback, "Панель выбора устарела, начните заново.", show_alert=True)
                 return
             if category_idx < 0 or category_idx >= len(grouped):
-                await callback.answer("Категория не найдена", show_alert=True)
+                await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
                 return
             payload = pending.payload or {}
             selected_roles = _normalize_role_names(payload.get("selected_roles"))
@@ -2306,7 +2328,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     page,
                 ),
             )
-            await callback.answer()
+            await _safe_callback_answer(callback)
             return
 
         if action == "user_role_toggle":
@@ -2316,10 +2338,10 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             role_idx = int(parts[6]) if len(parts) > 6 and parts[6].isdigit() else -1
             pending = _get_user_role_flow_pending(callback.from_user.id if callback.from_user else None)
             if not pending or str((pending.payload or {}).get("action") or "") != flow_action:
-                await callback.answer("Панель выбора устарела, начните заново.", show_alert=True)
+                await _safe_callback_answer(callback, "Панель выбора устарела, начните заново.", show_alert=True)
                 return
             if category_idx < 0 or category_idx >= len(grouped):
-                await callback.answer("Категория не найдена", show_alert=True)
+                await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
                 return
             category_roles = [
                 role
@@ -2329,7 +2351,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             safe_page = _normalize_page(page, len(category_roles), _MAX_ROLE_BUTTONS)
             item_index = safe_page * _MAX_ROLE_BUTTONS + role_idx
             if role_idx < 0 or item_index >= len(category_roles):
-                await callback.answer("Роль не найдена", show_alert=True)
+                await _safe_callback_answer(callback, "Роль не найдена", show_alert=True)
                 return
             role_name = str(category_roles[item_index].get("name") or "").strip()
             payload = pending.payload or {}
@@ -2362,14 +2384,14 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     safe_page,
                 ),
             )
-            await callback.answer(toast)
+            await _safe_callback_answer(callback, toast)
             return
 
         if action == "user_role_clear":
             flow_action = parts[3] if len(parts) > 3 else ""
             pending = _get_user_role_flow_pending(callback.from_user.id if callback.from_user else None)
             if not pending or str((pending.payload or {}).get("action") or "") != flow_action:
-                await callback.answer("Панель выбора устарела, начните заново.", show_alert=True)
+                await _safe_callback_answer(callback, "Панель выбора устарела, начните заново.", show_alert=True)
                 return
             payload = pending.payload or {}
             payload["selected_roles"] = []
@@ -2386,7 +2408,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 parse_mode="HTML",
                 reply_markup=_build_user_role_categories_keyboard(grouped, owner_id, flow_action, []),
             )
-            await callback.answer("Выбор очищен")
+            await _safe_callback_answer(callback, "Выбор очищен")
             return
 
         if action == "user_role_exit":
@@ -2404,20 +2426,20 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     can_manage_categories=actor_can_manage_categories,
                 ),
             )
-            await callback.answer("Панель выбора закрыта")
+            await _safe_callback_answer(callback, "Панель выбора закрыта")
             return
 
         if action == "user_role_apply":
             flow_action = parts[3] if len(parts) > 3 else ""
             pending = _get_user_role_flow_pending(callback.from_user.id if callback.from_user else None)
             if not pending or str((pending.payload or {}).get("action") or "") != flow_action:
-                await callback.answer("Панель выбора устарела, начните заново.", show_alert=True)
+                await _safe_callback_answer(callback, "Панель выбора устарела, начните заново.", show_alert=True)
                 return
             payload = pending.payload or {}
             selected_roles = _normalize_role_names(payload.get("selected_roles"))
             account_id = str(payload.get("account_id") or "").strip()
             if not account_id or not selected_roles:
-                await callback.answer("Сначала выберите хотя бы одну роль.", show_alert=True)
+                await _safe_callback_answer(callback, "Сначала выберите хотя бы одну роль.", show_alert=True)
                 return
             grant_roles, revoke_roles = _user_role_flow_summary_lists(flow_action, selected_roles)
             result = RoleManagementService.apply_user_role_changes_by_account(
@@ -2470,7 +2492,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     can_manage_categories=actor_can_manage_categories,
                 ),
             )
-            await callback.answer("Пакет применён" if result.get("ok") else "Пакет применён с ошибками", show_alert=not result.get("ok"))
+            await _safe_callback_answer(callback, "Пакет применён" if result.get("ok") else "Пакет применён с ошибками", show_alert=not result.get("ok"))
             return
 
         if action == "pick_role":
@@ -2482,7 +2504,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             safe_page = _normalize_page(page, len(flattened), page_size)
             item_index = safe_page * page_size + role_idx
             if role_idx < 0 or item_index >= len(flattened):
-                await callback.answer("Роль не найдена", show_alert=True)
+                await _safe_callback_answer(callback, "Роль не найдена", show_alert=True)
                 return
             role_name = flattened[item_index]["role"]
             if operation == "role_delete":
@@ -2494,7 +2516,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     telegram_user_id=str(callback.from_user.id) if callback.from_user else None,
                     source="telegram_button",
                 )
-                await callback.answer(
+                await _safe_callback_answer(callback, 
                     f"Роль {role_name} удалена" if result["ok"] else _delete_role_result_message(result),
                     show_alert=not result["ok"],
                 )
@@ -2515,7 +2537,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     created_at=time.time(),
                     payload={"role": role_name},
                 )
-                await callback.answer("Ожидаю текст для блока «Как получить»", show_alert=True)
+                await _safe_callback_answer(callback, "Ожидаю текст для блока «Как получить»", show_alert=True)
                 await callback.message.reply(
                     f"Выбрана роль: <b>{role_name}</b>\n"
                     "Отправь: <code>Название роли | Как получить</code> или просто <code>Как получить</code>.\n"
@@ -2541,7 +2563,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                         source="button",
                         message="roles_admin pick_role denied role missing from canonical catalog",
                     )
-                    await callback.answer("Роль не найдена в каталоге", show_alert=True)
+                    await _safe_callback_answer(callback, "Роль не найдена в каталоге", show_alert=True)
                     await callback.message.reply(_canonical_role_missing_message())
                     return
                 _PENDING_ACTIONS[callback.from_user.id] = PendingRolesAdminAction(
@@ -2555,7 +2577,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     parse_mode="HTML",
                     reply_markup=_build_pick_category_keyboard(grouped, owner_id, next_operation),
                 )
-            await callback.answer()
+            await _safe_callback_answer(callback)
             return
 
         if action == "role_create_new_category":
@@ -2565,7 +2587,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     callback.data,
                     callback.from_user.id,
                 )
-                await callback.answer("Категориями может управлять только Глава клуба или Главный вице.", show_alert=True)
+                await _safe_callback_answer(callback, "Категориями может управлять только Глава клуба или Главный вице.", show_alert=True)
                 return
             _PENDING_ACTIONS[callback.from_user.id] = PendingRolesAdminAction(
                 operation="role_create_new_category_name",
@@ -2585,7 +2607,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     can_manage_categories=actor_can_manage_categories,
                 ),
             )
-            await callback.answer()
+            await _safe_callback_answer(callback)
             return
 
         if action == "set_position":
@@ -2594,13 +2616,13 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             pending = _PENDING_ACTIONS.get(callback.from_user.id)
             if op == "category_order":
                 if not pending or pending.operation != "category_order_pick_position" or not pending.payload:
-                    await callback.answer("Сессия устарела, начните заново", show_alert=True)
+                    await _safe_callback_answer(callback, "Сессия устарела, начните заново", show_alert=True)
                     return
                 category_name = pending.payload.get("category", "")
                 new_pos = int(value) if value.lstrip("-").isdigit() else max(len(grouped) - 1, 0)
                 ok = RoleManagementService.create_category(category_name, new_pos)
                 _PENDING_ACTIONS.pop(callback.from_user.id, None)
-                await callback.answer("Порядок категории обновлён" if ok else "Не удалось обновить порядок", show_alert=not ok)
+                await _safe_callback_answer(callback, "Порядок категории обновлён" if ok else "Не удалось обновить порядок", show_alert=not ok)
                 await _safe_edit_message_text(
                     callback,
                     _render_actions_text("categories", hidden_sections=visibility.hidden_sections),
@@ -2614,7 +2636,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 return
             if op == "role_position":
                 if not pending or pending.operation != "role_pick_position" or not pending.payload:
-                    await callback.answer("Сессия устарела, начните заново", show_alert=True)
+                    await _safe_callback_answer(callback, "Сессия устарела, начните заново", show_alert=True)
                     return
                 role_name = pending.payload.get("role", "")
                 category_name = pending.payload.get("category", "")
@@ -2635,7 +2657,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                         message="roles_admin role_position denied role missing from canonical catalog",
                     )
                     _PENDING_ACTIONS.pop(callback.from_user.id, None)
-                    await callback.answer("Роль не найдена в каталоге", show_alert=True)
+                    await _safe_callback_answer(callback, "Роль не найдена в каталоге", show_alert=True)
                     await callback.message.reply(_canonical_role_missing_message())
                     return
                 new_pos = int(value) if value.lstrip("-").isdigit() else int(preview.get("computed_last_position", 0))
@@ -2658,7 +2680,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                         source="button",
                         message="roles_admin role_position failed",
                     )
-                await callback.answer(
+                await _safe_callback_answer(callback, 
                     "Позиция роли обновлена" if ok else "Не удалось обновить позицию роли",
                     show_alert=not ok,
                 )
@@ -2679,7 +2701,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             category_idx = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else -1
             category_item = _resolve_category(grouped, page, category_idx)
             if not category_item:
-                await callback.answer("Категория не найдена, обновите список.", show_alert=True)
+                await _safe_callback_answer(callback, "Категория не найдена, обновите список.", show_alert=True)
                 return
 
             roles = category_item.get("roles", [])
@@ -2703,7 +2725,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     can_manage_categories=actor_can_manage_categories,
                 ),
             )
-            await callback.answer()
+            await _safe_callback_answer(callback)
             return
 
         if action == "delete_category":
@@ -2713,18 +2735,18 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     callback.data,
                     callback.from_user.id,
                 )
-                await callback.answer("Категориями может управлять только Глава клуба или Главный вице.", show_alert=True)
+                await _safe_callback_answer(callback, "Категориями может управлять только Глава клуба или Главный вице.", show_alert=True)
                 return
             page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
             category_idx = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else -1
             category_item = _resolve_category(grouped, page, category_idx)
             if not category_item:
-                await callback.answer("Категория не найдена, обновите список.", show_alert=True)
+                await _safe_callback_answer(callback, "Категория не найдена, обновите список.", show_alert=True)
                 return
 
             ok = RoleManagementService.delete_category(category_item["category"])
             if not ok:
-                await callback.answer("Не удалось удалить категорию (смотри логи).", show_alert=True)
+                await _safe_callback_answer(callback, "Не удалось удалить категорию (смотри логи).", show_alert=True)
                 return
 
             grouped_after = RoleManagementService.list_roles_grouped() or []
@@ -2733,7 +2755,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 parse_mode="HTML",
                 reply_markup=_build_list_keyboard(grouped_after, owner_id, page),
             )
-            await callback.answer("Категория удалена")
+            await _safe_callback_answer(callback, "Категория удалена")
             return
 
         if action == "delete_role":
@@ -2743,7 +2765,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             category_item = _resolve_category(grouped, page, category_idx)
             roles = category_item.get("roles", []) if category_item else []
             if not category_item or role_idx < 0 or role_idx >= len(roles):
-                await callback.answer("Роль не найдена, обновите список.", show_alert=True)
+                await _safe_callback_answer(callback, "Роль не найдена, обновите список.", show_alert=True)
                 return
 
             role_name = roles[role_idx]["name"]
@@ -2756,7 +2778,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 source="telegram_button",
             )
             if not result["ok"]:
-                await callback.answer(_delete_role_result_message(result), show_alert=True)
+                await _safe_callback_answer(callback, _delete_role_result_message(result), show_alert=True)
                 return
 
             grouped_after = RoleManagementService.list_roles_grouped() or []
@@ -2786,18 +2808,17 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     parse_mode="HTML",
                     reply_markup=_build_list_keyboard(grouped_after, owner_id, page),
                 )
-            await callback.answer(f"Роль {role_name} удалена")
+            await _safe_callback_answer(callback, f"Роль {role_name} удалена")
             return
 
-        await callback.answer("Неизвестное действие", show_alert=True)
+        await _safe_callback_answer(callback, "Неизвестное действие", show_alert=True)
     except (TelegramNetworkError, TelegramConflictError):
         logger.exception(
             "roles_admin callback transport failed (telegram runtime/session issue) callback_data=%s actor_id=%s",
             callback.data,
             callback.from_user.id if callback.from_user else None,
         )
-        await _safe_callback_answer(
-            callback,
+        await _safe_callback_answer(callback, 
             "Сеть Telegram недоступна или идёт перезапуск polling. Попробуйте ещё раз через пару секунд.",
             show_alert=True,
         )
