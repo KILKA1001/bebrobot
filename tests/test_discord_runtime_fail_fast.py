@@ -97,3 +97,31 @@ def test_run_both_async_keeps_telegram_running_after_discord_failure():
             assert run_telegram_polling_mock.call_count >= 1
 
     asyncio.run(_exercise())
+
+
+def test_restore_runtime_views_once_skips_duplicate_db_reads_on_reconnect():
+    bot_main = load_bot_main()
+    bot_main.runtime_views_restored = False
+
+    tournaments = [
+        {
+            "id": 42,
+            "size": 8,
+            "type": "solo",
+            "announcement_message_id": 111,
+        }
+    ]
+
+    with (
+        patch("bot.main.tournament_db.get_active_tournaments", return_value=tournaments) as get_active_mock,
+        patch("bot.main.tournament_db.get_status_message_id", return_value=222) as get_status_mock,
+        patch("bot.main.tournament_db.list_participants", return_value=[{"discord_user_id": 10}]) as list_participants_mock,
+        patch.object(bot_main.bot, "add_view") as add_view_mock,
+    ):
+        bot_main._restore_runtime_views_once()
+        bot_main._restore_runtime_views_once()
+
+    assert get_active_mock.call_count == 1
+    assert get_status_mock.call_count == 1
+    assert list_participants_mock.call_count == 1
+    assert add_view_mock.call_count == 3

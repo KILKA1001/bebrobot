@@ -44,6 +44,10 @@ class TelegramPollingConflictDetectedError(RuntimeError):
     """Raised when polling detects another active getUpdates consumer."""
 
 
+class TelegramPollingTransientNetworkError(RuntimeError):
+    """Raised when Telegram polling exceeds bounded transient network retries."""
+
+
 def _is_local_process_alive(pid: int) -> bool:
     """Best-effort check for local process existence."""
 
@@ -105,6 +109,8 @@ def _patch_aiogram_conflict_behavior() -> None:
     already polling. We keep the default behavior for other errors.
     """
 
+    max_transient_failures = max(1, int(os.getenv("TELEGRAM_POLLING_MAX_TRANSIENT_FAILURES", "3")))
+
     async def _listen_updates_with_conflict_exit(
         cls,
         bot: Bot,
@@ -133,11 +139,24 @@ def _patch_aiogram_conflict_behavior() -> None:
             except Exception as e:  # noqa: BLE001
                 failed = True
                 aiogram_loggers.dispatcher.error("Failed to fetch updates - %s: %s", type(e).__name__, e)
+                if backoff.counter >= max_transient_failures:
+                    aiogram_loggers.dispatcher.error(
+                        "Polling stopped after bounded transient retries "
+                        "(tryings = %d, bot id = %d, max_failures = %d)",
+                        backoff.counter,
+                        bot.id,
+                        max_transient_failures,
+                    )
+                    raise TelegramPollingTransientNetworkError(
+                        "telegram polling exceeded bounded transient network retries"
+                    ) from e
                 aiogram_loggers.dispatcher.warning(
-                    "Sleep for %f seconds and try again... (tryings = %d, bot id = %d)",
+                    "Sleep for %f seconds and try again... "
+                    "(tryings = %d, bot id = %d, max_failures = %d)",
                     backoff.next_delay,
                     backoff.counter,
                     bot.id,
+                    max_transient_failures,
                 )
                 await backoff.asleep()
                 continue

@@ -177,6 +177,7 @@ python -m bot.admin_api.app
 ## 🤖 Telegram (подготовка)
 - Матрица паритета команд Discord/Telegram: [docs/command_parity_matrix.md](docs/command_parity_matrix.md) (обновляется вместе с новыми user-facing командами).
 - Единая точка запуска: `python bot/main.py`.
+- В проекте **нет** `keep_alive.py`, ping-to-self cron/workaround и auto-start HTTP web-server для legacy free-hosting: основной runtime поднимает только Discord и/или Telegram, а HTTP admin API запускается отдельно при явной необходимости.
 - Для Discord укажите `DISCORD_TOKEN`.
 - Для Telegram укажите `TELEGRAM_BOT_TOKEN`.
 - Если задан только `DISCORD_TOKEN`, стартует только Discord runtime.
@@ -186,7 +187,8 @@ python -m bot.admin_api.app
 - `bot/telegram_bot/main.py` — Telegram runtime-модуль, который `bot/main.py` запускает автоматически, когда найден `TELEGRAM_BOT_TOKEN`.
 - Telegram polling-loop (aiogram) стартует автоматически и пишет в лог фактические диагностические сообщения по токену и состоянию блокировки.
 - Конфликты polling (`TelegramPollingLockActiveError`, `TelegramPollingPreflightConflictError`, `TelegramPollingConflictDetectedError`) обрабатываются в fail-fast режиме: процесс завершается с понятной ошибкой в логах, чтобы внешний supervisor (`systemd`) мог корректно перезапустить сервис.
-- Для действительно временных сетевых ошибок Telegram runtime делает только 1-2 короткие повторные попытки, а затем тоже завершает процесс, не создавая внутренний бесконечный restart loop.
+- Для действительно временных сетевых ошибок Telegram runtime делает только ограниченное число коротких retry внутри polling-цикла, а затем тоже завершает процесс, не создавая внутренний бесконечный restart loop. Лимит настраивается через `TELEGRAM_POLLING_MAX_TRANSIENT_FAILURES` (по умолчанию 3 подряд неудачных запроса = 2 коротких retry перед остановкой процесса).
+- Discord background jobs и восстановление persistent views запускаются один раз на процесс, чтобы reconnect не создавал дубли фоновых задач и лишние повторные запросы к БД.
 - В Telegram доступны команды `/start`, `/link`, `/helpy` (список команд обновляется через Telegram API при запуске).
 - AI-ответы персонажа Гуй работают и в Discord, и в Telegram (паритет): бот отвечает только если его явно позвали словом `Гуй` или если сообщение является ответом на сообщение бота.
 - AI не вмешивается в выполнение команд: в Discord при валидной команде сообщение обрабатывается только как команда, в Telegram AI-ответы пропускаются для командных сообщений и активных сценариев меню (`/points`, `/tickets`, `/profile_edit`).
