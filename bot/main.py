@@ -282,10 +282,13 @@ async def send_greetings(channel, user_list):
 
 async def autosave_task():
     await bot.wait_until_ready()
+    autosave_interval_sec = int(os.getenv("SCORES_AUTOSAVE_INTERVAL_SEC", "600"))
     while not bot.is_closed():
-        db.save_all()
-        print("Данные сохранены автоматически.")
-        await asyncio.sleep(300)
+        try:
+            db.save_all()
+        except Exception:
+            logging.exception("autosave flush failed")
+        await asyncio.sleep(autosave_interval_sec)
 
 @bot.event
 async def on_ready():
