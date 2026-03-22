@@ -26,7 +26,9 @@ from bot.services.ai_service import (
     _resolve_text_models,
     _resolve_vision_model,
     _sanitize_guiy_reply,
+    close_shared_http_session,
     generate_guiy_reply,
+    init_shared_http_session,
 )
 from bot.telegram_bot.commands.ai_chat import _is_bot_mentioned, _is_command_text, _is_name_trigger
 from bot.utils.guiy_typing import calculate_typing_delay_seconds
@@ -37,6 +39,9 @@ class GuiyAIGuardsTests(unittest.TestCase):
     def setUp(self):
         ai_service._DIALOG_ACTIVE_USERS.clear()
         ai_service._DIALOG_MEMORY.clear()
+
+    def tearDown(self):
+        asyncio.run(close_shared_http_session())
 
     def test_role_break_detects_model_leak(self):
         self.assertTrue(_is_role_break("Я языковая модель, не могу войти в роль"))
@@ -550,24 +555,23 @@ class GuiyAIGuardsTests(unittest.TestCase):
             ai_service._AI_COOLDOWN_UNTIL = old
 
     @patch.dict("os.environ", {"GROQ_API_KEY": "x", "GROQ_MODELS": "moonshotai/kimi-k2-instruct-0905,llama-3.3-70b-versatile"}, clear=True)
-    @patch("bot.services.ai_service.asyncio.to_thread", new_callable=AsyncMock)
-    @patch("bot.services.ai_service.Groq")
-    def test_generate_once_temporary_upstream_429_does_not_enable_cooldown(self, mock_groq_cls, mock_to_thread):
+    @patch(
+        "bot.services.ai_service._request_groq_json",
+        new_callable=AsyncMock,
+        return_value=(
+            None,
+            429,
+            '{"error":{"message":"Provider returned error","metadata":{"raw":"temporarily rate-limited upstream. Please retry shortly"}}}',
+        ),
+    )
+    def test_generate_once_temporary_upstream_429_does_not_enable_cooldown(self, mock_request):
         old = ai_service._AI_COOLDOWN_UNTIL
         try:
             ai_service._AI_COOLDOWN_UNTIL = 0
 
-            error = Exception(
-                '{"error":{"message":"Provider returned error","metadata":{"raw":"temporarily rate-limited upstream. Please retry shortly"}}}'
-            )
-            error.status_code = 429
-            mock_to_thread.side_effect = error
-
-            client = mock_groq_cls.return_value
-
             reply, status = asyncio.run(
                 ai_service._generate_once(
-                    client,
+                    "x",
                     "moonshotai/kimi-k2-instruct-0905",
                     "sys",
                     "user",
@@ -576,8 +580,33 @@ class GuiyAIGuardsTests(unittest.TestCase):
             self.assertIsNone(reply)
             self.assertEqual(status, 429)
             self.assertEqual(ai_service._AI_COOLDOWN_UNTIL, 0)
+            mock_request.assert_awaited_once()
         finally:
             ai_service._AI_COOLDOWN_UNTIL = old
+
+    @patch("bot.services.ai_service.aiohttp.ClientSession")
+    def test_init_shared_http_session_reuses_existing_session(self, mock_session_cls):
+        fake_session = AsyncMock()
+        fake_session.closed = False
+        mock_session_cls.return_value = fake_session
+
+        first = asyncio.run(init_shared_http_session())
+        second = asyncio.run(init_shared_http_session())
+
+        self.assertIs(first, fake_session)
+        self.assertIs(second, fake_session)
+        mock_session_cls.assert_called_once()
+
+    @patch("bot.services.ai_service.aiohttp.ClientSession")
+    def test_close_shared_http_session_closes_existing_session(self, mock_session_cls):
+        fake_session = AsyncMock()
+        fake_session.closed = False
+        mock_session_cls.return_value = fake_session
+
+        asyncio.run(init_shared_http_session())
+        asyncio.run(close_shared_http_session())
+
+        fake_session.close.assert_awaited_once()
 
     @patch.dict("os.environ", {"GROQ_API_KEY": "x"}, clear=True)
     @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=(None, None))
