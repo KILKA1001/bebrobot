@@ -34,7 +34,11 @@ import bot.commands.tournament
 import bot.commands.maps
 from datetime import datetime
 from bot.systems import fines_logic
-from bot.systems.profile_titles_logic import profile_titles_sync_loop
+from bot.systems.profile_titles_logic import (
+    handle_member_join_for_profile_titles,
+    handle_member_update_for_profile_titles,
+    profile_titles_sync_loop,
+)
 from bot.systems.external_roles_sync_logic import external_roles_sync_loop
 import bot.commands.fines
 import bot.data.tournament_db as tournament_db
@@ -362,6 +366,7 @@ async def on_ready():
         except Exception:
             logging.exception("discord startup failed to update presence | %s", _startup_context(step="change_presence"))
 
+
     if not commands_synced:
         should_sync = should_sync_commands()
         try:
@@ -475,6 +480,16 @@ async def on_ready():
 
     print('--- Ленивый режим загрузки данных активирован ---')
     print("📡 Задачи активированы.")
+
+
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member):
+    await handle_member_update_for_profile_titles(before, after)
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    await handle_member_join_for_profile_titles(member)
 
 
 @bot.event
