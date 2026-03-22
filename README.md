@@ -60,6 +60,52 @@ python bot/main.py
 После запуска список команд автоматически синхронизируется с Discord и будет
 доступен во всплывающем меню при вводе `/`.
 
+### Рекомендуемый запуск через systemd
+
+Для VPS рекомендуется **не использовать внутренний бесконечный restart loop в приложении** и доверить перезапуск `systemd`. Telegram polling в проекте настроен на fail-fast: если обнаружен конфликт `getUpdates`/polling или после коротких retry не восстановилась сеть, процесс завершается с диагностикой в логах, а `systemd` уже решает, когда поднимать сервис заново.
+
+Пример unit-файла для основного bot runtime:
+
+```ini
+[Unit]
+Description=Bebrobot runtime
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/bebrobot
+EnvironmentFile=/opt/bebrobot/.env
+ExecStart=/opt/bebrobot/.venv/bin/python bot/main.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Если вы оставляете admin API, лучше держать его отдельным сервисом, чтобы HTTP-интерфейс не влиял на runtime бота:
+
+```ini
+[Unit]
+Description=Bebrobot admin API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/bebrobot
+EnvironmentFile=/opt/bebrobot/.env
+ExecStart=/opt/bebrobot/.venv/bin/python -m bot.admin_api.app
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Итоговая рекомендация для VPS: выбирайте **один** механизм перезапуска. В этом проекте предпочтителен `systemd`, а не комбинация `systemd` + внутренний бесконечный self-healing loop.
+
 ### Опциональный admin API
 
 HTTP admin API не нужен для обычного запуска Discord/Telegram-бота и **не поднимается автоматически** из `bot/main.py`. Если вам действительно нужен административный HTTP-интерфейс на VPS, запускайте его отдельным процессом:
@@ -137,6 +183,8 @@ python -m bot.admin_api.app
 - Если не задан ни один токен, launcher завершает старт с ошибкой в логах.
 - `bot/telegram_bot/main.py` — Telegram runtime-модуль, который `bot/main.py` запускает автоматически, когда найден `TELEGRAM_BOT_TOKEN`.
 - Telegram polling-loop (aiogram) стартует автоматически и пишет в лог фактические диагностические сообщения по токену и состоянию блокировки.
+- Конфликты polling (`TelegramPollingLockActiveError`, `TelegramPollingPreflightConflictError`, `TelegramPollingConflictDetectedError`) обрабатываются в fail-fast режиме: процесс завершается с понятной ошибкой в логах, чтобы внешний supervisor (`systemd`) мог корректно перезапустить сервис.
+- Для действительно временных сетевых ошибок Telegram runtime делает только 1-2 короткие повторные попытки, а затем тоже завершает процесс, не создавая внутренний бесконечный restart loop.
 - В Telegram доступны команды `/start`, `/link`, `/helpy` (список команд обновляется через Telegram API при запуске).
 - AI-ответы персонажа Гуй работают и в Discord, и в Telegram (паритет): бот отвечает только если его явно позвали словом `Гуй` или если сообщение является ответом на сообщение бота.
 - AI не вмешивается в выполнение команд: в Discord при валидной команде сообщение обрабатывается только как команда, в Telegram AI-ответы пропускаются для командных сообщений и активных сценариев меню (`/points`, `/tickets`, `/profile_edit`).
