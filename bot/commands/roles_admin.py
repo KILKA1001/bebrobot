@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
@@ -8,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.commands.base import bot
-from bot.services import AccountsService, AuthorityService, RoleManagementService
+from bot.services import AccountsService, AuthorityService, ExternalRolesSyncService, RoleManagementService
 from bot.services.role_management_service import (
     DELETE_ROLE_REASON_DISCORD_MANAGED,
     DELETE_ROLE_REASON_NOT_FOUND,
@@ -1527,6 +1528,53 @@ async def rolesadmin_user_revoke(ctx: commands.Context, target: str, role_name: 
         return
 
     await send_temp(ctx, f"✅ Роль **{role_name}** снята у {resolved['label']}.")
+
+
+@rolesadmin.command(name="sync_external_roles", description="Синхронизировать snapshot внешних ролей")
+async def rolesadmin_sync_external_roles(ctx: commands.Context, target: str | None = None):
+    if not await _ensure_roles_admin(ctx):
+        return
+
+    try:
+        if target:
+            resolved = await _resolve_discord_target(ctx, target, operation="sync_external_roles")
+            if not resolved:
+                return
+            account_id = str(resolved.get("account_id") or "").strip()
+            if not account_id:
+                await send_temp(
+                    ctx,
+                    "❌ У пользователя пока нет account_id. Пусть выполнит `/register_account`, `/link` или `/profile`, затем повтори команду.",
+                )
+                return
+            changed = await asyncio.to_thread(ExternalRolesSyncService.sync_account_by_account_id, bot, account_id)
+            await send_temp(
+                ctx,
+                (
+                    f"✅ Snapshot внешних ролей для {resolved['label']} проверен. "
+                    f"Изменения: {'да' if changed else 'нет'}. "
+                    "Используй `/rolesadmin sync_external_roles @user`, когда нужно точечно перепроверить связанный аккаунт."
+                ),
+            )
+            return
+
+        stats = await asyncio.to_thread(ExternalRolesSyncService.sync_all_linked_accounts, bot)
+        await send_temp(
+            ctx,
+            (
+                "✅ Полная сверка snapshot внешних ролей завершена. "
+                f"Обработано: {stats.get('processed', 0)}, обновлено: {stats.get('synced', 0)}, ошибок: {stats.get('errors', 0)}. "
+                "Для точечной проверки используй `/rolesadmin sync_external_roles @user`."
+            ),
+        )
+    except Exception:
+        logger.exception(
+            "rolesadmin sync_external_roles failed guild_id=%s actor_id=%s target=%s",
+            ctx.guild.id if ctx.guild else None,
+            ctx.author.id,
+            target,
+        )
+        await send_temp(ctx, "❌ Не удалось синхронизировать snapshot внешних ролей (смотри логи).")
 
 
 @rolesadmin.command(name="sync_discord_roles", description="Синхронизировать роли сервера Discord в каталог")
