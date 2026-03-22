@@ -10,6 +10,7 @@ from bot.telegram_bot.systems.commands_logic import (
     process_roles_catalog_command,
     render_roles_catalog_page,
 )
+from bot.systems.roles_catalog_shared import prepare_public_roles_catalog_pages
 
 
 class TelegramCommandsLogicTests(unittest.TestCase):
@@ -66,13 +67,18 @@ class TelegramCommandsLogicTests(unittest.TestCase):
         self.assertIn("field=telegram_user_id", captured.output[0])
         self.assertIn("action=extract_platform_user_id", captured.output[0])
 
-    def test_helpy_contains_profile_edit(self):
-        self.assertIn("/profile_edit", get_helpy_text())
-        self.assertIn("/roles", get_helpy_text())
-        self.assertIn("/points", get_helpy_text())
-        self.assertIn("/balance", get_helpy_text())
-        self.assertIn("/tickets", get_helpy_text())
-        self.assertIn("/roles_admin / /rolesadmin", get_helpy_text())
+    @patch("bot.telegram_bot.systems.commands_logic.AuthorityService.resolve_authority")
+    def test_helpy_contains_profile_edit(self, mock_resolve_authority):
+        mock_resolve_authority.return_value = type("Authority", (), {"level": 100, "titles": ("Глава клуба",)})()
+
+        help_text = get_helpy_text(telegram_user_id=42)
+
+        self.assertIn("/profile_edit", help_text)
+        self.assertIn("/roles", help_text)
+        self.assertIn("/points", help_text)
+        self.assertIn("/balance", help_text)
+        self.assertIn("/tickets", help_text)
+        self.assertIn("/roles_admin / /rolesadmin", help_text)
 
     @patch("bot.telegram_bot.systems.commands_logic.RoleManagementService.list_public_roles_catalog")
     def test_roles_catalog_command_renders_description_and_acquire_hint(self, mock_list_roles_grouped):
@@ -133,10 +139,12 @@ class TelegramCommandsLogicTests(unittest.TestCase):
         mock_list_roles_grouped.return_value = [
             {
                 "category": "Первая",
+                "position": 1,
                 "roles": [{"name": f"R{i}", "description": "", "acquire_method_label": "выдаёт администратор", "acquire_hint": ""} for i in range(1, 9)],
             },
             {
                 "category": "Вторая",
+                "position": 2,
                 "roles": [{"name": "R9", "description": "", "acquire_method_label": "за баллы", "acquire_hint": ""}],
             },
         ]
@@ -145,6 +153,60 @@ class TelegramCommandsLogicTests(unittest.TestCase):
 
         self.assertIn("сейчас показана страница <b>2/2</b>", result)
         self.assertIn("<b>Вторая</b>", result)
+
+    def test_roles_catalog_helper_hides_empty_categories_and_logs_anomalies(self):
+        grouped = [
+            {
+                "category": "",
+                "position": 2,
+                "roles": [
+                    {
+                        "name": "",
+                        "position": 2,
+                        "description": "d" * 701,
+                        "acquire_method_label": "выдаёт администратор",
+                        "acquire_hint": "h" * 401,
+                    }
+                ],
+            },
+            {
+                "category": "Alpha",
+                "position": 1,
+                "roles": [
+                    {
+                        "name": "Zeta",
+                        "position": 2,
+                        "description": "",
+                        "acquire_method_label": "за баллы",
+                        "acquire_hint": "",
+                    },
+                    {
+                        "name": "Beta",
+                        "position": 1,
+                        "description": "",
+                        "acquire_method_label": "за баллы",
+                        "acquire_hint": "",
+                    },
+                ],
+            },
+            {
+                "category": "Ghost",
+                "position": 3,
+                "roles": [],
+            },
+        ]
+
+        with self.assertLogs("bot.systems.roles_catalog_shared", level="INFO") as captured:
+            pages = prepare_public_roles_catalog_pages(grouped, max_roles_per_page=8, log_context="test:/roles")
+
+        self.assertEqual(len(pages), 1)
+        self.assertEqual([section["category"] for section in pages[0]["sections"]], ["Alpha", "Без категории"])
+        self.assertEqual([item["name"] for item in pages[0]["sections"][0]["items"]], ["Beta", "Zeta"])
+        self.assertEqual(pages[0]["sections"][1]["items"][0]["name"], "Без названия")
+        self.assertTrue(any("description too long" in line for line in captured.output))
+        self.assertTrue(any("acquire_hint too long" in line for line in captured.output))
+        self.assertTrue(any("roles catalog empty category hidden" in line for line in captured.output))
+
 
     def test_link_command_restricted_to_private_chat(self):
         result = process_link_command('/link ABC123', telegram_user_id=100, is_private_chat=False)

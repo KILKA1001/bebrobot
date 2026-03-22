@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from bot.data import db
+from bot.systems.roles_catalog_shared import prepare_public_roles_catalog_pages
 from bot.services.accounts_service import AccountsService
 from bot.services.authority_service import AuthorityService
 from bot.services.profile_titles import is_protected_profile_title
@@ -799,109 +800,11 @@ class RoleManagementService:
         *,
         roles_per_page: int | None = None,
     ) -> list[dict[str, Any]]:
-        page_size = max(int(roles_per_page or RoleManagementService.PUBLIC_ROLE_CATALOG_PAGE_SIZE), 1)
-        pages: list[dict[str, Any]] = []
-        current_blocks: list[dict[str, Any]] = []
-        current_role_count = 0
-
-        def flush_page() -> None:
-            nonlocal current_blocks, current_role_count
-            if not current_blocks:
-                return
-            pages.append(
-                {
-                    "blocks": [
-                        {
-                            "category": str(block.get("category") or "Без категории"),
-                            "roles": list(block.get("roles") or []),
-                            "category_chunk_index": int(block.get("category_chunk_index") or 1),
-                            "category_chunk_total": int(block.get("category_chunk_total") or 1),
-                            "is_category_continuation": bool(block.get("is_category_continuation")),
-                        }
-                        for block in current_blocks
-                    ]
-                }
-            )
-            current_blocks = []
-            current_role_count = 0
-
-        for item in grouped or []:
-            category_name = str(item.get("category") or "Без категории")
-            roles = list(item.get("roles") or [])
-            role_total = len(roles)
-
-            if role_total == 0:
-                current_blocks.append(
-                    {
-                        "category": category_name,
-                        "roles": [],
-                        "category_chunk_index": 1,
-                        "category_chunk_total": 1,
-                        "is_category_continuation": False,
-                    }
-                )
-                continue
-
-            if role_total > page_size:
-                flush_page()
-                chunk_total = max((role_total + page_size - 1) // page_size, 1)
-                for start in range(0, role_total, page_size):
-                    chunk = roles[start : start + page_size]
-                    chunk_index = (start // page_size) + 1
-                    pages.append(
-                        {
-                            "blocks": [
-                                {
-                                    "category": category_name,
-                                    "roles": chunk,
-                                    "category_chunk_index": chunk_index,
-                                    "category_chunk_total": chunk_total,
-                                    "is_category_continuation": chunk_index > 1,
-                                }
-                            ]
-                        }
-                    )
-                continue
-
-            if current_blocks and current_role_count + role_total > page_size:
-                flush_page()
-
-            current_blocks.append(
-                {
-                    "category": category_name,
-                    "roles": roles,
-                    "category_chunk_index": 1,
-                    "category_chunk_total": 1,
-                    "is_category_continuation": False,
-                }
-            )
-            current_role_count += role_total
-
-        flush_page()
-
-        total_pages = len(pages)
-        normalized_pages: list[dict[str, Any]] = []
-        for index, page in enumerate(pages, start=1):
-            blocks = [
-                {
-                    "category": str(block.get("category") or "Без категории"),
-                    "roles": list(block.get("roles") or []),
-                    "category_chunk_index": int(block.get("category_chunk_index") or 1),
-                    "category_chunk_total": int(block.get("category_chunk_total") or 1),
-                    "is_category_continuation": bool(block.get("is_category_continuation")),
-                }
-                for block in page.get("blocks", [])
-            ]
-            normalized_pages.append(
-                {
-                    "page": index,
-                    "total_pages": total_pages,
-                    "blocks": blocks,
-                    "category_count": len(blocks),
-                    "role_count": sum(len(block.get("roles") or []) for block in blocks),
-                }
-            )
-        return normalized_pages
+        return prepare_public_roles_catalog_pages(
+            grouped,
+            max_roles_per_page=max(int(roles_per_page or RoleManagementService.PUBLIC_ROLE_CATALOG_PAGE_SIZE), 1),
+            log_context="RoleManagementService.paginate_public_roles_catalog",
+        )
 
     @staticmethod
     def list_roles_available_for_admin_reorder() -> list[dict[str, str]]:
