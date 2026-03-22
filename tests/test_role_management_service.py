@@ -361,6 +361,40 @@ class RoleManagementServiceTests(unittest.TestCase):
         self.assertEqual(grouped[2]["roles"][0]["acquire_method_label"], "за баллы")
         self.assertEqual(grouped[2]["roles"][0]["points_required"], 10)
 
+    def test_list_public_roles_catalog_hides_roles_marked_hidden_in_db(self):
+        self.fake_db.tables["roles"] = [
+            {
+                "name": "Видимая",
+                "category_name": "Discord",
+                "position": 0,
+                "description": "Показывается",
+                "acquire_hint": "Видна в каталоге",
+                "is_discord_managed": True,
+                "discord_role_id": "101",
+                "show_in_roles_catalog": True,
+            },
+            {
+                "name": "Скрытая",
+                "category_name": "Discord",
+                "position": 1,
+                "description": "Скрыта",
+                "acquire_hint": "Не показывается",
+                "is_discord_managed": True,
+                "discord_role_id": "102",
+                "show_in_roles_catalog": False,
+            },
+        ]
+        self.fake_db.tables["role_categories"] = [{"name": "Discord", "position": 0}]
+
+        with self.assertLogs("bot.services.role_management_service", level="INFO") as captured:
+            grouped = RoleManagementService.list_public_roles_catalog(log_context="/roles")
+
+        self.assertEqual([role["name"] for role in grouped[0]["roles"]], ["Видимая"])
+        self.assertTrue(
+            any("filtered hidden role" in message and "role_name=Скрытая" in message for message in captured.output),
+            captured.output,
+        )
+
     def test_list_public_roles_catalog_backfills_legacy_points_hint_for_canonical_role(self):
         self.fake_db.tables["roles"] = [
             {
@@ -559,7 +593,7 @@ class RoleManagementServiceTests(unittest.TestCase):
         select_ops = [
             op for op in self.fake_db.operations if op["table"] == "roles" and op["action"] == "select"
         ]
-        self.assertEqual(len(select_ops), 6)
+        self.assertEqual(len(select_ops), 12)
         self.assertTrue(any("role cache refreshed role_name=Missing exists=False" in line for line in captured.output), captured.output)
         self.assertTrue(any("role cache hit role_name=Missing exists=false" in line for line in captured.output), captured.output)
 
@@ -625,6 +659,25 @@ class RoleManagementServiceTests(unittest.TestCase):
         conflict_row = next(row for row in self.fake_db.tables["role_change_audit"] if row["action"] == "role_batch_conflict")
         self.assertEqual(conflict_row["status"], "conflict")
         self.assertEqual(conflict_row["source"], "discord_button")
+
+    def test_sync_discord_guild_roles_preserves_hidden_public_visibility_flag(self):
+        self.fake_db.tables["roles"] = [
+            {
+                "name": "Bot Hidden",
+                "category_name": "Discord сервер (auto)",
+                "position": 0,
+                "is_discord_managed": True,
+                "discord_role_id": "role-1",
+                "show_in_roles_catalog": False,
+            }
+        ]
+
+        result = RoleManagementService.sync_discord_guild_roles([
+            {"id": "role-1", "name": "Bot Hidden", "position": 5, "guild_id": "guild-1"}
+        ])
+
+        self.assertEqual(result["upserted"], 1)
+        self.assertFalse(self.fake_db.tables["roles"][0]["show_in_roles_catalog"])
 
     def test_sync_discord_guild_roles_removes_dependencies_before_role_row(self):
         self.fake_db.tables["roles"] = [

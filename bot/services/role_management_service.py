@@ -36,6 +36,7 @@ ROLE_NAME_CONFLICT_PROFILE_TITLE_MESSAGE = "Название совпадает 
 ACQUIRE_METHOD_POINTS = "за баллы"
 ACQUIRE_METHOD_ADMIN = "выдаёт администратор"
 ACQUIRE_METHOD_DISCORD_SYNC = "автоматически синхронизируется с Discord"
+ROLE_PUBLIC_VISIBILITY_COLUMN = "show_in_roles_catalog"
 _ROLE_CACHE_MISS = object()
 
 
@@ -129,6 +130,9 @@ class RoleManagementService:
                     "discord_role_id": str(role.get("discord_role_id") or "").strip() or None,
                     "discord_role_name": str(role.get("discord_role_name") or "").strip() or None,
                     "is_privileged_discord_role": bool(role.get("is_privileged_discord_role")),
+                    ROLE_PUBLIC_VISIBILITY_COLUMN: RoleManagementService._public_catalog_visibility(
+                        role.get(ROLE_PUBLIC_VISIBILITY_COLUMN)
+                    ),
                 }
         logger.debug("role lookup cache miss role_name=%s", role_key)
         return None
@@ -143,6 +147,19 @@ class RoleManagementService:
             str(reason or "unspecified"),
             cleared_role_entries,
         )
+
+    @staticmethod
+    def _public_catalog_visibility(value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        normalized = str(value).strip().lower()
+        if not normalized:
+            return True
+        return normalized not in {"0", "false", "f", "no", "n", "off"}
 
     @staticmethod
     def _jsonable(value: Any) -> Any:
@@ -519,6 +536,12 @@ class RoleManagementService:
             return []
 
         select_variants = (
+            "name,category_name,description,acquire_hint,position,is_discord_managed,discord_role_id,is_privileged_discord_role,show_in_roles_catalog",
+            "name,category_name,acquire_hint,position,is_discord_managed,discord_role_id,is_privileged_discord_role,show_in_roles_catalog",
+            "name,category_name,position,is_discord_managed,discord_role_id,is_privileged_discord_role,show_in_roles_catalog",
+            "name,category_name,description,acquire_hint,position,is_discord_managed,discord_role_id,show_in_roles_catalog",
+            "name,category_name,acquire_hint,position,is_discord_managed,discord_role_id,show_in_roles_catalog",
+            "name,category_name,position,is_discord_managed,discord_role_id,show_in_roles_catalog",
             "name,category_name,description,acquire_hint,position,is_discord_managed,discord_role_id,is_privileged_discord_role",
             "name,category_name,acquire_hint,position,is_discord_managed,discord_role_id,is_privileged_discord_role",
             "name,category_name,position,is_discord_managed,discord_role_id,is_privileged_discord_role",
@@ -626,6 +649,9 @@ class RoleManagementService:
                     "is_discord_managed": bool(row.get("is_discord_managed")),
                     "discord_role_id": str(row.get("discord_role_id") or "").strip() or None,
                     "is_privileged_discord_role": bool(row.get("is_privileged_discord_role")),
+                    ROLE_PUBLIC_VISIBILITY_COLUMN: RoleManagementService._public_catalog_visibility(
+                        row.get(ROLE_PUBLIC_VISIBILITY_COLUMN)
+                    ),
                 }
             )
 
@@ -689,6 +715,9 @@ class RoleManagementService:
             "discord_role_id": role_id,
             "discord_role_name": role_name,
             "is_privileged_discord_role": bool((existing or {}).get("is_privileged_discord_role")),
+            ROLE_PUBLIC_VISIBILITY_COLUMN: RoleManagementService._public_catalog_visibility(
+                (existing or {}).get(ROLE_PUBLIC_VISIBILITY_COLUMN)
+            ),
         }
 
         try:
@@ -750,6 +779,9 @@ class RoleManagementService:
                     "discord_role_id": role_id,
                     "category_name": (existing or {}).get("category_name") or _AUTO_DISCORD_CATEGORY,
                     "position": int((existing or {}).get("position") or 0),
+                    ROLE_PUBLIC_VISIBILITY_COLUMN: RoleManagementService._public_catalog_visibility(
+                        (existing or {}).get(ROLE_PUBLIC_VISIBILITY_COLUMN)
+                    ),
                 }
         return upserted, synced_ids
 
@@ -761,7 +793,7 @@ class RoleManagementService:
         try:
             existing_managed_resp = (
                 db.supabase.table("roles")
-                .select("name,discord_role_id,category_name,position")
+                .select("name,discord_role_id,category_name,position,show_in_roles_catalog")
                 .eq("is_discord_managed", True)
                 .execute()
             )
@@ -859,6 +891,7 @@ class RoleManagementService:
     ) -> list[dict[str, Any]]:
         grouped = RoleManagementService.list_roles_grouped(log_context=log_context)
         public_grouped: list[dict[str, Any]] = []
+        hidden_roles_count = 0
         roles_by_discord_id: dict[str, dict[str, Any]] = {}
         roles_by_name: dict[str, dict[str, Any]] = {}
         category_positions: dict[str, int] = {}
@@ -872,6 +905,18 @@ class RoleManagementService:
                 "roles": [],
             }
             for role in item.get("roles", []):
+                if not RoleManagementService._public_catalog_visibility(role.get(ROLE_PUBLIC_VISIBILITY_COLUMN)):
+                    hidden_roles_count += 1
+                    logger.info(
+                        "public roles catalog filtered hidden role command=%s category=%s role_name=%s discord_managed=%s discord_role_id=%s visibility_column=%s",
+                        log_context or "n/a",
+                        category_name,
+                        str(role.get("name") or "").strip() or None,
+                        bool(role.get("is_discord_managed")),
+                        str(role.get("discord_role_id") or "").strip() or None,
+                        ROLE_PUBLIC_VISIBILITY_COLUMN,
+                    )
+                    continue
                 public_role = dict(role)
                 public_role["points_required"] = None
                 public_role["acquire_method"] = (
@@ -884,7 +929,8 @@ class RoleManagementService:
                 if discord_role_id:
                     roles_by_discord_id[discord_role_id] = public_role
                 roles_by_name[str(public_role.get("name") or "").strip().lower()] = public_role
-            public_grouped.append(public_item)
+            if public_item["roles"]:
+                public_grouped.append(public_item)
 
         legacy_roles: list[dict[str, Any]] = []
         for index, (role_id, points_needed) in enumerate(sorted(ROLE_THRESHOLDS.items(), key=lambda item: item[1])):
@@ -926,6 +972,13 @@ class RoleManagementService:
             )
 
         public_grouped.sort(key=lambda item: (int(item.get("position") or 0), str(item.get("category") or "").lower()))
+        if hidden_roles_count:
+            logger.info(
+                "public roles catalog hidden roles filtered command=%s hidden_roles=%s visible_categories=%s",
+                log_context or "n/a",
+                hidden_roles_count,
+                len(public_grouped),
+            )
         return public_grouped
 
     @staticmethod
@@ -1050,6 +1103,9 @@ class RoleManagementService:
             "discord_role_id": str(discord_role_id).strip() if discord_role_id else None,
             "discord_role_name": str(discord_role_name).strip() if discord_role_name else None,
             "is_privileged_discord_role": False,
+            ROLE_PUBLIC_VISIBILITY_COLUMN: RoleManagementService._public_catalog_visibility(
+                before_role.get(ROLE_PUBLIC_VISIBILITY_COLUMN)
+            ),
         }
 
         conflict = RoleManagementService._find_active_profile_title_role_conflict(role_name)
@@ -2073,6 +2129,12 @@ class RoleManagementService:
             return cached_role
 
         select_variants = (
+            "name,category_name,description,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role,show_in_roles_catalog",
+            "name,category_name,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role,show_in_roles_catalog",
+            "name,category_name,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role,show_in_roles_catalog",
+            "name,category_name,description,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,show_in_roles_catalog",
+            "name,category_name,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,show_in_roles_catalog",
+            "name,category_name,is_discord_managed,discord_role_id,discord_role_name,show_in_roles_catalog",
             "name,category_name,description,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role",
             "name,category_name,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role",
             "name,category_name,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role",
@@ -2093,6 +2155,9 @@ class RoleManagementService:
                     row = resp.data[0]
                     row["description"] = RoleManagementService._description_text(row.get("description"))
                     row["acquire_hint"] = RoleManagementService._acquire_hint_text(row.get("acquire_hint"))
+                    row[ROLE_PUBLIC_VISIBILITY_COLUMN] = RoleManagementService._public_catalog_visibility(
+                        row.get(ROLE_PUBLIC_VISIBILITY_COLUMN)
+                    )
                     RoleManagementService._set_cached_role(role_key, row)
                     return row
             except Exception:
@@ -2332,7 +2397,7 @@ class RoleManagementService:
             db.supabase.table("role_categories").upsert({"name": _AUTO_DISCORD_CATEGORY, "position": 9999}).execute()
             existing_managed_resp = (
                 db.supabase.table("roles")
-                .select("name,discord_role_id,category_name,position")
+                .select("name,discord_role_id,category_name,position,show_in_roles_catalog")
                 .eq("is_discord_managed", True)
                 .execute()
             )
@@ -2374,6 +2439,9 @@ class RoleManagementService:
                         "discord_role_id": role_id,
                         "category_name": (existing or {}).get("category_name") or _AUTO_DISCORD_CATEGORY,
                         "position": int((existing or {}).get("position") or int(role.get("position") or 0)),
+                        ROLE_PUBLIC_VISIBILITY_COLUMN: RoleManagementService._public_catalog_visibility(
+                            (existing or {}).get(ROLE_PUBLIC_VISIBILITY_COLUMN)
+                        ),
                     }
 
             external_upserted, external_active_ids = RoleManagementService._sync_discord_roles_from_external_bindings(
@@ -2385,7 +2453,7 @@ class RoleManagementService:
 
             existing_resp = (
                 db.supabase.table("roles")
-                .select("name,discord_role_id,category_name")
+                .select("name,discord_role_id,category_name,show_in_roles_catalog")
                 .eq("is_discord_managed", True)
                 .execute()
             )
