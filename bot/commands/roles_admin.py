@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,6 +26,8 @@ _SECTION_LABELS = {
     "roles": "Роли",
     "users": "Пользователи",
 }
+_DISCORD_CATALOG_SYNC_MIN_INTERVAL_SECONDS = 45
+_LAST_IMPLICIT_DISCORD_CATALOG_SYNC_AT: dict[int, float] = {}
 
 
 def _role_assignment_error_message(result: dict[str, Any], *, default_message: str) -> str:
@@ -328,12 +331,29 @@ async def _sync_ctx_discord_roles_catalog(ctx: commands.Context, *, operation: s
     if not ctx.guild:
         return True
     try:
+        last_sync_at = _LAST_IMPLICIT_DISCORD_CATALOG_SYNC_AT.get(ctx.guild.id)
+        now = time.monotonic()
+        if last_sync_at is not None:
+            elapsed = now - last_sync_at
+            if elapsed < _DISCORD_CATALOG_SYNC_MIN_INTERVAL_SECONDS:
+                logger.info(
+                    "rolesadmin implicit discord catalog sync skipped actor_id=%s guild_id=%s operation=%s source=%s elapsed_sec=%.3f min_interval_sec=%s",
+                    ctx.author.id,
+                    ctx.guild.id,
+                    operation,
+                    "discord_hybrid",
+                    elapsed,
+                    _DISCORD_CATALOG_SYNC_MIN_INTERVAL_SECONDS,
+                )
+                return True
+
         guild_roles = [
             {"id": str(role.id), "name": role.name, "position": role.position, "guild_id": str(ctx.guild.id)}
             for role in ctx.guild.roles
             if not role.is_default()
         ]
         result = RoleManagementService.sync_discord_guild_roles(guild_roles)
+        _LAST_IMPLICIT_DISCORD_CATALOG_SYNC_AT[ctx.guild.id] = time.monotonic()
         logger.info(
             "rolesadmin implicit discord catalog sync completed actor_id=%s guild_id=%s operation=%s source=%s roles=%s upserted=%s removed=%s",
             ctx.author.id,
@@ -1591,6 +1611,7 @@ async def rolesadmin_sync_discord_roles(ctx: commands.Context):
             if not role.is_default()
         ]
         result = RoleManagementService.sync_discord_guild_roles(guild_roles)
+        _LAST_IMPLICIT_DISCORD_CATALOG_SYNC_AT[ctx.guild.id] = time.monotonic()
         await send_temp(
             ctx,
             f"✅ Синхронизация ролей завершена. Обновлено: {result.get('upserted', 0)}, удалено устаревших: {result.get('removed', 0)}.",
