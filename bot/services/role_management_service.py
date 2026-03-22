@@ -29,7 +29,9 @@ DELETE_ROLE_REASON_DISCORD_MANAGED = "discord_managed"
 DELETE_ROLE_REASON_NOT_FOUND = "not_found"
 DELETE_ROLE_REASON_ERROR = "error"
 ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE = "privileged_discord_role"
+ROLE_ASSIGNMENT_REASON_SYNC_ONLY_DISCORD_ROLE = "sync_only_discord_role"
 PRIVILEGED_DISCORD_ROLE_MESSAGE = "Эту Discord-роль может выдавать только глава/главный вице."
+SYNC_ONLY_DISCORD_ROLE_MESSAGE = "Эта скрытая Discord-роль управляется только через сам Discord и не меняется командами бота."
 USER_ACQUIRE_HINT_PLACEHOLDER = "Способ получения пока не указан администратором"
 PROTECTED_PROFILE_TITLE_ROLE_MESSAGE = "Это звание управляется через profile_title_roles → accounts.titles и не должно выдаваться как обычная роль."
 ROLE_NAME_CONFLICT_PROFILE_TITLE_MESSAGE = "Название совпадает с активным званием из profile_title_roles. Используй другое имя для каталожной роли: это уже звание, а не обычная роль каталога."
@@ -410,6 +412,47 @@ class RoleManagementService:
             "role_name": role_name,
             "discord_role_id": discord_role_id,
         }
+
+    @staticmethod
+    def _check_sync_only_discord_role_access(
+        *,
+        actor_provider: str | None,
+        actor_user_id: str | None,
+        role_name: str,
+        role_info: dict[str, Any] | None = None,
+        action: str,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        role = dict(role_info or RoleManagementService.get_role(role_name) or {})
+        discord_role_id = str(role.get("discord_role_id") or "").strip() or None
+        is_discord_managed = bool(role.get("is_discord_managed"))
+        is_hidden_from_catalog = not RoleManagementService._public_catalog_visibility(
+            role.get(ROLE_PUBLIC_VISIBILITY_COLUMN)
+        )
+        if not is_discord_managed or not discord_role_id or not is_hidden_from_catalog:
+            return RoleManagementService._role_action_result(
+                True,
+                role_name=role_name,
+                discord_role_id=discord_role_id,
+            )
+
+        logger.warning(
+            "sync_only_discord_role_access_denied actor_id=%s actor_provider=%s target_role=%s discord_role_id=%s action=%s source=%s visibility_column=%s",
+            str(actor_user_id or "").strip() or None,
+            str(actor_provider or "").strip() or None,
+            role_name,
+            discord_role_id,
+            action,
+            str(source or "").strip() or None,
+            ROLE_PUBLIC_VISIBILITY_COLUMN,
+        )
+        return RoleManagementService._role_action_result(
+            False,
+            reason=ROLE_ASSIGNMENT_REASON_SYNC_ONLY_DISCORD_ROLE,
+            message=SYNC_ONLY_DISCORD_ROLE_MESSAGE,
+            role_name=role_name,
+            discord_role_id=discord_role_id,
+        )
 
     @staticmethod
     def _check_privileged_discord_role_access(
@@ -1894,6 +1937,31 @@ class RoleManagementService:
                     message=PROTECTED_PROFILE_TITLE_ROLE_MESSAGE,
                     role_name=role_key,
                 )
+            guard_result = RoleManagementService._check_sync_only_discord_role_access(
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id,
+                role_name=role_key,
+                action="grant",
+                source=source,
+            )
+            if not guard_result["ok"]:
+                RoleManagementService.record_role_change_audit(
+                    action="role_grant_denied",
+                    role_name=role_key,
+                    source=source,
+                    actor_provider=actor_provider,
+                    actor_user_id=actor_user_id,
+                    actor_account_id=actor_account_id,
+                    target_provider=target_provider,
+                    target_user_id=target_user_id,
+                    target_account_id=account_key,
+                    before={"assigned": False},
+                    after={"assigned": False},
+                    status="denied",
+                    error_code=str(guard_result.get("reason") or "denied"),
+                    error_message=str(guard_result.get("message") or "role grant denied"),
+                )
+                return guard_result
             guard_result = RoleManagementService._check_privileged_discord_role_access(
                 actor_provider=actor_provider,
                 actor_user_id=actor_user_id,
@@ -2045,6 +2113,31 @@ class RoleManagementService:
                     message=PROTECTED_PROFILE_TITLE_ROLE_MESSAGE,
                     role_name=role_key,
                 )
+            guard_result = RoleManagementService._check_sync_only_discord_role_access(
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id,
+                role_name=role_key,
+                action="revoke",
+                source=source,
+            )
+            if not guard_result["ok"]:
+                RoleManagementService.record_role_change_audit(
+                    action="role_revoke_denied",
+                    role_name=role_key,
+                    source=source,
+                    actor_provider=actor_provider,
+                    actor_user_id=actor_user_id,
+                    actor_account_id=actor_account_id,
+                    target_provider=target_provider,
+                    target_user_id=target_user_id,
+                    target_account_id=account_key,
+                    before={"assigned": True},
+                    after={"assigned": True},
+                    status="denied",
+                    error_code=str(guard_result.get("reason") or "denied"),
+                    error_message=str(guard_result.get("message") or "role revoke denied"),
+                )
+                return guard_result
             guard_result = RoleManagementService._check_privileged_discord_role_access(
                 actor_provider=actor_provider,
                 actor_user_id=actor_user_id,

@@ -9,6 +9,8 @@ from bot.services.role_management_service import (
     PROTECTED_PROFILE_TITLE_ROLE_MESSAGE,
     ROLE_NAME_CONFLICT_PROFILE_TITLE_MESSAGE,
     ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE,
+    ROLE_ASSIGNMENT_REASON_SYNC_ONLY_DISCORD_ROLE,
+    SYNC_ONLY_DISCORD_ROLE_MESSAGE,
     RoleManagementService,
 )
 
@@ -493,6 +495,69 @@ class RoleManagementServiceTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(self.fake_db.tables["roles"][0]["category_name"], "Новая категория")
         self.assertEqual(self.fake_db.tables["roles"][0]["position"], 0)
+
+    def test_apply_user_role_changes_denies_hidden_discord_sync_only_role_on_grant(self):
+        self.fake_db.tables["roles"] = [
+            {
+                "name": "Bot Hidden",
+                "category_name": "Discord",
+                "is_discord_managed": True,
+                "discord_role_id": "sync-only-1",
+                "show_in_roles_catalog": False,
+            }
+        ]
+
+        with self.assertLogs("bot.services.role_management_service", level="WARNING") as captured:
+            result = RoleManagementService.apply_user_role_changes_by_account(
+                "acc-7",
+                actor_id="42",
+                actor_provider="telegram",
+                actor_user_id="42",
+                grant_roles=["Bot Hidden"],
+                source="telegram_command",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["grant_failed"], ["Bot Hidden"])
+        self.assertEqual(result["grant_denied"][0]["reason"], ROLE_ASSIGNMENT_REASON_SYNC_ONLY_DISCORD_ROLE)
+        self.assertEqual(result["grant_denied"][0]["message"], SYNC_ONLY_DISCORD_ROLE_MESSAGE)
+        self.assertEqual(self.fake_db.tables["account_role_assignments"], [])
+        self.assertTrue(any("sync_only_discord_role_access_denied" in line for line in captured.output), captured.output)
+        denied_audit = next(row for row in self.fake_db.tables["role_change_audit"] if row["action"] == "role_grant_denied")
+        self.assertEqual(denied_audit["error_code"], ROLE_ASSIGNMENT_REASON_SYNC_ONLY_DISCORD_ROLE)
+
+    def test_apply_user_role_changes_denies_hidden_discord_sync_only_role_on_revoke(self):
+        self.fake_db.tables["roles"] = [
+            {
+                "name": "Bot Hidden",
+                "category_name": "Discord",
+                "is_discord_managed": True,
+                "discord_role_id": "sync-only-1",
+                "show_in_roles_catalog": False,
+            }
+        ]
+        self.fake_db.tables["account_role_assignments"] = [
+            {"account_id": "acc-7", "role_name": "Bot Hidden", "source": "discord"}
+        ]
+
+        with self.assertLogs("bot.services.role_management_service", level="WARNING") as captured:
+            result = RoleManagementService.apply_user_role_changes_by_account(
+                "acc-7",
+                actor_id="42",
+                actor_provider="discord",
+                actor_user_id="42",
+                revoke_roles=["Bot Hidden"],
+                source="discord_command",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["revoke_failed"], ["Bot Hidden"])
+        self.assertEqual(result["revoke_denied"][0]["reason"], ROLE_ASSIGNMENT_REASON_SYNC_ONLY_DISCORD_ROLE)
+        self.assertEqual(result["revoke_denied"][0]["message"], SYNC_ONLY_DISCORD_ROLE_MESSAGE)
+        self.assertEqual(len(self.fake_db.tables["account_role_assignments"]), 1)
+        self.assertTrue(any("sync_only_discord_role_access_denied" in line for line in captured.output), captured.output)
+        denied_audit = next(row for row in self.fake_db.tables["role_change_audit"] if row["action"] == "role_revoke_denied")
+        self.assertEqual(denied_audit["error_code"], ROLE_ASSIGNMENT_REASON_SYNC_ONLY_DISCORD_ROLE)
 
     def test_apply_user_role_changes_denies_privileged_discord_role_for_vice(self):
         self.fake_db.tables["roles"] = [

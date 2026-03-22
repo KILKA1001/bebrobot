@@ -16,6 +16,8 @@ from bot.services.role_management_service import (
     DELETE_ROLE_REASON_NOT_FOUND,
     PRIVILEGED_DISCORD_ROLE_MESSAGE,
     ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE,
+    ROLE_ASSIGNMENT_REASON_SYNC_ONLY_DISCORD_ROLE,
+    SYNC_ONLY_DISCORD_ROLE_MESSAGE,
 )
 from bot.utils import send_temp
 
@@ -33,6 +35,8 @@ _LAST_IMPLICIT_DISCORD_CATALOG_SYNC_AT: dict[int, float] = {}
 def _role_assignment_error_message(result: dict[str, Any], *, default_message: str) -> str:
     if result.get("reason") == ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE:
         return f"❌ {result.get('message') or PRIVILEGED_DISCORD_ROLE_MESSAGE}"
+    if result.get("reason") == ROLE_ASSIGNMENT_REASON_SYNC_ONLY_DISCORD_ROLE:
+        return f"❌ {result.get('message') or SYNC_ONLY_DISCORD_ROLE_MESSAGE}"
     return default_message
 
 
@@ -926,6 +930,8 @@ class _DiscordUserRoleApplyButton(discord.ui.Button):
         for denied in privileged_denied:
             if denied.get("reason") == ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE:
                 lines.append(f"❌ {denied.get('message') or PRIVILEGED_DISCORD_ROLE_MESSAGE}")
+            elif denied.get("reason") == ROLE_ASSIGNMENT_REASON_SYNC_ONLY_DISCORD_ROLE:
+                lines.append(f"❌ {denied.get('message') or SYNC_ONLY_DISCORD_ROLE_MESSAGE}")
         if result.get("conflicting_roles"):
             lines.append("⚠️ Пропущены конфликтующие роли: " + ", ".join(result["conflicting_roles"]))
         embed = discord.Embed(
