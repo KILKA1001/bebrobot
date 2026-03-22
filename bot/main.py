@@ -12,6 +12,9 @@ import json
 import contextlib
 import hashlib
 import uuid
+import errno
+import socket
+from aiohttp import ClientConnectionError, ClientError, ServerTimeoutError
 from dotenv import load_dotenv
 
 from bot.telegram_bot.config import TELEGRAM_BOT_TOKEN_ENV, get_telegram_bot_token
@@ -214,6 +217,42 @@ def _reset_discord_http_client_state(reason: str) -> None:
         )
     except Exception:
         logging.exception("discord http state reset failed reason=%s", reason)
+
+
+def _is_transient_telegram_network_error(exc: BaseException) -> bool:
+    """Return True for short-lived Telegram transport/network failures."""
+
+    transient_error_types = (
+        asyncio.TimeoutError,
+        TimeoutError,
+        ConnectionError,
+        ClientConnectionError,
+        ServerTimeoutError,
+        socket.timeout,
+    )
+
+    if isinstance(exc, transient_error_types):
+        return True
+
+    if isinstance(exc, ClientError):
+        return True
+
+    if isinstance(exc, OSError):
+        transient_errno = {
+            errno.EAI_AGAIN,
+            errno.ECONNRESET,
+            errno.ECONNABORTED,
+            errno.ECONNREFUSED,
+            errno.ENETDOWN,
+            errno.ENETRESET,
+            errno.ENETUNREACH,
+            errno.EHOSTDOWN,
+            errno.EHOSTUNREACH,
+            errno.ETIMEDOUT,
+        }
+        return exc.errno in transient_errno
+
+    return False
 
 
 class _SuppressKnownRateLimitWarning(logging.Filter):
@@ -906,12 +945,10 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
 
     async def _run_telegram_with_retries() -> None:
         global telegram_runtime_started
-        crash_retry_delay = 5.0
-        conflict_retry_delay = 15.0
-        max_retry_delay = float(os.getenv("BOTH_RUNTIME_MAX_RETRY_DELAY", "300"))
-        max_conflict_retry_delay = float(os.getenv("BOTH_RUNTIME_MAX_CONFLICT_RETRY_DELAY", "600"))
+        max_network_retry_attempts = max(0, int(os.getenv("TELEGRAM_TRANSIENT_RETRY_ATTEMPTS", "2")))
+        network_retry_delay = float(os.getenv("TELEGRAM_TRANSIENT_RETRY_DELAY_SEC", "3"))
 
-        while True:
+        for attempt in range(1, max_network_retry_attempts + 2):
             async with telegram_runtime_guard:
                 if telegram_runtime_started:
                     logging.warning(
@@ -921,12 +958,19 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
                 telegram_runtime_started = True
 
             try:
-                logging.info("telegram runtime started token_hash=%s", _token_fingerprint(telegram_token))
+                logging.info(
+                    "telegram runtime started token_hash=%s attempt=%s max_attempts=%s",
+                    _token_fingerprint(telegram_token),
+                    attempt,
+                    max_network_retry_attempts + 1,
+                )
                 await run_telegram_polling(telegram_token)
-                logging.warning(
-                    "telegram runtime stopped without exception; "
-                    "treating as graceful stop and restarting in %.1fs",
-                    crash_retry_delay,
+                logging.error(
+                    "telegram runtime stopped unexpectedly without exception; "
+                    "fail-fast shutdown so external supervisor can decide restart policy"
+                )
+                raise RuntimeError(
+                    "telegram runtime stopped unexpectedly without exception; process shutdown required"
                 )
             except TelegramPollingAlreadyRunningInProcessError as exc:
                 logging.warning(
@@ -936,50 +980,55 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
                 return
             except TelegramPollingLockActiveError as exc:
                 logging.error(
-                    "telegram runtime duplicate startup detected; another process already owns the polling lock. details=%s retry_in=%.1fs",
+                    "telegram runtime duplicate startup detected; another process already owns the polling lock. "
+                    "Fail-fast shutdown required. details=%s",
                     exc,
-                    conflict_retry_delay,
                 )
-                await asyncio.sleep(conflict_retry_delay)
-                conflict_retry_delay = min(conflict_retry_delay * 2, max_conflict_retry_delay)
-                continue
+                raise
             except TelegramPollingPreflightConflictError as exc:
-                logging.warning(
+                logging.error(
                     "telegram runtime duplicate startup detected during preflight getUpdates; "
-                    "another consumer is active. details=%s retry_in=%.1fs",
+                    "another consumer is active. Fail-fast shutdown required. details=%s",
                     exc,
-                    conflict_retry_delay,
                 )
-                await asyncio.sleep(conflict_retry_delay)
-                conflict_retry_delay = min(conflict_retry_delay * 2, max_conflict_retry_delay)
-                continue
+                raise
             except TelegramPollingConflictDetectedError as exc:
                 logging.error(
                     "telegram runtime duplicate startup detected during active polling; "
-                    "lost getUpdates ownership. details=%s retry_in=%.1fs",
+                    "lost getUpdates ownership. Fail-fast shutdown required. details=%s",
                     exc,
-                    conflict_retry_delay,
                 )
-                await asyncio.sleep(conflict_retry_delay)
-                conflict_retry_delay = min(conflict_retry_delay * 2, max_conflict_retry_delay)
-                continue
+                raise
             except asyncio.CancelledError:
                 logging.info("telegram runtime cancelled")
                 raise
-            except Exception:
+            except Exception as exc:
+                transient_network_error = _is_transient_telegram_network_error(exc)
+                retries_left = max_network_retry_attempts - (attempt - 1)
+                if transient_network_error and retries_left > 0:
+                    logging.exception(
+                        "telegram runtime temporary network failure; retrying after short delay "
+                        "attempt=%s retries_left=%s retry_in=%.1fs error_type=%s",
+                        attempt,
+                        retries_left,
+                        network_retry_delay,
+                        type(exc).__name__,
+                    )
+                    await asyncio.sleep(network_retry_delay)
+                    continue
+
                 logging.exception(
-                    "telegram runtime crashed; retry_in=%.1fs",
-                    crash_retry_delay,
+                    "telegram runtime fatal failure; shutting down process "
+                    "attempt=%s retries_left=%s transient_network_error=%s error_type=%s",
+                    attempt,
+                    max(retries_left, 0),
+                    transient_network_error,
+                    type(exc).__name__,
                 )
-                await asyncio.sleep(crash_retry_delay)
-                crash_retry_delay = min(crash_retry_delay * 2, max_retry_delay)
-                continue
+                raise
             finally:
                 async with telegram_runtime_guard:
                     telegram_runtime_started = False
-
-            await asyncio.sleep(crash_retry_delay)
-            crash_retry_delay = min(crash_retry_delay * 2, max_retry_delay)
 
     discord_task = asyncio.create_task(_run_discord_once(), name="discord-runtime")
     telegram_task = asyncio.create_task(_run_telegram_with_retries(), name="telegram-runtime")

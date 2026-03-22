@@ -354,7 +354,7 @@ def main() -> None:
     if not token:
         raise RuntimeError(
             f"Не задана переменная окружения {TELEGRAM_BOT_TOKEN_ENV}. "
-            "Добавьте её в Render перед запуском Telegram-процесса."
+            "Укажите её в окружении VPS/сервиса перед запуском Telegram-процесса."
         )
 
     asyncio.run(run_polling(token))
