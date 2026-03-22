@@ -4,6 +4,7 @@ import secrets
 import string
 import uuid
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 _ACCOUNT_ID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
 )
+_ACCOUNT_ID_CACHE_MISS = object()
 
 
 class AccountsService:
@@ -31,8 +33,51 @@ class AccountsService:
         "nulls_brawl_id": {"default": "—", "max_length": 32, "label": "Null's Brawl ID"},
     }
     _account_titles_cache: dict[str, list[str]] = {}
+    _account_id_cache: dict[tuple[str, str], tuple[float, str | None]] = {}
     _title_roles_cache: dict[int, str] | None = None
     MAX_VISIBLE_PROFILE_ROLES = 3
+    ACCOUNT_ID_CACHE_TTL_SEC = int(os.getenv("ACCOUNT_ID_CACHE_TTL_SEC", "300"))
+
+    @staticmethod
+    def _account_id_cache_key(provider: str, provider_user_id: str) -> tuple[str, str]:
+        return (str(provider or "").strip().lower(), str(provider_user_id or "").strip())
+
+    @staticmethod
+    def _get_cached_account_id(provider: str, provider_user_id: str) -> str | None | object:
+        cache_key = AccountsService._account_id_cache_key(provider, provider_user_id)
+        cached_entry = AccountsService._account_id_cache.get(cache_key)
+        if cached_entry is None:
+            return _ACCOUNT_ID_CACHE_MISS
+
+        expires_at, cached_account_id = cached_entry
+        now = time.monotonic()
+        if expires_at <= now:
+            AccountsService._account_id_cache.pop(cache_key, None)
+            logger.debug(
+                "resolve_account_id cache expired provider=%s provider_user_id=%s",
+                cache_key[0],
+                cache_key[1],
+            )
+            return _ACCOUNT_ID_CACHE_MISS
+
+        logger.debug(
+            "resolve_account_id cache hit provider=%s provider_user_id=%s account_id=%s",
+            cache_key[0],
+            cache_key[1],
+            cached_account_id,
+        )
+        return cached_account_id
+
+    @staticmethod
+    def _cache_account_id(provider: str, provider_user_id: str, account_id: str | None) -> None:
+        cache_key = AccountsService._account_id_cache_key(provider, provider_user_id)
+        ttl_sec = max(1, int(AccountsService.ACCOUNT_ID_CACHE_TTL_SEC))
+        AccountsService._account_id_cache[cache_key] = (time.monotonic() + ttl_sec, str(account_id).strip() or None)
+
+    @staticmethod
+    def invalidate_account_id_cache(provider: str, provider_user_id: str) -> None:
+        cache_key = AccountsService._account_id_cache_key(provider, provider_user_id)
+        AccountsService._account_id_cache.pop(cache_key, None)
 
     @staticmethod
     def _load_account_identity_rows(account_id: str) -> list[dict]:
@@ -643,23 +688,44 @@ class AccountsService:
 
     @staticmethod
     def resolve_account_id(provider: str, provider_user_id: str) -> Optional[str]:
+        normalized_provider, normalized_user_id = AccountsService._account_id_cache_key(provider, provider_user_id)
+        if not normalized_provider or not normalized_user_id:
+            logger.warning(
+                "resolve_account_id skipped invalid input provider=%s provider_user_id=%s",
+                provider,
+                provider_user_id,
+            )
+            return None
+
+        cached_account_id = AccountsService._get_cached_account_id(normalized_provider, normalized_user_id)
+        if cached_account_id is not _ACCOUNT_ID_CACHE_MISS:
+            return cached_account_id
+
         if not db.supabase:
             return None
         try:
             response = (
                 db.supabase.table("account_identities")
                 .select("account_id")
-                .eq("provider", provider)
-                .eq("provider_user_id", str(provider_user_id))
+                .eq("provider", normalized_provider)
+                .eq("provider_user_id", normalized_user_id)
                 .limit(1)
                 .execute()
             )
             if response.data:
-                return response.data[0].get("account_id")
+                account_id = str(response.data[0].get("account_id") or "").strip() or None
+                AccountsService._cache_account_id(normalized_provider, normalized_user_id, account_id)
+                return account_id
+            AccountsService._cache_account_id(normalized_provider, normalized_user_id, None)
         except Exception as e:
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("identity_resolve_errors")
-            logger.warning("resolve_account_id failed (%s:%s): %s", provider, provider_user_id, e)
+            logger.warning(
+                "resolve_account_id failed provider=%s provider_user_id=%s error=%s",
+                normalized_provider,
+                normalized_user_id,
+                AccountsService._format_db_error(e),
+            )
         return None
 
     @staticmethod
@@ -1187,6 +1253,7 @@ class AccountsService:
             response = query.execute()
             updated_rows = response.data or []
             if updated_rows:
+                AccountsService._cache_account_id(normalized_provider, normalized_provider_user_id, normalized_account_id)
                 logger.warning(
                     "register identity claimed lookup identity row provider=%s provider_user_id=%s account_id=%s",
                     normalized_provider,
@@ -1198,6 +1265,7 @@ class AccountsService:
             refreshed_identity = AccountsService._load_identity_row(normalized_provider, normalized_provider_user_id)
             refreshed_account_id = str(refreshed_identity.get("account_id") or "").strip() if refreshed_identity else ""
             if refreshed_account_id:
+                AccountsService._cache_account_id(normalized_provider, normalized_provider_user_id, refreshed_account_id)
                 logger.warning(
                     "register identity observed concurrent binding provider=%s provider_user_id=%s existing_account_id=%s new_account_id=%s",
                     normalized_provider,
@@ -1585,6 +1653,7 @@ class AccountsService:
                 logger.warning("consume_link_code missing account_id code=%s table=%s", code, table_name)
                 return False, "Код не содержит account_id"
 
+            AccountsService.invalidate_account_id_cache(target_provider, target_provider_user_id)
             existing_account_id = AccountsService.resolve_account_id(target_provider, target_provider_user_id)
             if existing_account_id and str(existing_account_id) != str(account_id):
                 logger.warning(
@@ -1597,6 +1666,7 @@ class AccountsService:
                 )
                 AccountsService._merge_accounts(str(existing_account_id), str(account_id))
                 existing_account_id = str(account_id)
+                AccountsService._cache_account_id(target_provider, target_provider_user_id, existing_account_id)
 
             if not existing_account_id:
                 identity_payload = {
@@ -1609,10 +1679,13 @@ class AccountsService:
                         identity_payload,
                         on_conflict="provider,provider_user_id",
                     ).execute()
+                    AccountsService._cache_account_id(target_provider, target_provider_user_id, str(account_id))
                 except TypeError:
                     db.supabase.table("account_identities").upsert(identity_payload).execute()
+                    AccountsService._cache_account_id(target_provider, target_provider_user_id, str(account_id))
                 except Exception as e:
                     if AccountsService._is_unique_violation(e):
+                        AccountsService.invalidate_account_id_cache(target_provider, target_provider_user_id)
                         existing_account_id = AccountsService.resolve_account_id(target_provider, target_provider_user_id)
                         if existing_account_id and str(existing_account_id) != str(account_id):
                             logger.warning(
@@ -1624,6 +1697,7 @@ class AccountsService:
                                 account_id,
                             )
                             AccountsService._merge_accounts(str(existing_account_id), str(account_id))
+                            AccountsService._cache_account_id(target_provider, target_provider_user_id, str(account_id))
                     else:
                         raise
 
@@ -2060,7 +2134,6 @@ class AccountsService:
 
         normalized = [str(item).strip() for item in (titles or []) if str(item).strip()]
         normalized = list(dict.fromkeys(normalized))
-        AccountsService._account_titles_cache[str(account_id)] = list(normalized)
 
         if not db.supabase:
             logger.warning("save_account_titles skipped for account_id=%s source=%s: supabase is unavailable", account_id, source)
@@ -2073,6 +2146,7 @@ class AccountsService:
         }
         try:
             db.supabase.table("accounts").update(payload).eq("id", str(account_id)).execute()
+            AccountsService._account_titles_cache[str(account_id)] = list(normalized)
             return True
         except Exception as e:
             logger.warning("save_account_titles failed for account_id=%s source=%s error=%s", account_id, source, e)
@@ -2170,6 +2244,7 @@ class AccountsService:
                     db._inc_metric("unlink_fail")
                 return False, "Связь не найдена"
 
+            AccountsService.invalidate_account_id_cache(provider, provider_user_id)
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("unlink_success")
             logger.info("identity_unlinked provider=%s provider_user_id=%s", provider, provider_user_id)

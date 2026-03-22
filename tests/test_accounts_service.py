@@ -58,6 +58,13 @@ class _TableOp:
 
     def execute(self):
         rows = self.fake_db.tables[self.table_name]
+        self.fake_db.operations.append(
+            {
+                "table": self.table_name,
+                "action": self._action,
+                "filters": list(self._filters),
+            }
+        )
 
         if self._action == "insert":
             if self.table_name == "accounts" and "id" not in self._payload:
@@ -184,6 +191,7 @@ class _FakeDb:
         self.account_seq = 0
         self.supabase = _FakeSupabase(self)
         self.metrics = []
+        self.operations = []
 
     def _inc_metric(self, name):
         self.metrics.append(name)
@@ -195,6 +203,7 @@ class AccountsServiceTests(unittest.TestCase):
         self.patcher = patch("bot.services.accounts_service.db", self.fake_db)
         self.patcher.start()
         AccountsService._account_titles_cache = {}
+        AccountsService._account_id_cache = {}
         AccountsService._title_roles_cache = None
 
     def tearDown(self):
@@ -743,6 +752,38 @@ class AccountsServiceTests(unittest.TestCase):
         self.assertIsNotNone(profile)
         self.assertEqual(profile["titles"], ["Глава клуба", "Главный вице"])
         self.assertEqual(profile["titles_text"], "Глава клуба, Главный вице")
+
+    def test_resolve_account_id_uses_ttl_cache_for_repeat_lookup(self):
+        AccountsService.register_identity("discord", "111")
+        self.fake_db.operations.clear()
+
+        with patch("bot.services.accounts_service.time.monotonic", side_effect=[100.0, 101.0]):
+            first = AccountsService.resolve_account_id("discord", "111")
+            second = AccountsService.resolve_account_id("discord", "111")
+
+        self.assertEqual(first, second)
+        self.assertEqual(first, "acc-1")
+        select_operations = [
+            op for op in self.fake_db.operations
+            if op["table"] == "account_identities" and op["action"] == "select"
+        ]
+        self.assertEqual(len(select_operations), 1)
+
+    def test_resolve_account_id_refreshes_cache_after_ttl_expiry(self):
+        AccountsService.register_identity("discord", "111")
+        self.fake_db.operations.clear()
+
+        with patch("bot.services.accounts_service.time.monotonic", side_effect=[100.0, 401.0, 401.0]):
+            first = AccountsService.resolve_account_id("discord", "111")
+            second = AccountsService.resolve_account_id("discord", "111")
+
+        self.assertEqual(first, "acc-1")
+        self.assertEqual(second, "acc-1")
+        select_operations = [
+            op for op in self.fake_db.operations
+            if op["table"] == "account_identities" and op["action"] == "select"
+        ]
+        self.assertEqual(len(select_operations), 2)
 
 
     def test_profile_contains_resolved_roles_payload(self):

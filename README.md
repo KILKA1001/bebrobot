@@ -28,7 +28,7 @@ pip install -r requirements.txt
      BOT_API_DELAY_JITTER=0.8
      PROFILE_DISCORD_TITLE_ROLE_IDS=ID_роли_главы,ID_роли_вице
      PROFILE_DISCORD_TITLE_ROLE_NAMES=Глава клуба,Главный вице
-     PROFILE_TITLES_SYNC_INTERVAL_SEC=900
+     PROFILE_TITLES_SYNC_INTERVAL_SEC=21600
      ```
      Здесь `ID_роли` — числовые идентификаторы ролей, которым разрешены
      соответствующие действия.
@@ -51,7 +51,9 @@ pip install -r requirements.txt
      Быстрое заполнение таблицы готовым шаблоном: `sql/p6_profile_title_roles_seed_template.sql`
      (замените NULL на свои ID ролей и выполните запрос).
 
-     `PROFILE_TITLES_SYNC_INTERVAL_SEC` задаёт интервал (в секундах) для фоновой синхронизации званий.
+     `PROFILE_TITLES_SYNC_INTERVAL_SEC` задаёт интервал (в секундах) для reconciliation-прохода.
+     Основная синхронизация званий теперь идёт event-driven через Discord events изменения ролей и входа участника,
+     поэтому безопасный дефолт поднят до `21600` секунд (6 часов), чтобы периодический job только перепроверял состояние.
 
 3. **Запуск бота**:
 ```bash
