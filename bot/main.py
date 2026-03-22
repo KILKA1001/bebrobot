@@ -59,6 +59,7 @@ from bot.telegram_bot.main import (
     TelegramPollingAlreadyRunningInProcessError,
     TelegramPollingLockActiveError,
     TelegramPollingPreflightConflictError,
+    TelegramPollingTransientNetworkError,
     run_polling as run_telegram_polling,
 )
 from bot.utils.discord_http import (
@@ -81,6 +82,7 @@ tasks_started = False
 startup_tasks_started = False
 commands_synced = False
 presence_initialized = False
+runtime_views_restored = False
 telegram_runtime_started = False
 telegram_runtime_guard = asyncio.Lock()
 
@@ -89,11 +91,6 @@ COMMAND_SYNC_STATE_FILE = os.getenv(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "command_sync_state.json"),
 )
 COMMAND_SYNC_MIN_INTERVAL = int(os.getenv("COMMAND_SYNC_MIN_INTERVAL", "21600"))
-STARTUP_RETRY_STATE_FILE = os.getenv(
-    "STARTUP_RETRY_STATE_FILE",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "startup_retry_state.json"),
-)
-
 bot = command_bot
 db.bot = bot
 
@@ -321,6 +318,89 @@ async def autosave_task():
             logging.exception("autosave flush failed")
         await asyncio.sleep(autosave_interval_sec)
 
+
+def _restore_runtime_views_once() -> None:
+    global runtime_views_restored
+    if runtime_views_restored:
+        logging.info("discord runtime view restoration skipped: already completed in this process")
+        return
+
+    active_tournaments = tournament_db.get_active_tournaments()
+    logging.info("discord runtime view restoration begin active_tournaments=%s", len(active_tournaments))
+
+    for tour in active_tournaments:
+        if not all(key in tour for key in ["id", "size", "type", "announcement_message_id"]):
+            logging.warning("discord runtime view restoration skipped malformed tournament payload=%s", tour)
+            continue
+
+        try:
+            bet_view = BettingView(tour["id"])
+            logging.info(
+                "discord view registration begin tour_id=%s announcement_message_id=%s | %s",
+                tour["id"],
+                tour["announcement_message_id"],
+                _startup_context(step="betting_view_register", operation_id=f"tournament:{tour['id']}"),
+            )
+            bot.add_view(bet_view, message_id=tour["announcement_message_id"])
+            logging.info(
+                "discord view registration complete tour_id=%s announcement_message_id=%s | %s",
+                tour["id"],
+                tour["announcement_message_id"],
+                _startup_context(step="betting_view_register", operation_id=f"tournament:{tour['id']}"),
+            )
+
+            status_msg_id = tournament_db.get_status_message_id(tour["id"])
+            if status_msg_id:
+                logging.info(
+                    "discord view registration begin tour_id=%s status_message_id=%s | %s",
+                    tour["id"],
+                    status_msg_id,
+                    _startup_context(step="betting_status_view_register", operation_id=f"tournament:{tour['id']}"),
+                )
+                bot.add_view(BettingView(tour["id"]), message_id=status_msg_id)
+                logging.info(
+                    "discord view registration complete tour_id=%s status_message_id=%s | %s",
+                    tour["id"],
+                    status_msg_id,
+                    _startup_context(step="betting_status_view_register", operation_id=f"tournament:{tour['id']}"),
+                )
+        except Exception:
+            logging.exception("discord runtime view restoration failed tour_id=%s", tour.get("id"))
+
+        participants_data = tournament_db.list_participants(tour["id"])
+        participants = []
+        for p in participants_data:
+            if "discord_user_id" in p and p["discord_user_id"]:
+                participants.append(p["discord_user_id"])
+            elif "player_id" in p and p["player_id"]:
+                participants.append(p["player_id"])
+
+        if participants:
+            try:
+                team_size = 3 if tour.get("type") == "team" else 1
+                tournament_logic = create_tournament_logic(
+                    participants, team_size=team_size, shuffle=False
+                )
+                round_management_view = RoundManagementView(tour["id"], tournament_logic)
+                logging.info(
+                    "discord view registration begin tour_id=%s participants_count=%s | %s",
+                    tour["id"],
+                    len(participants),
+                    _startup_context(step="round_management_view_register", operation_id=f"tournament:{tour['id']}"),
+                )
+                bot.add_view(round_management_view)
+                logging.info(
+                    "discord view registration complete tour_id=%s participants_count=%s | %s",
+                    tour["id"],
+                    len(participants),
+                    _startup_context(step="round_management_view_register", operation_id=f"tournament:{tour['id']}"),
+                )
+            except Exception:
+                logging.exception("discord round management view restoration failed tour_id=%s", tour.get("id"))
+
+    runtime_views_restored = True
+    logging.info("discord runtime view restoration complete active_tournaments=%s", len(active_tournaments))
+
 @bot.event
 async def on_ready():
     print(f'🟢 Бот {bot.user} запущен!')
@@ -425,76 +505,7 @@ async def on_ready():
         except Exception:
             logging.exception("❌ Ошибка синхронизации slash-команд | %s", _startup_context(step="tree_sync", should_sync=should_sync))
     
-    active_tournaments = tournament_db.get_active_tournaments()
-    for tour in active_tournaments:
-        # Проверяем наличие нужных полей
-        if not all(key in tour for key in ["id", "size", "type", "announcement_message_id"]):
-            continue
-
-        try:
-            # Регистрируем кнопку ставок, чтобы она работала после перезапуска
-            bet_view = BettingView(tour["id"])
-            logging.info(
-                "discord view registration begin tour_id=%s announcement_message_id=%s | %s",
-                tour["id"],
-                tour["announcement_message_id"],
-                _startup_context(step="betting_view_register", operation_id=f"tournament:{tour['id']}"),
-            )
-            bot.add_view(bet_view, message_id=tour["announcement_message_id"])
-            logging.info(
-                "discord view registration complete tour_id=%s announcement_message_id=%s | %s",
-                tour["id"],
-                tour["announcement_message_id"],
-                _startup_context(step="betting_view_register", operation_id=f"tournament:{tour['id']}"),
-            )
-
-            # если есть отдельное сообщение со статусом — добавляем кнопку и туда
-            status_msg_id = tournament_db.get_status_message_id(tour["id"])
-            if status_msg_id:
-                logging.info(
-                    "discord view registration begin tour_id=%s status_message_id=%s | %s",
-                    tour["id"],
-                    status_msg_id,
-                    _startup_context(step="betting_status_view_register", operation_id=f"tournament:{tour['id']}"),
-                )
-                bot.add_view(BettingView(tour["id"]), message_id=status_msg_id)
-                logging.info(
-                    "discord view registration complete tour_id=%s status_message_id=%s | %s",
-                    tour["id"],
-                    status_msg_id,
-                    _startup_context(step="betting_status_view_register", operation_id=f"tournament:{tour['id']}"),
-                )
-        except Exception as e:
-            print(f"Ошибка при регистрации кнопок турнира {tour.get('id')}: {e}")
-
-        # Регистрация RoundManagementView
-        participants_data = tournament_db.list_participants(tour["id"])
-        participants = []
-        for p in participants_data:
-            if "discord_user_id" in p and p["discord_user_id"]:
-                participants.append(p["discord_user_id"])
-            elif "player_id" in p and p["player_id"]:
-                participants.append(p["player_id"])
-                
-        if participants:
-            team_size = 3 if tour.get("type") == "team" else 1
-            tournament_logic = create_tournament_logic(
-                participants, team_size=team_size, shuffle=False
-            )
-            round_management_view = RoundManagementView(tour["id"], tournament_logic)
-            logging.info(
-                "discord view registration begin tour_id=%s participants_count=%s | %s",
-                tour["id"],
-                len(participants),
-                _startup_context(step="round_management_view_register", operation_id=f"tournament:{tour['id']}"),
-            )
-            bot.add_view(round_management_view)
-            logging.info(
-                "discord view registration complete tour_id=%s participants_count=%s | %s",
-                tour["id"],
-                len(participants),
-                _startup_context(step="round_management_view_register", operation_id=f"tournament:{tour['id']}"),
-            )
+    _restore_runtime_views_once()
 
     # Не дублируем фоновые задачи при повторном on_ready (reconnect)
     if not startup_tasks_started:
@@ -831,37 +842,6 @@ def mark_commands_synced() -> None:
             json.dump({"last_synced": time.time()}, f)
     except OSError as e:
         logging.warning("Не удалось записать состояние синхронизации команд: %s", e)
-
-
-def load_startup_retry_state() -> tuple[float, float]:
-    """Load persisted cooldown timestamp and retry delay for startup retries."""
-    try:
-        with open(STARTUP_RETRY_STATE_FILE, "r", encoding="utf-8") as f:
-            state = json.load(f)
-        return float(state.get("next_retry_at", 0)), float(state.get("retry_delay", 60.0))
-    except (FileNotFoundError, ValueError, OSError, TypeError):
-        return 0.0, 60.0
-
-
-def save_startup_retry_state(next_retry_at: float, retry_delay: float) -> None:
-    try:
-        with open(STARTUP_RETRY_STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump({"next_retry_at": next_retry_at, "retry_delay": retry_delay}, f)
-    except OSError as e:
-        logging.warning("Не удалось записать состояние повторного запуска: %s", e)
-
-
-
-def load_next_startup_retry_at() -> float:
-    """Backward-compatible shim for older startup code paths."""
-    next_retry_at, _ = load_startup_retry_state()
-    return next_retry_at
-
-
-def save_next_startup_retry_at(next_retry_at: float) -> None:
-    """Backward-compatible shim for older startup code paths."""
-    _, retry_delay = load_startup_retry_state()
-    save_startup_retry_state(next_retry_at, retry_delay)
 # Основной запуск
 
 def run_telegram_main(token: str) -> None:
@@ -1019,90 +999,74 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
 
     async def _run_telegram_with_retries() -> None:
         global telegram_runtime_started
-        max_network_retry_attempts = max(0, int(os.getenv("TELEGRAM_TRANSIENT_RETRY_ATTEMPTS", "2")))
-        network_retry_delay = float(os.getenv("TELEGRAM_TRANSIENT_RETRY_DELAY_SEC", "3"))
-
-        for attempt in range(1, max_network_retry_attempts + 2):
-            async with telegram_runtime_guard:
-                if telegram_runtime_started:
-                    logging.warning(
-                        "telegram runtime duplicate startup detected; another in-process telegram loop is already active"
-                    )
-                    return
-                telegram_runtime_started = True
-
-            try:
-                logging.info(
-                    "telegram runtime started token_hash=%s attempt=%s max_attempts=%s",
-                    _token_fingerprint(telegram_token),
-                    attempt,
-                    max_network_retry_attempts + 1,
-                )
-                await run_telegram_polling(telegram_token)
-                logging.error(
-                    "telegram runtime stopped unexpectedly without exception; "
-                    "fail-fast shutdown so external supervisor can decide restart policy"
-                )
-                raise RuntimeError(
-                    "telegram runtime stopped unexpectedly without exception; process shutdown required"
-                )
-            except TelegramPollingAlreadyRunningInProcessError as exc:
+        async with telegram_runtime_guard:
+            if telegram_runtime_started:
                 logging.warning(
-                    "telegram runtime duplicate startup detected; no restart. details=%s",
-                    exc,
+                    "telegram runtime duplicate startup detected; another in-process telegram loop is already active"
                 )
                 return
-            except TelegramPollingLockActiveError as exc:
-                logging.error(
-                    "telegram runtime duplicate startup detected; another process already owns the polling lock. "
-                    "Fail-fast shutdown required. details=%s",
-                    exc,
-                )
-                raise
-            except TelegramPollingPreflightConflictError as exc:
-                logging.error(
-                    "telegram runtime duplicate startup detected during preflight getUpdates; "
-                    "another consumer is active. Fail-fast shutdown required. details=%s",
-                    exc,
-                )
-                raise
-            except TelegramPollingConflictDetectedError as exc:
-                logging.error(
-                    "telegram runtime duplicate startup detected during active polling; "
-                    "lost getUpdates ownership. Fail-fast shutdown required. details=%s",
-                    exc,
-                )
-                raise
-            except asyncio.CancelledError:
-                logging.info("telegram runtime cancelled")
-                raise
-            except Exception as exc:
-                transient_network_error = _is_transient_telegram_network_error(exc)
-                retries_left = max_network_retry_attempts - (attempt - 1)
-                if transient_network_error and retries_left > 0:
-                    logging.exception(
-                        "telegram runtime temporary network failure; retrying after short delay "
-                        "attempt=%s retries_left=%s retry_in=%.1fs error_type=%s",
-                        attempt,
-                        retries_left,
-                        network_retry_delay,
-                        type(exc).__name__,
-                    )
-                    await asyncio.sleep(network_retry_delay)
-                    continue
+            telegram_runtime_started = True
 
-                logging.exception(
-                    "telegram runtime fatal failure; shutting down process "
-                    "attempt=%s retries_left=%s transient_network_error=%s error_type=%s",
-                    attempt,
-                    max(retries_left, 0),
-                    transient_network_error,
-                    type(exc).__name__,
-                )
-                raise
-            finally:
-                async with telegram_runtime_guard:
-                    telegram_runtime_started = False
+        try:
+            logging.info(
+                "telegram runtime started token_hash=%s bounded_internal_retries=%s",
+                _token_fingerprint(telegram_token),
+                max(1, int(os.getenv("TELEGRAM_POLLING_MAX_TRANSIENT_FAILURES", "3"))) - 1,
+            )
+            await run_telegram_polling(telegram_token)
+            logging.error(
+                "telegram runtime stopped unexpectedly without exception; "
+                "fail-fast shutdown so external supervisor can decide restart policy"
+            )
+            raise RuntimeError(
+                "telegram runtime stopped unexpectedly without exception; process shutdown required"
+            )
+        except TelegramPollingAlreadyRunningInProcessError as exc:
+            logging.warning(
+                "telegram runtime duplicate startup detected; no restart. details=%s",
+                exc,
+            )
+            return
+        except TelegramPollingLockActiveError as exc:
+            logging.error(
+                "telegram runtime duplicate startup detected; another process already owns the polling lock. "
+                "Fail-fast shutdown required. details=%s",
+                exc,
+            )
+            raise
+        except TelegramPollingPreflightConflictError as exc:
+            logging.error(
+                "telegram runtime duplicate startup detected during preflight getUpdates; "
+                "another consumer is active. Fail-fast shutdown required. details=%s",
+                exc,
+            )
+            raise
+        except TelegramPollingConflictDetectedError as exc:
+            logging.error(
+                "telegram runtime duplicate startup detected during active polling; "
+                "lost getUpdates ownership. Fail-fast shutdown required. details=%s",
+                exc,
+            )
+            raise
+        except TelegramPollingTransientNetworkError as exc:
+            logging.exception(
+                "telegram runtime exhausted bounded transient polling retries; shutting down process. details=%s",
+                exc,
+            )
+            raise
+        except asyncio.CancelledError:
+            logging.info("telegram runtime cancelled")
+            raise
+        except Exception as exc:
+            logging.exception(
+                "telegram runtime fatal failure; shutting down process transient_network_error=%s error_type=%s",
+                _is_transient_telegram_network_error(exc),
+                type(exc).__name__,
+            )
+            raise
+        finally:
+            async with telegram_runtime_guard:
+                telegram_runtime_started = False
 
     discord_task = asyncio.create_task(_run_discord_once(), name="discord-runtime")
     telegram_task = asyncio.create_task(_run_telegram_with_retries(), name="telegram-runtime")
