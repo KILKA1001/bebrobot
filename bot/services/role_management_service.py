@@ -1,4 +1,7 @@
+import copy
 import logging
+import os
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -32,10 +35,105 @@ ROLE_NAME_CONFLICT_PROFILE_TITLE_MESSAGE = "Название совпадает 
 ACQUIRE_METHOD_POINTS = "за баллы"
 ACQUIRE_METHOD_ADMIN = "выдаёт администратор"
 ACQUIRE_METHOD_DISCORD_SYNC = "автоматически синхронизируется с Discord"
+_ROLE_CACHE_MISS = object()
 
 
 class RoleManagementService:
     PUBLIC_ROLE_CATALOG_PAGE_SIZE = 8
+    ROLE_CATALOG_CACHE_TTL_SEC = int(os.getenv("ROLE_CATALOG_CACHE_TTL_SEC", "30"))
+    _grouped_roles_cache: tuple[float, list[dict[str, Any]]] | None = None
+    _role_lookup_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
+
+    @staticmethod
+    def _catalog_cache_ttl_sec() -> int:
+        return max(1, int(RoleManagementService.ROLE_CATALOG_CACHE_TTL_SEC))
+
+    @staticmethod
+    def _cache_copy(value: Any) -> Any:
+        return copy.deepcopy(value)
+
+    @staticmethod
+    def _get_cached_grouped_roles() -> list[dict[str, Any]] | None:
+        cached = RoleManagementService._grouped_roles_cache
+        if cached is None:
+            return None
+        expires_at, grouped = cached
+        now = time.monotonic()
+        if expires_at <= now:
+            RoleManagementService._grouped_roles_cache = None
+            logger.debug("role catalog grouped cache expired")
+            return None
+        logger.debug("role catalog grouped cache hit categories=%s", len(grouped))
+        return RoleManagementService._cache_copy(grouped)
+
+    @staticmethod
+    def _set_cached_grouped_roles(grouped: list[dict[str, Any]]) -> None:
+        ttl_sec = RoleManagementService._catalog_cache_ttl_sec()
+        cached_grouped = RoleManagementService._cache_copy(grouped)
+        RoleManagementService._grouped_roles_cache = (time.monotonic() + ttl_sec, cached_grouped)
+
+        roles_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
+        expires_at = time.monotonic() + ttl_sec
+        for item in grouped:
+            category_name = RoleManagementService._normalized_category(item.get("category"))
+            for role in item.get("roles", []):
+                role_name = str(role.get("name") or "").strip()
+                if not role_name:
+                    continue
+                roles_cache[role_name] = (
+                    expires_at,
+                    {
+                        "name": role_name,
+                        "category_name": category_name,
+                        "description": RoleManagementService._description_text(role.get("description")),
+                        "acquire_hint": RoleManagementService._acquire_hint_text(role.get("acquire_hint")),
+                        "is_discord_managed": bool(role.get("is_discord_managed")),
+                        "discord_role_id": str(role.get("discord_role_id") or "").strip() or None,
+                        "discord_role_name": str(role.get("discord_role_name") or "").strip() or None,
+                        "is_privileged_discord_role": bool(role.get("is_privileged_discord_role")),
+                    },
+                )
+        RoleManagementService._role_lookup_cache = roles_cache
+        logger.debug(
+            "role catalog caches refreshed categories=%s roles=%s ttl_sec=%s",
+            len(grouped),
+            len(roles_cache),
+            ttl_sec,
+        )
+
+    @staticmethod
+    def _get_cached_role(role_name: str) -> dict[str, Any] | None | object:
+        role_key = str(role_name or "").strip()
+        if not role_key:
+            return None
+        cached = RoleManagementService._role_lookup_cache.get(role_key)
+        if cached is None:
+            return _ROLE_CACHE_MISS
+        expires_at, role = cached
+        now = time.monotonic()
+        if expires_at <= now:
+            RoleManagementService._role_lookup_cache.pop(role_key, None)
+            logger.debug("role lookup cache expired role_name=%s", role_key)
+            return _ROLE_CACHE_MISS
+        logger.debug("role lookup cache hit role_name=%s", role_key)
+        return RoleManagementService._cache_copy(role)
+
+    @staticmethod
+    def _set_cached_role(role_name: str, role: dict[str, Any] | None) -> None:
+        role_key = str(role_name or "").strip()
+        if not role_key:
+            return
+        ttl_sec = RoleManagementService._catalog_cache_ttl_sec()
+        RoleManagementService._role_lookup_cache[role_key] = (
+            time.monotonic() + ttl_sec,
+            RoleManagementService._cache_copy(role),
+        )
+
+    @staticmethod
+    def invalidate_catalog_cache(*, reason: str | None = None) -> None:
+        RoleManagementService._grouped_roles_cache = None
+        RoleManagementService._role_lookup_cache = {}
+        logger.debug("role catalog caches invalidated reason=%s", str(reason or "unspecified"))
 
     @staticmethod
     def _jsonable(value: Any) -> Any:
@@ -657,6 +755,8 @@ class RoleManagementService:
                 log_context=log_context,
             )
             if upserted:
+                RoleManagementService.invalidate_catalog_cache(reason="ensure_external_discord_roles_in_catalog")
+            if upserted:
                 logger.info("ensure_external_discord_roles_in_catalog completed upserted=%s", upserted)
             return {"upserted": upserted}
         except Exception:
@@ -668,6 +768,10 @@ class RoleManagementService:
         if not db.supabase:
             logger.warning("list_roles_grouped skipped: supabase is not configured")
             return []
+
+        cached_grouped = RoleManagementService._get_cached_grouped_roles()
+        if cached_grouped is not None:
+            return cached_grouped
 
         try:
             RoleManagementService.ensure_external_discord_roles_in_catalog(log_context=log_context)
@@ -696,7 +800,9 @@ class RoleManagementService:
                     None,
                 )
 
-        return RoleManagementService._build_grouped_roles(categories_resp.data or [], roles_rows)
+        grouped = RoleManagementService._build_grouped_roles(categories_resp.data or [], roles_rows)
+        RoleManagementService._set_cached_grouped_roles(grouped)
+        return grouped
 
     @staticmethod
     def _resolve_legacy_points_role_name(
@@ -922,6 +1028,7 @@ class RoleManagementService:
             return False
         try:
             db.supabase.table("role_categories").upsert({"name": category, "position": int(position)}).execute()
+            RoleManagementService.invalidate_catalog_cache(reason="create_category")
             logger.info("create_category completed category=%s position=%s", category, int(position))
             return True
         except Exception:
@@ -945,6 +1052,7 @@ class RoleManagementService:
             )
             db.supabase.table("roles").update({"category_name": fallback}).eq("category_name", category).execute()
             db.supabase.table("role_categories").delete().eq("name", category).execute()
+            RoleManagementService.invalidate_catalog_cache(reason="delete_category")
             logger.info("delete_category completed category=%s fallback_category=%s", category, fallback)
             return True
         except Exception:
@@ -1065,6 +1173,7 @@ class RoleManagementService:
                 log_context="create_role_category",
             )
             db.supabase.table("roles").upsert(payload, on_conflict="name").execute()
+            RoleManagementService.invalidate_catalog_cache(reason="create_role")
             after_role = RoleManagementService.get_role(role_name) or dict(payload)
             audit_action = "role_edit" if before_role else "role_create"
             logger.info(
@@ -1265,6 +1374,7 @@ class RoleManagementService:
 
             RoleManagementService._delete_role_dependencies(role_name, log_context="delete_role")
             db.supabase.table("roles").delete().eq("name", role_name).execute()
+            RoleManagementService.invalidate_catalog_cache(reason="delete_role")
             RoleManagementService.record_role_change_audit(
                 action="role_delete",
                 role_name=role_name,
@@ -1352,6 +1462,7 @@ class RoleManagementService:
                 .eq("name", name)
                 .execute()
             )
+            RoleManagementService.invalidate_catalog_cache(reason="move_role")
             if existing_role and response is not None and hasattr(response, "data") and response.data == []:
                 RoleManagementService._log_role_position_error(
                     "move_role update returned no rows",
@@ -2021,6 +2132,10 @@ class RoleManagementService:
         if not role_key:
             return None
 
+        cached_role = RoleManagementService._get_cached_role(role_key)
+        if cached_role is not _ROLE_CACHE_MISS:
+            return cached_role
+
         select_variants = (
             "name,category_name,description,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role",
             "name,category_name,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role",
@@ -2042,9 +2157,11 @@ class RoleManagementService:
                     row = resp.data[0]
                     row["description"] = RoleManagementService._description_text(row.get("description"))
                     row["acquire_hint"] = RoleManagementService._acquire_hint_text(row.get("acquire_hint"))
+                    RoleManagementService._set_cached_role(role_key, row)
                     return row
             except Exception:
                 logger.exception("get_role failed role_name=%s select=%s", role_key, select_clause)
+        RoleManagementService._set_cached_role(role_key, None)
         return None
 
     @staticmethod
@@ -2102,6 +2219,7 @@ class RoleManagementService:
                     error_message="role not found for description update",
                 )
                 return False
+            RoleManagementService.invalidate_catalog_cache(reason="update_role_description")
             role = RoleManagementService.get_role(role_key) or {}
             logger.info(
                 "update_role_description completed role_name=%s category=%s description_length=%s actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s operation=%s source=%s before=%s after=%s",
@@ -2211,6 +2329,7 @@ class RoleManagementService:
                     error_message="role not found for acquire_hint update",
                 )
                 return False
+            RoleManagementService.invalidate_catalog_cache(reason="update_role_acquire_hint")
             role = RoleManagementService.get_role(role_key) or {}
             logger.info(
                 "update_role_metadata completed actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s role_name=%s field=%s value_length=%s operation=%s source=%s before=%s after=%s",
@@ -2329,6 +2448,9 @@ class RoleManagementService:
                     RoleManagementService._delete_role_dependencies(role_name, log_context="sync_discord_guild_roles")
                     db.supabase.table("roles").delete().eq("name", role_name).execute()
                     removed += 1
+
+            if upserted or removed:
+                RoleManagementService.invalidate_catalog_cache(reason="sync_discord_guild_roles")
 
             logger.info(
                 "sync_discord_guild_roles completed upserted=%s removed=%s active_ids=%s",
