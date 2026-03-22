@@ -5,8 +5,10 @@ from bot.telegram_bot.systems.commands_logic import (
     get_helpy_text,
     process_link_command,
     process_link_discord_command,
+    prepare_roles_catalog_pages,
     process_profile_command,
     process_roles_catalog_command,
+    render_roles_catalog_page,
 )
 
 
@@ -88,10 +90,13 @@ class TelegramCommandsLogicTests(unittest.TestCase):
             }
         ]
 
-        result = process_roles_catalog_command()
+        payload = prepare_roles_catalog_pages()
+        result = render_roles_catalog_page(payload["pages"][0])
 
         self.assertIn("Каталог ролей", result)
         self.assertIn("Что это", result)
+        self.assertIn("сейчас показана страница <b>1/1</b>", result)
+        self.assertIn("используй кнопки ниже", result.lower())
         self.assertIn("Где смотреть способ получения", result)
         self.assertIn("выдаются вручную", result)
         self.assertIn("Чемпион", result)
@@ -115,12 +120,31 @@ class TelegramCommandsLogicTests(unittest.TestCase):
             }
         ]
 
-        result = process_roles_catalog_command()
+        payload = prepare_roles_catalog_pages()
+        result = render_roles_catalog_page(payload["pages"][0])
 
         self.assertIn("Новичок", result)
         self.assertIn("Описание пока не указано администратором", result)
         self.assertIn("за баллы", result)
         self.assertIn("Способ получения пока не указан администратором", result)
+
+    @patch("bot.telegram_bot.systems.commands_logic.RoleManagementService.list_public_roles_catalog")
+    def test_process_roles_catalog_command_uses_requested_page(self, mock_list_roles_grouped):
+        mock_list_roles_grouped.return_value = [
+            {
+                "category": "Первая",
+                "roles": [{"name": f"R{i}", "description": "", "acquire_method_label": "выдаёт администратор", "acquire_hint": ""} for i in range(1, 9)],
+            },
+            {
+                "category": "Вторая",
+                "roles": [{"name": "R9", "description": "", "acquire_method_label": "за баллы", "acquire_hint": ""}],
+            },
+        ]
+
+        result = process_roles_catalog_command(page=1)
+
+        self.assertIn("сейчас показана страница <b>2/2</b>", result)
+        self.assertIn("<b>Вторая</b>", result)
 
     def test_link_command_restricted_to_private_chat(self):
         result = process_link_command('/link ABC123', telegram_user_id=100, is_private_chat=False)
