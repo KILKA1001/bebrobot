@@ -27,7 +27,6 @@ import pytz
 from bot.commands import bot as command_bot
 # Локальные импорты
 from bot.data import db
-from keep_alive import keep_alive
 import bot.commands.tournament
 import bot.commands.maps
 from datetime import datetime
@@ -1040,7 +1039,6 @@ def main() -> None:
 
     load_dotenv()
     configure_logging()
-    keep_alive()
 
     discord_token = (os.getenv('DISCORD_TOKEN') or '').strip()
     telegram_token = get_telegram_bot_token()

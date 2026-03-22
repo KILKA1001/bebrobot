@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+from datetime import datetime, timezone
 from typing import Any
 
 from flask import Blueprint, Flask, jsonify, render_template_string, request
@@ -241,5 +243,33 @@ def register_admin_routes(app: Flask) -> Flask:
     return app
 
 
-admin_app = Flask(__name__)
-register_admin_routes(admin_app)
+def create_admin_app() -> Flask:
+    app = Flask(__name__)
+    register_admin_routes(app)
+    return app
+
+
+def run_admin_api() -> None:
+    host = os.getenv("ADMIN_API_HOST", "0.0.0.0")
+    port = int(os.getenv("ADMIN_API_PORT", os.getenv("PORT", "8080")))
+    debug = os.getenv("ADMIN_API_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+
+    logging.basicConfig(level=logging.INFO)
+    logger.info("starting admin api host=%s port=%s debug=%s", host, port, debug)
+
+    try:
+        create_admin_app().run(host=host, port=port, debug=debug)
+    except Exception:
+        logger.exception("admin api server crashed host=%s port=%s", host, port)
+        raise
+
+
+def main() -> None:
+    run_admin_api()
+
+
+admin_app = create_admin_app()
+
+
+if __name__ == "__main__":
+    main()

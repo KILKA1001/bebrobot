@@ -59,7 +59,6 @@ def test_run_discord_main_does_not_retry_after_http_exception():
     exc = make_http_exception()
 
     with (
-        patch("bot.main.keep_alive"),
         patch("bot.main.configure_logging"),
         patch("bot.main.load_dotenv"),
         patch.dict(os.environ, {"DISCORD_TOKEN": "test-token"}, clear=False),
