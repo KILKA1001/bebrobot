@@ -814,6 +814,9 @@ class RoleManagementService:
                         {
                             "category": str(block.get("category") or "Без категории"),
                             "roles": list(block.get("roles") or []),
+                            "category_chunk_index": int(block.get("category_chunk_index") or 1),
+                            "category_chunk_total": int(block.get("category_chunk_total") or 1),
+                            "is_category_continuation": bool(block.get("is_category_continuation")),
                         }
                         for block in current_blocks
                     ]
@@ -828,20 +831,50 @@ class RoleManagementService:
             role_total = len(roles)
 
             if role_total == 0:
-                current_blocks.append({"category": category_name, "roles": []})
+                current_blocks.append(
+                    {
+                        "category": category_name,
+                        "roles": [],
+                        "category_chunk_index": 1,
+                        "category_chunk_total": 1,
+                        "is_category_continuation": False,
+                    }
+                )
                 continue
 
             if role_total > page_size:
                 flush_page()
+                chunk_total = max((role_total + page_size - 1) // page_size, 1)
                 for start in range(0, role_total, page_size):
                     chunk = roles[start : start + page_size]
-                    pages.append({"blocks": [{"category": category_name, "roles": chunk}]})
+                    chunk_index = (start // page_size) + 1
+                    pages.append(
+                        {
+                            "blocks": [
+                                {
+                                    "category": category_name,
+                                    "roles": chunk,
+                                    "category_chunk_index": chunk_index,
+                                    "category_chunk_total": chunk_total,
+                                    "is_category_continuation": chunk_index > 1,
+                                }
+                            ]
+                        }
+                    )
                 continue
 
             if current_blocks and current_role_count + role_total > page_size:
                 flush_page()
 
-            current_blocks.append({"category": category_name, "roles": roles})
+            current_blocks.append(
+                {
+                    "category": category_name,
+                    "roles": roles,
+                    "category_chunk_index": 1,
+                    "category_chunk_total": 1,
+                    "is_category_continuation": False,
+                }
+            )
             current_role_count += role_total
 
         flush_page()
@@ -853,6 +886,9 @@ class RoleManagementService:
                 {
                     "category": str(block.get("category") or "Без категории"),
                     "roles": list(block.get("roles") or []),
+                    "category_chunk_index": int(block.get("category_chunk_index") or 1),
+                    "category_chunk_total": int(block.get("category_chunk_total") or 1),
+                    "is_category_continuation": bool(block.get("is_category_continuation")),
                 }
                 for block in page.get("blocks", [])
             ]

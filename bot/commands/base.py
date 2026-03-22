@@ -1,7 +1,8 @@
+import asyncio
 import discord
 from discord.ext import commands
 from aiohttp import TraceConfig
-from typing import Optional
+from typing import Any, Optional
 import logging
 
 from bot.data import db
@@ -25,6 +26,14 @@ from bot.utils import send_temp
 from bot.utils.api_monitor import monitor
 from bot.services import AuthorityService, RoleManagementService
 from bot.services.role_management_service import USER_ACQUIRE_HINT_PLACEHOLDER
+from bot.systems.roles_catalog_shared import (
+    ROLES_CATALOG_EMPTY_TEXT,
+    ROLES_CATALOG_ERROR_TEXT,
+    ROLES_CATALOG_FOOTER_TEXT,
+    ROLES_CATALOG_TITLE,
+    build_roles_catalog_intro_lines,
+    format_roles_catalog_category_title,
+)
 from bot import COMMAND_PREFIX
 
 
@@ -42,6 +51,10 @@ trace_config = TraceConfig()
 logger = logging.getLogger(__name__)
 
 ROLE_DESCRIPTION_PLACEHOLDER = "Описание пока не указано администратором"
+DISCORD_EMBED_DESCRIPTION_LIMIT = 4096
+DISCORD_EMBED_FIELD_NAME_LIMIT = 256
+DISCORD_EMBED_FIELD_VALUE_LIMIT = 1024
+DISCORD_EMBED_FIELD_COUNT_LIMIT = 25
 
 @trace_config.on_request_end.append
 async def _trace_request_end(session, ctx, params):
@@ -111,55 +124,255 @@ async def history_cmd(
         await send_temp(ctx, "Не удалось определить пользователя.")
 
 
-@bot.hybrid_command(
-    name="roles", description="Каталог ролей по категориям и способам получения"
-)
-async def roles_list(ctx):
+def _prepare_discord_roles_catalog_pages(guild: discord.Guild | None) -> dict[str, object]:
     try:
         grouped = RoleManagementService.list_public_roles_catalog(
-            role_name_resolver=lambda role_id: ctx.guild.get_role(role_id).name if ctx.guild and ctx.guild.get_role(role_id) else None,
+            role_name_resolver=lambda role_id: guild.get_role(role_id).name if guild and guild.get_role(role_id) else None,
             log_context="/roles",
         )
     except Exception:
-        logger.exception("roles command failed command=/roles source=discord_user_command guild_id=%s", ctx.guild.id if ctx.guild else None)
-        grouped = []
+        logger.exception(
+            "roles catalog discord load failed command=/roles source=discord_user_command guild_id=%s",
+            guild.id if guild else None,
+        )
+        return {"status": "error", "pages": [], "message": ROLES_CATALOG_ERROR_TEXT}
 
-    embed = discord.Embed(
-        title="🏅 Каталог ролей",
-        description=(
-            "**Что это:** здесь собраны все пользовательские роли по категориям, чтобы быстро понять назначение каждой роли.\n"
-            "**Где смотреть способ получения:** в строках `Способ получения` и `Как получить` у каждой роли.\n"
-            "**Как читать статус:** роли с пометкой `выдаёт администратор` обычно выдаются вручную, а роли с пометками вроде `автоматически`, `за баллы` или `через активность` приходят автоматически после выполнения условия."
-        ),
-        color=discord.Color.purple(),
-    )
-    for item in grouped:
+    if not grouped:
+        return {"status": "empty", "pages": [], "message": ROLES_CATALOG_EMPTY_TEXT}
+
+    return {
+        "status": "ok",
+        "pages": RoleManagementService.paginate_public_roles_catalog(grouped),
+        "message": "",
+    }
+
+
+def _validate_roles_catalog_embed_limits(
+    *,
+    page_data: dict[str, Any],
+    description: str,
+    fields: list[tuple[str, str]],
+) -> None:
+    if len(description) > DISCORD_EMBED_DESCRIPTION_LIMIT:
+        logger.error(
+            "roles catalog discord embed description exceeds limit page=%s total_pages=%s description_len=%s limit=%s",
+            page_data.get("page"),
+            page_data.get("total_pages"),
+            len(description),
+            DISCORD_EMBED_DESCRIPTION_LIMIT,
+        )
+        raise ValueError("roles catalog embed description exceeds limit")
+
+    if len(fields) > DISCORD_EMBED_FIELD_COUNT_LIMIT:
+        logger.error(
+            "roles catalog discord embed field count exceeds limit page=%s field_count=%s limit=%s",
+            page_data.get("page"),
+            len(fields),
+            DISCORD_EMBED_FIELD_COUNT_LIMIT,
+        )
+        raise ValueError("roles catalog embed field count exceeds limit")
+
+    for field_name, field_value in fields:
+        if len(field_name) > DISCORD_EMBED_FIELD_NAME_LIMIT or len(field_value) > DISCORD_EMBED_FIELD_VALUE_LIMIT:
+            logger.error(
+                "roles catalog discord embed field exceeds limit page=%s field_name_len=%s field_value_len=%s category_count=%s role_count=%s limit_name=%s limit_value=%s",
+                page_data.get("page"),
+                len(field_name),
+                len(field_value),
+                page_data.get("category_count"),
+                page_data.get("role_count"),
+                DISCORD_EMBED_FIELD_NAME_LIMIT,
+                DISCORD_EMBED_FIELD_VALUE_LIMIT,
+            )
+            raise ValueError("roles catalog embed field exceeds limit")
+
+
+def _build_discord_roles_catalog_embed(page_data: dict[str, Any]) -> discord.Embed:
+    current_page = max(int(page_data.get("page") or 1), 1)
+    total_pages = max(int(page_data.get("total_pages") or 1), 1)
+    description_lines: list[str] = []
+    for line in build_roles_catalog_intro_lines(current_page=current_page, total_pages=total_pages):
+        if ": " in line:
+            label, value = line.split(": ", maxsplit=1)
+            description_lines.append(f"**{label}:** {value}")
+        else:
+            description_lines.append(line)
+    description = "\n".join(description_lines)
+
+    fields: list[tuple[str, str]] = []
+    for item in page_data.get("blocks") or []:
+        field_name = format_roles_catalog_category_title(item)
+        roles = item.get("roles") or []
+        if not roles:
+            fields.append((field_name, "Пока нет ролей."))
+            continue
+
         lines = []
-        for role in item.get("roles", []):
+        for role in roles:
             role_name = str(role.get("name") or "Без названия")
-            description = str(role.get("description") or "").strip() or ROLE_DESCRIPTION_PLACEHOLDER
+            role_description = str(role.get("description") or "").strip() or ROLE_DESCRIPTION_PLACEHOLDER
             acquire_method = str(role.get("acquire_method_label") or "Не указан").strip()
             acquire_hint = str(role.get("acquire_hint") or "").strip() or USER_ACQUIRE_HINT_PLACEHOLDER
             lines.append(
                 f"**{role_name}**\n"
-                f"Описание: {description}\n"
+                f"Описание: {role_description}\n"
                 f"Способ получения: {acquire_method}\n"
                 f"Как получить: {acquire_hint}"
             )
-        embed.add_field(
-            name=str(item.get("category") or "Без категории"),
-            value="\n\n".join(lines) if lines else "Пока нет ролей.",
-            inline=False,
-        )
+        fields.append((field_name, "\n\n".join(lines)))
 
-    if not grouped:
-        embed.description = (
-            "📭 Каталог ролей пока пуст.\n"
-            "Когда администраторы добавят роли, здесь появятся категории, описания и инструкция по получению."
-        )
+    _validate_roles_catalog_embed_limits(page_data=page_data, description=description, fields=fields)
 
-    embed.set_footer(text="Если хочешь получить роль, ориентируйся на блок «Как получить» и при необходимости уточняй условия у администратора.")
-    await send_temp(ctx, embed=embed)
+    embed = discord.Embed(
+        title=ROLES_CATALOG_TITLE,
+        description=description,
+        color=discord.Color.purple(),
+    )
+    for field_name, field_value in fields:
+        embed.add_field(name=field_name, value=field_value, inline=False)
+    embed.set_footer(text=ROLES_CATALOG_FOOTER_TEXT)
+    return embed
+
+
+def _build_discord_roles_catalog_empty_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title=ROLES_CATALOG_TITLE,
+        description=ROLES_CATALOG_EMPTY_TEXT,
+        color=discord.Color.purple(),
+    )
+    embed.set_footer(text=ROLES_CATALOG_FOOTER_TEXT)
+    return embed
+
+
+class RolesCatalogDiscordView(discord.ui.View):
+    def __init__(self, *, author_id: int, guild: discord.Guild | None, page_index: int = 0):
+        super().__init__(timeout=300)
+        self.author_id = int(author_id)
+        self.guild = guild
+        self.page_index = max(int(page_index), 0)
+        self.total_pages = 1
+        self._sync_buttons()
+
+    def _sync_buttons(self) -> None:
+        self.page_index = min(max(self.page_index, 0), max(self.total_pages - 1, 0))
+        self.prev_button.disabled = self.page_index <= 0
+        self.next_button.disabled = self.page_index >= self.total_pages - 1
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            logger.error(
+                "roles catalog discord foreign interaction denied owner_id=%s actor_id=%s guild_id=%s page=%s",
+                self.author_id,
+                interaction.user.id,
+                interaction.guild.id if interaction.guild else None,
+                self.page_index + 1,
+            )
+            await interaction.response.send_message("❌ Это меню открыто для другого пользователя.", ephemeral=True)
+            return False
+        return True
+
+    async def _load_page_embed(self, *, requested_page: int) -> discord.Embed:
+        payload = await asyncio.to_thread(_prepare_discord_roles_catalog_pages, self.guild)
+        status = str(payload.get("status") or "")
+        if status == "error":
+            raise RuntimeError(str(payload.get("message") or ROLES_CATALOG_ERROR_TEXT))
+        if status == "empty":
+            self.total_pages = 1
+            self.page_index = 0
+            self._sync_buttons()
+            return _build_discord_roles_catalog_empty_embed()
+
+        pages = list(payload.get("pages") or [])
+        if not pages:
+            logger.error(
+                "roles catalog discord page build failed empty_pages guild_id=%s requested_page=%s",
+                self.guild.id if self.guild else None,
+                requested_page + 1,
+            )
+            raise RuntimeError(ROLES_CATALOG_ERROR_TEXT)
+
+        self.total_pages = len(pages)
+        self.page_index = min(max(int(requested_page), 0), len(pages) - 1)
+        self._sync_buttons()
+        page_data = pages[self.page_index]
+        try:
+            return _build_discord_roles_catalog_embed(page_data)
+        except Exception:
+            logger.exception(
+                "roles catalog discord page build failed guild_id=%s page=%s total_pages=%s category_count=%s role_count=%s",
+                self.guild.id if self.guild else None,
+                page_data.get("page"),
+                page_data.get("total_pages"),
+                page_data.get("category_count"),
+                page_data.get("role_count"),
+            )
+            raise
+
+    async def _update_message(self, interaction: discord.Interaction, *, requested_page: int, action: str) -> None:
+        try:
+            embed = await self._load_page_embed(requested_page=requested_page)
+            self._sync_buttons()
+            await interaction.response.edit_message(embed=embed, view=self)
+        except Exception:
+            logger.exception(
+                "roles catalog discord view update failed guild_id=%s actor_id=%s action=%s requested_page=%s",
+                interaction.guild.id if interaction.guild else None,
+                interaction.user.id,
+                action,
+                requested_page + 1,
+            )
+            if interaction.response.is_done():
+                await interaction.followup.send(ROLES_CATALOG_ERROR_TEXT, ephemeral=True)
+            else:
+                await interaction.response.send_message(ROLES_CATALOG_ERROR_TEXT, ephemeral=True)
+
+    @discord.ui.button(label="⬅️", style=discord.ButtonStyle.secondary)
+    async def prev_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._update_message(interaction, requested_page=self.page_index - 1, action="previous")
+
+    @discord.ui.button(label="🔄", style=discord.ButtonStyle.secondary)
+    async def refresh_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._update_message(interaction, requested_page=self.page_index, action="refresh")
+
+    @discord.ui.button(label="➡️", style=discord.ButtonStyle.secondary)
+    async def next_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._update_message(interaction, requested_page=self.page_index + 1, action="next")
+
+
+@bot.hybrid_command(
+    name="roles", description="Каталог ролей по категориям и способам получения"
+)
+async def roles_list(ctx):
+    payload = await asyncio.to_thread(_prepare_discord_roles_catalog_pages, ctx.guild)
+    status = str(payload.get("status") or "")
+    if status == "error":
+        await send_temp(ctx, ROLES_CATALOG_ERROR_TEXT)
+        return
+    if status == "empty":
+        await send_temp(ctx, embed=_build_discord_roles_catalog_empty_embed())
+        return
+
+    pages = list(payload.get("pages") or [])
+    if not pages:
+        logger.error("roles catalog discord initial render failed empty_pages guild_id=%s", ctx.guild.id if ctx.guild else None)
+        await send_temp(ctx, ROLES_CATALOG_ERROR_TEXT)
+        return
+
+    try:
+        embed = _build_discord_roles_catalog_embed(pages[0])
+    except Exception:
+        logger.exception(
+            "roles catalog discord initial page build failed guild_id=%s page=%s",
+            ctx.guild.id if ctx.guild else None,
+            pages[0].get("page"),
+        )
+        await send_temp(ctx, ROLES_CATALOG_ERROR_TEXT)
+        return
+
+    view = RolesCatalogDiscordView(author_id=ctx.author.id, guild=ctx.guild, page_index=0)
+    view.total_pages = len(pages)
+    view._sync_buttons()
+    await send_temp(ctx, embed=embed, view=view)
 
 
 @bot.hybrid_command(

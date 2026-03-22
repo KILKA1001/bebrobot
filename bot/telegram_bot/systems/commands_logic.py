@@ -8,6 +8,12 @@ from bot.legacy_identity_logging import (
 from bot.services import AccountsService, AuthorityService, RoleManagementService
 from bot.services.profile_titles import normalize_protected_profile_title
 from bot.services.role_management_service import USER_ACQUIRE_HINT_PLACEHOLDER
+from bot.systems.roles_catalog_shared import (
+    ROLES_CATALOG_FOOTER_TEXT,
+    ROLES_CATALOG_TITLE,
+    build_roles_catalog_intro_lines,
+    format_roles_catalog_category_title,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -18,7 +24,7 @@ ROLES_CATALOG_LOAD_ERROR_TEXT = (
 )
 ROLES_CATALOG_EMPTY_TEXT = (
     "📭 <b>Каталог ролей пока пуст.</b>\n"
-    "Когда администраторы добавят роли, здесь появятся название, описание и понятная инструкция, как получить каждую роль."
+    "Когда администраторы добавят роли, здесь появятся категории, описания и инструкция по получению."
 )
 
 
@@ -109,17 +115,17 @@ def prepare_roles_catalog_pages() -> dict[str, object]:
 def render_roles_catalog_page(page_data: dict[str, object]) -> str:
     current_page = int(page_data.get("page") or 1)
     total_pages = int(page_data.get("total_pages") or 1)
-    parts = [
-        "🏅 <b>Каталог ролей</b>",
-        "<b>Что это:</b> здесь собраны все пользовательские роли по категориям — чтобы быстро понять, за что отвечает каждая роль.",
-        f"<b>Страница:</b> сейчас показана страница <b>{current_page}/{total_pages}</b>.",
-        "<b>Как листать:</b> используй кнопки ниже — ⬅️ назад, 🔄 обновить каталог, ➡️ вперёд.",
-        "<b>Где смотреть способ получения:</b> у каждой роли есть строки <b>Способ получения</b> и <b>Как получить</b>.",
-        "<b>Как читать статус:</b> роли со способом <b>выдаёт администратор</b> обычно выдаются вручную, а роли с пометками вроде <b>автоматически</b>, <b>за баллы</b> или <b>через активность</b> приходят автоматически после нужного условия.",
-    ]
+    parts = [f"🏅 <b>{escape(ROLES_CATALOG_TITLE.replace('🏅 ', ''))}</b>"]
+    for line in build_roles_catalog_intro_lines(current_page=current_page, total_pages=total_pages):
+        label, value = line.split(": ", maxsplit=1)
+        if label == "Страница":
+            current_marker = escape(f"{current_page}/{total_pages}")
+            parts.append(f"<b>{escape(label)}:</b> сейчас показана страница <b>{current_marker}</b>.")
+            continue
+        parts.append(f"<b>{escape(label)}:</b> {escape(value)}")
 
     for item in page_data.get("blocks") or []:
-        category = escape(str(item.get("category") or "Без категории"))
+        category = escape(format_roles_catalog_category_title(item))
         parts.append(f"\n<b>{category}</b>")
         roles = item.get("roles") or []
         if not roles:
@@ -136,7 +142,7 @@ def render_roles_catalog_page(page_data: dict[str, object]) -> str:
                 f"Способ получения: {acquire_method}\n"
                 f"Как получить: {acquire_hint}"
             )
-    parts.append("\nЕсли хочешь примерить роль на себя или уточнить условия — напиши администратору и укажи точное название роли из списка.")
+    parts.append(f"\n{escape(ROLES_CATALOG_FOOTER_TEXT)}")
     return "\n".join(parts)
 
 
