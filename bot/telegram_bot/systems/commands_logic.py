@@ -12,6 +12,14 @@ from bot.services.role_management_service import USER_ACQUIRE_HINT_PLACEHOLDER
 
 logger = logging.getLogger(__name__)
 ROLE_DESCRIPTION_PLACEHOLDER = "Описание пока не указано администратором"
+ROLES_CATALOG_LOAD_ERROR_TEXT = (
+    "❌ Не удалось загрузить каталог ролей. Попробуйте позже; если ошибка повторится, откройте /helpy "
+    "или сообщите администратору, что не открывается /roles."
+)
+ROLES_CATALOG_EMPTY_TEXT = (
+    "📭 <b>Каталог ролей пока пуст.</b>\n"
+    "Когда администраторы добавят роли, здесь появятся название, описание и понятная инструкция, как получить каждую роль."
+)
 
 
 _PUBLIC_HELP_COMMANDS: tuple[str, ...] = (
@@ -81,29 +89,36 @@ def get_helpy_text(telegram_user_id: int | None = None) -> str:
     return _build_helpy_text(actor_level=authority.level, actor_titles=authority.titles)
 
 
-def process_roles_catalog_command() -> str:
+def prepare_roles_catalog_pages() -> dict[str, object]:
     try:
         grouped = RoleManagementService.list_public_roles_catalog(log_context="/roles")
     except Exception:
         logger.exception("roles catalog render failed command=/roles source=telegram_user_command")
-        return (
-            "❌ Не удалось загрузить каталог ролей. Попробуйте позже; если ошибка повторится, откройте /helpy "
-            "или сообщите администратору, что не открывается /roles."
-        )
+        return {"status": "error", "pages": [], "message": ROLES_CATALOG_LOAD_ERROR_TEXT}
 
     if not grouped:
-        return (
-            "📭 <b>Каталог ролей пока пуст.</b>\n"
-            "Когда администраторы добавят роли, здесь появятся название, описание и понятная инструкция, как получить каждую роль."
-        )
+        return {"status": "empty", "pages": [], "message": ROLES_CATALOG_EMPTY_TEXT}
 
+    return {
+        "status": "ok",
+        "pages": RoleManagementService.paginate_public_roles_catalog(grouped),
+        "message": "",
+    }
+
+
+def render_roles_catalog_page(page_data: dict[str, object]) -> str:
+    current_page = int(page_data.get("page") or 1)
+    total_pages = int(page_data.get("total_pages") or 1)
     parts = [
         "🏅 <b>Каталог ролей</b>",
         "<b>Что это:</b> здесь собраны все пользовательские роли по категориям — чтобы быстро понять, за что отвечает каждая роль.",
+        f"<b>Страница:</b> сейчас показана страница <b>{current_page}/{total_pages}</b>.",
+        "<b>Как листать:</b> используй кнопки ниже — ⬅️ назад, 🔄 обновить каталог, ➡️ вперёд.",
         "<b>Где смотреть способ получения:</b> у каждой роли есть строки <b>Способ получения</b> и <b>Как получить</b>.",
         "<b>Как читать статус:</b> роли со способом <b>выдаёт администратор</b> обычно выдаются вручную, а роли с пометками вроде <b>автоматически</b>, <b>за баллы</b> или <b>через активность</b> приходят автоматически после нужного условия.",
     ]
-    for item in grouped:
+
+    for item in page_data.get("blocks") or []:
         category = escape(str(item.get("category") or "Без категории"))
         parts.append(f"\n<b>{category}</b>")
         roles = item.get("roles") or []
@@ -123,6 +138,16 @@ def process_roles_catalog_command() -> str:
             )
     parts.append("\nЕсли хочешь примерить роль на себя или уточнить условия — напиши администратору и укажи точное название роли из списка.")
     return "\n".join(parts)
+
+
+def process_roles_catalog_command(page: int = 0) -> str:
+    payload = prepare_roles_catalog_pages()
+    if payload["status"] != "ok":
+        return str(payload["message"])
+
+    pages = list(payload.get("pages") or [])
+    safe_page = min(max(int(page), 0), len(pages) - 1)
+    return render_roles_catalog_page(pages[safe_page])
 
 
 def process_register_command(telegram_user_id: int | None) -> str:

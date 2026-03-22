@@ -15,7 +15,8 @@ from bot.telegram_bot.systems.commands_logic import (
     process_link_discord_command,
     process_profile_command,
     process_profile_roles_command,
-    process_roles_catalog_command,
+    prepare_roles_catalog_pages,
+    render_roles_catalog_page,
     process_register_command,
 )
 from bot.utils.blocking_io import run_blocking_io
@@ -25,6 +26,10 @@ router = Router()
 
 _TELEGRAM_MESSAGE_LIMIT = 4096
 _VISIBLE_ROLES_PAGE_SIZE = 10
+_ROLES_CATALOG_CALLBACK_PREFIX = "roles_catalog"
+_ROLES_CATALOG_RENDER_ERROR_TEXT = (
+    "❌ Каталог ролей не удалось отрисовать полностью. Пожалуйста, повторите попытку через кнопку обновления или команду /roles."
+)
 
 _EDIT_FIELD_LABELS = {
     "custom_nick": "Никнейм",
@@ -130,6 +135,28 @@ async def _safe_answer(
             )
             return False
         logger.exception("message send failed chat_id=%s", message.chat.id)
+        return False
+
+
+async def _safe_edit_text(
+    message: Message,
+    text: str,
+    *,
+    parse_mode: ParseMode | None = None,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> bool:
+    try:
+        kwargs: dict[str, object] = {}
+        if parse_mode is not None:
+            kwargs["parse_mode"] = parse_mode.value if isinstance(parse_mode, ParseMode) else parse_mode
+        if reply_markup is not None:
+            kwargs["reply_markup"] = reply_markup
+        await message.edit_text(text, **kwargs)
+        return True
+    except TelegramBadRequest as error:
+        if "message is not modified" in str(error).lower():
+            return True
+        logger.exception("message edit failed chat_id=%s", message.chat.id)
         return False
 
 
@@ -248,6 +275,63 @@ def _build_visible_roles_text(selected_roles: list[str], page: int, total_pages:
         f"Страница: <b>{page + 1}/{total_pages}</b>\n"
         f"Выбрано ({len(selected_roles)}/{AccountsService.MAX_VISIBLE_PROFILE_ROLES}): {selected_text}"
     )
+
+
+def _build_roles_catalog_keyboard(page_data: dict[str, object]) -> InlineKeyboardMarkup:
+    current_page = max(int(page_data.get("page") or 1), 1)
+    total_pages = max(int(page_data.get("total_pages") or 1), 1)
+    previous_page = max(current_page - 1, 1)
+    next_page = min(current_page + 1, total_pages)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="⬅️",
+                    callback_data=f"{_ROLES_CATALOG_CALLBACK_PREFIX}:page:{previous_page}",
+                ),
+                InlineKeyboardButton(
+                    text="🔄",
+                    callback_data=f"{_ROLES_CATALOG_CALLBACK_PREFIX}:refresh:{current_page}",
+                ),
+                InlineKeyboardButton(
+                    text="➡️",
+                    callback_data=f"{_ROLES_CATALOG_CALLBACK_PREFIX}:page:{next_page}",
+                ),
+            ]
+        ]
+    )
+
+
+def _log_roles_catalog_page_too_long(page_data: dict[str, object], text: str) -> None:
+    logger.error(
+        "roles catalog telegram page exceeds message limit page=%s category_count=%s role_count=%s text_len=%s",
+        page_data.get("page"),
+        page_data.get("category_count"),
+        page_data.get("role_count"),
+        len(text or ""),
+    )
+
+
+def _render_roles_catalog_response(
+    payload: dict[str, object],
+    *,
+    requested_page: int,
+) -> tuple[str, InlineKeyboardMarkup | None, dict[str, object] | None]:
+    status = str(payload.get("status") or "")
+    if status != "ok":
+        return str(payload.get("message") or _ROLES_CATALOG_RENDER_ERROR_TEXT), None, None
+
+    pages = list(payload.get("pages") or [])
+    if not pages:
+        return _ROLES_CATALOG_RENDER_ERROR_TEXT, None, None
+
+    safe_page = min(max(int(requested_page), 0), len(pages) - 1)
+    page_data = pages[safe_page]
+    text = render_roles_catalog_page(page_data)
+    if len(text) > _TELEGRAM_MESSAGE_LIMIT:
+        _log_roles_catalog_page_too_long(page_data, text)
+        return _ROLES_CATALOG_RENDER_ERROR_TEXT, None, page_data
+    return text, _build_roles_catalog_keyboard(page_data), page_data
 
 
 @router.message(Command("helpy"))
@@ -652,12 +736,56 @@ async def profile_roles_command(message: Message) -> None:
 @router.message(Command("roles"))
 async def roles_catalog_command(message: Message) -> None:
     persist_telegram_identity_from_user(message.from_user)
-    response = await run_blocking_io(
-        "telegram.roles.process_command",
-        process_roles_catalog_command,
+    payload = await run_blocking_io(
+        "telegram.roles.prepare_pages",
+        prepare_roles_catalog_pages,
         logger=logger,
     )
-    await _safe_answer_chunked(message, response, parse_mode=ParseMode.HTML, command_name="/roles")
+    response_text, reply_markup, _ = _render_roles_catalog_response(payload, requested_page=0)
+    await _safe_answer(message, response_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+
+
+@router.callback_query(F.data.startswith(f"{_ROLES_CATALOG_CALLBACK_PREFIX}:"))
+async def roles_catalog_callback(callback: CallbackQuery) -> None:
+    if callback.message is None:
+        await callback.answer()
+        return
+
+    try:
+        _, action, raw_page = str(callback.data or "").split(":", maxsplit=2)
+        requested_page = max(int(raw_page), 1) - 1
+    except (TypeError, ValueError):
+        await callback.answer("Не удалось открыть страницу каталога", show_alert=True)
+        return
+
+    payload = await run_blocking_io(
+        "telegram.roles.prepare_pages",
+        prepare_roles_catalog_pages,
+        logger=logger,
+    )
+    response_text, reply_markup, page_data = _render_roles_catalog_response(payload, requested_page=requested_page)
+    edited = await _safe_edit_text(
+        callback.message,
+        response_text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=reply_markup,
+    )
+    if not edited:
+        if page_data is not None:
+            logger.error(
+                "roles catalog telegram callback render failed page=%s category_count=%s role_count=%s text_len=%s action=%s",
+                page_data.get("page"),
+                page_data.get("category_count"),
+                page_data.get("role_count"),
+                len(response_text or ""),
+                action,
+            )
+        await callback.answer("Каталог не удалось обновить", show_alert=True)
+        return
+    if action == "refresh":
+        await callback.answer("Каталог обновлён")
+        return
+    await callback.answer()
 
 
 @router.message(Command("link"))

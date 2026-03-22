@@ -359,6 +359,39 @@ class RoleManagementServiceTests(unittest.TestCase):
         self.assertEqual(role["points_required"], 10)
         self.assertEqual(role["acquire_hint"], "Накопить 10 баллов.")
 
+    def test_paginate_public_roles_catalog_packs_adjacent_categories_and_splits_large_one(self):
+        grouped = [
+            {
+                "category": "Альфа",
+                "roles": [{"name": f"A{i}"} for i in range(1, 4)],
+            },
+            {
+                "category": "Бета",
+                "roles": [{"name": f"B{i}"} for i in range(1, 5)],
+            },
+            {
+                "category": "Гамма",
+                "roles": [{"name": f"G{i}"} for i in range(1, 10)],
+            },
+            {
+                "category": "Дельта",
+                "roles": [{"name": "D1"}],
+            },
+        ]
+
+        pages = RoleManagementService.paginate_public_roles_catalog(grouped)
+
+        self.assertEqual(len(pages), 4)
+        self.assertEqual(pages[0]["page"], 1)
+        self.assertEqual(pages[0]["total_pages"], 4)
+        self.assertEqual([block["category"] for block in pages[0]["blocks"]], ["Альфа", "Бета"])
+        self.assertEqual(pages[0]["role_count"], 7)
+        self.assertEqual([len(block["roles"]) for block in pages[1]["blocks"]], [8])
+        self.assertEqual(pages[1]["blocks"][0]["category"], "Гамма")
+        self.assertEqual([len(block["roles"]) for block in pages[2]["blocks"]], [1])
+        self.assertEqual(pages[2]["blocks"][0]["category"], "Гамма")
+        self.assertEqual([block["category"] for block in pages[3]["blocks"]], ["Дельта"])
+
     def test_move_role_returns_false_when_role_missing_from_catalog(self):
         with self.assertLogs("bot.services.role_management_service", level="WARNING") as captured:
             ok = RoleManagementService.move_role("Missing", "Категория", 1)
