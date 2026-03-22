@@ -66,6 +66,13 @@ class _TableOp:
         return all(row.get(k) == v for k, v in self._filters)
 
     def execute(self):
+        self.fake_db.operations.append(
+            {
+                "table": self.table_name,
+                "action": self._action,
+                "filters": list(self._filters),
+            }
+        )
         rows = self.fake_db.tables[self.table_name]
 
         if self._action == "delete":
@@ -136,6 +143,7 @@ class _FakeDb:
             "profile_title_roles": [],
             "role_change_audit": [],
         }
+        self.operations = []
         self.supabase = _FakeSupabase(self)
 
 
@@ -144,8 +152,10 @@ class RoleManagementServiceTests(unittest.TestCase):
         self.fake_db = _FakeDb()
         self.patcher = patch("bot.services.role_management_service.db", self.fake_db)
         self.patcher.start()
+        RoleManagementService.invalidate_catalog_cache(reason="test_setup")
 
     def tearDown(self):
+        RoleManagementService.invalidate_catalog_cache(reason="test_teardown")
         self.patcher.stop()
 
     def test_delete_role_denies_discord_managed_role_and_keeps_assignments(self):
@@ -260,6 +270,19 @@ class RoleManagementServiceTests(unittest.TestCase):
         self.assertEqual(grouped[0]["roles"][0]["name"], "Legacy")
         self.assertEqual(grouped[0]["roles"][0]["description"], "")
         self.assertEqual(grouped[0]["roles"][0]["acquire_hint"], "")
+
+    def test_list_roles_grouped_reuses_ttl_cache_for_repeat_reads(self):
+        self.fake_db.tables["roles"] = [
+            {"name": "Legacy", "category_name": "General", "position": 0},
+        ]
+        self.fake_db.tables["role_categories"] = [{"name": "General", "position": 0}]
+
+        first = RoleManagementService.list_roles_grouped()
+        operation_count_after_first = len(self.fake_db.operations)
+        second = RoleManagementService.list_roles_grouped()
+
+        self.assertEqual(first, second)
+        self.assertEqual(len(self.fake_db.operations), operation_count_after_first)
 
     def test_apply_user_role_changes_by_account_logs_each_role_and_keeps_multi_result(self):
         self.fake_db.tables["roles"] = [
@@ -504,6 +527,21 @@ class RoleManagementServiceTests(unittest.TestCase):
         assert role is not None
         self.assertEqual(role["description"], "")
         self.assertEqual(role["acquire_hint"], "")
+
+    def test_create_role_invalidates_catalog_cache_after_repeat_reads(self):
+        self.fake_db.tables["roles"] = [
+            {"name": "Alpha", "category_name": "General", "position": 0},
+        ]
+        self.fake_db.tables["role_categories"] = [{"name": "General", "position": 0}]
+
+        initial = RoleManagementService.list_roles_grouped()
+        self.assertEqual([role["name"] for role in initial[0]["roles"]], ["Alpha"])
+
+        ok = RoleManagementService.create_role("Beta", "General", description="Описание")
+        self.assertTrue(ok)
+
+        refreshed = RoleManagementService.list_roles_grouped()
+        self.assertEqual([role["name"] for role in refreshed[0]["roles"]], ["Alpha", "Beta"])
 
     def test_update_role_description_updates_role(self):
         self.fake_db.tables["roles"] = [
