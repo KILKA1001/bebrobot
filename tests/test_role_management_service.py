@@ -549,6 +549,20 @@ class RoleManagementServiceTests(unittest.TestCase):
         self.assertEqual(role["description"], "")
         self.assertEqual(role["acquire_hint"], "")
 
+    def test_get_role_uses_role_cache_for_missing_role(self):
+        with self.assertLogs("bot.services.role_management_service", level="DEBUG") as captured:
+            first = RoleManagementService.get_role("Missing")
+            second = RoleManagementService.get_role("Missing")
+
+        self.assertIsNone(first)
+        self.assertIsNone(second)
+        select_ops = [
+            op for op in self.fake_db.operations if op["table"] == "roles" and op["action"] == "select"
+        ]
+        self.assertEqual(len(select_ops), 6)
+        self.assertTrue(any("role cache refreshed role_name=Missing exists=False" in line for line in captured.output), captured.output)
+        self.assertTrue(any("role cache hit role_name=Missing exists=false" in line for line in captured.output), captured.output)
+
     def test_create_role_invalidates_catalog_cache_after_repeat_reads(self):
         self.fake_db.tables["roles"] = [
             {"name": "Alpha", "category_name": "General", "position": 0},

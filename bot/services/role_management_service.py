@@ -43,6 +43,7 @@ class RoleManagementService:
     PUBLIC_ROLE_CATALOG_PAGE_SIZE = 8
     ROLE_CATALOG_CACHE_TTL_SEC = int(os.getenv("ROLE_CATALOG_CACHE_TTL_SEC", "30"))
     _grouped_roles_cache: tuple[float, list[dict[str, Any]]] | None = None
+    _role_cache: dict[str, tuple[float, Any]] = {}
 
     @staticmethod
     def _catalog_cache_ttl_sec() -> int:
@@ -51,6 +52,36 @@ class RoleManagementService:
     @staticmethod
     def _cache_copy(value: Any) -> Any:
         return copy.deepcopy(value)
+
+    @staticmethod
+    def _get_cached_role(role_name: str) -> dict[str, Any] | None | object:
+        role_key = str(role_name or "").strip()
+        if not role_key:
+            return _ROLE_CACHE_MISS
+        cached = RoleManagementService._role_cache.get(role_key)
+        if cached is None:
+            return _ROLE_CACHE_MISS
+        expires_at, cached_role = cached
+        now = time.monotonic()
+        if expires_at <= now:
+            RoleManagementService._role_cache.pop(role_key, None)
+            logger.debug("role cache expired role_name=%s", role_key)
+            return _ROLE_CACHE_MISS
+        if cached_role is None:
+            logger.debug("role cache hit role_name=%s exists=false", role_key)
+            return None
+        logger.debug("role cache hit role_name=%s exists=true", role_key)
+        return RoleManagementService._cache_copy(cached_role)
+
+    @staticmethod
+    def _set_cached_role(role_name: str, role: dict[str, Any] | None) -> None:
+        role_key = str(role_name or "").strip()
+        if not role_key:
+            return
+        ttl_sec = RoleManagementService._catalog_cache_ttl_sec()
+        cached_role = None if role is None else RoleManagementService._cache_copy(role)
+        RoleManagementService._role_cache[role_key] = (time.monotonic() + ttl_sec, cached_role)
+        logger.debug("role cache refreshed role_name=%s exists=%s ttl_sec=%s", role_key, role is not None, ttl_sec)
 
     @staticmethod
     def _get_cached_grouped_roles() -> list[dict[str, Any]] | None:
@@ -104,8 +135,14 @@ class RoleManagementService:
 
     @staticmethod
     def invalidate_catalog_cache(*, reason: str | None = None) -> None:
+        cleared_role_entries = len(RoleManagementService._role_cache)
         RoleManagementService._grouped_roles_cache = None
-        logger.debug("role catalog caches invalidated reason=%s", str(reason or "unspecified"))
+        RoleManagementService._role_cache = {}
+        logger.debug(
+            "role catalog caches invalidated reason=%s cleared_role_entries=%s",
+            str(reason or "unspecified"),
+            cleared_role_entries,
+        )
 
     @staticmethod
     def _jsonable(value: Any) -> Any:
@@ -2028,6 +2065,11 @@ class RoleManagementService:
 
         cached_role = RoleManagementService._find_role_in_grouped_cache(role_key)
         if cached_role is not None:
+            RoleManagementService._set_cached_role(role_key, cached_role)
+            return cached_role
+
+        cached_role = RoleManagementService._get_cached_role(role_key)
+        if cached_role is not _ROLE_CACHE_MISS:
             return cached_role
 
         select_variants = (
