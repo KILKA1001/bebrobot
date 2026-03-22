@@ -13,6 +13,7 @@ from bot.systems.roles_catalog_shared import (
     ROLES_CATALOG_TITLE,
     build_roles_catalog_intro_lines,
     format_roles_catalog_category_title,
+    prepare_public_roles_catalog_pages,
 )
 
 
@@ -107,13 +108,13 @@ def prepare_roles_catalog_pages() -> dict[str, object]:
 
     return {
         "status": "ok",
-        "pages": RoleManagementService.paginate_public_roles_catalog(grouped),
+        "pages": prepare_public_roles_catalog_pages(grouped, max_roles_per_page=8, log_context="telegram:/roles"),
         "message": "",
     }
 
 
 def render_roles_catalog_page(page_data: dict[str, object]) -> str:
-    current_page = int(page_data.get("page") or 1)
+    current_page = int(page_data.get("page_index") or 0) + 1
     total_pages = int(page_data.get("total_pages") or 1)
     parts = [f"🏅 <b>{escape(ROLES_CATALOG_TITLE.replace('🏅 ', ''))}</b>"]
     for line in build_roles_catalog_intro_lines(current_page=current_page, total_pages=total_pages):
@@ -124,10 +125,10 @@ def render_roles_catalog_page(page_data: dict[str, object]) -> str:
             continue
         parts.append(f"<b>{escape(label)}:</b> {escape(value)}")
 
-    for item in page_data.get("blocks") or []:
+    for item in page_data.get("sections") or []:
         category = escape(format_roles_catalog_category_title(item))
         parts.append(f"\n<b>{category}</b>")
-        roles = item.get("roles") or []
+        roles = item.get("items") or []
         if not roles:
             parts.append("• Пока нет ролей")
             continue
