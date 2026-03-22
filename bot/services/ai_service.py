@@ -8,7 +8,6 @@ import time
 from typing import Any
 
 import aiohttp
-from groq import Groq
 
 from bot.services.accounts_service import AccountsService
 
@@ -36,10 +35,19 @@ FREE_TIER_GROQ_MEDIA_MODELS = MEDIA_GROQ_MODELS
 DEFAULT_GROQ_VISION_MODEL = "llama-3.3-70b-versatile"
 MAX_VISION_MEDIA_ITEMS = 3
 MAX_VISION_BYTES = 5 * 1024 * 1024
+AI_HTTP_TOTAL_TIMEOUT_SECONDS = float(os.getenv("AI_HTTP_TIMEOUT_TOTAL_SEC", "70"))
+AI_HTTP_CONNECT_TIMEOUT_SECONDS = float(os.getenv("AI_HTTP_TIMEOUT_CONNECT_SEC", "10"))
+AI_HTTP_SOCK_CONNECT_TIMEOUT_SECONDS = float(os.getenv("AI_HTTP_TIMEOUT_SOCK_CONNECT_SEC", "10"))
+AI_HTTP_SOCK_READ_TIMEOUT_SECONDS = float(os.getenv("AI_HTTP_TIMEOUT_SOCK_READ_SEC", "60"))
+AI_HTTP_MAX_RETRIES = max(0, int(os.getenv("AI_HTTP_MAX_RETRIES", "2")))
+AI_HTTP_RETRY_BASE_DELAY_SECONDS = max(0.1, float(os.getenv("AI_HTTP_RETRY_BASE_DELAY_SEC", "1.5")))
+DEFAULT_GROQ_OPENAI_BASE_URL = "https://api.groq.com/openai/v1"
 
 # Global backoff guard for quota/rate-limit errors.
 _AI_COOLDOWN_UNTIL = 0.0
 _AI_HARD_QUOTA_UNTIL = 0.0
+_AI_HTTP_SESSION: aiohttp.ClientSession | None = None
+_AI_HTTP_SESSION_LOCK = asyncio.Lock()
 
 USER_DIALOG_TTL_SECONDS = 300
 MAX_TRACKED_USERS_PER_DIALOG = 8
@@ -172,6 +180,60 @@ STYLE_MANIPULATION_PATTERNS = (
     r"speak\s+every\s+other\s+word",
     r"mix\s+languages",
 )
+
+
+def _build_ai_http_timeout() -> aiohttp.ClientTimeout:
+    return aiohttp.ClientTimeout(
+        total=AI_HTTP_TOTAL_TIMEOUT_SECONDS,
+        connect=AI_HTTP_CONNECT_TIMEOUT_SECONDS,
+        sock_connect=AI_HTTP_SOCK_CONNECT_TIMEOUT_SECONDS,
+        sock_read=AI_HTTP_SOCK_READ_TIMEOUT_SECONDS,
+    )
+
+
+def _resolve_groq_openai_base_url() -> str:
+    return (os.getenv("GROQ_OPENAI_BASE_URL") or DEFAULT_GROQ_OPENAI_BASE_URL).rstrip("/")
+
+
+async def init_shared_http_session() -> aiohttp.ClientSession:
+    global _AI_HTTP_SESSION
+    async with _AI_HTTP_SESSION_LOCK:
+        if _AI_HTTP_SESSION and not _AI_HTTP_SESSION.closed:
+            return _AI_HTTP_SESSION
+
+        timeout = _build_ai_http_timeout()
+        _AI_HTTP_SESSION = aiohttp.ClientSession(timeout=timeout)
+        logger.info(
+            "AI shared http session initialized timeout_total=%ss connect=%ss sock_connect=%ss sock_read=%ss",
+            AI_HTTP_TOTAL_TIMEOUT_SECONDS,
+            AI_HTTP_CONNECT_TIMEOUT_SECONDS,
+            AI_HTTP_SOCK_CONNECT_TIMEOUT_SECONDS,
+            AI_HTTP_SOCK_READ_TIMEOUT_SECONDS,
+        )
+        return _AI_HTTP_SESSION
+
+
+async def get_shared_http_session() -> aiohttp.ClientSession:
+    session = _AI_HTTP_SESSION
+    if session and not session.closed:
+        return session
+
+    logger.warning("AI shared http session requested before explicit initialization; creating lazily")
+    return await init_shared_http_session()
+
+
+async def close_shared_http_session() -> None:
+    global _AI_HTTP_SESSION
+    async with _AI_HTTP_SESSION_LOCK:
+        session = _AI_HTTP_SESSION
+        _AI_HTTP_SESSION = None
+
+    if not session or session.closed:
+        logger.info("AI shared http session close skipped because session is already absent or closed")
+        return
+
+    await session.close()
+    logger.info("AI shared http session closed")
 
 
 def _build_system_prompt() -> str:
@@ -709,6 +771,164 @@ def _extract_retry_after_seconds(headers: "aiohttp.typedefs.LooseHeaders", body:
     return None
 
 
+def _should_retry_status(status: int) -> bool:
+    return status in {500, 502, 503, 504}
+
+
+def _is_timeout_error(exc: BaseException) -> bool:
+    return isinstance(exc, (asyncio.TimeoutError, TimeoutError, aiohttp.ServerTimeoutError))
+
+
+def _is_temporary_network_error(exc: BaseException) -> bool:
+    return isinstance(exc, aiohttp.ClientConnectionError)
+
+
+async def _request_groq_json(
+    *,
+    endpoint: str,
+    api_key: str,
+    payload: dict[str, Any],
+    operation: str,
+    model: str,
+    provider: str | None = None,
+    conversation_id: str | int | None = None,
+    user_id: str | int | None = None,
+) -> tuple[dict[str, Any] | None, int, str]:
+    session = await get_shared_http_session()
+    url = f"{_resolve_groq_openai_base_url()}/{endpoint.lstrip('/')}"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    for attempt in range(1, AI_HTTP_MAX_RETRIES + 2):
+        try:
+            async with session.post(url, headers=headers, json=payload) as response:
+                body = await response.text()
+                status = int(response.status)
+
+                if status >= 400:
+                    if status == 429:
+                        logger.warning(
+                            "AI upstream rate limit operation=%s model=%s status=%s attempt=%s provider=%s conversation_id=%s user_id=%s retry_after=%s body=%s",
+                            operation,
+                            model,
+                            status,
+                            attempt,
+                            provider,
+                            conversation_id,
+                            user_id,
+                            _extract_retry_after_seconds(response.headers, body),
+                            body[:1200],
+                        )
+                    elif _should_retry_status(status):
+                        logger.warning(
+                            "AI temporary upstream error operation=%s model=%s status=%s attempt=%s max_attempts=%s provider=%s conversation_id=%s user_id=%s body=%s",
+                            operation,
+                            model,
+                            status,
+                            attempt,
+                            AI_HTTP_MAX_RETRIES + 1,
+                            provider,
+                            conversation_id,
+                            user_id,
+                            body[:1200],
+                        )
+                        if attempt <= AI_HTTP_MAX_RETRIES:
+                            await asyncio.sleep(AI_HTTP_RETRY_BASE_DELAY_SECONDS * attempt)
+                            continue
+                    elif 400 <= status < 500:
+                        logger.error(
+                            "AI non-retryable client error operation=%s model=%s status=%s attempt=%s provider=%s conversation_id=%s user_id=%s body=%s",
+                            operation,
+                            model,
+                            status,
+                            attempt,
+                            provider,
+                            conversation_id,
+                            user_id,
+                            body[:1200],
+                        )
+                    else:
+                        logger.error(
+                            "AI upstream unexpected error operation=%s model=%s status=%s attempt=%s provider=%s conversation_id=%s user_id=%s body=%s",
+                            operation,
+                            model,
+                            status,
+                            attempt,
+                            provider,
+                            conversation_id,
+                            user_id,
+                            body[:1200],
+                        )
+                    return None, status, body
+
+                try:
+                    return await response.json(content_type=None), status, body
+                except Exception:
+                    logger.exception(
+                        "AI upstream json parse failed operation=%s model=%s status=%s provider=%s conversation_id=%s user_id=%s body=%s",
+                        operation,
+                        model,
+                        status,
+                        provider,
+                        conversation_id,
+                        user_id,
+                        body[:1200],
+                    )
+                    return None, status, body
+        except Exception as exc:
+            if _is_timeout_error(exc):
+                logger.warning(
+                    "AI timeout operation=%s model=%s attempt=%s max_attempts=%s provider=%s conversation_id=%s user_id=%s error_type=%s",
+                    operation,
+                    model,
+                    attempt,
+                    AI_HTTP_MAX_RETRIES + 1,
+                    provider,
+                    conversation_id,
+                    user_id,
+                    type(exc).__name__,
+                    exc_info=True,
+                )
+                if attempt <= AI_HTTP_MAX_RETRIES:
+                    await asyncio.sleep(AI_HTTP_RETRY_BASE_DELAY_SECONDS * attempt)
+                    continue
+                return None, 504, ""
+
+            if _is_temporary_network_error(exc):
+                logger.warning(
+                    "AI temporary network error operation=%s model=%s attempt=%s max_attempts=%s provider=%s conversation_id=%s user_id=%s error_type=%s",
+                    operation,
+                    model,
+                    attempt,
+                    AI_HTTP_MAX_RETRIES + 1,
+                    provider,
+                    conversation_id,
+                    user_id,
+                    type(exc).__name__,
+                    exc_info=True,
+                )
+                if attempt <= AI_HTTP_MAX_RETRIES:
+                    await asyncio.sleep(AI_HTTP_RETRY_BASE_DELAY_SECONDS * attempt)
+                    continue
+                return None, 503, ""
+
+            logger.exception(
+                "AI non-retryable client error operation=%s model=%s attempt=%s provider=%s conversation_id=%s user_id=%s error_type=%s",
+                operation,
+                model,
+                attempt,
+                provider,
+                conversation_id,
+                user_id,
+                type(exc).__name__,
+            )
+            return None, 500, str(exc)
+
+    return None, 500, ""
+
+
 def _is_hard_quota_exhausted(body: str) -> bool:
     normalized = (body or "").lower()
     if not normalized:
@@ -897,11 +1117,6 @@ async def _generate_media_summary(
         "max_output_tokens": 700,
         "top_p": 1,
     }
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    timeout = aiohttp.ClientTimeout(total=60)
     logger.info(
         "Groq vision request begin model=%s provider=%s conversation_id=%s user_id=%s media_count=%s",
         vision_model,
@@ -910,39 +1125,21 @@ async def _generate_media_summary(
         user_id,
         len(bounded_media),
     )
-    try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
-                "https://api.groq.com/openai/v1/responses",
-                headers=headers,
-                json=payload,
-            ) as response:
-                body = await response.text()
-                if response.status >= 400:
-                    logger.error(
-                        "Groq vision request failed model=%s status=%s body=%s provider=%s conversation_id=%s user_id=%s",
-                        vision_model,
-                        response.status,
-                        body[:1500],
-                        provider,
-                        conversation_id,
-                        user_id,
-                    )
-                    return None
-
-                try:
-                    response_json = await response.json(content_type=None)
-                except Exception:
-                    logger.exception(
-                        "Groq vision response json parse failed model=%s body=%s",
-                        vision_model,
-                        body[:1500],
-                    )
-                    return None
-    except Exception:
-        logger.exception(
-            "Groq vision request crashed model=%s provider=%s conversation_id=%s user_id=%s",
+    response_json, status, _body = await _request_groq_json(
+        endpoint="responses",
+        api_key=api_key,
+        payload=payload,
+        operation="groq_vision_summary",
+        model=vision_model,
+        provider=provider,
+        conversation_id=conversation_id,
+        user_id=user_id,
+    )
+    if not response_json:
+        logger.warning(
+            "Groq vision request did not return usable json model=%s status=%s provider=%s conversation_id=%s user_id=%s",
             vision_model,
+            status,
             provider,
             conversation_id,
             user_id,
@@ -981,25 +1178,8 @@ async def _generate_media_summary(
     )
     return summary
 
-
-def _extract_groq_chunk_text(chunk: object) -> str:
-    try:
-        choices = getattr(chunk, "choices", None) or []
-        for choice in choices:
-            delta = getattr(choice, "delta", None)
-            if delta is None:
-                continue
-            content = getattr(delta, "content", None)
-            if isinstance(content, str) and content:
-                return content
-    except Exception:
-        logger.exception("Groq stream chunk parse failed chunk=%s", str(chunk)[:500])
-    return ""
-
-
-
 async def _generate_once(
-    client: Groq,
+    api_key: str,
     model: str,
     system_prompt: str,
     user_text: str,
@@ -1009,64 +1189,108 @@ async def _generate_once(
     max_completion_tokens: int = 4096,
     reasoning_effort: str | None = None,
 ) -> tuple[str | None, int]:
-    try:
-        request_kwargs: dict[str, Any] = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_text},
-            ],
-            "temperature": temperature,
-            "max_completion_tokens": max_completion_tokens,
-            "top_p": top_p,
-            "stream": True,
-            "stop": None,
-        }
-        if reasoning_effort is not None:
-            request_kwargs["reasoning_effort"] = reasoning_effort
+    request_kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text},
+        ],
+        "temperature": temperature,
+        "max_completion_tokens": max_completion_tokens,
+        "top_p": top_p,
+        "stream": False,
+        "stop": None,
+    }
+    if reasoning_effort is not None:
+        request_kwargs["reasoning_effort"] = reasoning_effort
 
-        stream = await asyncio.to_thread(
-            client.chat.completions.create,
-            **request_kwargs,
-        )
-        chunks: list[str] = []
-        for chunk in stream:
-            text = _extract_groq_chunk_text(chunk)
-            if text:
-                chunks.append(text)
-        reply = "".join(chunks).strip()
+    response_json, status, body = await _request_groq_json(
+        endpoint="chat/completions",
+        api_key=api_key,
+        payload=request_kwargs,
+        operation="groq_text_completion",
+        model=model,
+    )
+
+    if response_json:
+        reply = ""
+        choices = response_json.get("choices") or []
+        if choices:
+            message = choices[0].get("message") or {}
+            content = message.get("content")
+            if isinstance(content, str):
+                reply = content.strip()
+            elif isinstance(content, list):
+                parts: list[str] = []
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    text = str(item.get("text") or "").strip()
+                    if text:
+                        parts.append(text)
+                reply = "\n".join(parts).strip()
+
         if reply:
             return reply, 200
         logger.warning("Groq returned empty completion model=%s", model)
         return None, 200
-    except Exception as exc:
-        status = int(getattr(exc, "status_code", 0) or 0)
-        body = str(getattr(exc, "body", "") or exc)
-        logger.exception(
-            "Groq API request failed model=%s status=%s body=%s",
+
+    if status == 429:
+        if _is_hard_quota_exhausted(body):
+            retry_after = _extract_retry_after_seconds({}, body) or 3600
+            logger.error(
+                "Groq rate limit: hard quota exhausted model=%s cooldown=%ss body=%s",
+                model,
+                retry_after,
+                body[:800],
+            )
+            _set_ai_cooldown(retry_after, hard_quota=True)
+        elif _is_temporary_upstream_rate_limited(body):
+            logger.warning(
+                "Groq temporary upstream error model=%s status=%s body=%s",
+                model,
+                status,
+                body[:800],
+            )
+        else:
+            retry_after = _extract_retry_after_seconds({}, body) or 60
+            logger.warning(
+                "Groq rate limit model=%s cooldown=%ss body=%s",
+                model,
+                retry_after,
+                body[:800],
+            )
+            _set_ai_cooldown(retry_after, hard_quota=False)
+
+    if _should_retry_status(status):
+        logger.warning(
+            "Groq temporary upstream error model=%s status=%s body=%s",
             model,
             status,
-            body[:1000],
+            body[:800],
         )
-        if status == 429:
-            if _is_hard_quota_exhausted(body):
-                retry_after = 3600
-                logger.error(
-                    "Groq hard quota exhausted model=%s; enabling extended cooldown=%ss body=%s",
-                    model,
-                    retry_after,
-                    body[:800],
-                )
-                _set_ai_cooldown(retry_after, hard_quota=True)
-            elif _is_temporary_upstream_rate_limited(body):
-                logger.warning(
-                    "Groq temporary upstream rate limit model=%s; skipping global cooldown to allow model fallback body=%s",
-                    model,
-                    body[:800],
-                )
-            else:
-                _set_ai_cooldown(60, hard_quota=False)
-        return None, status or 500
+    elif 400 <= status < 500 and status != 429:
+        logger.error(
+            "Groq non-retryable client error model=%s status=%s body=%s",
+            model,
+            status,
+            body[:800],
+        )
+    elif status >= 500:
+        logger.warning(
+            "Groq temporary upstream error model=%s status=%s body=%s",
+            model,
+            status,
+            body[:800],
+        )
+    else:
+        logger.error(
+            "Groq request failed model=%s status=%s body=%s",
+            model,
+            status,
+            body[:800],
+        )
+    return None, status or 500
 
 
 async def _generate_with_model_fallback(
@@ -1077,7 +1301,6 @@ async def _generate_with_model_fallback(
     route_label: str = "text",
 ) -> tuple[str | None, str | None]:
     last_status: int | None = None
-    client = Groq(api_key=api_key)
     model_chain = _resolve_text_models()
     logger.info(
         "Groq text generation begin route=%s model_chain=%s",
@@ -1094,7 +1317,7 @@ async def _generate_with_model_fallback(
         if normalized_model == "qwen/qwen3-32b":
             request_kwargs["reasoning_effort"] = "default"
         reply, status = await _generate_once(
-            client,
+            api_key,
             model,
             system_prompt,
             user_text,

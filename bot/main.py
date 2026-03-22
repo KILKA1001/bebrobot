@@ -18,7 +18,12 @@ from aiohttp import ClientConnectionError, ClientError, ServerTimeoutError
 from dotenv import load_dotenv
 
 from bot.telegram_bot.config import TELEGRAM_BOT_TOKEN_ENV, get_telegram_bot_token
-from bot.services.ai_service import _build_media_input, generate_guiy_reply
+from bot.services.ai_service import (
+    _build_media_input,
+    close_shared_http_session,
+    generate_guiy_reply,
+    init_shared_http_session,
+)
 
 
 load_dotenv()
@@ -94,6 +99,7 @@ db.bot = bot
 
 startup_run_id = uuid.uuid4().hex[:12]
 startup_token_hash = "unknown"
+_ai_session_hooks_installed = False
 
 
 def _token_fingerprint(token: str) -> str:
@@ -122,6 +128,31 @@ def _startup_context(
 
 def _log_startup_step(level: int, message: str, *, step: str, operation_id: str | None = None, **extra) -> None:
     logging.log(level, "%s | %s", message, _startup_context(step=step, operation_id=operation_id, **extra))
+
+
+def _install_ai_session_hooks_for_discord() -> None:
+    global _ai_session_hooks_installed
+    if _ai_session_hooks_installed:
+        return
+
+    original_setup_hook = getattr(bot, "setup_hook", None)
+    original_close = bot.close
+
+    async def _setup_hook_with_ai_session(*args, **kwargs):
+        await init_shared_http_session()
+        if original_setup_hook is not None:
+            return await original_setup_hook(*args, **kwargs)
+        return None
+
+    async def _close_with_ai_session(*args, **kwargs):
+        try:
+            return await original_close(*args, **kwargs)
+        finally:
+            await close_shared_http_session()
+
+    bot.setup_hook = _setup_hook_with_ai_session
+    bot.close = _close_with_ai_session
+    _ai_session_hooks_installed = True
 
 
 def _create_task_with_startup_logging(
@@ -835,7 +866,14 @@ def save_next_startup_retry_at(next_retry_at: float) -> None:
 
 def run_telegram_main(token: str) -> None:
     try:
-        asyncio.run(run_telegram_polling(token))
+        async def _run() -> None:
+            await init_shared_http_session()
+            try:
+                await run_telegram_polling(token)
+            finally:
+                await close_shared_http_session()
+
+        asyncio.run(_run())
     except TelegramPollingAlreadyRunningInProcessError as exc:
         logging.warning("telegram runtime duplicate startup detected; details=%s", exc)
         return
@@ -848,6 +886,7 @@ def run_discord_main(token: str) -> None:
     global bot, startup_token_hash
 
     startup_token_hash = _token_fingerprint(token)
+    _install_ai_session_hooks_for_discord()
 
     try:
         _log_startup_step(
@@ -901,6 +940,8 @@ def run_discord_main(token: str) -> None:
         raise
 
 async def _run_both_async(discord_token: str, telegram_token: str) -> None:
+    await init_shared_http_session()
+
     async def _run_discord_once() -> None:
         global startup_token_hash
         startup_token_hash = _token_fingerprint(discord_token)
@@ -1069,47 +1110,50 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
     pending = {discord_task, telegram_task}
     runtime_errors: dict[str, BaseException] = {}
 
-    while pending:
-        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+    try:
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
 
-        for task in done:
-            task_name = task.get_name()
+            for task in done:
+                task_name = task.get_name()
 
-            try:
-                exc = task.exception()
-            except asyncio.CancelledError:
-                logging.info("%s cancelled in runtime supervisor", task_name)
-                continue
+                try:
+                    exc = task.exception()
+                except asyncio.CancelledError:
+                    logging.info("%s cancelled in runtime supervisor", task_name)
+                    continue
 
-            if exc is None:
-                logging.warning(
-                    "%s stopped; remaining_runtimes=%s",
-                    task_name,
-                    ", ".join(sorted(other.get_name() for other in pending)) or "none",
-                )
-                continue
+                if exc is None:
+                    logging.warning(
+                        "%s stopped; remaining_runtimes=%s",
+                        task_name,
+                        ", ".join(sorted(other.get_name() for other in pending)) or "none",
+                    )
+                    continue
 
-            runtime_errors[task_name] = exc
-            remaining = ", ".join(sorted(other.get_name() for other in pending)) or "none"
+                runtime_errors[task_name] = exc
+                remaining = ", ".join(sorted(other.get_name() for other in pending)) or "none"
 
-            if task_name == "discord-runtime":
+                if task_name == "discord-runtime":
+                    logging.error(
+                        "discord runtime stopped while telegram remains active. "
+                        "Full dashboard restart is required to start Discord again. remaining_runtimes=%s error=%s",
+                        remaining,
+                        exc,
+                    )
+                    continue
+
                 logging.error(
-                    "discord runtime stopped while telegram remains active. "
-                    "Full dashboard restart is required to start Discord again. remaining_runtimes=%s error=%s",
+                    "%s stopped; remaining_runtimes=%s error=%s",
+                    task_name,
                     remaining,
                     exc,
                 )
-                continue
 
-            logging.error(
-                "%s stopped; remaining_runtimes=%s error=%s",
-                task_name,
-                remaining,
-                exc,
-            )
-
-    if runtime_errors and "telegram-runtime" in runtime_errors:
-        raise runtime_errors["telegram-runtime"]
+        if runtime_errors and "telegram-runtime" in runtime_errors:
+            raise runtime_errors["telegram-runtime"]
+    finally:
+        await close_shared_http_session()
 
 
 def run_both_main(discord_token: str, telegram_token: str) -> None:
