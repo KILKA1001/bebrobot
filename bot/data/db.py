@@ -149,6 +149,7 @@ class Database:
         self._table_account_id_support = {}
         self._scores_has_user_id = True
         self._account_metrics = {}
+        self._dirty_score_keys = set()
 
         self.scores = LazyDict(self.ensure_core_data_loaded)
         self.actions = LazyList(self.ensure_core_data_loaded)
@@ -160,6 +161,69 @@ class Database:
         self.quick_pay_streak = {}
         self.guild_id = int(os.getenv("GUILD_ID", 0))
         self.fast_payer_role_id = int(os.getenv("FAST_PAYER_ROLE_ID", 0))
+
+    def _score_dirty_key(self, *, account_id: Optional[str] = None, user_id: Optional[int] = None) -> Optional[str]:
+        if account_id:
+            return f"account:{account_id}"
+        if user_id is not None:
+            return f"user:{int(user_id)}"
+        return None
+
+    def _mark_score_dirty(self, *, account_id: Optional[str] = None, user_id: Optional[int] = None) -> None:
+        dirty_key = self._score_dirty_key(account_id=account_id, user_id=user_id)
+        if dirty_key:
+            self._dirty_score_keys.add(dirty_key)
+
+    def _clear_score_dirty(self, *, account_id: Optional[str] = None, user_id: Optional[int] = None) -> None:
+        dirty_key = self._score_dirty_key(account_id=account_id, user_id=user_id)
+        if dirty_key:
+            self._dirty_score_keys.discard(dirty_key)
+
+    def _rekey_score_dirty_to_account(self, *, account_id: str, user_id: Optional[int] = None) -> None:
+        if user_id is not None:
+            self._clear_score_dirty(user_id=user_id)
+        self._mark_score_dirty(account_id=account_id)
+
+    def _build_dirty_scores_payload(self):
+        dirty_payload = []
+        retained_dirty_keys = set()
+
+        for dirty_key in list(self._dirty_score_keys):
+            key_type, _, raw_value = dirty_key.partition(":")
+            account_id = raw_value if key_type == "account" else None
+            user_id = None
+
+            if key_type == "user":
+                try:
+                    user_id = int(raw_value)
+                except ValueError:
+                    logger.error("❌ save_all dirty-set contains invalid user key=%s", dirty_key)
+                    continue
+                account_id = self._get_account_id_for_discord_user(user_id)
+                if not account_id:
+                    retained_dirty_keys.add(dirty_key)
+                    logger.error("❌ save_all cannot flush dirty score without account_id user_id=%s", user_id)
+                    continue
+            elif key_type != "account":
+                logger.error("❌ save_all dirty-set contains unsupported key=%s", dirty_key)
+                continue
+
+            cache_user_id = user_id if user_id is not None else self._get_discord_user_for_account_id(account_id)
+            if cache_user_id is None:
+                retained_dirty_keys.add(dirty_key)
+                logger.error("❌ save_all cannot resolve local score cache for account_id=%s", account_id)
+                continue
+
+            if cache_user_id not in self.scores:
+                logger.warning("⚠️ save_all skipped dirty score missing from cache account_id=%s user_id=%s", account_id, cache_user_id)
+                continue
+
+            dirty_payload.append({
+                "account_id": account_id,
+                "points": float(self.scores[cache_user_id]),
+            })
+
+        return dirty_payload, retained_dirty_keys
 
     def _log_db_timing(
         self,
@@ -428,6 +492,7 @@ class Database:
                         continue
                     scores_data[resolved_user_id] = float(item['points'])
                 self.scores.set_data(scores_data)
+                self._dirty_score_keys.clear()
             else:
                 raise ValueError("Некорректный ответ от Supabase при загрузке баллов")
 
@@ -452,6 +517,7 @@ class Database:
             self.scores.set_data({})
             self.actions.set_data([])
             self.history.set_data({})
+            self._dirty_score_keys.clear()
             self._core_data_loaded = True
         finally:
             self._core_data_loading = False
@@ -539,6 +605,8 @@ class Database:
             if result:
                 if cache_user_id is not None:
                     self.scores[cache_user_id] = new_points
+                self._mark_score_dirty(account_id=account_id, user_id=cache_user_id)
+                self._rekey_score_dirty_to_account(account_id=account_id, user_id=cache_user_id)
                 return True
         except Exception as e:
             logger.error("🔥 Ошибка обновления баллов account_id=%s: %s", account_id, str(e))
@@ -651,6 +719,8 @@ class Database:
                     current_points = float(row.get("new_points", self.scores.get(cache_user_id, 0) if cache_user_id is not None else 0))
                     if cache_user_id is not None:
                         self.scores[cache_user_id] = current_points
+                    self._mark_score_dirty(account_id=resolved_account_id, user_id=cache_user_id)
+                    self._rekey_score_dirty_to_account(account_id=resolved_account_id, user_id=cache_user_id)
                     if not rpc_applied:
                         logger.warning("⚠️ add_action op_key=%s уже применён, пропуск дубликата", op_key)
                         return True
@@ -840,57 +910,30 @@ class Database:
         try:
             if not self.supabase:
                 logger.warning("⚠️ Supabase не инициализирован")
-                return
+                return 0
 
             if not self._core_data_loaded:
-                return
-                
-            if self.scores:
-                # Не восстанавливаем удалённые вручную строки из устаревшего in-memory кеша.
-                # Иначе после DELETE в БД старые значения могут "возвращаться" при очередном save_all.
-                existing_user_ids = set()
-                if self._scores_has_user_id:
-                    existing_rows_response = (
-                        self.supabase.table("scores")
-                        .select("user_id")
-                        .not_.is_("user_id", "null")
-                        .execute()
-                    )
-                    existing_user_ids = {
-                        int(row.get("user_id"))
-                        for row in (existing_rows_response.data or [])
-                        if row.get("user_id") is not None
-                    }
+                return 0
 
-                scores_data = []
-                skipped_user_ids = []
-                for user_id, points in self.scores.items():
-                    if self._scores_has_user_id:
-                        if int(user_id) in existing_user_ids:
-                            scores_data.append({"user_id": user_id, "points": points})
-                        else:
-                            skipped_user_ids.append(int(user_id))
-                    else:
-                        scores_data.append(self._prefer_account_id_payload("scores", int(user_id), {"user_id": int(user_id), "points": points}))
+            if not self._dirty_score_keys:
+                return 0
 
-                if skipped_user_ids:
-                    logger.warning(
-                        "⚠️ save_all пропустил %s удалённых/отсутствующих строк scores (пример user_id=%s)",
-                        len(skipped_user_ids),
-                        skipped_user_ids[:5],
-                    )
+            scores_data, retained_dirty_keys = self._build_dirty_scores_payload()
+            if not scores_data:
+                self._dirty_score_keys = retained_dirty_keys
+                return 0
 
-                if scores_data:
-                    response = self._handle_response(
-                        self.supabase.table("scores").upsert(scores_data).execute()
-                    )
-                    if response:
-                        logger.info(f"💾 Данные сохранены: {len(response.data if response.data else [])} записей")
-                else:
-                    logger.info("ℹ️ save_all: нет строк scores для сохранения после сверки с БД")
+            response = self._handle_response(
+                self.supabase.table("scores").upsert(scores_data, on_conflict="account_id").execute()
+            )
+            if response is not None:
+                self._dirty_score_keys = retained_dirty_keys
+                logger.info("autosave flushed %s dirty rows", len(scores_data))
+                return len(scores_data)
         except Exception as e:
             logger.error(f"🔥 Ошибка сохранения: {str(e)}")
             traceback.print_exc()
+        return 0
 
     def log_monthly_top(self, entries: list, month: int, year: int):
         """Запись топа месяца в Supabase"""
