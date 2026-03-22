@@ -39,7 +39,7 @@ from bot.systems.profile_titles_logic import (
     handle_member_update_for_profile_titles,
     profile_titles_sync_loop,
 )
-from bot.systems.external_roles_sync_logic import external_roles_sync_loop
+from bot.systems.external_roles_sync_logic import external_roles_sync_loop, schedule_external_roles_sync
 import bot.commands.fines
 import bot.data.tournament_db as tournament_db
 from bot.systems.tournament_logic import BettingView
@@ -485,6 +485,21 @@ async def on_ready():
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
     await handle_member_update_for_profile_titles(before, after)
+
+    try:
+        before_role_ids = {role.id for role in before.roles if not role.is_default()}
+        after_role_ids = {role.id for role in after.roles if not role.is_default()}
+        if before_role_ids == after_role_ids:
+            return
+
+        from bot.services import AccountsService
+
+        account_id = AccountsService.resolve_account_id("discord", str(after.id))
+        if not account_id:
+            return
+        schedule_external_roles_sync(bot, str(account_id), reason="discord_member_update")
+    except Exception:
+        logging.exception("external roles sync dispatch failed for member update member_id=%s guild_id=%s", after.id, after.guild.id if after.guild else None)
 
 
 @bot.event

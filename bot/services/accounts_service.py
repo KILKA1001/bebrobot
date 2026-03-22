@@ -1721,6 +1721,12 @@ class AccountsService:
                 return False, "Не удалось завершить привязку, попробуйте позже"
 
             AccountsService._mark_registry_link_code_usage(str(account_id), code)
+            from bot.services.external_roles_sync_service import ExternalRolesSyncService
+
+            ExternalRolesSyncService.trigger_account_sync(
+                str(account_id),
+                reason=f"link_{target_provider}",
+            )
 
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("link_consume_success")
@@ -2245,9 +2251,19 @@ class AccountsService:
                 return False, "Связь не найдена"
 
             AccountsService.invalidate_account_id_cache(provider, provider_user_id)
+            account_id = None
+            if result.data:
+                account_id = str(result.data[0].get("account_id") or "").strip() or None
+            if account_id:
+                from bot.services.external_roles_sync_service import ExternalRolesSyncService
+
+                ExternalRolesSyncService.trigger_account_sync(
+                    account_id,
+                    reason=f"unlink_{provider}",
+                )
             if hasattr(db, "_inc_metric"):
                 db._inc_metric("unlink_success")
-            logger.info("identity_unlinked provider=%s provider_user_id=%s", provider, provider_user_id)
+            logger.info("identity_unlinked provider=%s provider_user_id=%s account_id=%s", provider, provider_user_id, account_id)
             return True, "Связь удалена"
         except Exception as e:
             if hasattr(db, "_inc_metric"):
