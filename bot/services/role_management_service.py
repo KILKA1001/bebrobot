@@ -524,8 +524,12 @@ class RoleManagementService:
         *,
         default_position: int = 0,
         log_context: str = "ensure_category_exists",
+        known_categories: set[str] | None = None,
     ) -> bool:
         category = RoleManagementService._normalized_category(name)
+        if known_categories is not None and category in known_categories:
+            logger.debug("%s reused known category cache category=%s", log_context, category)
+            return True
         if not db.supabase:
             logger.warning("%s skipped: supabase is not configured category=%s", log_context, category)
             return False
@@ -540,6 +544,8 @@ class RoleManagementService:
             )
             existing = list(response.data or [])
             if existing:
+                if known_categories is not None:
+                    known_categories.add(category)
                 logger.info(
                     "%s preserved existing category position category=%s position=%s default_position=%s",
                     log_context,
@@ -550,6 +556,8 @@ class RoleManagementService:
                 return True
 
             db.supabase.table("role_categories").insert({"name": category, "position": int(default_position)}).execute()
+            if known_categories is not None:
+                known_categories.add(category)
             logger.info("%s created missing category category=%s position=%s", log_context, category, int(default_position))
             return True
         except Exception:
@@ -619,6 +627,7 @@ class RoleManagementService:
         source: str,
         account_id: str | None = None,
         guild_id: str | None = None,
+        known_categories: set[str] | None = None,
     ) -> bool:
         if not db.supabase or not role_id or not role_name:
             return False
@@ -650,6 +659,7 @@ class RoleManagementService:
                 payload["category_name"],
                 default_position=9999,
                 log_context="_upsert_discord_catalog_role",
+                known_categories=known_categories,
             )
             if existing:
                 db.supabase.table("roles").update(payload).eq("discord_role_id", role_id).execute()
@@ -672,6 +682,7 @@ class RoleManagementService:
         existing_by_role_id: dict[str, dict[str, Any]],
         *,
         log_context: str | None = None,
+        known_categories: set[str] | None = None,
     ) -> tuple[int, set[str]]:
         if not db.supabase:
             return 0, set()
@@ -694,6 +705,7 @@ class RoleManagementService:
                 default_position=0,
                 source="external_role_bindings",
                 account_id=account_id,
+                known_categories=known_categories,
             ):
                 upserted += 1
                 existing_by_role_id[role_id] = {
@@ -722,9 +734,17 @@ class RoleManagementService:
                 if existing_role_id and existing_role_id not in existing_by_role_id:
                     existing_by_role_id[existing_role_id] = row
 
+            categories_resp = db.supabase.table("role_categories").select("name").execute()
+            known_categories = {
+                RoleManagementService._normalized_category(row.get("name"))
+                for row in categories_resp.data or []
+                if RoleManagementService._normalized_category(row.get("name"))
+            }
+
             upserted, _ = RoleManagementService._sync_discord_roles_from_external_bindings(
                 existing_by_role_id,
                 log_context=log_context,
+                known_categories=known_categories,
             )
             if upserted:
                 RoleManagementService.invalidate_catalog_cache(reason="ensure_external_discord_roles_in_catalog")
@@ -2280,6 +2300,14 @@ class RoleManagementService:
                 if existing_role_id and existing_role_id not in existing_by_role_id:
                     existing_by_role_id[existing_role_id] = row
 
+            categories_resp = db.supabase.table("role_categories").select("name").execute()
+            known_categories = {
+                RoleManagementService._normalized_category(row.get("name"))
+                for row in categories_resp.data or []
+                if RoleManagementService._normalized_category(row.get("name"))
+            }
+            known_categories.add(RoleManagementService._normalized_category(_AUTO_DISCORD_CATEGORY))
+
             for role in guild_roles:
                 role_id = str(role.get("id") or "").strip()
                 role_name = str(role.get("name") or "").strip()
@@ -2296,6 +2324,7 @@ class RoleManagementService:
                     default_position=int(role.get("position") or 0),
                     source="guild_roles",
                     guild_id=str(role.get("guild_id") or "").strip() or None,
+                    known_categories=known_categories,
                 ):
                     upserted += 1
                     existing_by_role_id[role_id] = {
@@ -2305,7 +2334,10 @@ class RoleManagementService:
                         "position": int((existing or {}).get("position") or int(role.get("position") or 0)),
                     }
 
-            external_upserted, external_active_ids = RoleManagementService._sync_discord_roles_from_external_bindings(existing_by_role_id)
+            external_upserted, external_active_ids = RoleManagementService._sync_discord_roles_from_external_bindings(
+                existing_by_role_id,
+                known_categories=known_categories,
+            )
             upserted += external_upserted
             active_ids.update(external_active_ids)
 

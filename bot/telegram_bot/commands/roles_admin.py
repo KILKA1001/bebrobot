@@ -28,6 +28,7 @@ _PENDING_TTL_SECONDS = 300
 _TELEGRAM_MESSAGE_LIMIT = 4096
 _LIST_ROLE_DESCRIPTION_LIMIT = 180
 _LIST_ROLE_ACQUIRE_HINT_LIMIT = 180
+_DISCORD_CATALOG_SYNC_MIN_INTERVAL_SECONDS = 45
 _SECTION_LABELS = {
     "categories": "Категории",
     "roles": "Роли",
@@ -48,6 +49,7 @@ class PendingRolesAdminAction:
 
 
 _PENDING_ACTIONS: dict[int, PendingRolesAdminAction] = {}
+_LAST_DISCORD_CATALOG_SYNC_AT: float | None = None
 
 
 @dataclass(frozen=True)
@@ -236,15 +238,38 @@ async def _sync_linked_discord_role(target: dict[str, str], role_name: str, *, r
         )
 
 
-async def _sync_discord_roles_catalog() -> None:
+def _should_skip_implicit_discord_catalog_sync(*, force: bool = False) -> tuple[bool, float]:
+    global _LAST_DISCORD_CATALOG_SYNC_AT
+    now = time.monotonic()
+    if force or _LAST_DISCORD_CATALOG_SYNC_AT is None:
+        return False, 0.0
+    elapsed = now - _LAST_DISCORD_CATALOG_SYNC_AT
+    if elapsed < _DISCORD_CATALOG_SYNC_MIN_INTERVAL_SECONDS:
+        return True, elapsed
+    return False, elapsed
+
+
+async def _sync_discord_roles_catalog(*, force: bool = False, trigger: str = "implicit") -> bool:
     """Sync live Discord guild roles into local catalog for Telegram role operations."""
     try:
+        global _LAST_DISCORD_CATALOG_SYNC_AT
+
+        skip_sync, elapsed = _should_skip_implicit_discord_catalog_sync(force=force)
+        if skip_sync:
+            logger.info(
+                "telegram roles_admin discord catalog sync skipped trigger=%s reason=recent_sync elapsed_sec=%.3f min_interval_sec=%s",
+                trigger,
+                elapsed,
+                _DISCORD_CATALOG_SYNC_MIN_INTERVAL_SECONDS,
+            )
+            return False
+
         from bot.commands.base import bot as discord_bot
 
         guilds = list(getattr(discord_bot, "guilds", []) or [])
         if not guilds:
             logger.warning("telegram roles_admin discord catalog sync skipped: no guilds attached")
-            return
+            return False
 
         guild_roles: list[dict[str, str | int]] = []
         for guild in guilds:
@@ -270,18 +295,22 @@ async def _sync_discord_roles_catalog() -> None:
                 "telegram roles_admin discord catalog sync has no roles guild_count=%s",
                 len(guilds),
             )
-            return
+            return False
 
         result = RoleManagementService.sync_discord_guild_roles(guild_roles)
+        _LAST_DISCORD_CATALOG_SYNC_AT = time.monotonic()
         logger.info(
-            "telegram roles_admin discord catalog sync completed guild_count=%s roles=%s upserted=%s removed=%s",
+            "telegram roles_admin discord catalog sync completed trigger=%s guild_count=%s roles=%s upserted=%s removed=%s",
+            trigger,
             len(guilds),
             len(guild_roles),
             result.get("upserted", 0),
             result.get("removed", 0),
         )
+        return True
     except Exception:
-        logger.exception("telegram roles_admin discord catalog sync crashed")
+        logger.exception("telegram roles_admin discord catalog sync crashed trigger=%s", trigger)
+        return False
 
 def _format_telegram_lookup_candidate(candidate: dict[str, Any]) -> str:
     provider = str(candidate.get("provider") or "").strip()
@@ -1573,7 +1602,7 @@ async def roles_admin_command(message: Message) -> None:
         if not await _ensure_roles_admin(message):
             return
 
-        await _sync_discord_roles_catalog()
+        await _sync_discord_roles_catalog(trigger="command_entry")
 
         text = (message.text or "").strip()
         parts = text.split()
@@ -1933,7 +1962,10 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             return
 
         action = parts[2]
-        await _sync_discord_roles_catalog()
+        await _sync_discord_roles_catalog(
+            force=action == "home",
+            trigger=f"callback:{action}",
+        )
         grouped = RoleManagementService.list_roles_grouped() or []
 
         if action == "help":
