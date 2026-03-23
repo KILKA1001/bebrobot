@@ -8,6 +8,7 @@ from .linking import router as linking_router
 from .ai_chat import router as ai_chat_router
 from .roles_admin import router as roles_admin_router
 from .guiy_owner import router as guiy_owner_router
+from .rep import router as rep_router
 
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ def get_commands_router() -> Router:
     router.include_router(engagement_router)
     router.include_router(roles_admin_router)
     router.include_router(guiy_owner_router)
+    router.include_router(rep_router)
     router.include_router(ai_chat_router)
     _COMMANDS_ROUTER = router
     logger.info("telegram commands router initialized")

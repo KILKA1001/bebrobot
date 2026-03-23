@@ -14,6 +14,7 @@ from bot.legacy_identity_logging import (
     log_legacy_schema_fallback,
 )
 from bot.services import AccountsService, AuthorityService
+from bot.services.profile_titles import normalize_protected_profile_title
 from bot.utils.roles_and_activities import ROLE_THRESHOLDS
 from bot.utils import (
     send_temp,
@@ -643,6 +644,13 @@ def _help_can_manage_roles_admin(visibility: HelpVisibilityContext) -> bool:
     return visibility.is_administrator or visibility.level >= 80
 
 
+def _help_can_use_rep(visibility: HelpVisibilityContext) -> bool:
+    if visibility.is_administrator:
+        return True
+    normalized = {normalize_protected_profile_title(title) for title in visibility.titles if str(title).strip()}
+    return bool(normalized & {"ветеран города", "младший админ", "вице города", "админ", "главный вице", "глава клуба", "оператор"})
+
+
 def _help_can_manage_tickets(visibility: HelpVisibilityContext) -> bool:
     if visibility.is_administrator:
         return True
@@ -658,6 +666,7 @@ def _has_privileged_help_commands(visibility: HelpVisibilityContext) -> bool:
             _help_can_manage_bank(visibility),
             _help_can_manage_tournaments(visibility),
             _help_can_manage_roles_admin(visibility),
+            _help_can_use_rep(visibility),
             _help_can_manage_tickets(visibility),
         )
     )
@@ -750,14 +759,13 @@ def get_help_embed(category: str, visibility: HelpVisibilityContext | None = Non
             "`/finehistory [@пользователь] [страница]` — история штрафов.",
             "`/finedetails ID` — детали конкретного штрафа.",
         ]
-        if _help_can_create_fines(visibility):
-            lines.extend(
-                [
-                    "",
-                    "**Дополнительно доступно по вашему званию:**",
-                    "`/fine @пользователь сумма тип [причина]` — назначить штраф.",
-                ]
-            )
+        if _help_can_create_fines(visibility) or _help_can_use_rep(visibility):
+            extra_lines = ["", "**Дополнительно доступно по вашему званию:**"]
+            if _help_can_use_rep(visibility):
+                extra_lines.append("`/rep` — единая команда модерации: выбрать нарушителя, увидеть автонаказание и подтвердить.")
+            if _help_can_create_fines(visibility):
+                extra_lines.append("`/fine @пользователь сумма тип [причина]` — назначить штраф.")
+            lines.extend(extra_lines)
         if _help_can_manage_fines(visibility):
             lines.extend(
                 [
@@ -799,7 +807,11 @@ def get_help_embed(category: str, visibility: HelpVisibilityContext | None = Non
         )
     elif category == "admin_fines":
         embed.title = "📉 Мод-команды: штрафы"
-        description = ["`/fine @пользователь сумма тип [причина]` — выдать штраф."]
+        description = []
+        if _help_can_use_rep(visibility):
+            description.append("`/rep` — единая команда модерации с авторасчётом наказания и экраном подтверждения.")
+        if _help_can_create_fines(visibility):
+            description.append("`/fine @пользователь сумма тип [причина]` — выдать штраф.")
         if _help_can_manage_fines(visibility):
             description.extend(
                 [
