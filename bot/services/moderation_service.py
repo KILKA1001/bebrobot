@@ -4,6 +4,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from bot.data import db
+from bot.systems.moderation_rep_ui import REP_HOW_IT_WORKS_LINES, render_rep_duplicate_submit_text
 
 from .accounts_service import AccountsService
 from .authority_service import AuthorityService, ModerationAuthorityDecision
@@ -598,11 +599,7 @@ class ModerationService:
 
     @staticmethod
     def _how_it_works_lines() -> list[str]:
-        return [
-            "• Наказание выбрано автоматически по типу нарушения и числу предупреждений.",
-            "• Изменение вручную в этом сценарии не требуется.",
-            "• Если наказание выглядит неверным — отмените и проверьте историю пользователя.",
-        ]
+        return [line.replace("выбирается", "выбрано").replace("Пока кейс не подтверждён, ничего не применяется.", "До подтверждения ничего не применяется.") for line in REP_HOW_IT_WORKS_LINES]
 
     @staticmethod
     def _build_ui_payload(
@@ -1122,7 +1119,7 @@ class ModerationService:
             result_ui_payload = dict(ui_payload)
             result_ui_payload["case_id"] = existing_case.get("id")
             result_ui_payload["moderation_op_key"] = moderation_op_key
-            duplicate_message = "Кейс уже был подтверждён ранее. Повторное применение пропущено."
+            duplicate_message = render_rep_duplicate_submit_text()
             ModerationService._log_case_event(
                 "warning",
                 message="moderation duplicate submit ignored",

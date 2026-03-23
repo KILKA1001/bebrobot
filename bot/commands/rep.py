@@ -10,14 +10,26 @@ from discord.ext import commands
 from bot.commands.base import bot
 from bot.commands.roles_admin import _resolve_discord_target
 from bot.services import AuthorityService, ModerationService
-from bot.systems.moderation_rep_ui import render_rep_preview_text, render_rep_result_text, render_violator_notification_text
+from bot.systems.moderation_rep_ui import (
+    render_rep_apply_error_text,
+    render_rep_cancelled_text,
+    render_rep_duplicate_submit_text,
+    render_rep_expired_text,
+    render_rep_foreign_actor_text,
+    render_rep_preview_text,
+    render_rep_result_text,
+    render_rep_start_text,
+    render_rep_target_prompt_text,
+    render_violator_notification_text,
+    render_rep_violation_prompt_text,
+)
 from bot.utils import safe_send, send_temp
 
 logger = logging.getLogger(__name__)
 
 
 def _friendly_rep_error_text() -> str:
-    return "Не удалось завершить /rep. Ничего не применено: обновите экран и попробуйте ещё раз."
+    return render_rep_apply_error_text()
 
 
 async def _resolve_reply_message(ctx: commands.Context) -> discord.Message | None:
@@ -177,7 +189,7 @@ class _RepConfirmButton(discord.ui.Button):
             await interaction.response.send_message("❌ Ошибка /rep. Откройте команду заново.", ephemeral=True)
             return
         if view.state.is_applying or view.state.result:
-            await interaction.response.send_message("Это действие уже обработано. Откройте /rep заново для нового кейса.", ephemeral=True)
+            await interaction.response.send_message(render_rep_duplicate_submit_text(), ephemeral=True)
             return
         if not view.state.target or not view.state.violation_code:
             await interaction.response.send_message("Сначала выберите нарушителя и нарушение.", ephemeral=True)
@@ -232,7 +244,7 @@ class _RepCancelButton(discord.ui.Button):
         view.disable_all_items()
         embed = discord.Embed(
             title="/rep отменён",
-            description="Сценарий остановлен. Никаких действий не применено. Запустите /rep ещё раз, если нужно начать заново.",
+            description=render_rep_cancelled_text(),
             color=discord.Color.dark_grey(),
         )
         await interaction.response.edit_message(embed=embed, view=view)
@@ -243,6 +255,7 @@ class DiscordRepFlowView(discord.ui.View):
         super().__init__(timeout=300)
         self.state = DiscordRepFlowState(actor_id=actor_id, guild_id=guild_id, chat_id=chat_id)
         self._violations = ModerationService.list_active_violation_types()
+        self.message: discord.Message | None = None
         self.rebuild()
 
     def log_event(
@@ -323,7 +336,7 @@ class DiscordRepFlowView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.state.actor_id:
             self.log_event("warning", message="rep interaction denied", error_code="foreign_actor")
-            await interaction.response.send_message("Эта панель /rep открыта другим модератором.", ephemeral=True)
+            await interaction.response.send_message(render_rep_foreign_actor_text(), ephemeral=True)
             return False
         return True
 
@@ -338,27 +351,20 @@ class DiscordRepFlowView(discord.ui.View):
             embed.add_field(name="Статус", value=self.state.status_text or "Проверьте итог и подтвердите применение.", inline=False)
             return embed
         embed = discord.Embed(title="🛡️ /rep", color=discord.Color.blurple())
-        embed.description = (
-            "Единый интерактивный мастер модерации: бот сам подбирает наказание по доменной модели и authority-проверкам.\n\n"
-            "**Как пользоваться**\n"
-            "• Шаг 1: выберите нарушителя.\n"
-            "• Шаг 2: выберите нарушение кнопками.\n"
-            "• Шаг 3: проверьте предпросмотр наказания и следующий шаг эскалации.\n"
-            "• Шаг 4: подтвердите или отмените действие.\n\n"
-            f"**Текущая цель:** {_target_label(self.state.target)}\n"
-            f"**Подсказка:** {self.state.target_hint}"
-        )
-        if self.state.status_text:
-            embed.add_field(name="Короткий статус", value=self.state.status_text, inline=False)
+        embed.description = render_rep_start_text(target_selection_hint=self.state.target_hint)
+        embed.add_field(name="Текущая цель", value=_target_label(self.state.target), inline=False)
         embed.add_field(
-            name="Как это работает",
-            value=(
-                "• Наказание выбирается автоматически по типу нарушения и числу предупреждений.\n"
-                "• Вручную менять исход в этом сценарии не нужно.\n"
-                "• Если расчёт кажется неверным — нажмите «Отмена» и проверьте историю пользователя."
+            name="Шаг 1",
+            value=render_rep_target_prompt_text(
+                target_selection_hint=self.state.target_hint,
+                target_label=_target_label(self.state.target) if self.state.target else None,
             ),
             inline=False,
         )
+        if self.state.target:
+            embed.add_field(name="Шаг 2", value=render_rep_violation_prompt_text(target_label=_target_label(self.state.target)), inline=False)
+        if self.state.status_text:
+            embed.add_field(name="Короткий статус", value=self.state.status_text, inline=False)
         return embed
 
     async def notify_target(self, ui_payload: dict[str, Any]) -> None:
@@ -372,6 +378,16 @@ class DiscordRepFlowView(discord.ui.View):
 
     async def on_timeout(self) -> None:
         self.disable_all_items()
+        self.state.status_text = render_rep_expired_text()
+        self.log_event("warning", message="rep interaction expired", error_code="session_expired")
+        message = getattr(self, "message", None)
+        if not message:
+            return
+        try:
+            embed = discord.Embed(title="⌛ /rep истёк", description=render_rep_expired_text(), color=discord.Color.dark_grey())
+            await message.edit(embed=embed, view=self)
+        except Exception:
+            self.log_event("exception", message="rep timeout edit failed", error_code="timeout_edit_failed")
 
 
 async def _prefill_target_from_context(ctx: commands.Context, raw_target: str | None) -> dict[str, Any] | None:
@@ -429,4 +445,6 @@ async def rep(ctx: commands.Context, *, target: str | None = None):
         None,
         None,
     )
-    await send_temp(ctx, embed=view.build_embed(), view=view, delete_after=None)
+    sent_message = await send_temp(ctx, embed=view.build_embed(), view=view, delete_after=None)
+    if sent_message is not None:
+        view.message = sent_message

@@ -431,6 +431,10 @@ class ModerationServiceTests(unittest.TestCase):
         self.assertTrue(second["ok"])
         self.assertEqual(first["case_id"], second["case_id"])
         self.assertEqual(second["status"], ModerationService.STATUS_DUPLICATE)
+        self.assertEqual(
+            second["message"],
+            "Кейс уже был подтверждён ранее. Повторное применение пропущено; ничего дополнительно не применено.",
+        )
         self.assertEqual(len(self.fake_db.tables["moderation_cases"]), 1)
 
     def test_commit_case_rolls_back_when_mute_apply_fails_after_warn_increment(self):
