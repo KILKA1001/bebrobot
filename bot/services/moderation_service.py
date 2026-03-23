@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+from uuid import uuid4
 
 from bot.data import db
 
@@ -24,6 +25,16 @@ class ModerationService:
         ACTION_WARN: 2,
         ACTION_BAN: 3,
     }
+    STATUS_PENDING = "pending"
+    STATUS_APPLIED = "applied"
+    STATUS_FAILED = "failed"
+    STATUS_ROLLED_BACK = "rolled_back"
+    STATUS_DUPLICATE = "duplicate"
+    FRIENDLY_ERROR_MESSAGE = (
+        "Не удалось завершить кейс модерации. Действие не подтверждено.\n"
+        "Попробуйте ещё раз позже.\n"
+        "Подробности ошибки записаны в консоль."
+    )
 
     @staticmethod
     def _resolve_account_id(provider: str, provider_user_id: str | int, *, role: str) -> Optional[str]:
@@ -255,6 +266,63 @@ class ModerationService:
         }
 
     @staticmethod
+    def _build_op_key(context: dict[str, Any], actor_subject: dict[str, Any], target_subject: dict[str, Any], violation_code: str) -> str:
+        existing = str(context.get("moderation_op_key") or context.get("op_key") or "").strip()
+        if existing:
+            return existing
+        return (
+            f"rep:{actor_subject.get('account_id') or actor_subject.get('provider_user_id')}:"
+            f"{target_subject.get('account_id') or target_subject.get('provider_user_id')}:"
+            f"{str(violation_code or '').strip().lower()}:{uuid4()}"
+        )
+
+    @staticmethod
+    def _serialize_exception(exc: Exception | None) -> str | None:
+        return None if exc is None else str(exc)
+
+    @staticmethod
+    def _log_case_event(
+        level: str,
+        *,
+        message: str,
+        provider: str,
+        chat_id: Any,
+        actor_account_id: str | None,
+        target_account_id: str | None,
+        violation_code: str | None,
+        requested_action_set: list[str] | None,
+        selected_rule_id: Any,
+        case_id: Any,
+        op_key: str | None,
+        status: str | None,
+        error_code: str | None,
+        rollback_status: str | None,
+        step: str | None = None,
+    ) -> None:
+        log_method = getattr(logger, level)
+        log_method(
+            (
+                "%s provider=%s chat_id=%s actor_account_id=%s target_account_id=%s violation_code=%s "
+                "requested_action_set=%s selected_rule_id=%s case_id=%s op_key=%s status=%s error_code=%s "
+                "rollback_status=%s step=%s"
+            ),
+            message,
+            provider,
+            chat_id,
+            actor_account_id,
+            target_account_id,
+            violation_code,
+            list(requested_action_set or []),
+            selected_rule_id,
+            case_id,
+            op_key,
+            status,
+            error_code,
+            rollback_status,
+            step,
+        )
+
+    @staticmethod
     def _human_violation_title(violation_type: dict[str, Any]) -> str:
         return str(violation_type.get("title") or violation_type.get("name") or violation_type.get("code") or "Нарушение")
 
@@ -357,6 +425,7 @@ class ModerationService:
         authority: ModerationAuthorityDecision,
         context: dict[str, Any],
         case_id: Any | None = None,
+        moderation_op_key: str | None = None,
     ) -> dict[str, Any]:
         action_lines, warn_count_after, should_ban = ModerationService._action_summary_lines(rule, warn_count_before)
         violation_title = ModerationService._human_violation_title(violation_type)
@@ -411,6 +480,7 @@ class ModerationService:
             "authority_allowed": authority.allowed,
             "authority_message": authority.message,
             "case_id": case_id,
+            "moderation_op_key": moderation_op_key,
             "rule_id": rule.get("id"),
             "escalation_step": ModerationService._rule_escalation_step(rule, warn_count_before),
             "context": dict(context),
@@ -480,6 +550,7 @@ class ModerationService:
             }
 
         next_rule = ModerationService._load_penalty_rule(violation_type["id"], warn_count_before + 1)
+        moderation_op_key = ModerationService._build_op_key(context, actor_subject, target_subject, str(violation_type.get("code") or violation_code))
         payload = ModerationService._build_ui_payload(
             provider=provider,
             actor_subject=actor_subject,
@@ -490,6 +561,7 @@ class ModerationService:
             warn_count_before=warn_count_before,
             authority=authority,
             context=context,
+            moderation_op_key=moderation_op_key,
         )
         return {
             "ok": True,
@@ -503,6 +575,7 @@ class ModerationService:
             "selected_actions": payload["selected_actions"],
             "authority": authority,
             "ui_payload": payload,
+            "moderation_op_key": moderation_op_key,
         }
 
     @staticmethod
@@ -538,6 +611,7 @@ class ModerationService:
         *,
         case_id: Any,
         action_type: str,
+        op_key: str | None = None,
         value_numeric: float | int | None = None,
         value_text: str | None = None,
         starts_at: str | None = None,
@@ -552,11 +626,190 @@ class ModerationService:
             "starts_at": starts_at,
             "ends_at": ends_at,
             "created_at": created_at,
+            "op_key": op_key,
         }
         return ModerationService._insert_row("moderation_actions", payload)
 
     @staticmethod
-    def moderate(
+    def _build_result(
+        *,
+        ok: bool,
+        provider: str,
+        actor_subject: dict[str, Any] | None,
+        target_subject: dict[str, Any] | None,
+        violation_code: str,
+        selected_actions: list[str],
+        op_key: str | None,
+        status: str,
+        error_code: str | None,
+        user_message: str,
+        moderator_message: str,
+        case_row: dict[str, Any] | None = None,
+        ui_payload: dict[str, Any] | None = None,
+        rule: dict[str, Any] | None = None,
+        violation_type: dict[str, Any] | None = None,
+        warnings_before: int | None = None,
+        warnings_after: int | None = None,
+        applied_actions: list[dict[str, Any]] | None = None,
+        mute_until: str | None = None,
+        ban_applied: bool = False,
+        fine_points_applied: float | int = 0,
+        authority: ModerationAuthorityDecision | None = None,
+        rollback_status: str | None = None,
+        case_status: str | None = None,
+    ) -> dict[str, Any]:
+        payload = dict(ui_payload or {})
+        if op_key and not payload.get("moderation_op_key"):
+            payload["moderation_op_key"] = op_key
+        if case_row and case_row.get("id") and not payload.get("case_id"):
+            payload["case_id"] = case_row.get("id")
+        return {
+            "ok": ok,
+            "provider": provider,
+            "case_id": case_row.get("id") if case_row else None,
+            "case": case_row,
+            "applied_actions": list(applied_actions or []),
+            "actions": list(applied_actions or []),
+            "warnings_before": warnings_before,
+            "warn_count_before": warnings_before,
+            "warnings_after": warnings_after,
+            "warn_count_after": warnings_after,
+            "mute_until": mute_until,
+            "ban_applied": ban_applied,
+            "fine_points_applied": fine_points_applied,
+            "op_key": op_key,
+            "moderation_op_key": op_key,
+            "status": status,
+            "case_status": case_status or status,
+            "error_code": error_code,
+            "message": user_message,
+            "user_message": user_message,
+            "moderator_message": moderator_message,
+            "selected_actions": list(selected_actions or []),
+            "rule": rule,
+            "violation_type": violation_type,
+            "authority": authority,
+            "ui_payload": payload,
+            "actor": actor_subject or {},
+            "target": target_subject or {},
+            "rollback_status": rollback_status,
+        }
+
+    @staticmethod
+    def _rollback_case(
+        *,
+        provider: str,
+        chat_id: Any,
+        actor_subject: dict[str, Any],
+        target_subject: dict[str, Any],
+        violation_code: str,
+        selected_actions: list[str],
+        selected_rule_id: Any,
+        case_row: dict[str, Any] | None,
+        op_key: str,
+        warn_state_before: dict[str, Any],
+        warn_changed: bool,
+        mute_row: dict[str, Any] | None,
+        ban_row: dict[str, Any] | None,
+        fine_points: float,
+        fine_applied: bool,
+        completed_steps: list[str],
+    ) -> tuple[str, list[str], list[str]]:
+        rolled_back: list[str] = []
+        dirty_state: list[str] = []
+        rollback_status = ModerationService.STATUS_ROLLED_BACK
+
+        if fine_applied and fine_points > 0:
+            rollback_reason = f"Rollback moderation case #{case_row.get('id') if case_row else 'unknown'}"
+            if db.add_action_by_account(target_subject["account_id"], fine_points, rollback_reason, actor_subject["account_id"], is_undo=True, op_key=f"{op_key}:rollback:fine"):
+                rolled_back.append("fine_apply")
+            else:
+                dirty_state.append("fine_apply")
+
+        if ban_row:
+            updated = ModerationService._update_rows(
+                "moderation_bans",
+                {"id": ban_row.get("id")},
+                {"is_active": False, "revoked_at": datetime.now(timezone.utc).isoformat(), "rollback_op_key": op_key},
+            )
+            if updated:
+                rolled_back.append("ban_apply")
+            else:
+                dirty_state.append("ban_apply")
+
+        if mute_row:
+            updated = ModerationService._update_rows(
+                "moderation_mutes",
+                {"id": mute_row.get("id")},
+                {"is_active": False, "revoked_at": datetime.now(timezone.utc).isoformat(), "rollback_op_key": op_key},
+            )
+            if updated:
+                rolled_back.append("mute_apply")
+            else:
+                dirty_state.append("mute_apply")
+
+        if warn_changed:
+            warn_payload = {
+                "active_warn_count": ModerationService._current_warn_count(warn_state_before),
+                "last_violation_type_id": warn_state_before.get("last_violation_type_id"),
+                "last_case_id": warn_state_before.get("last_case_id"),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "rollback_op_key": op_key,
+            }
+            updated = ModerationService._update_rows("moderation_warn_state", {"account_id": target_subject["account_id"]}, warn_payload)
+            if updated:
+                rolled_back.append("warn_update")
+            else:
+                dirty_state.append("warn_update")
+
+        if case_row:
+            case_status = ModerationService.STATUS_ROLLED_BACK if not dirty_state else ModerationService.STATUS_FAILED
+            updated_case = ModerationService._update_rows(
+                "moderation_cases",
+                {"id": case_row.get("id")},
+                {
+                    "status": case_status,
+                    "rollback_status": "ok" if not dirty_state else "manual_review_required",
+                    "rollback_steps": ", ".join(rolled_back),
+                    "dirty_steps": ", ".join(dirty_state),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            if not updated_case:
+                dirty_state.append("finalize_case")
+
+        if dirty_state:
+            rollback_status = "manual_review_required"
+
+        ModerationService._log_case_event(
+            "error" if dirty_state else "warning",
+            message="moderation rollback completed" if not dirty_state else "moderation rollback requires manual review",
+            provider=provider,
+            chat_id=chat_id,
+            actor_account_id=actor_subject.get("account_id"),
+            target_account_id=target_subject.get("account_id"),
+            violation_code=violation_code,
+            requested_action_set=selected_actions,
+            selected_rule_id=selected_rule_id,
+            case_id=case_row.get("id") if case_row else None,
+            op_key=op_key,
+            status=ModerationService.STATUS_ROLLED_BACK if not dirty_state else ModerationService.STATUS_FAILED,
+            error_code=None if not dirty_state else "rollback_incomplete",
+            rollback_status=rollback_status,
+            step="rollback",
+        )
+        logger.error(
+            "moderation rollback details op_key=%s completed_steps=%s rolled_back=%s dirty_state=%s manual_review_required=%s",
+            op_key,
+            completed_steps,
+            rolled_back,
+            dirty_state,
+            bool(dirty_state),
+        )
+        return rollback_status, rolled_back, dirty_state
+
+    @staticmethod
+    def commit_case(
         provider: str,
         actor: Any,
         target: Any,
@@ -576,8 +829,65 @@ class ModerationService:
         warn_count_before = int(preview["warn_count_before"])
         warn_count_after = int(preview["warn_count_after"])
         authority: ModerationAuthorityDecision = preview["authority"]
+        moderation_op_key = str(preview.get("moderation_op_key") or ui_payload.get("moderation_op_key") or ModerationService._build_op_key(context, actor_subject, target_subject, violation_code))
+        ui_payload["moderation_op_key"] = moderation_op_key
+        selected_actions = list(ui_payload.get("selected_actions") or [])
+        chat_id = context.get("chat_id") or context.get("source_chat_id")
+        existing_case = ModerationService._select_single("moderation_cases", op_key=moderation_op_key)
+        if existing_case:
+            existing_status = str(existing_case.get("status") or "").strip().lower() or ModerationService.STATUS_APPLIED
+            existing_action_rows = ModerationService._select_many("moderation_actions", case_id=existing_case.get("id"))
+            result_ui_payload = dict(ui_payload)
+            result_ui_payload["case_id"] = existing_case.get("id")
+            result_ui_payload["moderation_op_key"] = moderation_op_key
+            duplicate_message = "Кейс уже был подтверждён ранее. Повторное применение пропущено."
+            ModerationService._log_case_event(
+                "warning",
+                message="moderation duplicate submit ignored",
+                provider=provider,
+                chat_id=chat_id,
+                actor_account_id=actor_subject.get("account_id"),
+                target_account_id=target_subject.get("account_id"),
+                violation_code=str(violation_type.get("code") or violation_code),
+                requested_action_set=selected_actions,
+                selected_rule_id=rule.get("id"),
+                case_id=existing_case.get("id"),
+                op_key=moderation_op_key,
+                status=ModerationService.STATUS_DUPLICATE,
+                error_code="duplicate_submit",
+                rollback_status=existing_case.get("rollback_status"),
+                step="case_insert",
+            )
+            return ModerationService._build_result(
+                ok=True,
+                provider=provider,
+                actor_subject=actor_subject,
+                target_subject=target_subject,
+                violation_code=str(violation_type.get("code") or violation_code),
+                selected_actions=selected_actions,
+                op_key=moderation_op_key,
+                status=ModerationService.STATUS_DUPLICATE,
+                error_code=None,
+                user_message=duplicate_message,
+                moderator_message=duplicate_message,
+                case_row=existing_case,
+                ui_payload=result_ui_payload,
+                rule=rule,
+                violation_type=violation_type,
+                warnings_before=warn_count_before,
+                warnings_after=ModerationService._current_warn_count(ModerationService._load_warn_state(target_subject["account_id"])),
+                applied_actions=existing_action_rows,
+                mute_until=None,
+                ban_applied=ModerationService.ACTION_BAN in selected_actions,
+                fine_points_applied=float(rule.get("fine_points") or 0) if ModerationService.ACTION_FINE_POINTS in selected_actions else 0,
+                authority=authority,
+                rollback_status=existing_case.get("rollback_status"),
+                case_status=existing_status,
+            )
+
         now = datetime.now(timezone.utc)
         created_at = now.isoformat()
+        warn_state_before = ModerationService._load_warn_state(str(target_subject["account_id"]))
         case_payload = {
             "account_id": target_subject["account_id"],
             "actor_account_id": actor_subject["account_id"],
@@ -588,123 +898,276 @@ class ModerationService:
             "source_chat_id": str(context.get("chat_id") or context.get("source_chat_id") or "") or None,
             "reason_text": str(context.get("reason_text") or context.get("reason") or ""),
             "created_at": created_at,
+            "op_key": moderation_op_key,
+            "status": ModerationService.STATUS_PENDING,
         }
-        moderation_case = ModerationService._insert_row("moderation_cases", case_payload)
-        if not moderation_case:
-            logger.error(
-                "moderation apply violation aborted: failed to create case target_account_id=%s actor_account_id=%s violation_code=%s",
-                target_subject["account_id"],
-                actor_subject["account_id"],
-                violation_code,
-            )
-            return {"ok": False, "error_code": "case_create_failed", "message": "Не удалось создать moderation-case. Проверь логи."}
-
+        moderation_case = None
         applied_actions: list[dict[str, Any]] = []
-
-        if ModerationService.ACTION_WARN in ui_payload["selected_actions"]:
-            warn_action = ModerationService._create_action(
-                case_id=moderation_case["id"],
-                action_type=ModerationService.ACTION_WARN,
-                value_numeric=1,
-                value_text=rule.get("description_for_admin") or str(context.get("reason_text") or context.get("reason") or violation_code),
-                starts_at=created_at,
-                created_at=created_at,
+        mute_row = None
+        ban_row = None
+        mute_until = None
+        fine_points = float(rule.get("fine_points") or 0)
+        fine_applied = False
+        warn_changed = False
+        completed_steps: list[str] = []
+        current_step = "authority_check"
+        rollback_status = "not_required"
+        try:
+            ModerationService._log_case_event(
+                "info",
+                message="moderation case apply started",
+                provider=provider,
+                chat_id=chat_id,
+                actor_account_id=actor_subject.get("account_id"),
+                target_account_id=target_subject.get("account_id"),
+                violation_code=str(violation_type.get("code") or violation_code),
+                requested_action_set=selected_actions,
+                selected_rule_id=rule.get("id"),
+                case_id=None,
+                op_key=moderation_op_key,
+                status=ModerationService.STATUS_PENDING,
+                error_code=None,
+                rollback_status=rollback_status,
+                step=current_step,
             )
-            if warn_action:
+            completed_steps.append(current_step)
+            current_step = "rule_selection"
+            completed_steps.append(current_step)
+
+            current_step = "case_insert"
+            moderation_case = ModerationService._insert_row("moderation_cases", case_payload)
+            if not moderation_case:
+                raise RuntimeError("Не удалось создать moderation-case")
+            ui_payload["case_id"] = moderation_case.get("id")
+            completed_steps.append(current_step)
+
+            if ModerationService.ACTION_WARN in selected_actions:
+                current_step = "create_moderation_actions"
+                warn_action = ModerationService._create_action(
+                    case_id=moderation_case["id"],
+                    action_type=ModerationService.ACTION_WARN,
+                    op_key=moderation_op_key,
+                    value_numeric=1,
+                    value_text=rule.get("description_for_admin") or str(context.get("reason_text") or context.get("reason") or violation_code),
+                    starts_at=created_at,
+                    created_at=created_at,
+                )
+                if not warn_action:
+                    raise RuntimeError("Не удалось создать warn action")
                 applied_actions.append(warn_action)
-            ModerationService._save_warn_state(
-                account_id=target_subject["account_id"],
-                violation_type_id=violation_type["id"],
-                warn_count_after=warn_count_after,
-                case_id=moderation_case["id"],
-                updated_at=created_at,
-            )
+                completed_steps.append(current_step)
 
-        mute_minutes = int(rule.get("mute_minutes") or 0)
-        if ModerationService.ACTION_MUTE in ui_payload["selected_actions"] and mute_minutes > 0:
-            mute_ends_at = (now + timedelta(minutes=mute_minutes)).isoformat()
-            mute_reason = str(context.get("reason_text") or context.get("reason") or rule.get("description_for_user") or violation_code)
-            mute_row = ModerationService._insert_row(
-                "moderation_mutes",
-                {
-                    "account_id": target_subject["account_id"],
-                    "case_id": moderation_case["id"],
-                    "reason_text": mute_reason,
-                    "starts_at": created_at,
-                    "ends_at": mute_ends_at,
-                    "is_active": True,
-                    "created_at": created_at,
-                },
-            )
-            if mute_row:
+                current_step = "warn_update"
+                warn_state = ModerationService._save_warn_state(
+                    account_id=target_subject["account_id"],
+                    violation_type_id=violation_type["id"],
+                    warn_count_after=warn_count_after,
+                    case_id=moderation_case["id"],
+                    updated_at=created_at,
+                )
+                if not warn_state:
+                    raise RuntimeError("Не удалось обновить состояние предупреждений")
+                warn_changed = True
+                completed_steps.append(current_step)
+
+            mute_minutes = int(rule.get("mute_minutes") or 0)
+            if ModerationService.ACTION_MUTE in selected_actions and mute_minutes > 0:
+                current_step = "mute_apply"
+                mute_until = (now + timedelta(minutes=mute_minutes)).isoformat()
+                mute_reason = str(context.get("reason_text") or context.get("reason") or rule.get("description_for_user") or violation_code)
+                mute_row = ModerationService._insert_row(
+                    "moderation_mutes",
+                    {
+                        "account_id": target_subject["account_id"],
+                        "case_id": moderation_case["id"],
+                        "reason_text": mute_reason,
+                        "starts_at": created_at,
+                        "ends_at": mute_until,
+                        "is_active": True,
+                        "created_at": created_at,
+                        "op_key": moderation_op_key,
+                    },
+                )
+                if not mute_row:
+                    raise RuntimeError("Не удалось применить мут")
                 mute_action = ModerationService._create_action(
                     case_id=moderation_case["id"],
                     action_type=ModerationService.ACTION_MUTE,
+                    op_key=moderation_op_key,
                     value_numeric=mute_minutes,
                     value_text=mute_reason,
                     starts_at=created_at,
-                    ends_at=mute_ends_at,
+                    ends_at=mute_until,
                     created_at=created_at,
                 )
-                if mute_action:
-                    applied_actions.append(mute_action)
+                if not mute_action:
+                    raise RuntimeError("Не удалось создать mute action")
+                applied_actions.append(mute_action)
+                completed_steps.append(current_step)
 
-        fine_points = float(rule.get("fine_points") or 0)
-        if ModerationService.ACTION_FINE_POINTS in ui_payload["selected_actions"] and fine_points > 0:
-            fine_reason = f"Модерация кейс #{moderation_case['id']}: {context.get('reason_text') or context.get('reason') or violation_code}"
-            if not db.add_action_by_account(target_subject["account_id"], -fine_points, fine_reason, actor_subject["account_id"]):
-                logger.error(
-                    "moderation fine_points apply failed case_id=%s account_id=%s fine_points=%s",
-                    moderation_case["id"],
-                    target_subject["account_id"],
-                    fine_points,
+            if ModerationService.ACTION_BAN in selected_actions:
+                current_step = "ban_apply"
+                ban_reason = str(context.get("reason_text") or context.get("reason") or rule.get("description_for_user") or violation_code)
+                ban_row = ModerationService._insert_row(
+                    "moderation_bans",
+                    {
+                        "account_id": target_subject["account_id"],
+                        "case_id": moderation_case["id"],
+                        "reason_text": ban_reason,
+                        "starts_at": created_at,
+                        "ends_at": None,
+                        "is_active": True,
+                        "created_at": created_at,
+                        "op_key": moderation_op_key,
+                    },
                 )
-            fine_action = ModerationService._create_action(
-                case_id=moderation_case["id"],
-                action_type=ModerationService.ACTION_FINE_POINTS,
-                value_numeric=fine_points,
-                value_text=fine_reason,
-                starts_at=created_at,
-                created_at=created_at,
-            )
-            if fine_action:
-                applied_actions.append(fine_action)
-
-        if ModerationService.ACTION_BAN in ui_payload["selected_actions"]:
-            ban_reason = str(context.get("reason_text") or context.get("reason") or rule.get("description_for_user") or violation_code)
-            ban_row = ModerationService._insert_row(
-                "moderation_bans",
-                {
-                    "account_id": target_subject["account_id"],
-                    "case_id": moderation_case["id"],
-                    "reason_text": ban_reason,
-                    "starts_at": created_at,
-                    "ends_at": None,
-                    "is_active": True,
-                    "created_at": created_at,
-                },
-            )
-            if ban_row:
+                if not ban_row:
+                    raise RuntimeError("Не удалось применить бан")
                 ban_action = ModerationService._create_action(
                     case_id=moderation_case["id"],
                     action_type=ModerationService.ACTION_BAN,
+                    op_key=moderation_op_key,
                     value_numeric=None,
                     value_text=ban_reason,
                     starts_at=created_at,
                     created_at=created_at,
                 )
-                if ban_action:
-                    applied_actions.append(ban_action)
+                if not ban_action:
+                    raise RuntimeError("Не удалось создать ban action")
+                applied_actions.append(ban_action)
+                completed_steps.append(current_step)
 
-        ui_payload["case_id"] = moderation_case.get("id")
+            if ModerationService.ACTION_FINE_POINTS in selected_actions and fine_points > 0:
+                current_step = "fine_apply"
+                fine_reason = f"Модерация кейс #{moderation_case['id']}: {context.get('reason_text') or context.get('reason') or violation_code}"
+                if not db.add_action_by_account(
+                    target_subject["account_id"],
+                    -fine_points,
+                    fine_reason,
+                    actor_subject["account_id"],
+                    op_key=f"{moderation_op_key}:fine_points",
+                ):
+                    raise RuntimeError("Не удалось применить денежный штраф")
+                fine_applied = True
+                fine_action = ModerationService._create_action(
+                    case_id=moderation_case["id"],
+                    action_type=ModerationService.ACTION_FINE_POINTS,
+                    op_key=moderation_op_key,
+                    value_numeric=fine_points,
+                    value_text=fine_reason,
+                    starts_at=created_at,
+                    created_at=created_at,
+                )
+                if not fine_action:
+                    raise RuntimeError("Не удалось создать fine_points action")
+                applied_actions.append(fine_action)
+                completed_steps.append(current_step)
+                current_step = "bank_income_log"
+                completed_steps.append(current_step)
+
+            current_step = "finalize_case"
+            finalized_case_rows = ModerationService._update_rows(
+                "moderation_cases",
+                {"id": moderation_case["id"]},
+                {
+                    "status": ModerationService.STATUS_APPLIED,
+                    "applied_actions": ", ".join(selected_actions),
+                    "warnings_before": warn_count_before,
+                    "warnings_after": warn_count_after,
+                    "mute_until": mute_until,
+                    "ban_applied": ModerationService.ACTION_BAN in selected_actions,
+                    "fine_points_applied": fine_points if fine_applied else 0,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            if not finalized_case_rows:
+                raise RuntimeError("Не удалось зафиксировать итоговый статус кейса")
+            moderation_case = finalized_case_rows[0]
+            completed_steps.append(current_step)
+        except Exception as exc:
+            error_code = f"{current_step}_failed"
+            ModerationService._log_case_event(
+                "exception",
+                message="moderation case apply failed",
+                provider=provider,
+                chat_id=chat_id,
+                actor_account_id=actor_subject.get("account_id"),
+                target_account_id=target_subject.get("account_id"),
+                violation_code=str(violation_type.get("code") or violation_code),
+                requested_action_set=selected_actions,
+                selected_rule_id=rule.get("id"),
+                case_id=moderation_case.get("id") if moderation_case else None,
+                op_key=moderation_op_key,
+                status=ModerationService.STATUS_FAILED,
+                error_code=error_code,
+                rollback_status="started",
+                step=current_step,
+            )
+            rollback_status, rolled_back_steps, dirty_state = ModerationService._rollback_case(
+                provider=provider,
+                chat_id=chat_id,
+                actor_subject=actor_subject,
+                target_subject=target_subject,
+                violation_code=str(violation_type.get("code") or violation_code),
+                selected_actions=selected_actions,
+                selected_rule_id=rule.get("id"),
+                case_row=moderation_case,
+                op_key=moderation_op_key,
+                warn_state_before=warn_state_before,
+                warn_changed=warn_changed,
+                mute_row=mute_row,
+                ban_row=ban_row,
+                fine_points=fine_points,
+                fine_applied=fine_applied,
+                completed_steps=completed_steps,
+            )
+            moderator_message = (
+                f"Кейс модерации не завершён. Шаг сбоя: {current_step}. "
+                f"Rollback: {rollback_status}. Успешные шаги: {', '.join(completed_steps) or 'нет'}."
+            )
+            logger.error(
+                "moderation case apply exception step=%s op_key=%s error=%s rolled_back=%s dirty_state=%s",
+                current_step,
+                moderation_op_key,
+                exc,
+                rolled_back_steps,
+                dirty_state,
+            )
+            return ModerationService._build_result(
+                ok=False,
+                provider=provider,
+                actor_subject=actor_subject,
+                target_subject=target_subject,
+                violation_code=str(violation_type.get("code") or violation_code),
+                selected_actions=selected_actions,
+                op_key=moderation_op_key,
+                status=ModerationService.STATUS_FAILED,
+                error_code=error_code,
+                user_message=ModerationService.FRIENDLY_ERROR_MESSAGE,
+                moderator_message=moderator_message,
+                case_row=moderation_case,
+                ui_payload=ui_payload,
+                rule=rule,
+                violation_type=violation_type,
+                warnings_before=warn_count_before,
+                warnings_after=ModerationService._current_warn_count(ModerationService._load_warn_state(target_subject["account_id"])),
+                applied_actions=applied_actions,
+                mute_until=mute_until,
+                ban_applied=bool(ban_row),
+                fine_points_applied=fine_points if fine_applied else 0,
+                authority=authority,
+                rollback_status=rollback_status,
+            )
+
         result_lines = [f"Кейс #{moderation_case.get('id')} создан"]
-        if ModerationService.ACTION_MUTE in ui_payload["selected_actions"] and mute_minutes > 0:
+        mute_minutes = int(rule.get("mute_minutes") or 0)
+        if ModerationService.ACTION_MUTE in selected_actions and mute_minutes > 0:
             result_lines.append(f"Выдан мут на {ModerationService._format_duration(mute_minutes)}")
-        if ModerationService.ACTION_WARN in ui_payload["selected_actions"]:
+        if ModerationService.ACTION_WARN in selected_actions:
             result_lines.append(f"Добавлено предупреждение: {warn_count_after}/{ModerationService.BAN_WARN_THRESHOLD}")
-        if ModerationService.ACTION_FINE_POINTS in ui_payload["selected_actions"] and fine_points > 0:
+        if ModerationService.ACTION_FINE_POINTS in selected_actions and fine_points > 0:
             result_lines.append(f"Списан штраф {ModerationService._format_points_value(fine_points)} баллов в банк")
-        if ModerationService.ACTION_BAN in ui_payload["selected_actions"]:
+        if ModerationService.ACTION_BAN in selected_actions:
             result_lines.append("Применён бан")
         result_lines.append(next_step_text if (next_step_text := str(ui_payload.get("next_step_text") or "").strip()) else "")
         ui_payload["moderator_result_lines"] = [line for line in result_lines if line]
@@ -715,42 +1178,67 @@ class ModerationService:
             f"Применено наказание: {ui_payload.get('selected_action_summary')}",
             f"Предупреждений теперь: {warn_count_after}/{ModerationService.BAN_WARN_THRESHOLD}",
         ]
-        if ModerationService.ACTION_MUTE in ui_payload["selected_actions"] and mute_minutes > 0:
-            violator_lines.append(f"Мут закончится: {(now + timedelta(minutes=mute_minutes)).strftime('%d.%m.%Y %H:%M UTC')}")
+        if ModerationService.ACTION_MUTE in selected_actions and mute_minutes > 0:
+            violator_lines.append(f"Мут закончится: {datetime.fromisoformat(mute_until).strftime('%d.%m.%Y %H:%M UTC') if mute_until else (now + timedelta(minutes=mute_minutes)).strftime('%d.%m.%Y %H:%M UTC')}")
         violator_lines.append("Наказание выбирается автоматически по типу нарушения и числу предупреждений.")
         if next_step_text:
             violator_lines.append(next_step_text)
         violator_lines.append("Чтобы избежать следующего усиления, не повторяйте это нарушение и при необходимости запросите у модератора историю кейсов, активные наказания и текущий счётчик предупреждений.")
         ui_payload["violator_result_lines"] = violator_lines
         ui_payload["violator_result_text"] = "\n".join(violator_lines)
-
-        result = {
-            "ok": True,
-            "case": moderation_case,
-            "rule": rule,
-            "violation_type": violation_type,
-            "warn_count_before": warn_count_before,
-            "warn_count_after": warn_count_after,
-            "actions": applied_actions,
-            "selected_actions": ui_payload["selected_actions"],
-            "ban_applied": ui_payload["ban_applied"],
-            "authority": authority,
-            "ui_payload": ui_payload,
-            "actor": actor_subject,
-            "target": target_subject,
-        }
-        logger.info(
-            "moderation case created case_id=%s target_account_id=%s actor_account_id=%s violation_code=%s actions=%s warn_before=%s warn_after=%s ban_applied=%s",
-            moderation_case.get("id"),
-            target_subject.get("account_id"),
-            actor_subject.get("account_id"),
-            violation_code,
-            list(ui_payload.get("selected_actions") or []),
-            warn_count_before,
-            warn_count_after,
-            ui_payload.get("ban_applied"),
+        moderator_message = f"Кейс #{moderation_case.get('id')} успешно применён."
+        ModerationService._log_case_event(
+            "info",
+            message="moderation case apply success",
+            provider=provider,
+            chat_id=chat_id,
+            actor_account_id=actor_subject.get("account_id"),
+            target_account_id=target_subject.get("account_id"),
+            violation_code=str(violation_type.get("code") or violation_code),
+            requested_action_set=selected_actions,
+            selected_rule_id=rule.get("id"),
+            case_id=moderation_case.get("id"),
+            op_key=moderation_op_key,
+            status=ModerationService.STATUS_APPLIED,
+            error_code=None,
+            rollback_status=rollback_status,
+            step="finalize_case",
         )
-        return result
+        return ModerationService._build_result(
+            ok=True,
+            provider=provider,
+            actor_subject=actor_subject,
+            target_subject=target_subject,
+            violation_code=str(violation_type.get("code") or violation_code),
+            selected_actions=selected_actions,
+            op_key=moderation_op_key,
+            status=ModerationService.STATUS_APPLIED,
+            error_code=None,
+            user_message="Кейс модерации успешно подтверждён.",
+            moderator_message=moderator_message,
+            case_row=moderation_case,
+            ui_payload=ui_payload,
+            rule=rule,
+            violation_type=violation_type,
+            warnings_before=warn_count_before,
+            warnings_after=warn_count_after,
+            applied_actions=applied_actions,
+            mute_until=mute_until,
+            ban_applied=ui_payload["ban_applied"],
+            fine_points_applied=fine_points if fine_applied else 0,
+            authority=authority,
+            rollback_status=rollback_status,
+        )
+
+    @staticmethod
+    def moderate(
+        provider: str,
+        actor: Any,
+        target: Any,
+        violation_code: str,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return ModerationService.commit_case(provider, actor, target, violation_code, context)
 
     @staticmethod
     def apply_violation(
