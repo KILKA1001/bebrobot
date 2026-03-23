@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from bot.commands.base import bot
-from bot.utils import send_temp, build_top_embed, safe_send, format_moscow_date
+from bot.utils import send_temp, safe_send, format_moscow_date
 import os
 import logging
 
@@ -15,7 +15,6 @@ from bot.systems.fines_logic import (
     build_fine_detail_embed,
     FineView,
     AllFinesView,
-    get_fine_leaders,
 )
 
 logger = logging.getLogger(__name__)
@@ -336,24 +335,31 @@ async def finehistory(
 
 
 @bot.hybrid_command(
-    name="topfines", description="Список топ-должников по сумме штрафов"
+    name="topfines", description="Legacy-режим: перенаправление со старого штрафного топа"
 )
 async def topfines(ctx):
-    top = get_fine_leaders()
-    if not top:
-        await send_temp(ctx, "📭 Нет должников.")
-        return
-
-    formatted = []
-    for account_id, amount in top:
-        uid = db._get_discord_user_for_account_id(account_id)
-        member = ctx.guild.get_member(uid) if uid else None
-        name = member.display_name if member else (f"<@{uid}>" if uid else f"account:{account_id}")
-        formatted.append((name, f"💰 Задолженность: {amount:.2f} баллов"))
-
-    embed = build_top_embed(
-        title="📉 Топ по задолженности",
-        entries=formatted,
-        color=discord.Color.red(),
+    logger.warning(
+        "legacy topfines command invoked actor_id=%s guild_id=%s reason=topfines_retired",
+        getattr(getattr(ctx, "author", None), "id", None),
+        getattr(getattr(ctx, "guild", None), "id", None),
     )
+    embed = discord.Embed(
+        title="🧭 /topfines больше не используется",
+        description=(
+            "Штрафной monthly-top и рейтинг должников выведены в legacy-only режим. "
+            "Основной сценарий модерации теперь начинается с `/rep`, а не с `/topfines`."
+        ),
+        color=discord.Color.orange(),
+    )
+    embed.add_field(
+        name="Что использовать вместо этого",
+        value=(
+            "• `/rep` — открыть кейс модерации, увидеть автонаказание, предупреждения и следующий шаг эскалации.\n"
+            "• `/myfines` — посмотреть свои активные денежные штрафы.\n"
+            "• `/finehistory [@пользователь] [страница]` — открыть историю legacy-штрафов на переходный период.\n"
+            "• В кейсе /rep отдельно видно, был ли списан штраф в банк и какое наказание активно сейчас."
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Legacy-вызов записан в лог, чтобы можно было добить оставшиеся ссылки на /topfines.")
     await send_temp(ctx, embed=embed)

@@ -797,22 +797,9 @@ async def monthly_top_task():
                     from bot.systems.core_logic import run_monthly_top
                     await run_monthly_top(ctx, now.month, now.year)
 
-                    # 🔥 Штрафной антибонус для топ-должников
-                    from bot.systems.fines_logic import get_fine_leaders
-                    top_fines = get_fine_leaders()
-                    punishments = [0.01, 0.03, 0.05]
-
-                    for (uid, total), percent in zip(top_fines, punishments):
-                        penalty = round(total * percent, 2)
-                        db.update_scores(uid, -penalty)
-                        db.add_action(
-                            user_id=uid,
-                            points=-penalty,
-                            reason=f"Антибонус за топ штрафников ({int(percent * 100)}%)",
-                            author_id=0
-                        )
-
-                    db.log_monthly_fine_top(list(zip(top_fines, punishments)))
+                    logging.info(
+                        "legacy monthly fine top flow disabled source=monthly_top_task reason=rep_primary_entrypoint"
+                    )
                 else:
                     logging.error("❌ Указанный канал недоступен или не текстовый channel_id=%s", TOP_CHANNEL_ID)
 

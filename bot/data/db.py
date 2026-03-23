@@ -1326,32 +1326,14 @@ class Database:
             return False
 
     def log_monthly_fine_top(self, entries: list):
-        if not self.supabase:
-            logger.warning("Supabase не инициализирован для штрафного лога")
-            return False
-
-        now = datetime.now()
-        month = now.month
-        year = now.year
-
-        logs = [
-            {
-                "user_id": uid,
-                "month": month,
-                "year": year,
-                "place": i + 1,
-                "penalty": round(total * percent, 2)
-            }
-            for i, ((uid, total), percent) in enumerate(entries)
-        ]
-
-        try:
-            self.supabase.table("monthly_fine_hst").insert(logs).execute()
-            logger.info("✅ История штрафного топа записана")
-            return True
-        except Exception as e:
-            logger.error(f"❌ Ошибка записи штрафного топа: {e}")
-            return False
+        logger.warning(
+            "legacy monthly fine top write blocked entries=%s table=monthly_fine_hst reason=topfines_retired",
+            len(entries or []),
+        )
+        logger.warning(
+            "legacy storage remains compatibility-only table=fines monthly_table=monthly_fine_hst action=skip_write",
+        )
+        return False
 
     def _track_quick_payment(self, user_id: int):
         self.quick_pay_streak[user_id] = self.quick_pay_streak.get(user_id, 0) + 1
