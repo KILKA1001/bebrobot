@@ -21,6 +21,7 @@ class ModerationService:
     ACTION_KICK = "kick"
     ACTION_DEMOTION = "demotion"
     ACTION_FINE_POINTS = "fine_points"
+    ACTION_BANK_INCOME = "bank_income"
     DEFAULT_WARN_TTL_MINUTES = 10 * 24 * 60
     _ACTION_PRIORITY = {
         ACTION_MUTE: 1,
@@ -28,6 +29,7 @@ class ModerationService:
         ACTION_WARN: 3,
         ACTION_BAN: 4,
         ACTION_DEMOTION: 5,
+        ACTION_BANK_INCOME: 6,
     }
     STATUS_PENDING = "pending"
     STATUS_APPLIED = "applied"
@@ -970,11 +972,32 @@ class ModerationService:
         ban_row: dict[str, Any] | None,
         fine_points: float,
         fine_applied: bool,
+        bank_income_applied: bool,
         completed_steps: list[str],
     ) -> tuple[str, list[str], list[str]]:
         rolled_back: list[str] = []
         dirty_state: list[str] = []
         rollback_status = ModerationService.STATUS_ROLLED_BACK
+
+        if bank_income_applied and fine_points > 0:
+            rollback_bank_reason = f"Rollback bank income for moderation case #{case_row.get('id') if case_row else 'unknown'} op_key={op_key}"
+            if db.add_to_bank(-fine_points):
+                rolled_back.append("bank_income_apply")
+                logger.info(
+                    "✅ moderation rollback bank income reverted case_id=%s op_key=%s amount=%s",
+                    case_row.get("id") if case_row else None,
+                    op_key,
+                    fine_points,
+                )
+            else:
+                dirty_state.append("bank_income_apply")
+                logger.error(
+                    "❌ moderation rollback bank income revert failed case_id=%s op_key=%s amount=%s reason=%s",
+                    case_row.get("id") if case_row else None,
+                    op_key,
+                    fine_points,
+                    rollback_bank_reason,
+                )
 
         if fine_applied and fine_points > 0:
             rollback_reason = f"Rollback moderation case #{case_row.get('id') if case_row else 'unknown'}"
@@ -1172,6 +1195,7 @@ class ModerationService:
         ban_minutes = ModerationService._rule_ban_minutes(rule)
         permanent_ban = ModerationService._rule_has_permanent_ban(rule)
         fine_applied = False
+        bank_income_applied = False
         warn_changed = False
         completed_steps: list[str] = []
         current_step = "authority_check"
@@ -1341,6 +1365,7 @@ class ModerationService:
             if ModerationService.ACTION_FINE_POINTS in selected_actions and fine_points > 0:
                 current_step = "fine_apply"
                 fine_reason = f"Модерация кейс #{moderation_case['id']}: {context.get('reason_text') or context.get('reason') or violation_code}"
+                bank_reason = f"Поступление штрафа moderation case #{moderation_case['id']} op_key={moderation_op_key}: {context.get('reason_text') or context.get('reason') or violation_code}"
                 if not db.add_action_by_account(
                     target_subject["account_id"],
                     -fine_points,
@@ -1348,6 +1373,13 @@ class ModerationService:
                     actor_subject["account_id"],
                     op_key=f"{moderation_op_key}:fine_points",
                 ):
+                    logger.error(
+                        "❌ moderation fine apply failed case_id=%s op_key=%s target_account_id=%s amount=%s",
+                        moderation_case["id"],
+                        moderation_op_key,
+                        target_subject["account_id"],
+                        fine_points,
+                    )
                     raise RuntimeError("Не удалось применить денежный штраф")
                 fine_applied = True
                 fine_action = ModerationService._create_action(
@@ -1360,10 +1392,75 @@ class ModerationService:
                     created_at=created_at,
                 )
                 if not fine_action:
+                    logger.error(
+                        "❌ moderation fine action create failed case_id=%s op_key=%s amount=%s",
+                        moderation_case["id"],
+                        moderation_op_key,
+                        fine_points,
+                    )
                     raise RuntimeError("Не удалось создать fine_points action")
                 applied_actions.append(fine_action)
                 completed_steps.append(current_step)
+
+                current_step = "bank_income_apply"
+                if not db.add_to_bank(fine_points):
+                    logger.error(
+                        "❌ moderation bank income apply failed case_id=%s op_key=%s amount=%s",
+                        moderation_case["id"],
+                        moderation_op_key,
+                        fine_points,
+                    )
+                    raise RuntimeError("Не удалось зачислить штраф в банк")
+                bank_income_applied = True
+                completed_steps.append(current_step)
+
                 current_step = "bank_income_log"
+                log_bank_income_by_account = getattr(db, "log_bank_income_by_account", None)
+                bank_logged = False
+                if callable(log_bank_income_by_account):
+                    bank_logged = bool(log_bank_income_by_account(target_subject["account_id"], fine_points, bank_reason))
+                else:
+                    provider_user_id = target_subject.get("provider_user_id")
+                    if provider_user_id is not None:
+                        try:
+                            bank_logged = bool(db.log_bank_income(int(provider_user_id), fine_points, bank_reason))
+                        except (TypeError, ValueError):
+                            logger.error(
+                                "❌ moderation bank income fallback log failed invalid provider_user_id case_id=%s op_key=%s provider_user_id=%s",
+                                moderation_case["id"],
+                                moderation_op_key,
+                                provider_user_id,
+                            )
+                if not bank_logged:
+                    logger.error(
+                        "❌ moderation bank income log failed case_id=%s op_key=%s target_account_id=%s amount=%s",
+                        moderation_case["id"],
+                        moderation_op_key,
+                        target_subject["account_id"],
+                        fine_points,
+                    )
+                    raise RuntimeError("Не удалось записать поступление штрафа в банк")
+                completed_steps.append(current_step)
+
+                current_step = "bank_income_action"
+                bank_action = ModerationService._create_action(
+                    case_id=moderation_case["id"],
+                    action_type=ModerationService.ACTION_BANK_INCOME,
+                    op_key=moderation_op_key,
+                    value_numeric=fine_points,
+                    value_text=bank_reason,
+                    starts_at=created_at,
+                    created_at=created_at,
+                )
+                if not bank_action:
+                    logger.error(
+                        "❌ moderation bank income action create failed case_id=%s op_key=%s amount=%s",
+                        moderation_case["id"],
+                        moderation_op_key,
+                        fine_points,
+                    )
+                    raise RuntimeError("Не удалось привязать поступление штрафа к истории кейса")
+                applied_actions.append(bank_action)
                 completed_steps.append(current_step)
 
             current_step = "finalize_case"
@@ -1421,6 +1518,7 @@ class ModerationService:
                 ban_row=ban_row,
                 fine_points=fine_points,
                 fine_applied=fine_applied,
+                bank_income_applied=bank_income_applied,
                 completed_steps=completed_steps,
             )
             moderator_message = (
