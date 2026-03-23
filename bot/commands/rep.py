@@ -12,13 +12,17 @@ from bot.commands.roles_admin import _resolve_discord_target
 from bot.services import AuthorityService, ModerationService
 from bot.systems.moderation_rep_ui import (
     render_rep_apply_error_text,
+    render_rep_authority_deny_text,
     render_rep_cancelled_text,
     render_rep_duplicate_submit_text,
     render_rep_expired_text,
     render_rep_foreign_actor_text,
     render_rep_preview_text,
+    render_rep_preview_failed_text,
     render_rep_result_text,
+    render_rep_session_status_text,
     render_rep_start_text,
+    render_rep_target_not_found_text,
     render_rep_target_prompt_text,
     render_violator_notification_text,
     render_rep_violation_prompt_text,
@@ -79,7 +83,7 @@ class DiscordRepFlowState:
     preview: dict[str, Any] | None = None
     result: dict[str, Any] | None = None
     status_text: str = ""
-    target_hint: str = "Выберите пользователя через панель ниже. Для prefix-команды также можно указать reply, mention, username или display_name."
+    target_hint: str = "Reply на сообщение — самый быстрый способ. Иначе используйте панель ниже; для prefix-команды подойдут reply, mention, username или display_name."
     is_applying: bool = False
 
 
@@ -145,7 +149,7 @@ class _RepViolationSelect(discord.ui.Select):
             return
         preview = view.build_preview(interaction.user, code)
         if not preview.get("ok"):
-            await interaction.response.send_message(f"❌ {preview.get('message')}", ephemeral=True)
+            await interaction.response.send_message(f"❌ {preview.get('message') or render_rep_preview_failed_text()}", ephemeral=True)
             return
         view.state.violation_code = code
         view.state.preview = preview
@@ -170,11 +174,11 @@ class _RepBackButton(discord.ui.Button):
         if view.state.preview:
             view.state.preview = None
             view.state.violation_code = None
-            view.state.status_text = "Возврат к шагу выбора нарушения. Пользователь сохранён, можно выбрать другой тип нарушения."
+            view.state.status_text = "Возврат к шагу 2: пользователь сохранён, можно выбрать другой тип нарушения."
         elif view.state.target:
             view.state.target = None
-            view.state.status_text = "Возврат к выбору пользователя."
-            view.state.target_hint = "Выберите нарушителя через панель ниже или откройте /rep reply-сообщением для быстрого старта."
+            view.state.status_text = "Возврат к шагу 1: выберите другого пользователя."
+            view.state.target_hint = "Reply на сообщение — самый быстрый способ. Также можно выбрать нарушителя через панель ниже."
         view.rebuild()
         await interaction.response.edit_message(embed=view.build_embed(), view=view)
 
@@ -307,7 +311,7 @@ class DiscordRepFlowView(discord.ui.View):
             )
         except Exception:
             self.log_event("exception", message="rep preview failure", error_code="preview_exception")
-            return {"ok": False, "message": _friendly_rep_error_text()}
+            return {"ok": False, "message": render_rep_preview_failed_text()}
         if not preview.get("ok"):
             self.log_event(
                 "warning",
@@ -317,7 +321,7 @@ class DiscordRepFlowView(discord.ui.View):
             )
             return {
                 "ok": False,
-                "message": str(preview.get("message") or "Действие сейчас недоступно. Проверьте выбранную цель и ваши полномочия."),
+                "message": render_rep_authority_deny_text(str(preview.get("message") or "")),
             }
         return preview
 
@@ -344,15 +348,39 @@ class DiscordRepFlowView(discord.ui.View):
         if self.state.result:
             ui_payload = self.state.result["ui_payload"]
             embed = discord.Embed(title="✅ /rep завершён", description=render_rep_result_text(ui_payload), color=discord.Color.green())
+            embed.add_field(
+                name="Состояние сессии",
+                value=render_rep_session_status_text(
+                    current_step=5,
+                    status_text=self.state.status_text or "Кейс создан, summary показан, дополнительных действий в этой сессии больше не требуется.",
+                ),
+                inline=False,
+            )
             return embed
         if self.state.preview:
             ui_payload = self.state.preview["ui_payload"]
             embed = discord.Embed(title="🧾 Предпросмотр /rep", description=render_rep_preview_text(ui_payload), color=discord.Color.orange())
-            embed.add_field(name="Статус", value=self.state.status_text or "Проверьте итог и подтвердите применение.", inline=False)
+            embed.add_field(
+                name="Состояние сессии",
+                value=render_rep_session_status_text(
+                    current_step=3,
+                    status_text=self.state.status_text or "Шаг 3/5: проверьте авторасчёт, затем подтвердите или вернитесь назад.",
+                ),
+                inline=False,
+            )
             return embed
         embed = discord.Embed(title="🛡️ /rep", color=discord.Color.blurple())
         embed.description = render_rep_start_text(target_selection_hint=self.state.target_hint)
         embed.add_field(name="Текущая цель", value=_target_label(self.state.target), inline=False)
+        current_step = 2 if self.state.target else 1
+        embed.add_field(
+            name="Состояние сессии",
+            value=render_rep_session_status_text(
+                current_step=current_step,
+                status_text=self.state.status_text or ("Шаг 2/5: выберите нарушение." if self.state.target else "Шаг 1/5: выберите нарушителя."),
+            ),
+            inline=False,
+        )
         embed.add_field(
             name="Шаг 1",
             value=render_rep_target_prompt_text(
@@ -410,7 +438,20 @@ async def _prefill_target_from_context(ctx: commands.Context, raw_target: str | 
 @bot.hybrid_command(name="rep", description="Интерактивная единая команда модерации")
 async def rep(ctx: commands.Context, *, target: str | None = None):
     if not AuthorityService.has_command_permission("discord", str(ctx.author.id), "moderation_mute"):
-        await send_temp(ctx, "❌ Команда /rep доступна только ролям модерации. Если доступ должен быть — проверьте authority и попробуйте ещё раз.")
+        logger.warning(
+            "rep authority deny provider=%s chat_id=%s actor=%s actor_account_id=%s target=%s target_account_id=%s violation_code=%s selected_actions=%s case_id=%s error_code=%s",
+            "discord",
+            ctx.channel.id if ctx.channel else (ctx.guild.id if ctx.guild else None),
+            ctx.author.id,
+            None,
+            None,
+            None,
+            None,
+            [],
+            None,
+            "authority_denied",
+        )
+        await send_temp(ctx, f"❌ {render_rep_authority_deny_text('Команда /rep доступна только ролям модерации. Если доступ должен быть — проверьте authority и попробуйте ещё раз.')}")
         return
     view = DiscordRepFlowView(
         actor_id=ctx.author.id,
@@ -419,13 +460,27 @@ async def rep(ctx: commands.Context, *, target: str | None = None):
     )
     prefilled_target = await _prefill_target_from_context(ctx, target)
     if target and not prefilled_target:
+        logger.warning(
+            "rep target resolve failed provider=%s chat_id=%s actor=%s actor_account_id=%s target=%s target_account_id=%s violation_code=%s selected_actions=%s case_id=%s error_code=%s",
+            "discord",
+            view.state.chat_id,
+            ctx.author.id,
+            None,
+            target,
+            None,
+            None,
+            [],
+            None,
+            "target_not_found",
+        )
+        await send_temp(ctx, f"❌ {render_rep_target_not_found_text(target_selection_hint=view.state.target_hint)}")
         return
     if prefilled_target:
         matched_by = str(prefilled_target.get("matched_by") or "lookup")
         target_hint = (
-            "Нарушитель подставлен из reply-контекста. При необходимости можно выбрать другого пользователя в панели ниже."
+            "Нарушитель подставлен из reply-контекста. Это самый быстрый способ; при необходимости можно выбрать другого пользователя в панели ниже."
             if matched_by == "reply"
-            else "Нарушитель подставлен из lookup. При необходимости можно выбрать другого пользователя в панели ниже."
+            else "Нарушитель подставлен из lookup. Проверьте цель и при необходимости выберите другого пользователя в панели ниже."
         )
         view.select_target(
             prefilled_target,
