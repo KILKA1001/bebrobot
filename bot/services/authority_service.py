@@ -12,13 +12,29 @@ class AuthorityResult:
     level: int
     rank_weight: int
     titles: tuple[str, ...]
+    account_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ModerationAuthorityDecision:
+    allowed: bool
+    deny_reason: str | None
+    message: str
+    actor_account_id: str | None
+    target_account_id: str | None
+    actor_titles: tuple[str, ...]
+    target_titles: tuple[str, ...]
+    requested_action: str
 
 
 TITLE_WEIGHTS: dict[str, int] = {
     "глава клуба": 100,
     "главный вице": 100,
+    "оператор": 100,
     "вице города": 80,
+    "админ": 80,
     "ветеран города": 30,
+    "младший админ": 30,
     "участник клубов": 0,
 }
 
@@ -26,9 +42,11 @@ TITLE_WEIGHTS: dict[str, int] = {
 ROLE_LEVELS: dict[str, int] = {
     "глава клуба": 100,
     "главный вице": 100,
+    "оператор": 100,
     "вице города": 80,
-    "оператор": 80,
+    "админ": 80,
     "ветеран города": 30,
+    "младший админ": 30,
     "участник клубов": 0,
 }
 
@@ -36,6 +54,40 @@ MIN_ROLE_MANAGER_LEVEL = 80
 SUPER_ADMIN_ROLE_KEYS = {"глава клуба", "главный вице"}
 SUPER_ADMIN_LEVEL = 100
 
+MODERATION_ACTIONS = {"mute", "warn", "ban"}
+MODERATION_MUTE_TITLES = {
+    "ветеран города",
+    "младший админ",
+    "вице города",
+    "админ",
+    "главный вице",
+    "глава клуба",
+    "оператор",
+}
+MODERATION_WARN_TITLES = {
+    "вице города",
+    "админ",
+    "главный вице",
+    "глава клуба",
+    "оператор",
+}
+MODERATION_BAN_TITLES = {
+    "главный вице",
+    "глава клуба",
+    "оператор",
+}
+MODERATION_PERMISSION_TITLES: dict[str, set[str]] = {
+    "moderation_mute": MODERATION_MUTE_TITLES,
+    "moderation_warn": MODERATION_WARN_TITLES,
+    "moderation_ban": MODERATION_BAN_TITLES,
+    "moderation_view_cases": MODERATION_MUTE_TITLES,
+    "moderation_manage_rules": MODERATION_BAN_TITLES,
+}
+MODERATION_ACTION_TITLES: dict[str, set[str]] = {
+    "mute": MODERATION_MUTE_TITLES,
+    "warn": MODERATION_WARN_TITLES,
+    "ban": MODERATION_BAN_TITLES,
+}
 
 COMMAND_LEVELS: dict[str, int] = {
     "points_manage": 80,
@@ -54,6 +106,46 @@ class AuthorityService:
     @staticmethod
     def _normalized_titles(titles: tuple[str, ...]) -> set[str]:
         return {normalize_protected_profile_title(title) for title in titles if str(title).strip()}
+
+    @staticmethod
+    def _moderation_action_message(action_key: str) -> str:
+        if action_key == "warn":
+            return "Предупреждение доступно только ролям уровня Вице города / Админ и выше"
+        if action_key == "ban":
+            return "Бан доступен только Главному вице, Главе клуба и Оператору"
+        return "Модерация недоступна по вашему званию"
+
+    @staticmethod
+    def _build_moderation_decision(
+        *,
+        allowed: bool,
+        deny_reason: str | None,
+        message: str,
+        actor: AuthorityResult,
+        target: AuthorityResult,
+        requested_action: str,
+    ) -> ModerationAuthorityDecision:
+        decision = ModerationAuthorityDecision(
+            allowed=allowed,
+            deny_reason=deny_reason,
+            message=message,
+            actor_account_id=actor.account_id,
+            target_account_id=target.account_id,
+            actor_titles=actor.titles,
+            target_titles=target.titles,
+            requested_action=requested_action,
+        )
+        logger.info(
+            "moderation authority check actor_account_id=%s target_account_id=%s actor_titles=%s target_titles=%s requested_action=%s allowed=%s deny_reason=%s",
+            decision.actor_account_id,
+            decision.target_account_id,
+            list(decision.actor_titles),
+            list(decision.target_titles),
+            decision.requested_action,
+            decision.allowed,
+            decision.deny_reason,
+        )
+        return decision
 
     @staticmethod
     def is_super_admin(actor_provider: str, actor_user_id: str) -> bool:
@@ -75,26 +167,43 @@ class AuthorityService:
         try:
             account_id = AccountsService.resolve_account_id(provider, str(provider_user_id))
             if not account_id:
-                return AuthorityResult(level=0, rank_weight=0, titles=tuple())
+                return AuthorityResult(level=0, rank_weight=0, titles=tuple(), account_id=None)
+            account_id = str(account_id)
             titles = tuple(AccountsService.get_account_titles(account_id))
             max_weight = 0
             for title in titles:
                 weight = TITLE_WEIGHTS.get(normalize_protected_profile_title(title), 0)
                 if weight > max_weight:
                     max_weight = weight
-            return AuthorityResult(level=max_weight, rank_weight=max_weight, titles=titles)
+            return AuthorityResult(level=max_weight, rank_weight=max_weight, titles=titles, account_id=account_id)
         except Exception:
             logger.exception(
                 "resolve_authority failed provider=%s provider_user_id=%s",
                 provider,
                 provider_user_id,
             )
-            return AuthorityResult(level=0, rank_weight=0, titles=tuple())
+            return AuthorityResult(level=0, rank_weight=0, titles=tuple(), account_id=None)
 
     @staticmethod
     def has_command_permission(provider: str, provider_user_id: str, command_key: str) -> bool:
-        required_level = COMMAND_LEVELS.get(command_key, 100)
         actor = AuthorityService.resolve_authority(provider, provider_user_id)
+        actor_titles = AuthorityService._normalized_titles(actor.titles)
+
+        if command_key in MODERATION_PERMISSION_TITLES:
+            allowed_titles = MODERATION_PERMISSION_TITLES[command_key]
+            allowed = bool(actor_titles & allowed_titles)
+            logger.info(
+                "authority permission check provider=%s user_id=%s command_key=%s actor_level=%s actor_titles=%s allowed=%s mode=title_matrix",
+                provider,
+                provider_user_id,
+                command_key,
+                actor.level,
+                sorted(actor_titles),
+                allowed,
+            )
+            return allowed
+
+        required_level = COMMAND_LEVELS.get(command_key, 100)
         allowed = actor.level >= required_level
         logger.info(
             "authority check provider=%s user_id=%s command_key=%s actor_level=%s required=%s allowed=%s",
@@ -155,6 +264,61 @@ class AuthorityService:
         )
         return allowed
 
+    @staticmethod
+    def can_apply_moderation_action(
+        actor_provider: str,
+        actor_user_id: str,
+        target_provider: str,
+        target_user_id: str,
+        action: str,
+    ) -> ModerationAuthorityDecision:
+        requested_action = str(action or "").strip().lower()
+        actor = AuthorityService.resolve_authority(actor_provider, actor_user_id)
+        target = AuthorityService.resolve_authority(target_provider, target_user_id)
+        actor_titles = AuthorityService._normalized_titles(actor.titles)
+
+        if requested_action not in MODERATION_ACTIONS:
+            return AuthorityService._build_moderation_decision(
+                allowed=False,
+                deny_reason="unknown_action",
+                message="Неизвестный тип модерации",
+                actor=actor,
+                target=target,
+                requested_action=requested_action,
+            )
+
+        allowed_titles = MODERATION_ACTION_TITLES[requested_action]
+        if not (actor_titles & allowed_titles):
+            message = AuthorityService._moderation_action_message(requested_action)
+            if requested_action in {"warn", "ban"} and actor_titles & {"ветеран города", "младший админ"}:
+                message = "Вы можете выдавать только мут участникам"
+            return AuthorityService._build_moderation_decision(
+                allowed=False,
+                deny_reason="action_not_permitted",
+                message=message,
+                actor=actor,
+                target=target,
+                requested_action=requested_action,
+            )
+
+        if not AuthorityService.can_manage_target(actor_provider, actor_user_id, target_provider, target_user_id):
+            return AuthorityService._build_moderation_decision(
+                allowed=False,
+                deny_reason="hierarchy_denied",
+                message="Нельзя модерировать пользователя с равным или более высоким званием",
+                actor=actor,
+                target=target,
+                requested_action=requested_action,
+            )
+
+        return AuthorityService._build_moderation_decision(
+            allowed=True,
+            deny_reason=None,
+            message="Разрешено",
+            actor=actor,
+            target=target,
+            requested_action=requested_action,
+        )
 
     @staticmethod
     def can_manage_role(actor_provider: str, actor_user_id: str, target_role: str) -> bool:
