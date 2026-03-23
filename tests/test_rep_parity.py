@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from bot.services.moderation_service import ModerationService
 from bot.systems.core_logic import get_help_embed
-from bot.systems.moderation_rep_ui import REP_FLOW_STEPS, render_rep_preview_text, render_rep_result_text
+from bot.systems.moderation_rep_ui import REP_FLOW_STEPS, render_rep_preview_text, render_rep_result_text, render_violator_notification_text
 from bot.telegram_bot.systems.commands_logic import get_helpy_text
 
 
@@ -108,8 +108,11 @@ def test_rep_help_visibility_for_telegram_and_discord() -> None:
     )
 
     assert "/rep" in telegram_help
+    assert "reply/@username" in telegram_help
+    assert "кнопками" in telegram_help
     assert "/rep" not in regular_embed.description
     assert "/rep" in veteran_embed.description
+    assert "reply/mention" in veteran_embed.description
 
 
 def test_rep_service_keeps_same_escalation_payload_on_both_platforms() -> None:
@@ -158,22 +161,59 @@ def test_rep_service_keeps_same_escalation_payload_on_both_platforms() -> None:
     assert discord_ui["selected_actions"] == telegram_ui["selected_actions"] == ["warn", "mute", "fine_points"]
     assert discord_ui["selected_action_summary"] == telegram_ui["selected_action_summary"]
     assert discord_ui["next_step_text"] == telegram_ui["next_step_text"]
-    assert discord_ui["violator_result_lines"] == telegram_ui["violator_result_lines"]
+    assert discord_ui["how_it_works_lines"] == telegram_ui["how_it_works_lines"]
+    assert "Наказание выбрано автоматически" in discord_ui["how_it_works_text"]
     assert "мут 6 ч." in discord_ui["selected_action_summary"]
     assert "штраф 10 баллов" in discord_ui["selected_action_summary"]
 
 
 def test_rep_renderers_include_preview_and_result_explanations() -> None:
     ui_payload = {
-        "preview_text": "Кто выбран как цель: Target\nКакой тип нарушения выбран: Спам\nАктивных предупреждений до применения: 1/5\nНаказание сейчас: мут 6 ч. + предупреждение + штраф 10 баллов\nЧто будет дальше: При следующем таком нарушении наказание усилится: бан.",
-        "moderator_result_text": "Причина: Спам\nНаказание: мут 6 ч. + предупреждение + штраф 10 баллов\nУ вас теперь 2/5 предупреждений\nПри следующем таком нарушении наказание усилится: бан.",
+        "preview_text": "👤 Нарушитель: Target\n📘 Нарушение: Спам\n⚠️ Предупреждений до применения: 1/5\n🧮 Будет применено сейчас: мут 6 ч. + предупреждение + штраф 10 баллов\n📈 Предупреждений после применения: 2/5\n⏭️ Следующий шаг: При следующем таком нарушении наказание усилится: бан.",
+        "how_it_works_text": "• Наказание выбрано автоматически по типу нарушения и числу предупреждений.\n• Изменение вручную в этом сценарии не требуется.\n• Если наказание выглядит неверным — отмените и проверьте историю пользователя.",
+        "footer_hint": "Если наказание выглядит неверным — отмените и проверьте историю пользователя.",
+        "moderator_result_text": "Кейс #501 создан\nВыдан мут на 6 ч.\nДобавлено предупреждение: 2/5\nСписан штраф 10 баллов в банк\nПри следующем таком нарушении наказание усилится: бан.",
+        "violator_result_text": "Нарушение: Спам\nПрименено наказание: мут 6 ч. + предупреждение + штраф 10 баллов\nПредупреждений теперь: 2/5\nМут закончится: 24.03.2026 10:00 UTC\nНаказание выбирается автоматически по типу нарушения и числу предупреждений.\nПри следующем таком нарушении наказание усилится: бан.\nЧтобы избежать следующего усиления, не повторяйте это нарушение и проверьте историю кейсов у модератора.",
+        "history_hint": "Историю кейсов и активные наказания смотри через журнал модерации и профиль пользователя.",
         "case_id": 501,
     }
 
     preview_text = render_rep_preview_text(ui_payload)
     result_text = render_rep_result_text(ui_payload)
+    violator_text = render_violator_notification_text(ui_payload)
 
     assert "Шаг 1: выбрать нарушителя" in preview_text
-    assert "Наказание сейчас: мут 6 ч. + предупреждение + штраф 10 баллов" in preview_text
-    assert "Причина: Спам" in result_text
+    assert "Как это работает:" in preview_text
+    assert "Будет применено сейчас: мут 6 ч. + предупреждение + штраф 10 баллов" in preview_text
+    assert "Если наказание выглядит неверным" in preview_text
     assert "Кейс: #501" in result_text
+    assert "Историю кейсов" in result_text
+    assert "Мут закончится" in violator_text
+    assert "Чтобы избежать следующего усиления" in violator_text
+
+
+def test_rep_service_keeps_human_readable_authority_deny_text() -> None:
+    fake_db = _FakeDb()
+
+    def _resolve_account_id(provider: str, provider_user_id: str) -> str:
+        return f"acc-{provider}-{provider_user_id}"
+
+    authority = SimpleNamespace(allowed=False, message="Вы можете выдавать только мут участникам", deny_reason="action_not_permitted")
+    with patch("bot.services.moderation_service.db", fake_db), patch(
+        "bot.services.moderation_service.AccountsService.resolve_account_id",
+        side_effect=_resolve_account_id,
+    ), patch(
+        "bot.services.moderation_service.AuthorityService.can_apply_moderation_action",
+        return_value=authority,
+    ):
+        denied = ModerationService.prepare_moderation_payload(
+            "telegram",
+            {"provider": "telegram", "provider_user_id": "10", "label": "Mod"},
+            {"provider": "telegram", "provider_user_id": "20", "label": "Target"},
+            "spam",
+            {"chat_id": 100},
+        )
+
+    assert denied["ok"] is False
+    assert denied["error_code"] == "action_not_permitted"
+    assert denied["message"] == "Вы можете выдавать только мут участникам"

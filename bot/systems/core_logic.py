@@ -762,7 +762,7 @@ def get_help_embed(category: str, visibility: HelpVisibilityContext | None = Non
         if _help_can_create_fines(visibility) or _help_can_use_rep(visibility):
             extra_lines = ["", "**Дополнительно доступно по вашему званию:**"]
             if _help_can_use_rep(visibility):
-                extra_lines.append("`/rep` — единая команда модерации: выбрать нарушителя, увидеть автонаказание и подтвердить.")
+                extra_lines.append("`/rep` — единая команда модерации: выбрать нарушителя через reply/mention, выбрать нарушение кнопками, увидеть автонаказание и подтвердить.")
             if _help_can_create_fines(visibility):
                 extra_lines.append("`/fine @пользователь сумма тип [причина]` — назначить штраф.")
             lines.extend(extra_lines)
@@ -809,7 +809,7 @@ def get_help_embed(category: str, visibility: HelpVisibilityContext | None = Non
         embed.title = "📉 Мод-команды: штрафы"
         description = []
         if _help_can_use_rep(visibility):
-            description.append("`/rep` — единая команда модерации с авторасчётом наказания и экраном подтверждения.")
+            description.append("`/rep` — единая команда модерации: reply/mention для цели, кнопки нарушения, авторасчёт наказания, карточка предупреждений и следующий шаг эскалации.")
         if _help_can_create_fines(visibility):
             description.append("`/fine @пользователь сумма тип [причина]` — выдать штраф.")
         if _help_can_manage_fines(visibility):
