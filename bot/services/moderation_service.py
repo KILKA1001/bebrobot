@@ -381,7 +381,7 @@ class ModerationService:
             f"Предупреждений теперь: {warn_count_after}/{ModerationService.BAN_WARN_THRESHOLD}",
             next_step_text,
         ]
-        history_hint = "Где посмотреть дальше: журнал moderation cases и активные наказания пользователя."
+        history_hint = "Историю кейсов, активные наказания, историю нарушений и списания в банк по кейсу смотри в журнале moderation cases."
         return {
             "provider": provider,
             "target_label": target_subject.get("label"),
@@ -720,7 +720,7 @@ class ModerationService:
         violator_lines.append("Наказание выбирается автоматически по типу нарушения и числу предупреждений.")
         if next_step_text:
             violator_lines.append(next_step_text)
-        violator_lines.append("Чтобы избежать следующего усиления, не повторяйте это нарушение и проверьте историю кейсов у модератора.")
+        violator_lines.append("Чтобы избежать следующего усиления, не повторяйте это нарушение и при необходимости запросите у модератора историю кейсов, активные наказания и текущий счётчик предупреждений.")
         ui_payload["violator_result_lines"] = violator_lines
         ui_payload["violator_result_text"] = "\n".join(violator_lines)
 

@@ -18,7 +18,7 @@ def render_rep_step_list() -> str:
 
 
 def _render_history_hint(ui_payload: dict[str, Any]) -> str:
-    return str(ui_payload.get("history_hint") or "Историю кейсов и активные наказания смотри через журнал модерации и профиль пользователя.").strip()
+    return str(ui_payload.get("history_hint") or "Историю кейсов, активные наказания, предупреждения и списания в банк смотри через журнал модерации и профиль пользователя.").strip()
 
 
 def _render_footer_hint(ui_payload: dict[str, Any]) -> str:

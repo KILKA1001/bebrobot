@@ -755,27 +755,27 @@ def get_help_embed(category: str, visibility: HelpVisibilityContext | None = Non
         embed.description = "\n".join(lines)
     elif category == "fines":
         lines = [
-            "`/myfines` — ваши активные штрафы.",
-            "`/finehistory [@пользователь] [страница]` — история штрафов.",
-            "`/finedetails ID` — детали конкретного штрафа.",
+            "`/myfines` — ваши активные денежные штрафы из legacy-системы, если они ещё остались на переходный период.",
+            "`/finehistory [@пользователь] [страница]` — история legacy-штрафов, чтобы не потерять старые записи до полной миграции.",
+            "`/finedetails ID` — детали конкретного legacy-штрафа.",
+            "Штрафной monthly-top больше не используется: вместо рейтинга должников модерация ведётся через кейсы и действия.",
         ]
         if _help_can_create_fines(visibility) or _help_can_use_rep(visibility):
             extra_lines = ["", "**Дополнительно доступно по вашему званию:**"]
             if _help_can_use_rep(visibility):
-                extra_lines.append("`/rep` — единая команда модерации: выбрать нарушителя через reply/mention, выбрать нарушение кнопками, увидеть автонаказание и подтвердить.")
+                extra_lines.append("`/rep` — основная точка входа в модерацию: выбрать нарушителя через reply/mention, выбрать нарушение кнопками, увидеть кейс, активное наказание, предупреждения и штраф в банк, если он был частью кейса.")
             if _help_can_create_fines(visibility):
-                extra_lines.append("`/fine @пользователь сумма тип [причина]` — назначить штраф.")
+                extra_lines.append("`/fine @пользователь сумма тип [причина]` — legacy-команда совместимости для денежного штрафа; новые модерационные сценарии начинайте с `/rep`.")
             lines.extend(extra_lines)
         if _help_can_manage_fines(visibility):
             lines.extend(
                 [
-                    "`/editfine ID сумма тип дата причина` — изменить параметры штрафа.",
-                    "`/cancel_fine ID` — отменить штраф.",
-                    "`/topfines` — список топ-должников.",
-                    "`/allfines` — список всех активных штрафов.",
+                    "`/editfine ID сумма тип дата причина` — изменить параметры legacy-штрафа.",
+                    "`/cancel_fine ID` — отменить legacy-штраф.",
+                    "`/allfines` — список всех активных legacy-штрафов на переходный период.",
                 ]
             )
-        embed.title = "📉 Штрафы"
+        embed.title = "📉 Штрафы и модерация"
         embed.description = "\n".join(lines)
     elif category == "misc":
         lines = [
@@ -806,19 +806,21 @@ def get_help_embed(category: str, visibility: HelpVisibilityContext | None = Non
             "`/awardmonthtop [месяц] [год]` — бонусы за топ месяца."
         )
     elif category == "admin_fines":
-        embed.title = "📉 Мод-команды: штрафы"
-        description = []
+        embed.title = "📉 Мод-команды: штрафы и кейсы"
+        description = [
+            "Штрафной monthly-top выведен из основного продукта: вместо него используйте кейсы модерации и историю пользователя.",
+        ]
         if _help_can_use_rep(visibility):
-            description.append("`/rep` — единая команда модерации: reply/mention для цели, кнопки нарушения, авторасчёт наказания, карточка предупреждений и следующий шаг эскалации.")
+            description.append("`/rep` — основная точка входа: reply/mention для цели, кнопки нарушения, авторасчёт наказания, карточка предупреждений, текущий статус и штраф в банк, если он был частью кейса.")
         if _help_can_create_fines(visibility):
-            description.append("`/fine @пользователь сумма тип [причина]` — выдать штраф.")
+            description.append("`/fine @пользователь сумма тип [причина]` — legacy-команда совместимости для денежного штрафа; не используйте её как основной moderation flow.")
         if _help_can_manage_fines(visibility):
             description.extend(
                 [
-                    "`/editfine ID сумма тип дата причина` — изменить параметры штрафа.",
-                    "`/cancel_fine ID` — отменить штраф.",
-                    "`/topfines` — список топ-должников по сумме штрафов.",
-                    "`/allfines` — список всех активных штрафов.",
+                    "`/editfine ID сумма тип дата причина` — изменить параметры legacy-штрафа.",
+                    "`/cancel_fine ID` — отменить legacy-штраф.",
+                    "`/allfines` — список всех активных legacy-штрафов на переходный период.",
+                    "Историю кейсов, предупреждений, снятий и отмен ищите в moderation cases, а не в рейтинге должников.",
                 ]
             )
         embed.description = "\n".join(description)

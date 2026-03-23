@@ -47,7 +47,7 @@ _ROLES_ADMIN_HELP_LINE = (
     "/roles_admin / /rolesadmin — панель ролей с кнопками и встроенной справкой "
     "(в Telegram меню показывает /roles_admin, alias /rolesadmin нужен для паритета с Discord)"
 )
-_REP_HELP_LINE = "/rep — мастер модерации: лучше reply/@username для цели, нарушение выбирается кнопками, наказание считается автоматически, а итог показывает предупреждения и следующий шаг эскалации"
+_REP_HELP_LINE = "/rep — основная точка входа в модерацию: лучше reply/@username для цели, нарушение выбирается кнопками, бот показывает кейс, активное наказание, предупреждения и штраф в банк, если он был частью кейса"
 
 
 def _can_manage_points(actor_level: int) -> bool:
@@ -80,6 +80,7 @@ def _build_helpy_text(*, actor_level: int = 0, actor_titles: tuple[str, ...] = t
         lines.extend(privileged_lines)
 
     lines.append("")
+    lines.append("ℹ️ Штрафной monthly-top больше не используется: вместо рейтинга должников смотрите /rep, активные наказания и историю кейсов.")
     lines.append(
         "ℹ️ В help показываются только доступные вам команды. Owner-команды специально скрыты и здесь не отображаются."
     )
