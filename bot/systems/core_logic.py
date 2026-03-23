@@ -596,6 +596,7 @@ class HelpVisibilityContext:
     level: int = 0
     titles: tuple[str, ...] = tuple()
     is_administrator: bool = False
+    can_use_rep: bool = False
 
 
 def _normalize_help_titles(titles: tuple[str, ...]) -> set[str]:
@@ -609,6 +610,7 @@ def _resolve_help_visibility(user: discord.Member | discord.User | None) -> Help
     is_administrator = bool(getattr(getattr(user, "guild_permissions", None), "administrator", False))
     try:
         authority = AuthorityService.resolve_authority("discord", str(user.id))
+        can_use_rep = AuthorityService.has_command_permission("discord", str(user.id), "moderation_mute")
     except Exception:
         logger.exception("discord help authority resolve failed actor_id=%s", getattr(user, "id", None))
         return HelpVisibilityContext(is_administrator=is_administrator)
@@ -617,6 +619,7 @@ def _resolve_help_visibility(user: discord.Member | discord.User | None) -> Help
         level=authority.level,
         titles=authority.titles,
         is_administrator=is_administrator,
+        can_use_rep=can_use_rep,
     )
 
 
@@ -645,9 +648,11 @@ def _help_can_manage_roles_admin(visibility: HelpVisibilityContext) -> bool:
 
 
 def _help_can_use_rep(visibility: HelpVisibilityContext) -> bool:
-    if visibility.is_administrator:
+    if getattr(visibility, "is_administrator", False):
         return True
-    normalized = {normalize_protected_profile_title(title) for title in visibility.titles if str(title).strip()}
+    if hasattr(visibility, "can_use_rep"):
+        return bool(getattr(visibility, "can_use_rep", False))
+    normalized = {normalize_protected_profile_title(title) for title in getattr(visibility, "titles", tuple()) if str(title).strip()}
     return bool(normalized & {"ветеран города", "младший админ", "вице города", "админ", "главный вице", "глава клуба", "оператор"})
 
 
