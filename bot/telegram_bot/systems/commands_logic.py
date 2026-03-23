@@ -47,6 +47,7 @@ _ROLES_ADMIN_HELP_LINE = (
     "/roles_admin / /rolesadmin — панель ролей с кнопками и встроенной справкой "
     "(в Telegram меню показывает /roles_admin, alias /rolesadmin нужен для паритета с Discord)"
 )
+_REP_HELP_LINE = "/rep — единая команда модерации с авторасчётом наказания и подтверждением шаг за шагом"
 
 
 def _can_manage_points(actor_level: int) -> bool:
@@ -60,7 +61,7 @@ def _can_manage_tickets(actor_titles: tuple[str, ...], actor_level: int) -> bool
     return actor_level >= 100
 
 
-def _build_helpy_text(*, actor_level: int = 0, actor_titles: tuple[str, ...] = tuple()) -> str:
+def _build_helpy_text(*, actor_level: int = 0, actor_titles: tuple[str, ...] = tuple(), can_use_rep: bool = False) -> str:
     lines = ["📚 Список команд:", *_PUBLIC_HELP_COMMANDS]
 
     privileged_lines: list[str] = []
@@ -70,6 +71,8 @@ def _build_helpy_text(*, actor_level: int = 0, actor_titles: tuple[str, ...] = t
         privileged_lines.append(_TICKETS_HELP_LINE)
     if actor_level >= 80:
         privileged_lines.append(_ROLES_ADMIN_HELP_LINE)
+    if can_use_rep:
+        privileged_lines.append(_REP_HELP_LINE)
 
     if privileged_lines:
         lines.append("")
@@ -89,11 +92,12 @@ def get_helpy_text(telegram_user_id: int | None = None) -> str:
 
     try:
         authority = AuthorityService.resolve_authority("telegram", str(telegram_user_id))
+        can_use_rep = AuthorityService.has_command_permission("telegram", str(telegram_user_id), "moderation_mute")
     except Exception:
         logger.exception("telegram help authority resolve failed actor_id=%s", telegram_user_id)
         return _build_helpy_text()
 
-    return _build_helpy_text(actor_level=authority.level, actor_titles=authority.titles)
+    return _build_helpy_text(actor_level=authority.level, actor_titles=authority.titles, can_use_rep=can_use_rep)
 
 
 def prepare_roles_catalog_pages() -> dict[str, object]:
