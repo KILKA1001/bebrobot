@@ -72,7 +72,8 @@ def format_fine_due_date(fine: dict) -> str:
 
 
 def build_fine_embed(fine: dict) -> discord.Embed:
-    embed = discord.Embed(title=f"📌 Штраф ID #{fine['id']}", color=discord.Color.orange())
+    embed = discord.Embed(title=f"📌 Legacy-штраф ID #{fine['id']}", color=discord.Color.orange())
+    embed.description = "Старая денежная механика оставлена только для переходного периода. Для новой модерации используйте `/rep`."
     embed.add_field(name="💰 Сумма", value=f"{fine['amount']} баллов", inline=True)
     embed.add_field(name="📄 Осталось оплатить", value=f"{fine['amount'] - fine.get('paid_amount', 0):.2f} баллов", inline=True)
     embed.add_field(name="📅 Срок", value=format_fine_due_date(fine), inline=True)
@@ -84,11 +85,11 @@ def build_fine_embed(fine: dict) -> discord.Embed:
 
 def build_fine_detail_embed(fine: dict) -> discord.Embed:
     embed = build_fine_embed(fine)
-    embed.title = f"ℹ️ Подробности штрафа #{fine['id']}"
+    embed.title = f"ℹ️ Подробности legacy-штрафа #{fine['id']}"
     author_account_id = fine.get('author_account_id')
     author_id = db._get_discord_user_for_account_id(author_account_id) if author_account_id else None
     author_display = f'<@{author_id}>' if author_id else (author_account_id or 'unknown')
-    embed.set_footer(text=f"Назначен: {fine['created_at'][:10]} | Автор: {author_display}")
+    embed.set_footer(text=f"Legacy-данные переходного периода • Назначен: {fine['created_at'][:10]} | Автор: {author_display}")
     return embed
 
 

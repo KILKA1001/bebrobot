@@ -140,11 +140,14 @@ def test_rep_help_visibility_for_telegram_and_discord() -> None:
     assert "кнопками" in telegram_help
     assert "preview" in telegram_help
     assert "вручную вводить не нужно" in telegram_help
-    assert "/rep" not in regular_embed.description
+    assert "Рейтинг должников больше не используется" in telegram_help
+    assert "/myfines" in telegram_help
+    assert "Рейтинг должников выведен из основного продукта" in regular_embed.description
     assert "/rep" in veteran_embed.description
     assert "reply/mention" in veteran_embed.description
     assert "preview" in veteran_embed.description
     assert "без ручного выбора наказания" in veteran_embed.description
+    assert "активные наказания" in veteran_embed.description
 
 
 def test_rep_service_keeps_same_escalation_payload_on_both_platforms() -> None:
@@ -205,8 +208,8 @@ def test_rep_renderers_include_preview_and_result_explanations() -> None:
         "how_it_works_text": "• Наказание выбрано автоматически по типу нарушения и числу предупреждений.\n• Изменение вручную в этом сценарии не требуется.\n• Если наказание выглядит неверным — отмените и проверьте историю пользователя.",
         "footer_hint": "Если наказание выглядит неверным — отмените и проверьте историю пользователя.",
         "moderator_result_text": "Кейс #501 создан\nВыдан мут на 6 ч.\nДобавлено предупреждение: 2/5\nСписан штраф 10 баллов в банк\nПри следующем таком нарушении наказание усилится: бан.",
-        "violator_result_text": "Нарушение: Спам\nПрименено наказание: мут 6 ч. + предупреждение + штраф 10 баллов\nПредупреждений теперь: 2/5\nМут закончится: 24.03.2026 10:00 UTC\nНаказание выбирается автоматически по типу нарушения и числу предупреждений.\nПри следующем таком нарушении наказание усилится: бан.\nЧтобы избежать следующего усиления, не повторяйте это нарушение и при необходимости запросите у модератора историю кейсов, активные наказания и текущий счётчик предупреждений.",
-        "history_hint": "Историю кейсов, активные наказания, историю нарушений и списания в банк по кейсу смотри в журнале moderation cases.",
+        "violator_result_text": "Нарушение: Спам\nПрименено наказание: мут 6 ч. + предупреждение + штраф 10 баллов\nПредупреждений теперь: 2/5\nМут закончится: 24.03.2026 10:00 UTC\nНаказание выбирается автоматически по типу нарушения и числу предупреждений.\nПри следующем таком нарушении наказание усилится: бан.\nЧтобы избежать следующего усиления, не повторяйте это нарушение и при необходимости запросите у модератора историю кейсов, активные наказания, историю нарушений и текущий счётчик предупреждений.",
+        "history_hint": "Историю кейсов, активные наказания, историю нарушений и списания в банк по кейсу смотри в журнале moderation cases и профиле пользователя.",
         "case_id": 501,
     }
 
@@ -222,6 +225,7 @@ def test_rep_renderers_include_preview_and_result_explanations() -> None:
     assert "Preview /rep" in compact_preview_text
     assert "Кейс: #501" in result_text
     assert "Историю кейсов" in result_text
+    assert "профиле пользователя" in result_text
     assert "Мут закончится" in violator_text
     assert "Чтобы избежать следующего усиления" in violator_text
 
