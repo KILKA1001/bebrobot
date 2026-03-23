@@ -119,7 +119,7 @@ class _FakeDb:
                     "apply_warn": True,
                     "mute_minutes": 0,
                     "fine_points": 0,
-                    "apply_ban": False,
+                    "apply_ban": True,
                     "is_active": True,
                     "description_for_admin": "Пятый пред",
                     "description_for_user": "Достигнут лимит предупреждений",
@@ -229,6 +229,137 @@ class ModerationServiceTests(unittest.TestCase):
         self.assertEqual(result["status"], ModerationService.STATUS_APPLIED)
         self.assertEqual(self.fake_db.tables["moderation_warn_state"][0]["active_warn_count"], 5)
         self.assertEqual(len(self.fake_db.tables["moderation_bans"]), 1)
+        self.assertEqual(
+            [row["action_type"] for row in self.fake_db.tables["moderation_actions"]],
+            ["warn", "ban"],
+        )
+
+    def test_apply_violation_does_not_auto_ban_without_active_ban_rule(self):
+        self.mock_resolve.side_effect = ["acc-actor", "acc-target"]
+        self.fake_db.tables["moderation_penalty_rules"] = [
+            {
+                "id": 20,
+                "violation_type_id": 1,
+                "escalation_step": 1,
+                "warn_count_before": 4,
+                "apply_warn": True,
+                "mute_minutes": 0,
+                "fine_points": 0,
+                "apply_ban": False,
+                "is_active": True,
+                "description_for_admin": "Пятый пред без бана",
+                "description_for_user": "Автобан отключён",
+            },
+        ]
+        self.fake_db.tables["moderation_warn_state"] = [
+            {"id": 1, "account_id": "acc-target", "active_warn_count": 4}
+        ]
+
+        result = ModerationService.apply_violation(
+            provider="discord",
+            actor="111",
+            target="222",
+            violation_code="spam",
+            reason_text="again",
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["warn_count_after"], 5)
+        self.assertFalse(result["ban_applied"])
+        self.assertEqual(
+            [row["action_type"] for row in self.fake_db.tables["moderation_actions"]],
+            ["warn"],
+        )
+        self.assertEqual(len(self.fake_db.tables["moderation_bans"]), 0)
+
+    def test_apply_violation_uses_clean_record_soft_warn_rule_when_configured(self):
+        self.mock_resolve.side_effect = ["acc-actor", "acc-target"]
+        self.fake_db.tables["moderation_penalty_rules"] = [
+            {
+                "id": 30,
+                "violation_type_id": 1,
+                "escalation_step": 0,
+                "warn_count_before": 0,
+                "warn_increment": 1,
+                "warn_ttl_minutes": 14400,
+                "mute_minutes": 0,
+                "fine_points": 0,
+                "ban_minutes": 0,
+                "apply_ban": False,
+                "only_if_clean_record": True,
+                "is_active": True,
+                "description_for_admin": "Первый чистый проступок",
+                "description_for_user": "Только предупреждение",
+            },
+            {
+                "id": 31,
+                "violation_type_id": 1,
+                "escalation_step": 1,
+                "warn_count_before": 1,
+                "warn_increment": 1,
+                "warn_ttl_minutes": 14400,
+                "mute_minutes": 15,
+                "fine_points": 1,
+                "ban_minutes": 0,
+                "apply_ban": False,
+                "is_active": True,
+                "description_for_admin": "Повтор после софт-вара",
+                "description_for_user": "Дальше будет мут",
+            },
+        ]
+
+        result = ModerationService.apply_violation(
+            provider="discord",
+            actor="111",
+            target="222",
+            violation_code="spam",
+            reason_text="soft warn",
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["warn_count_before"], 0)
+        self.assertEqual(result["warn_count_after"], 1)
+        self.assertEqual(
+            [row["action_type"] for row in self.fake_db.tables["moderation_actions"]],
+            ["warn"],
+        )
+        self.assertIn("мягкое правило первого чистого проступка", result["ui_payload"]["how_it_works_text"])
+        self.assertIsNotNone(self.fake_db.tables["moderation_actions"][0]["ends_at"])
+
+    def test_apply_violation_creates_temporary_ban_when_ban_minutes_configured(self):
+        self.mock_resolve.side_effect = ["acc-actor", "acc-target"]
+        self.fake_db.tables["moderation_penalty_rules"] = [
+            {
+                "id": 40,
+                "violation_type_id": 1,
+                "escalation_step": 5,
+                "warn_count_before": 4,
+                "warn_increment": 1,
+                "warn_ttl_minutes": 14400,
+                "mute_minutes": 0,
+                "fine_points": 0,
+                "ban_minutes": 7200,
+                "apply_ban": False,
+                "is_active": True,
+                "description_for_admin": "Временный бан",
+                "description_for_user": "Выдан бан на 5 дней",
+            },
+        ]
+        self.fake_db.tables["moderation_warn_state"] = [
+            {"id": 1, "account_id": "acc-target", "active_warn_count": 4}
+        ]
+
+        result = ModerationService.apply_violation(
+            provider="discord",
+            actor="111",
+            target="222",
+            violation_code="spam",
+            reason_text="temp ban",
+        )
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result["ban_applied"])
+        self.assertEqual(self.fake_db.tables["moderation_bans"][0]["ends_at"], result["case"]["ban_until"])
         self.assertEqual(
             [row["action_type"] for row in self.fake_db.tables["moderation_actions"]],
             ["warn", "ban"],
