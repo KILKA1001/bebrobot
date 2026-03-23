@@ -3,7 +3,18 @@ from unittest.mock import patch
 
 from bot.services.moderation_service import ModerationService
 from bot.systems.core_logic import get_help_embed
-from bot.systems.moderation_rep_ui import REP_FLOW_STEPS, render_rep_preview_text, render_rep_result_text, render_violator_notification_text
+from bot.systems.moderation_rep_ui import (
+    REP_FLOW_STEPS,
+    render_rep_apply_error_text,
+    render_rep_cancelled_text,
+    render_rep_duplicate_submit_text,
+    render_rep_expired_text,
+    render_rep_preview_text,
+    render_rep_result_text,
+    render_rep_start_text,
+    render_rep_target_prompt_text,
+    render_violator_notification_text,
+)
 from bot.telegram_bot.systems.commands_logic import get_helpy_text
 
 
@@ -230,3 +241,25 @@ def test_rep_service_keeps_human_readable_authority_deny_text() -> None:
     assert denied["ok"] is False
     assert denied["error_code"] == "action_not_permitted"
     assert denied["message"] == "Вы можете выдавать только мут участникам"
+
+
+def test_rep_shared_copy_keeps_same_user_explanations_for_both_platform_entries() -> None:
+    start_text = render_rep_start_text(target_selection_hint="reply/mention или @username/id в зависимости от платформы")
+    target_text = render_rep_target_prompt_text(
+        target_selection_hint="reply/mention или @username/id в зависимости от платформы",
+        target_label="Target",
+    )
+
+    assert "Наказание выбирается автоматически по типу нарушения и числу предупреждений" in start_text
+    assert "Следующий шаг эскалации бот показывает сразу в предпросмотре" in start_text
+    assert "Если при применении случится ошибка, кейс не должен считаться подтверждённым" in start_text
+    assert "Сейчас выбран: Target" in target_text
+    assert "reply/mention или @username/id" in target_text
+
+
+def test_rep_shared_copy_covers_cancel_duplicate_expired_and_error_states() -> None:
+    assert "Никаких действий не применено" in render_rep_cancelled_text()
+    assert "Ничего не применено" in render_rep_expired_text()
+    assert "Повторное применение пропущено" in render_rep_duplicate_submit_text()
+    assert "Ничего не применено" in render_rep_apply_error_text()
+
