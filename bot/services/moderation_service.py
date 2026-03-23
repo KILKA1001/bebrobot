@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 class ModerationService:
     """Account-first moderation service with shared preview/apply payloads for all transports."""
 
-    BAN_WARN_THRESHOLD = 5
     ACTION_WARN = "warn"
     ACTION_MUTE = "mute"
     ACTION_BAN = "ban"
@@ -212,11 +211,29 @@ class ModerationService:
         return False
 
     @staticmethod
+    def _rule_warn_count_before(rule: dict[str, Any]) -> int | None:
+        raw_value = rule.get("warn_count_before")
+        if raw_value is None:
+            return None
+        try:
+            return max(0, int(raw_value))
+        except (TypeError, ValueError):
+            logger.warning("moderation invalid rule warn_count_before=%s rule_id=%s", raw_value, rule.get("id"))
+            return None
+
+    @staticmethod
     def _load_penalty_rules(violation_type_id: Any) -> list[dict]:
         rules = ModerationService._select_many(
             "moderation_penalty_rules",
             violation_type_id=violation_type_id,
             is_active=True,
+        )
+        rules.sort(
+            key=lambda row: (
+                ModerationService._rule_escalation_step(row, 0),
+                ModerationService._rule_warn_count_before(row) if ModerationService._rule_warn_count_before(row) is not None else 10**9,
+                str(row.get("id") or ""),
+            )
         )
         return rules
 
@@ -355,7 +372,7 @@ class ModerationService:
         fine_points = float(rule.get("fine_points") or 0)
         if fine_points > 0:
             actions.append(ModerationService.ACTION_FINE_POINTS)
-        should_ban = ModerationService._is_truthy(rule.get("apply_ban")) or warn_count_after >= ModerationService.BAN_WARN_THRESHOLD
+        should_ban = ModerationService._is_truthy(rule.get("apply_ban"))
         if should_ban:
             actions.append(ModerationService.ACTION_BAN)
         return actions, warn_count_after, should_ban
@@ -405,6 +422,25 @@ class ModerationService:
         return str(int(numeric)) if numeric.is_integer() else str(numeric)
 
     @staticmethod
+    def _warn_limit_from_rules(rules: list[dict[str, Any]]) -> int | None:
+        limits: list[int] = []
+        for rule in rules:
+            if not ModerationService._is_truthy(rule.get("apply_ban")):
+                continue
+            warn_before = ModerationService._rule_warn_count_before(rule)
+            if warn_before is None:
+                warn_before = max(0, ModerationService._rule_escalation_step(rule, 0) - 1)
+            warn_after = warn_before + (1 if ModerationService._is_truthy(rule.get("apply_warn")) else 0)
+            limits.append(max(0, warn_after))
+        return min(limits) if limits else None
+
+    @staticmethod
+    def _warn_progress_text(*, warn_count: int, warn_limit: int | None, suffix: str) -> str:
+        if warn_limit is None:
+            return f"{warn_count} ({suffix}: бан не настроен в таблице эскалации)"
+        return f"{warn_count}/{warn_limit}"
+
+    @staticmethod
     def _how_it_works_lines() -> list[str]:
         return [
             "• Наказание выбрано автоматически по типу нарушения и числу предупреждений.",
@@ -421,6 +457,7 @@ class ModerationService:
         violation_type: dict[str, Any],
         rule: dict[str, Any],
         next_rule: dict[str, Any] | None,
+        all_rules: list[dict[str, Any]],
         warn_count_before: int,
         authority: ModerationAuthorityDecision,
         context: dict[str, Any],
@@ -430,6 +467,17 @@ class ModerationService:
         action_lines, warn_count_after, should_ban = ModerationService._action_summary_lines(rule, warn_count_before)
         violation_title = ModerationService._human_violation_title(violation_type)
         next_step_text = ModerationService._next_step_explanation(next_rule, warn_count_after)
+        warn_limit = ModerationService._warn_limit_from_rules(all_rules)
+        warn_before_text = ModerationService._warn_progress_text(
+            warn_count=warn_count_before,
+            warn_limit=warn_limit,
+            suffix="до применения",
+        )
+        warn_after_text = ModerationService._warn_progress_text(
+            warn_count=warn_count_after,
+            warn_limit=warn_limit,
+            suffix="после применения",
+        )
         selected_actions, _, _ = ModerationService._planned_actions(rule, warn_count_before)
         required_authority_action = ModerationService._required_authority_action(selected_actions)
         selected_action_summary = ModerationService._join_human_actions(action_lines)
@@ -439,15 +487,15 @@ class ModerationService:
         preview_lines = [
             f"👤 Нарушитель: {target_subject.get('label') or target_subject.get('provider_user_id') or 'неизвестно'}",
             f"📘 Нарушение: {violation_title}",
-            f"⚠️ Предупреждений до применения: {warn_count_before}/{ModerationService.BAN_WARN_THRESHOLD}",
+            f"⚠️ Предупреждений до применения: {warn_before_text}",
             f"🧮 Будет применено сейчас: {selected_action_summary}",
-            f"📈 Предупреждений после применения: {warn_count_after}/{ModerationService.BAN_WARN_THRESHOLD}",
+            f"📈 Предупреждений после применения: {warn_after_text}",
             f"⏭️ Следующий шаг: {next_step_text}",
         ]
         moderator_result_lines = [
             f"Причина: {violation_title}",
             f"Выдано сейчас: {selected_action_summary}",
-            f"Предупреждений теперь: {warn_count_after}/{ModerationService.BAN_WARN_THRESHOLD}",
+            f"Предупреждений теперь: {warn_after_text}",
             next_step_text,
         ]
         history_hint = "Историю кейсов, активные наказания, историю нарушений и списания в банк по кейсу смотри в журнале moderation cases."
@@ -462,7 +510,9 @@ class ModerationService:
             "violation_title": violation_title,
             "warn_count_before": warn_count_before,
             "warn_count_after": warn_count_after,
-            "ban_threshold": ModerationService.BAN_WARN_THRESHOLD,
+            "warn_count_before_text": warn_before_text,
+            "warn_count_after_text": warn_after_text,
+            "ban_threshold": warn_limit,
             "selected_actions": selected_actions,
             "selected_action_summary": selected_action_summary,
             "next_step_text": next_step_text,
@@ -512,6 +562,7 @@ class ModerationService:
 
         warn_state_before = ModerationService._load_warn_state(str(target_subject["account_id"]))
         warn_count_before = ModerationService._current_warn_count(warn_state_before)
+        all_rules = ModerationService._load_penalty_rules(violation_type["id"])
         rule = ModerationService._load_penalty_rule(violation_type["id"], warn_count_before)
         if not rule:
             return {"ok": False, "error_code": "rule_not_found", "message": "Не найдено правило наказания. Проверь логи и таблицу moderation_penalty_rules."}
@@ -558,6 +609,7 @@ class ModerationService:
             violation_type=violation_type,
             rule=rule,
             next_rule=next_rule,
+            all_rules=all_rules,
             warn_count_before=warn_count_before,
             authority=authority,
             context=context,
@@ -1164,7 +1216,7 @@ class ModerationService:
         if ModerationService.ACTION_MUTE in selected_actions and mute_minutes > 0:
             result_lines.append(f"Выдан мут на {ModerationService._format_duration(mute_minutes)}")
         if ModerationService.ACTION_WARN in selected_actions:
-            result_lines.append(f"Добавлено предупреждение: {warn_count_after}/{ModerationService.BAN_WARN_THRESHOLD}")
+            result_lines.append(f"Добавлено предупреждение: {ui_payload.get('warn_count_after_text') or warn_count_after}")
         if ModerationService.ACTION_FINE_POINTS in selected_actions and fine_points > 0:
             result_lines.append(f"Списан штраф {ModerationService._format_points_value(fine_points)} баллов в банк")
         if ModerationService.ACTION_BAN in selected_actions:
@@ -1176,7 +1228,7 @@ class ModerationService:
         violator_lines = [
             f"Нарушение: {ui_payload.get('violation_title')}",
             f"Применено наказание: {ui_payload.get('selected_action_summary')}",
-            f"Предупреждений теперь: {warn_count_after}/{ModerationService.BAN_WARN_THRESHOLD}",
+            f"Предупреждений теперь: {ui_payload.get('warn_count_after_text') or warn_count_after}",
         ]
         if ModerationService.ACTION_MUTE in selected_actions and mute_minutes > 0:
             violator_lines.append(f"Мут закончится: {datetime.fromisoformat(mute_until).strftime('%d.%m.%Y %H:%M UTC') if mute_until else (now + timedelta(minutes=mute_minutes)).strftime('%d.%m.%Y %H:%M UTC')}")
