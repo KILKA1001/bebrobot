@@ -332,6 +332,19 @@ class ModerationService:
         return f"При следующем таком нарушении наказание усилится: {ModerationService._join_human_actions(next_lines)}."
 
     @staticmethod
+    def _format_points_value(value: float | int) -> str:
+        numeric = float(value or 0)
+        return str(int(numeric)) if numeric.is_integer() else str(numeric)
+
+    @staticmethod
+    def _how_it_works_lines() -> list[str]:
+        return [
+            "• Наказание выбрано автоматически по типу нарушения и числу предупреждений.",
+            "• Изменение вручную в этом сценарии не требуется.",
+            "• Если наказание выглядит неверным — отмените и проверьте историю пользователя.",
+        ]
+
+    @staticmethod
     def _build_ui_payload(
         *,
         provider: str,
@@ -350,38 +363,50 @@ class ModerationService:
         next_step_text = ModerationService._next_step_explanation(next_rule, warn_count_after)
         selected_actions, _, _ = ModerationService._planned_actions(rule, warn_count_before)
         required_authority_action = ModerationService._required_authority_action(selected_actions)
-        explanation_lines = [
+        selected_action_summary = ModerationService._join_human_actions(action_lines)
+        mute_minutes = int(rule.get("mute_minutes") or 0)
+        fine_points = float(rule.get("fine_points") or 0)
+        how_it_works_lines = ModerationService._how_it_works_lines()
+        preview_lines = [
+            f"👤 Нарушитель: {target_subject.get('label') or target_subject.get('provider_user_id') or 'неизвестно'}",
+            f"📘 Нарушение: {violation_title}",
+            f"⚠️ Предупреждений до применения: {warn_count_before}/{ModerationService.BAN_WARN_THRESHOLD}",
+            f"🧮 Будет применено сейчас: {selected_action_summary}",
+            f"📈 Предупреждений после применения: {warn_count_after}/{ModerationService.BAN_WARN_THRESHOLD}",
+            f"⏭️ Следующий шаг: {next_step_text}",
+        ]
+        moderator_result_lines = [
             f"Причина: {violation_title}",
-            f"Наказание: {ModerationService._join_human_actions(action_lines)}",
-            f"У вас теперь {warn_count_after}/{ModerationService.BAN_WARN_THRESHOLD} предупреждений",
+            f"Выдано сейчас: {selected_action_summary}",
+            f"Предупреждений теперь: {warn_count_after}/{ModerationService.BAN_WARN_THRESHOLD}",
             next_step_text,
         ]
-        preview_lines = [
-            f"Кто выбран как цель: {target_subject.get('label') or target_subject.get('provider_user_id') or 'неизвестно'}",
-            f"Какой тип нарушения выбран: {violation_title}",
-            f"Активных предупреждений до применения: {warn_count_before}/{ModerationService.BAN_WARN_THRESHOLD}",
-            f"Наказание сейчас: {ModerationService._join_human_actions(action_lines)}",
-            f"Что будет дальше: {next_step_text}",
-        ]
+        history_hint = "Где посмотреть дальше: журнал moderation cases и активные наказания пользователя."
         return {
             "provider": provider,
             "target_label": target_subject.get("label"),
             "target_account_id": target_subject.get("account_id"),
+            "target_provider_user_id": target_subject.get("provider_user_id"),
             "actor_account_id": actor_subject.get("account_id"),
+            "actor_provider_user_id": actor_subject.get("provider_user_id"),
             "violation_code": str(violation_type.get("code") or ""),
             "violation_title": violation_title,
             "warn_count_before": warn_count_before,
             "warn_count_after": warn_count_after,
             "ban_threshold": ModerationService.BAN_WARN_THRESHOLD,
             "selected_actions": selected_actions,
-            "selected_action_summary": ModerationService._join_human_actions(action_lines),
+            "selected_action_summary": selected_action_summary,
             "next_step_text": next_step_text,
             "preview_lines": preview_lines,
             "preview_text": "\n".join(preview_lines),
-            "moderator_result_lines": explanation_lines,
-            "moderator_result_text": "\n".join(explanation_lines),
-            "violator_result_lines": explanation_lines,
-            "violator_result_text": "\n".join(explanation_lines),
+            "moderator_result_lines": moderator_result_lines,
+            "moderator_result_text": "\n".join(moderator_result_lines),
+            "violator_result_lines": [],
+            "violator_result_text": "",
+            "how_it_works_lines": how_it_works_lines,
+            "how_it_works_text": "\n".join(how_it_works_lines),
+            "history_hint": history_hint,
+            "footer_hint": how_it_works_lines[-1].lstrip("• "),
             "required_authority_action": required_authority_action,
             "authority_allowed": authority.allowed,
             "authority_message": authority.message,
@@ -390,6 +415,8 @@ class ModerationService:
             "escalation_step": ModerationService._rule_escalation_step(rule, warn_count_before),
             "context": dict(context),
             "ban_applied": should_ban,
+            "mute_minutes": mute_minutes,
+            "fine_points": fine_points,
         }
 
     @staticmethod
@@ -670,6 +697,33 @@ class ModerationService:
                     applied_actions.append(ban_action)
 
         ui_payload["case_id"] = moderation_case.get("id")
+        result_lines = [f"Кейс #{moderation_case.get('id')} создан"]
+        if ModerationService.ACTION_MUTE in ui_payload["selected_actions"] and mute_minutes > 0:
+            result_lines.append(f"Выдан мут на {ModerationService._format_duration(mute_minutes)}")
+        if ModerationService.ACTION_WARN in ui_payload["selected_actions"]:
+            result_lines.append(f"Добавлено предупреждение: {warn_count_after}/{ModerationService.BAN_WARN_THRESHOLD}")
+        if ModerationService.ACTION_FINE_POINTS in ui_payload["selected_actions"] and fine_points > 0:
+            result_lines.append(f"Списан штраф {ModerationService._format_points_value(fine_points)} баллов в банк")
+        if ModerationService.ACTION_BAN in ui_payload["selected_actions"]:
+            result_lines.append("Применён бан")
+        result_lines.append(next_step_text if (next_step_text := str(ui_payload.get("next_step_text") or "").strip()) else "")
+        ui_payload["moderator_result_lines"] = [line for line in result_lines if line]
+        ui_payload["moderator_result_text"] = "\n".join(ui_payload["moderator_result_lines"])
+
+        violator_lines = [
+            f"Нарушение: {ui_payload.get('violation_title')}",
+            f"Применено наказание: {ui_payload.get('selected_action_summary')}",
+            f"Предупреждений теперь: {warn_count_after}/{ModerationService.BAN_WARN_THRESHOLD}",
+        ]
+        if ModerationService.ACTION_MUTE in ui_payload["selected_actions"] and mute_minutes > 0:
+            violator_lines.append(f"Мут закончится: {(now + timedelta(minutes=mute_minutes)).strftime('%d.%m.%Y %H:%M UTC')}")
+        violator_lines.append("Наказание выбирается автоматически по типу нарушения и числу предупреждений.")
+        if next_step_text:
+            violator_lines.append(next_step_text)
+        violator_lines.append("Чтобы избежать следующего усиления, не повторяйте это нарушение и проверьте историю кейсов у модератора.")
+        ui_payload["violator_result_lines"] = violator_lines
+        ui_payload["violator_result_text"] = "\n".join(violator_lines)
+
         result = {
             "ok": True,
             "case": moderation_case,
