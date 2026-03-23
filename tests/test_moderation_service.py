@@ -130,6 +130,8 @@ class _FakeDb:
             "moderation_actions": [],
             "moderation_mutes": [],
             "moderation_bans": [],
+            "bank": [{"id": 1, "total": 0.0}],
+            "bank_history": [],
         }
         self.sequences = {
             "moderation_cases": 100,
@@ -137,6 +139,7 @@ class _FakeDb:
             "moderation_warn_state": 0,
             "moderation_mutes": 200,
             "moderation_bans": 300,
+            "bank_history": 0,
         }
         self.supabase = _FakeSupabase(self)
         self.operations = []
@@ -145,6 +148,8 @@ class _FakeDb:
         self.fail_insert_for = None
         self.fail_update_for = None
         self.fail_point_action = False
+        self.fail_add_to_bank = False
+        self.fail_log_bank_income = False
 
     def _inc_metric(self, name):
         self.metrics.append(name)
@@ -162,6 +167,30 @@ class _FakeDb:
                 "op_key": op_key,
             }
         )
+        return True
+
+    def add_to_bank(self, amount):
+        if self.fail_add_to_bank:
+            return False
+        self.tables["bank"][0]["total"] += amount
+        self.operations.append({"table": "bank", "action": "add", "amount": amount})
+        return True
+
+    def log_bank_income_by_account(self, account_id, amount, reason):
+        if self.fail_log_bank_income:
+            return False
+        self.tables["bank_history"].append({
+            "account_id": account_id,
+            "amount": amount,
+            "reason": reason,
+        })
+        self.operations.append({
+            "table": "bank_history",
+            "action": "insert",
+            "account_id": account_id,
+            "amount": amount,
+            "reason": reason,
+        })
         return True
 
 
@@ -202,7 +231,7 @@ class ModerationServiceTests(unittest.TestCase):
         self.assertEqual(len(self.fake_db.tables["moderation_mutes"]), 1)
         self.assertEqual(
             [row["action_type"] for row in self.fake_db.tables["moderation_actions"]],
-            ["warn", "mute", "fine_points"],
+            ["warn", "mute", "fine_points", "bank_income"],
         )
         self.assertEqual(self.fake_db.point_actions[0]["points"], -3.0)
         self.assertTrue(self.fake_db.point_actions[0]["op_key"].endswith(":fine_points"))
@@ -441,6 +470,51 @@ class ModerationServiceTests(unittest.TestCase):
         self.assertEqual(self.fake_db.point_actions[1]["points"], 3.0)
         self.assertTrue(self.fake_db.point_actions[1]["is_undo"])
         self.assertEqual(result["rollback_status"], "manual_review_required")
+
+    def test_commit_case_moves_fine_to_bank_and_links_it_to_case_history(self):
+        self.mock_resolve.side_effect = ["acc-actor", "acc-target"]
+
+        result = ModerationService.commit_case(
+            provider="discord",
+            actor="111",
+            target="222",
+            violation_code="spam",
+            context={"moderation_op_key": "rep:bank-ok", "skip_authority": True, "reason_text": "Flood links"},
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(self.fake_db.tables["bank"][0]["total"], 3.0)
+        self.assertEqual(len(self.fake_db.tables["bank_history"]), 1)
+        self.assertIn("moderation case #", self.fake_db.tables["bank_history"][0]["reason"])
+        self.assertIn("op_key=rep:bank-ok", self.fake_db.tables["bank_history"][0]["reason"])
+        self.assertEqual(
+            [row["action_type"] for row in self.fake_db.tables["moderation_actions"]],
+            ["warn", "mute", "fine_points", "bank_income"],
+        )
+        self.assertEqual(self.fake_db.tables["moderation_actions"][-1]["case_id"], result["case_id"])
+        self.assertEqual(self.fake_db.tables["moderation_actions"][-1]["op_key"], "rep:bank-ok")
+        self.assertIn("Списан штраф 3 баллов в банк", result["ui_payload"]["moderator_result_text"])
+
+    def test_commit_case_rolls_back_when_bank_income_log_fails(self):
+        self.mock_resolve.side_effect = ["acc-actor", "acc-target"]
+        self.fake_db.fail_log_bank_income = True
+
+        result = ModerationService.commit_case(
+            provider="discord",
+            actor="111",
+            target="222",
+            violation_code="spam",
+            context={"moderation_op_key": "rep:bank-log-fail", "skip_authority": True},
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_code"], "bank_income_log_failed")
+        self.assertEqual(self.fake_db.tables["bank"][0]["total"], 0.0)
+        self.assertEqual(self.fake_db.tables["bank_history"], [])
+        self.assertEqual(self.fake_db.point_actions[0]["points"], -3.0)
+        self.assertEqual(self.fake_db.point_actions[1]["points"], 3.0)
+        self.assertTrue(self.fake_db.point_actions[1]["is_undo"])
+        self.assertIn(result["rollback_status"], {"rolled_back", "manual_review_required"})
 
 
 if __name__ == "__main__":

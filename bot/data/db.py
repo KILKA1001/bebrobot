@@ -1386,6 +1386,41 @@ class Database:
             logger.error(f"Ошибка при трате из банка: {str(e)}")
             return False
 
+    def log_bank_income_by_account(self, account_id: str, amount: float, reason: str) -> bool:
+        try:
+            if not self.supabase:
+                logger.warning("❌ log_bank_income_by_account: Supabase не инициализирован account_id=%s amount=%s", account_id, amount)
+                return False
+            normalized_account_id = str(account_id or "").strip()
+            if not normalized_account_id:
+                logger.error("❌ log_bank_income_by_account aborted: empty account_id amount=%s reason=%s", amount, reason)
+                return False
+
+            history_payload = {
+                "account_id": normalized_account_id,
+                "amount": amount,
+                "reason": reason,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
+            self.supabase.table("bank_history").insert(history_payload).execute()
+            logger.info(
+                "✅ Доход банка сохранён account_id=%s amount=%s reason=%s",
+                normalized_account_id,
+                amount,
+                reason,
+            )
+            return True
+        except Exception as e:
+            logger.error(
+                "❌ Ошибка записи операции в банк account_id=%s amount=%s reason=%s error=%s",
+                account_id,
+                amount,
+                reason,
+                e,
+            )
+            return False
+
     def log_bank_income(self, user_id: int, amount: float, reason: str) -> bool:
         try:
             if not self.supabase:
