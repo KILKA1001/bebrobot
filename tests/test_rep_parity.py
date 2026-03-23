@@ -6,12 +6,16 @@ from bot.systems.core_logic import get_help_embed
 from bot.systems.moderation_rep_ui import (
     REP_FLOW_STEPS,
     render_rep_apply_error_text,
+    render_rep_authority_deny_text,
     render_rep_cancelled_text,
     render_rep_duplicate_submit_text,
     render_rep_expired_text,
     render_rep_preview_text,
+    render_rep_preview_failed_text,
     render_rep_result_text,
+    render_rep_session_status_text,
     render_rep_start_text,
+    render_rep_target_not_found_text,
     render_rep_target_prompt_text,
     render_violator_notification_text,
 )
@@ -134,9 +138,13 @@ def test_rep_help_visibility_for_telegram_and_discord() -> None:
     assert "/rep" in telegram_help
     assert "reply/@username" in telegram_help
     assert "кнопками" in telegram_help
+    assert "preview" in telegram_help
+    assert "вручную вводить не нужно" in telegram_help
     assert "/rep" not in regular_embed.description
     assert "/rep" in veteran_embed.description
     assert "reply/mention" in veteran_embed.description
+    assert "preview" in veteran_embed.description
+    assert "без ручного выбора наказания" in veteran_embed.description
 
 
 def test_rep_service_keeps_same_escalation_payload_on_both_platforms() -> None:
@@ -203,6 +211,7 @@ def test_rep_renderers_include_preview_and_result_explanations() -> None:
     }
 
     preview_text = render_rep_preview_text(ui_payload)
+    compact_preview_text = render_rep_preview_text(ui_payload, compact=True)
     result_text = render_rep_result_text(ui_payload)
     violator_text = render_violator_notification_text(ui_payload)
 
@@ -210,6 +219,7 @@ def test_rep_renderers_include_preview_and_result_explanations() -> None:
     assert "Как это работает:" in preview_text
     assert "Будет применено сейчас: мут 6 ч. + предупреждение + штраф 10 баллов" in preview_text
     assert "Если наказание выглядит неверным" in preview_text
+    assert "Preview /rep" in compact_preview_text
     assert "Кейс: #501" in result_text
     assert "Историю кейсов" in result_text
     assert "Мут закончится" in violator_text
@@ -245,16 +255,32 @@ def test_rep_service_keeps_human_readable_authority_deny_text() -> None:
 
 def test_rep_shared_copy_keeps_same_user_explanations_for_both_platform_entries() -> None:
     start_text = render_rep_start_text(target_selection_hint="reply/mention или @username/id в зависимости от платформы")
+    compact_start_text = render_rep_start_text(
+        target_selection_hint="reply/@username",
+        compact=True,
+    )
     target_text = render_rep_target_prompt_text(
         target_selection_hint="reply/mention или @username/id в зависимости от платформы",
         target_label="Target",
     )
+    compact_target_text = render_rep_target_prompt_text(
+        target_selection_hint="reply/@username",
+        target_label="Target",
+        compact=True,
+    )
 
     assert "Наказание выбирается автоматически по типу нарушения и числу предупреждений" in start_text
+    assert "интерактивная команда" in start_text
+    assert "Основа расчёта" in start_text
+    assert "До применения всегда будет предпросмотр" in start_text
     assert "Следующий шаг эскалации бот показывает сразу в предпросмотре" in start_text
     assert "Если при применении случится ошибка, кейс не должен считаться подтверждённым" in start_text
     assert "Сейчас выбран: Target" in target_text
+    assert "Reply — самый быстрый способ" in target_text
     assert "reply/mention или @username/id" in target_text
+    assert "preview" in compact_start_text
+    assert "вводить вручную не нужно" in compact_start_text
+    assert "Сейчас: Target" in compact_target_text
 
 
 def test_rep_shared_copy_covers_cancel_duplicate_expired_and_error_states() -> None:
@@ -262,4 +288,7 @@ def test_rep_shared_copy_covers_cancel_duplicate_expired_and_error_states() -> N
     assert "Ничего не применено" in render_rep_expired_text()
     assert "Повторное применение пропущено" in render_rep_duplicate_submit_text()
     assert "Ничего не применено" in render_rep_apply_error_text()
-
+    assert "вашей роли" in render_rep_authority_deny_text()
+    assert "Не удалось определить нарушителя" in render_rep_target_not_found_text(target_selection_hint="reply")
+    assert "Не удалось собрать preview" in render_rep_preview_failed_text()
+    assert "Шаг 3/5" in render_rep_session_status_text(current_step=3)

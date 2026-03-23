@@ -768,7 +768,7 @@ def get_help_embed(category: str, visibility: HelpVisibilityContext | None = Non
         if _help_can_create_fines(visibility) or _help_can_use_rep(visibility):
             extra_lines = ["", "**Дополнительно доступно по вашему званию:**"]
             if _help_can_use_rep(visibility):
-                extra_lines.append("`/rep` — основная точка входа в модерацию: выбрать нарушителя через reply/mention, выбрать нарушение кнопками и до подтверждения увидеть авторасчёт наказания по типу нарушения, числу предупреждений и следующему шагу эскалации.")
+                extra_lines.append("`/rep` — основная точка входа в модерацию: выбрать нарушителя через reply/mention, выбрать нарушение кнопками, увидеть preview и итоговый авторасчёт по типу нарушения из БД и числу предупреждений; наказание вручную здесь не вводится.")
             if _help_can_create_fines(visibility):
                 extra_lines.append("`/fine @пользователь сумма тип [причина]` — legacy-команда совместимости для денежного штрафа; новые модерационные сценарии начинайте с `/rep`.")
             lines.extend(extra_lines)
@@ -816,7 +816,7 @@ def get_help_embed(category: str, visibility: HelpVisibilityContext | None = Non
             "Штрафной monthly-top выведен из основного продукта: вместо него используйте кейсы модерации и историю пользователя.",
         ]
         if _help_can_use_rep(visibility):
-            description.append("`/rep` — основная точка входа: reply/mention для цели, кнопки нарушения, авторасчёт наказания по типу нарушения и числу предупреждений, следующий шаг эскалации до подтверждения и итоговый кейс без ручного выбора наказания.")
+            description.append("`/rep` — основная точка входа: reply/mention для цели, кнопки нарушения, preview до применения, авторасчёт наказания по типу нарушения из БД и числу предупреждений, следующий шаг эскалации и итоговый кейс без ручного выбора наказания.")
         if _help_can_create_fines(visibility):
             description.append("`/fine @пользователь сумма тип [причина]` — legacy-команда совместимости для денежного штрафа; не используйте её как основной moderation flow.")
         if _help_can_manage_fines(visibility):
