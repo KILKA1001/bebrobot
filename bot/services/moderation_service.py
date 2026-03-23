@@ -14,16 +14,20 @@ logger = logging.getLogger(__name__)
 
 class ModerationService:
     """Account-first moderation service with shared preview/apply payloads for all transports."""
-    
-    BAN_WARN_THRESHOLD = 5
+
     ACTION_WARN = "warn"
     ACTION_MUTE = "mute"
     ACTION_BAN = "ban"
+    ACTION_KICK = "kick"
+    ACTION_DEMOTION = "demotion"
     ACTION_FINE_POINTS = "fine_points"
+    DEFAULT_WARN_TTL_MINUTES = 10 * 24 * 60
     _ACTION_PRIORITY = {
         ACTION_MUTE: 1,
-        ACTION_WARN: 2,
-        ACTION_BAN: 3,
+        ACTION_KICK: 2,
+        ACTION_WARN: 3,
+        ACTION_BAN: 4,
+        ACTION_DEMOTION: 5,
     }
     STATUS_PENDING = "pending"
     STATUS_APPLIED = "applied"
@@ -68,6 +72,9 @@ class ModerationService:
         if not db.supabase:
             logger.error("moderation select skipped: supabase is not initialized table=%s", table)
             return None
+        if hasattr(db, "tables") and table not in getattr(db, "tables", {}):
+            logger.warning("moderation select skipped missing fake table=%s filters=%s", table, filters)
+            return None
 
         try:
             query = db.supabase.table(table).select("*")
@@ -84,6 +91,9 @@ class ModerationService:
     def _select_many(table: str, **filters: Any) -> list[dict]:
         if not db.supabase:
             logger.error("moderation select many skipped: supabase is not initialized table=%s", table)
+            return []
+        if hasattr(db, "tables") and table not in getattr(db, "tables", {}):
+            logger.warning("moderation select many skipped missing fake table=%s filters=%s", table, filters)
             return []
 
         try:
@@ -144,6 +154,33 @@ class ModerationService:
         return str(value or "").strip().lower() in {"1", "true", "t", "yes", "y"}
 
     @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _parse_dt(raw_value: Any) -> datetime | None:
+        if not raw_value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(raw_value))
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        except ValueError:
+            logger.warning("moderation invalid datetime raw_value=%s", raw_value)
+            return None
+
+    @staticmethod
     def list_active_violation_types() -> list[dict[str, Any]]:
         rows = ModerationService._select_many("moderation_violation_types", is_active=True)
         rows.sort(key=lambda item: (str(item.get("title") or item.get("code") or "").casefold(), str(item.get("code") or "").casefold()))
@@ -165,8 +202,36 @@ class ModerationService:
 
     @staticmethod
     def _load_warn_state(account_id: str) -> dict[str, Any]:
-        state = ModerationService._select_single("moderation_warn_state", account_id=account_id)
-        return state or {}
+        projected_state = ModerationService._select_single("moderation_warn_state", account_id=account_id) or {}
+        now = datetime.now(timezone.utc)
+        cases = ModerationService._select_many("moderation_cases", account_id=account_id)
+        active_warn_count = 0
+        has_prior_warns = ModerationService._is_truthy(projected_state.get("has_prior_warns"))
+        for case_row in cases:
+            if str(case_row.get("status") or "").strip().lower() != ModerationService.STATUS_APPLIED:
+                continue
+            for action_row in ModerationService._select_many("moderation_actions", case_id=case_row.get("id")):
+                if str(action_row.get("action_type") or "").strip().lower() != ModerationService.ACTION_WARN:
+                    continue
+                has_prior_warns = True
+                ends_at = ModerationService._parse_dt(action_row.get("ends_at"))
+                if ends_at is not None and ends_at <= now:
+                    continue
+                active_warn_count += max(0, ModerationService._safe_int(action_row.get("value_numeric"), 1) or 1)
+
+        if not cases and projected_state:
+            active_warn_count = ModerationService._safe_int(
+                projected_state.get("active_warn_count", projected_state.get("warn_count", 0)),
+                active_warn_count,
+            )
+
+        mute_rows = ModerationService._select_many("moderation_mutes", account_id=account_id)
+        has_prior_mutes = bool(mute_rows) or ModerationService._is_truthy(projected_state.get("has_prior_mutes"))
+        state = dict(projected_state)
+        state["active_warn_count"] = active_warn_count
+        state["has_prior_warns"] = has_prior_warns
+        state["has_prior_mutes"] = has_prior_mutes
+        return state
 
     @staticmethod
     def _current_warn_count(state: dict[str, Any]) -> int:
@@ -176,6 +241,14 @@ class ModerationService:
         except (TypeError, ValueError):
             logger.warning("moderation invalid warn count state=%s", state)
             return 0
+
+    @staticmethod
+    def _has_clean_record(state: dict[str, Any]) -> bool:
+        return (
+            ModerationService._current_warn_count(state) == 0
+            and not ModerationService._is_truthy(state.get("has_prior_warns"))
+            and not ModerationService._is_truthy(state.get("has_prior_mutes"))
+        )
 
     @staticmethod
     def _rule_escalation_step(rule: dict[str, Any], warn_count_before: int) -> int:
@@ -223,6 +296,51 @@ class ModerationService:
             return None
 
     @staticmethod
+    def _rule_warn_increment(rule: dict[str, Any]) -> int:
+        raw_value = rule.get("warn_increment")
+        if raw_value is not None:
+            value = ModerationService._safe_int(raw_value, 0)
+            if value < 0:
+                logger.warning("moderation invalid negative warn_increment=%s rule_id=%s", raw_value, rule.get("id"))
+                return 0
+            return value
+        return 1 if ModerationService._is_truthy(rule.get("apply_warn")) else 0
+
+    @staticmethod
+    def _rule_warn_ttl_minutes(rule: dict[str, Any]) -> int:
+        raw_value = rule.get("warn_ttl_minutes")
+        if raw_value is None:
+            return ModerationService.DEFAULT_WARN_TTL_MINUTES
+        value = ModerationService._safe_int(raw_value, ModerationService.DEFAULT_WARN_TTL_MINUTES)
+        if value < 0:
+            logger.warning("moderation invalid negative warn_ttl_minutes=%s rule_id=%s", raw_value, rule.get("id"))
+            return ModerationService.DEFAULT_WARN_TTL_MINUTES
+        return value
+
+    @staticmethod
+    def _rule_ban_minutes(rule: dict[str, Any]) -> int:
+        raw_value = rule.get("ban_minutes")
+        if raw_value is None:
+            return 0
+        value = ModerationService._safe_int(raw_value, 0)
+        if value < 0:
+            logger.warning("moderation invalid negative ban_minutes=%s rule_id=%s", raw_value, rule.get("id"))
+            return 0
+        return value
+
+    @staticmethod
+    def _rule_has_temporary_ban(rule: dict[str, Any]) -> bool:
+        return ModerationService._rule_ban_minutes(rule) > 0
+
+    @staticmethod
+    def _rule_has_permanent_ban(rule: dict[str, Any]) -> bool:
+        return ModerationService._is_truthy(rule.get("apply_permanent_ban")) or ModerationService._is_truthy(rule.get("apply_ban"))
+
+    @staticmethod
+    def _rule_only_if_clean_record(rule: dict[str, Any]) -> bool:
+        return ModerationService._is_truthy(rule.get("only_if_clean_record"))
+
+    @staticmethod
     def _load_penalty_rules(violation_type_id: Any) -> list[dict]:
         rules = ModerationService._select_many(
             "moderation_penalty_rules",
@@ -239,7 +357,7 @@ class ModerationService:
         return rules
 
     @staticmethod
-    def _load_penalty_rule(violation_type_id: Any, warn_count_before: int) -> Optional[dict]:
+    def _load_penalty_rule(violation_type_id: Any, warn_count_before: int, *, is_clean_record: bool = False) -> Optional[dict]:
         rules = ModerationService._load_penalty_rules(violation_type_id)
         if not rules:
             logger.error(
@@ -249,12 +367,23 @@ class ModerationService:
             )
             return None
 
-        exact_match = next((rule for rule in rules if ModerationService._rule_matches(rule, warn_count_before)), None)
+        exact_rules = [rule for rule in rules if ModerationService._rule_matches(rule, warn_count_before)]
+        exact_match = None
+        if is_clean_record:
+            exact_match = next((rule for rule in exact_rules if ModerationService._rule_only_if_clean_record(rule)), None)
+        if not exact_match:
+            exact_match = next((rule for rule in exact_rules if not ModerationService._rule_only_if_clean_record(rule)), None)
         if exact_match:
             return exact_match
 
+        candidate_rules = [
+            rule
+            for rule in rules
+            if not ModerationService._rule_only_if_clean_record(rule) or is_clean_record
+        ] or rules
+
         fallback_rule = max(
-            rules,
+            candidate_rules,
             key=lambda row: ModerationService._rule_escalation_step(row, warn_count_before),
         )
         logger.warning(
@@ -364,22 +493,31 @@ class ModerationService:
     def _planned_actions(rule: dict[str, Any], warn_count_before: int) -> tuple[list[str], int, bool]:
         actions: list[str] = []
         warn_count_after = warn_count_before
-        if ModerationService._is_truthy(rule.get("apply_warn")):
+        warn_increment = ModerationService._rule_warn_increment(rule)
+        if warn_increment > 0:
             actions.append(ModerationService.ACTION_WARN)
-            warn_count_after += 1
+            warn_count_after += warn_increment
         mute_minutes = int(rule.get("mute_minutes") or 0)
         if mute_minutes > 0:
             actions.append(ModerationService.ACTION_MUTE)
+        if ModerationService._is_truthy(rule.get("apply_kick")):
+            actions.append(ModerationService.ACTION_KICK)
         fine_points = float(rule.get("fine_points") or 0)
         if fine_points > 0:
             actions.append(ModerationService.ACTION_FINE_POINTS)
-        should_ban = ModerationService._is_truthy(rule.get("apply_ban"))
+        should_ban = ModerationService._rule_has_temporary_ban(rule) or ModerationService._rule_has_permanent_ban(rule)
         if should_ban:
             actions.append(ModerationService.ACTION_BAN)
+        if ModerationService._is_truthy(rule.get("apply_demotion")):
+            actions.append(ModerationService.ACTION_DEMOTION)
         return actions, warn_count_after, should_ban
 
     @staticmethod
     def _required_authority_action(actions: list[str]) -> str:
+        if ModerationService.ACTION_DEMOTION in actions or ModerationService.ACTION_BAN in actions:
+            return ModerationService.ACTION_BAN
+        if ModerationService.ACTION_KICK in actions:
+            return ModerationService.ACTION_MUTE
         moderation_actions = [item for item in actions if item in ModerationService._ACTION_PRIORITY]
         if not moderation_actions:
             return ModerationService.ACTION_MUTE
@@ -391,15 +529,30 @@ class ModerationService:
         lines: list[str] = []
         mute_minutes = int(rule.get("mute_minutes") or 0)
         fine_points = float(rule.get("fine_points") or 0)
+        warn_increment = ModerationService._rule_warn_increment(rule)
+        warn_ttl_minutes = ModerationService._rule_warn_ttl_minutes(rule)
+        ban_minutes = ModerationService._rule_ban_minutes(rule)
         if ModerationService.ACTION_MUTE in actions and mute_minutes > 0:
             lines.append(f"мут {ModerationService._format_duration(mute_minutes)}")
-        if ModerationService.ACTION_WARN in actions:
-            lines.append("предупреждение")
+        if ModerationService.ACTION_WARN in actions and warn_increment > 0:
+            warn_title = "предупреждение" if warn_increment == 1 else f"предупреждения ×{warn_increment}"
+            if warn_ttl_minutes > 0:
+                warn_title = f"{warn_title} на {ModerationService._format_duration(warn_ttl_minutes)}"
+            lines.append(warn_title)
+        if ModerationService.ACTION_KICK in actions:
+            lines.append("кик")
         if ModerationService.ACTION_FINE_POINTS in actions and fine_points > 0:
             value = int(fine_points) if float(fine_points).is_integer() else fine_points
             lines.append(f"штраф {value} баллов")
         if ModerationService.ACTION_BAN in actions:
-            lines.append("бан")
+            if ModerationService._rule_has_permanent_ban(rule):
+                lines.append("перманентный бан")
+            elif ban_minutes > 0:
+                lines.append(f"бан {ModerationService._format_duration(ban_minutes)}")
+            else:
+                lines.append("бан")
+        if ModerationService.ACTION_DEMOTION in actions:
+            lines.append("понижение")
         return lines, warn_count_after, should_ban
 
     @staticmethod
@@ -426,12 +579,12 @@ class ModerationService:
     def _warn_limit_from_rules(rules: list[dict[str, Any]]) -> int | None:
         limits: list[int] = []
         for rule in rules:
-            if not ModerationService._is_truthy(rule.get("apply_ban")):
+            if not (ModerationService._rule_has_temporary_ban(rule) or ModerationService._rule_has_permanent_ban(rule)):
                 continue
             warn_before = ModerationService._rule_warn_count_before(rule)
             if warn_before is None:
                 warn_before = max(0, ModerationService._rule_escalation_step(rule, 0) - 1)
-            warn_after = warn_before + (1 if ModerationService._is_truthy(rule.get("apply_warn")) else 0)
+            warn_after = warn_before + ModerationService._rule_warn_increment(rule)
             limits.append(max(0, warn_after))
         return min(limits) if limits else None
 
@@ -482,9 +635,15 @@ class ModerationService:
         selected_actions, _, _ = ModerationService._planned_actions(rule, warn_count_before)
         required_authority_action = ModerationService._required_authority_action(selected_actions)
         selected_action_summary = ModerationService._join_human_actions(action_lines)
+        warn_increment = ModerationService._rule_warn_increment(rule)
+        warn_ttl_minutes = ModerationService._rule_warn_ttl_minutes(rule)
         mute_minutes = int(rule.get("mute_minutes") or 0)
+        ban_minutes = ModerationService._rule_ban_minutes(rule)
+        permanent_ban = ModerationService._rule_has_permanent_ban(rule)
         fine_points = float(rule.get("fine_points") or 0)
         how_it_works_lines = ModerationService._how_it_works_lines()
+        if ModerationService._rule_only_if_clean_record(rule):
+            how_it_works_lines.append("• Для этого кейса сработало мягкое правило первого чистого проступка: сначала только предупреждение.")
         preview_lines = [
             f"👤 Нарушитель: {target_subject.get('label') or target_subject.get('provider_user_id') or 'неизвестно'}",
             f"📘 Нарушение: {violation_title}",
@@ -514,6 +673,8 @@ class ModerationService:
             "warn_count_before_text": warn_before_text,
             "warn_count_after_text": warn_after_text,
             "ban_threshold": warn_limit,
+            "warn_increment": warn_increment,
+            "warn_ttl_minutes": warn_ttl_minutes,
             "selected_actions": selected_actions,
             "selected_action_summary": selected_action_summary,
             "next_step_text": next_step_text,
@@ -536,6 +697,11 @@ class ModerationService:
             "escalation_step": ModerationService._rule_escalation_step(rule, warn_count_before),
             "context": dict(context),
             "ban_applied": should_ban,
+            "permanent_ban": permanent_ban,
+            "ban_minutes": ban_minutes,
+            "kick_applied": ModerationService.ACTION_KICK in selected_actions,
+            "demotion_applied": ModerationService.ACTION_DEMOTION in selected_actions,
+            "soft_warning_only": ModerationService._rule_only_if_clean_record(rule),
             "mute_minutes": mute_minutes,
             "fine_points": fine_points,
         }
@@ -560,11 +726,25 @@ class ModerationService:
         violation_type = ModerationService._load_violation_type(violation_code)
         if not violation_type:
             return {"ok": False, "error_code": "violation_not_found", "message": "Тип нарушения не найден. Обнови экран и попробуй ещё раз."}
+        if str(violation_type.get("subject_scope") or "all").strip().lower() == "admins_only":
+            target_authority = AuthorityService.resolve_authority(target_subject["provider"], target_subject["provider_user_id"])
+            if target_authority.level < 30:
+                logger.warning(
+                    "moderation violation scope mismatch code=%s target_account_id=%s scope=admins_only",
+                    violation_type.get("code"),
+                    target_subject.get("account_id"),
+                )
+                return {
+                    "ok": False,
+                    "error_code": "scope_mismatch",
+                    "message": "Это нарушение применяется только к администраторам.",
+                }
 
         warn_state_before = ModerationService._load_warn_state(str(target_subject["account_id"]))
         warn_count_before = ModerationService._current_warn_count(warn_state_before)
+        is_clean_record = ModerationService._has_clean_record(warn_state_before)
         all_rules = ModerationService._load_penalty_rules(violation_type["id"])
-        rule = ModerationService._load_penalty_rule(violation_type["id"], warn_count_before)
+        rule = ModerationService._load_penalty_rule(violation_type["id"], warn_count_before, is_clean_record=is_clean_record)
         if not rule:
             return {"ok": False, "error_code": "rule_not_found", "message": "Не найдено правило наказания. Проверь логи и таблицу moderation_penalty_rules."}
 
@@ -601,7 +781,7 @@ class ModerationService:
                 "selected_actions": selected_actions,
             }
 
-        next_rule = ModerationService._load_penalty_rule(violation_type["id"], warn_count_before + 1)
+        next_rule = ModerationService._load_penalty_rule(violation_type["id"], warn_count_before + ModerationService._rule_warn_increment(rule))
         moderation_op_key = ModerationService._build_op_key(context, actor_subject, target_subject, str(violation_type.get("code") or violation_code))
         payload = ModerationService._build_ui_payload(
             provider=provider,
@@ -639,6 +819,8 @@ class ModerationService:
         warn_count_after: int,
         case_id: Any,
         updated_at: str,
+        has_prior_warns: bool = True,
+        has_prior_mutes: bool = False,
     ) -> dict[str, Any]:
         payload = {
             "account_id": account_id,
@@ -646,6 +828,9 @@ class ModerationService:
             "last_violation_type_id": violation_type_id,
             "last_case_id": case_id,
             "updated_at": updated_at,
+            "last_warn_refresh_at": updated_at,
+            "has_prior_warns": has_prior_warns,
+            "has_prior_mutes": has_prior_mutes,
         }
         existing_state = ModerationService._select_single("moderation_warn_state", account_id=account_id)
         if existing_state:
@@ -656,6 +841,25 @@ class ModerationService:
             )
             return updated_rows[0] if updated_rows else payload
 
+        inserted = ModerationService._insert_row("moderation_warn_state", payload)
+        return inserted or payload
+
+    @staticmethod
+    def _remember_mute_history(account_id: str, updated_at: str) -> dict[str, Any]:
+        existing_state = ModerationService._select_single("moderation_warn_state", account_id=account_id) or {}
+        payload = {
+            "account_id": account_id,
+            "active_warn_count": ModerationService._current_warn_count(existing_state),
+            "last_violation_type_id": existing_state.get("last_violation_type_id"),
+            "last_case_id": existing_state.get("last_case_id"),
+            "updated_at": updated_at,
+            "last_warn_refresh_at": updated_at,
+            "has_prior_warns": ModerationService._is_truthy(existing_state.get("has_prior_warns")),
+            "has_prior_mutes": True,
+        }
+        if existing_state:
+            updated_rows = ModerationService._update_rows("moderation_warn_state", {"account_id": account_id}, payload)
+            return updated_rows[0] if updated_rows else payload
         inserted = ModerationService._insert_row("moderation_warn_state", payload)
         return inserted or payload
 
@@ -808,6 +1012,8 @@ class ModerationService:
                 "last_case_id": warn_state_before.get("last_case_id"),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "rollback_op_key": op_key,
+                "has_prior_warns": ModerationService._is_truthy(warn_state_before.get("has_prior_warns")),
+                "has_prior_mutes": ModerationService._is_truthy(warn_state_before.get("has_prior_mutes")),
             }
             updated = ModerationService._update_rows("moderation_warn_state", {"account_id": target_subject["account_id"]}, warn_payload)
             if updated:
@@ -959,7 +1165,12 @@ class ModerationService:
         mute_row = None
         ban_row = None
         mute_until = None
+        ban_until = None
         fine_points = float(rule.get("fine_points") or 0)
+        warn_increment = ModerationService._rule_warn_increment(rule)
+        warn_ttl_minutes = ModerationService._rule_warn_ttl_minutes(rule)
+        ban_minutes = ModerationService._rule_ban_minutes(rule)
+        permanent_ban = ModerationService._rule_has_permanent_ban(rule)
         fine_applied = False
         warn_changed = False
         completed_steps: list[str] = []
@@ -996,13 +1207,15 @@ class ModerationService:
 
             if ModerationService.ACTION_WARN in selected_actions:
                 current_step = "create_moderation_actions"
+                warn_expires_at = (now + timedelta(minutes=warn_ttl_minutes)).isoformat() if warn_ttl_minutes > 0 else None
                 warn_action = ModerationService._create_action(
                     case_id=moderation_case["id"],
                     action_type=ModerationService.ACTION_WARN,
                     op_key=moderation_op_key,
-                    value_numeric=1,
+                    value_numeric=warn_increment,
                     value_text=rule.get("description_for_admin") or str(context.get("reason_text") or context.get("reason") or violation_code),
                     starts_at=created_at,
+                    ends_at=warn_expires_at,
                     created_at=created_at,
                 )
                 if not warn_action:
@@ -1017,6 +1230,8 @@ class ModerationService:
                     warn_count_after=warn_count_after,
                     case_id=moderation_case["id"],
                     updated_at=created_at,
+                    has_prior_warns=True,
+                    has_prior_mutes=ModerationService._is_truthy(warn_state_before.get("has_prior_mutes")),
                 )
                 if not warn_state:
                     raise RuntimeError("Не удалось обновить состояние предупреждений")
@@ -1056,11 +1271,13 @@ class ModerationService:
                 if not mute_action:
                     raise RuntimeError("Не удалось создать mute action")
                 applied_actions.append(mute_action)
+                ModerationService._remember_mute_history(target_subject["account_id"], created_at)
                 completed_steps.append(current_step)
 
             if ModerationService.ACTION_BAN in selected_actions:
                 current_step = "ban_apply"
                 ban_reason = str(context.get("reason_text") or context.get("reason") or rule.get("description_for_user") or violation_code)
+                ban_until = (now + timedelta(minutes=ban_minutes)).isoformat() if ban_minutes > 0 else None
                 ban_row = ModerationService._insert_row(
                     "moderation_bans",
                     {
@@ -1068,7 +1285,7 @@ class ModerationService:
                         "case_id": moderation_case["id"],
                         "reason_text": ban_reason,
                         "starts_at": created_at,
-                        "ends_at": None,
+                        "ends_at": ban_until,
                         "is_active": True,
                         "created_at": created_at,
                         "op_key": moderation_op_key,
@@ -1080,14 +1297,45 @@ class ModerationService:
                     case_id=moderation_case["id"],
                     action_type=ModerationService.ACTION_BAN,
                     op_key=moderation_op_key,
-                    value_numeric=None,
+                    value_numeric=ban_minutes if ban_minutes > 0 else None,
                     value_text=ban_reason,
                     starts_at=created_at,
+                    ends_at=ban_until,
                     created_at=created_at,
                 )
                 if not ban_action:
                     raise RuntimeError("Не удалось создать ban action")
                 applied_actions.append(ban_action)
+                completed_steps.append(current_step)
+
+            if ModerationService.ACTION_KICK in selected_actions:
+                current_step = "kick_apply"
+                kick_action = ModerationService._create_action(
+                    case_id=moderation_case["id"],
+                    action_type=ModerationService.ACTION_KICK,
+                    op_key=moderation_op_key,
+                    value_text=str(context.get("reason_text") or context.get("reason") or rule.get("description_for_user") or violation_code),
+                    starts_at=created_at,
+                    created_at=created_at,
+                )
+                if not kick_action:
+                    raise RuntimeError("Не удалось создать kick action")
+                applied_actions.append(kick_action)
+                completed_steps.append(current_step)
+
+            if ModerationService.ACTION_DEMOTION in selected_actions:
+                current_step = "demotion_apply"
+                demotion_action = ModerationService._create_action(
+                    case_id=moderation_case["id"],
+                    action_type=ModerationService.ACTION_DEMOTION,
+                    op_key=moderation_op_key,
+                    value_text=str(context.get("reason_text") or context.get("reason") or rule.get("description_for_user") or violation_code),
+                    starts_at=created_at,
+                    created_at=created_at,
+                )
+                if not demotion_action:
+                    raise RuntimeError("Не удалось создать demotion action")
+                applied_actions.append(demotion_action)
                 completed_steps.append(current_step)
 
             if ModerationService.ACTION_FINE_POINTS in selected_actions and fine_points > 0:
@@ -1129,6 +1377,7 @@ class ModerationService:
                     "warnings_after": warn_count_after,
                     "mute_until": mute_until,
                     "ban_applied": ModerationService.ACTION_BAN in selected_actions,
+                    "ban_until": ban_until,
                     "fine_points_applied": fine_points if fine_applied else 0,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 },
@@ -1214,14 +1463,30 @@ class ModerationService:
 
         result_lines = [f"Кейс #{moderation_case.get('id')} создан"]
         mute_minutes = int(rule.get("mute_minutes") or 0)
+        ban_minutes = ModerationService._rule_ban_minutes(rule)
+        permanent_ban = ModerationService._rule_has_permanent_ban(rule)
+        warn_increment = ModerationService._rule_warn_increment(rule)
+        warn_ttl_minutes = ModerationService._rule_warn_ttl_minutes(rule)
         if ModerationService.ACTION_MUTE in selected_actions and mute_minutes > 0:
             result_lines.append(f"Выдан мут на {ModerationService._format_duration(mute_minutes)}")
         if ModerationService.ACTION_WARN in selected_actions:
-            result_lines.append(f"Добавлено предупреждение: {ui_payload.get('warn_count_after_text') or warn_count_after}")
+            warn_label = "Добавлено предупреждение" if warn_increment == 1 else f"Добавлено предупреждений: {warn_increment}"
+            if warn_ttl_minutes > 0:
+                warn_label = f"{warn_label} (срок {ModerationService._format_duration(warn_ttl_minutes)})"
+            result_lines.append(f"{warn_label}. Активных теперь: {ui_payload.get('warn_count_after_text') or warn_count_after}")
+        if ModerationService.ACTION_KICK in selected_actions:
+            result_lines.append("Зафиксирован кик")
         if ModerationService.ACTION_FINE_POINTS in selected_actions and fine_points > 0:
             result_lines.append(f"Списан штраф {ModerationService._format_points_value(fine_points)} баллов в банк")
         if ModerationService.ACTION_BAN in selected_actions:
-            result_lines.append("Применён бан")
+            if permanent_ban:
+                result_lines.append("Применён перманентный бан")
+            elif ban_minutes > 0:
+                result_lines.append(f"Применён бан на {ModerationService._format_duration(ban_minutes)}")
+            else:
+                result_lines.append("Применён бан")
+        if ModerationService.ACTION_DEMOTION in selected_actions:
+            result_lines.append("Зафиксировано понижение")
         result_lines.append(next_step_text if (next_step_text := str(ui_payload.get("next_step_text") or "").strip()) else "")
         ui_payload["moderator_result_lines"] = [line for line in result_lines if line]
         ui_payload["moderator_result_text"] = "\n".join(ui_payload["moderator_result_lines"])
@@ -1233,6 +1498,10 @@ class ModerationService:
         ]
         if ModerationService.ACTION_MUTE in selected_actions and mute_minutes > 0:
             violator_lines.append(f"Мут закончится: {datetime.fromisoformat(mute_until).strftime('%d.%m.%Y %H:%M UTC') if mute_until else (now + timedelta(minutes=mute_minutes)).strftime('%d.%m.%Y %H:%M UTC')}")
+        if ModerationService.ACTION_BAN in selected_actions and not permanent_ban and ban_until:
+            violator_lines.append(f"Бан закончится: {datetime.fromisoformat(ban_until).strftime('%d.%m.%Y %H:%M UTC')}")
+        if ModerationService.ACTION_BAN in selected_actions and permanent_ban:
+            violator_lines.append("Бан является бессрочным.")
         violator_lines.append("Наказание выбирается автоматически по типу нарушения и числу предупреждений.")
         if next_step_text:
             violator_lines.append(next_step_text)
