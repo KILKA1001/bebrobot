@@ -622,6 +622,7 @@ class Database:
         is_undo: bool = False,
         author_account_id: Optional[str] = None,
         account_id: Optional[str] = None,
+        op_key: Optional[str] = None,
     ):
         """Добавляет действие с гарантированной синхронизацией."""
         self.ensure_core_data_loaded()
@@ -654,7 +655,7 @@ class Database:
                 logger.warning("Supabase client is not initialized.")
                 return False
 
-            op_key = str(uuid.uuid4())
+            op_key = str(op_key or uuid.uuid4())
             if not author_account_id:
                 author_account_id = self._get_account_id_for_discord_user(author_id)
             if not author_account_id:
@@ -882,7 +883,7 @@ class Database:
             traceback.print_exc()
             return False
 
-    def add_action_by_account(self, account_id: str, points: float, reason: str, author_account_id: str, is_undo: bool = False) -> bool:
+    def add_action_by_account(self, account_id: str, points: float, reason: str, author_account_id: str, is_undo: bool = False, op_key: Optional[str] = None) -> bool:
         """Строгий account-first метод для действий по баллам."""
         if not author_account_id:
             logger.error("❌ add_action_by_account aborted: empty author_account_id account_id=%s reason=%s", account_id, reason)
@@ -896,6 +897,7 @@ class Database:
             is_undo=is_undo,
             author_account_id=author_account_id,
             account_id=account_id,
+            op_key=op_key,
         )
 
     def _handle_response(self, response):

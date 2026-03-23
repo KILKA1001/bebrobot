@@ -43,6 +43,8 @@ class _TableOp:
     def execute(self):
         rows = self.fake_db.tables[self.table_name]
         if self._action == "insert":
+            if self.fake_db.fail_insert_for == self.table_name:
+                raise RuntimeError(f"forced insert failure for {self.table_name}")
             payload = dict(self._payload)
             if "id" not in payload:
                 self.fake_db.sequences[self.table_name] += 1
@@ -52,6 +54,8 @@ class _TableOp:
             return _Resp([dict(payload)])
 
         if self._action == "update":
+            if self.fake_db.fail_update_for == self.table_name:
+                raise RuntimeError(f"forced update failure for {self.table_name}")
             matched = []
             for row in rows:
                 if all(str(row.get(k)) == str(v) for k, v in self._filters):
@@ -138,17 +142,24 @@ class _FakeDb:
         self.operations = []
         self.metrics = []
         self.point_actions = []
+        self.fail_insert_for = None
+        self.fail_update_for = None
+        self.fail_point_action = False
 
     def _inc_metric(self, name):
         self.metrics.append(name)
 
-    def add_action_by_account(self, account_id, points, reason, author_account_id):
+    def add_action_by_account(self, account_id, points, reason, author_account_id, is_undo=False, op_key=None):
+        if self.fail_point_action:
+            return False
         self.point_actions.append(
             {
                 "account_id": account_id,
                 "points": points,
                 "reason": reason,
                 "author_account_id": author_account_id,
+                "is_undo": is_undo,
+                "op_key": op_key,
             }
         )
         return True
@@ -182,8 +193,11 @@ class ModerationServiceTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result["warn_count_before"], 0)
         self.assertEqual(result["warn_count_after"], 1)
+        self.assertEqual(result["status"], ModerationService.STATUS_APPLIED)
         self.assertFalse(result["ban_applied"])
+        self.assertIsNotNone(result["op_key"])
         self.assertEqual(self.fake_db.tables["moderation_cases"][0]["penalty_rule_id"], 10)
+        self.assertEqual(self.fake_db.tables["moderation_cases"][0]["status"], ModerationService.STATUS_APPLIED)
         self.assertEqual(self.fake_db.tables["moderation_warn_state"][0]["active_warn_count"], 1)
         self.assertEqual(len(self.fake_db.tables["moderation_mutes"]), 1)
         self.assertEqual(
@@ -191,6 +205,7 @@ class ModerationServiceTests(unittest.TestCase):
             ["warn", "mute", "fine_points"],
         )
         self.assertEqual(self.fake_db.point_actions[0]["points"], -3.0)
+        self.assertTrue(self.fake_db.point_actions[0]["op_key"].endswith(":fine_points"))
         self.assertIn("Flood links", self.fake_db.point_actions[0]["reason"])
 
     def test_apply_violation_bans_when_warn_threshold_reached(self):
@@ -211,6 +226,7 @@ class ModerationServiceTests(unittest.TestCase):
         self.assertEqual(result["warn_count_before"], 4)
         self.assertEqual(result["warn_count_after"], 5)
         self.assertTrue(result["ban_applied"])
+        self.assertEqual(result["status"], ModerationService.STATUS_APPLIED)
         self.assertEqual(self.fake_db.tables["moderation_warn_state"][0]["active_warn_count"], 5)
         self.assertEqual(len(self.fake_db.tables["moderation_bans"]), 1)
         self.assertEqual(
@@ -232,6 +248,68 @@ class ModerationServiceTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertIn("moderation resolve account failed", "\n".join(captured.output))
         self.assertIn("identity_resolve_errors", self.fake_db.metrics)
+
+    def test_commit_case_is_idempotent_for_same_op_key(self):
+        self.mock_resolve.side_effect = ["acc-actor", "acc-target", "acc-actor", "acc-target"]
+
+        first = ModerationService.commit_case(
+            provider="discord",
+            actor="111",
+            target="222",
+            violation_code="spam",
+            context={"moderation_op_key": "rep:fixed-op-key", "skip_authority": True},
+        )
+        second = ModerationService.commit_case(
+            provider="discord",
+            actor="111",
+            target="222",
+            violation_code="spam",
+            context={"moderation_op_key": "rep:fixed-op-key", "skip_authority": True},
+        )
+
+        self.assertTrue(first["ok"])
+        self.assertTrue(second["ok"])
+        self.assertEqual(first["case_id"], second["case_id"])
+        self.assertEqual(second["status"], ModerationService.STATUS_DUPLICATE)
+        self.assertEqual(len(self.fake_db.tables["moderation_cases"]), 1)
+
+    def test_commit_case_rolls_back_when_mute_apply_fails_after_warn_increment(self):
+        self.mock_resolve.side_effect = ["acc-actor", "acc-target"]
+        self.fake_db.fail_insert_for = "moderation_mutes"
+
+        result = ModerationService.commit_case(
+            provider="discord",
+            actor="111",
+            target="222",
+            violation_code="spam",
+            context={"moderation_op_key": "rep:rollback-op", "skip_authority": True},
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_code"], "mute_apply_failed")
+        self.assertIn(result["rollback_status"], {"rolled_back", "manual_review_required"})
+        self.assertEqual(self.fake_db.tables["moderation_warn_state"][0]["active_warn_count"], 0)
+        self.assertEqual(self.fake_db.tables["moderation_cases"][0]["status"], ModerationService.STATUS_ROLLED_BACK)
+        self.assertEqual(len(self.fake_db.point_actions), 0)
+
+    def test_commit_case_returns_error_if_fine_applied_but_case_finalize_fails(self):
+        self.mock_resolve.side_effect = ["acc-actor", "acc-target"]
+        self.fake_db.fail_update_for = "moderation_cases"
+
+        result = ModerationService.commit_case(
+            provider="discord",
+            actor="111",
+            target="222",
+            violation_code="spam",
+            context={"moderation_op_key": "rep:finalize-fail", "skip_authority": True},
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_code"], "finalize_case_failed")
+        self.assertEqual(self.fake_db.point_actions[0]["points"], -3.0)
+        self.assertEqual(self.fake_db.point_actions[1]["points"], 3.0)
+        self.assertTrue(self.fake_db.point_actions[1]["is_undo"])
+        self.assertEqual(result["rollback_status"], "manual_review_required")
 
 
 if __name__ == "__main__":

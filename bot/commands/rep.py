@@ -184,12 +184,19 @@ class _RepConfirmButton(discord.ui.Button):
             return
         view.state.is_applying = True
         try:
-            result = ModerationService.moderate(
+            preview_payload = view.state.preview or {}
+            preview_ui_payload = preview_payload.get("ui_payload") or {}
+            result = ModerationService.commit_case(
                 "discord",
                 _actor_subject(interaction.user),
                 view.state.target,
                 view.state.violation_code,
-                {"chat_id": view.state.chat_id, "source_platform": "discord", "reason_text": ""},
+                {
+                    "chat_id": view.state.chat_id,
+                    "source_platform": "discord",
+                    "reason_text": "",
+                    "moderation_op_key": preview_payload.get("moderation_op_key") or preview_ui_payload.get("moderation_op_key"),
+                },
             )
             if not result.get("ok"):
                 view.log_event(
@@ -199,7 +206,7 @@ class _RepConfirmButton(discord.ui.Button):
                     selected_actions=list(result.get("selected_actions") or []),
                 )
                 view.state.is_applying = False
-                await interaction.response.send_message(f"❌ {result.get('message') or _friendly_rep_error_text()}", ephemeral=True)
+                await interaction.response.send_message(f"❌ {result.get('user_message') or result.get('message') or _friendly_rep_error_text()}", ephemeral=True)
                 return
             view.state.result = result
             view.state.status_text = "Шаг 5 завершён: кейс создан, итог показан модератору, уведомление нарушителю отправляется отдельно."

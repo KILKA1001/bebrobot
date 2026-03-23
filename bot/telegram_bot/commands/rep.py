@@ -320,12 +320,18 @@ async def rep_callback(callback: CallbackQuery) -> None:
         pending.is_applying = True
         _PENDING_REP[callback.from_user.id] = pending
         try:
-            result = ModerationService.moderate(
+            preview_ui_payload = (preview.get("ui_payload") or {}) if isinstance(preview, dict) else {}
+            result = ModerationService.commit_case(
                 "telegram",
                 {"provider": "telegram", "provider_user_id": str(callback.from_user.id), "label": f"@{callback.from_user.username}" if callback.from_user.username else str(callback.from_user.id)},
                 target,
                 violation_code,
-                {"chat_id": callback.message.chat.id, "source_platform": "telegram", "reason_text": ""},
+                {
+                    "chat_id": callback.message.chat.id,
+                    "source_platform": "telegram",
+                    "reason_text": "",
+                    "moderation_op_key": (preview.get("moderation_op_key") if isinstance(preview, dict) else None) or preview_ui_payload.get("moderation_op_key"),
+                },
             )
             if not result.get("ok"):
                 pending.is_applying = False
@@ -344,7 +350,7 @@ async def rep_callback(callback: CallbackQuery) -> None:
                     case_id=None,
                     error_code=str(result.get("error_code") or "apply_failed"),
                 )
-                await callback.answer(result.get("message") or _friendly_rep_error_text(), show_alert=True)
+                await callback.answer(result.get("user_message") or result.get("message") or _friendly_rep_error_text(), show_alert=True)
                 return
             ui_payload = result["ui_payload"]
             pending.step = "done"
