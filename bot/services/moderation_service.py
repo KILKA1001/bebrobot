@@ -14,7 +14,8 @@ logger = logging.getLogger(__name__)
 
 class ModerationService:
     """Account-first moderation service with shared preview/apply payloads for all transports."""
-
+    
+    BAN_WARN_THRESHOLD = 5
     ACTION_WARN = "warn"
     ACTION_MUTE = "mute"
     ACTION_BAN = "ban"
