@@ -9,6 +9,7 @@ from .ai_chat import router as ai_chat_router
 from .roles_admin import router as roles_admin_router
 from .guiy_owner import router as guiy_owner_router
 from .rep import router as rep_router
+from .fines import router as fines_router
 from .modstatus import router as modstatus_router
 
 
@@ -29,6 +30,7 @@ def get_commands_router() -> Router:
     router.include_router(guiy_owner_router)
     router.include_router(rep_router)
     router.include_router(modstatus_router)
+    router.include_router(fines_router)
     router.include_router(ai_chat_router)
     _COMMANDS_ROUTER = router
     logger.info("telegram commands router initialized")

@@ -626,31 +626,81 @@ async def remind_fines(bot):
             continue
         try:
             due_date = datetime.fromisoformat(due_raw)
-            delta = (due_date - now).days
-            if 0 < delta <= 3:
-                account_id = fine.get("account_id")
-                if not account_id:
-                    logger.warning("remind_fines skip: fine_id=%s without account_id", fine.get("id"))
-                    continue
-                target_user_id = db._get_discord_user_for_account_id(account_id)
-                if target_user_id is None:
-                    logger.warning("remind_fines skip: unresolved discord user for account_id=%s fine_id=%s", account_id, fine.get("id"))
-                    continue
-                await ModerationNotificationsService.dispatch_notification(
-                    runtime_bot=bot,
-                    provider="discord",
-                    target_account_id=account_id,
-                    event_type=ModerationNotificationsService.EVENT_FINE_DUE_SOON,
-                    message_text=ModerationNotificationsService.build_fine_text(
-                        reason=str(fine.get("reason") or "Модерационный штраф"),
-                        due_date=format_moscow_date(due_date),
-                        amount_text=f"{fine.get('amount')} баллов",
-                        status_hint="/myfines",
-                    ),
-                    fine_id=fine.get("id"),
-                    source_chat_id=None,
-                    requires_chat_delivery=False,
-                    allow_dm_delivery=True,
+            seconds_left = (due_date - now).total_seconds()
+            stage = None
+            if seconds_left <= 0:
+                stage = "overdue"
+            elif seconds_left <= 86400:
+                stage = "due_1d"
+            elif seconds_left <= 3 * 86400:
+                stage = "due_3d"
+            if not stage:
+                continue
+            if db.is_fine_reminder_sent(fine, stage):
+                continue
+
+            account_id = fine.get("account_id")
+            if not account_id:
+                logger.warning("remind_fines skip: fine_id=%s without account_id stage=%s", fine.get("id"), stage)
+                continue
+            target_user_id = db._get_discord_user_for_account_id(account_id)
+            if target_user_id is None:
+                logger.warning(
+                    "remind_fines skip: unresolved discord user for account_id=%s fine_id=%s stage=%s",
+                    account_id,
+                    fine.get("id"),
+                    stage,
+                )
+                continue
+            user = discord.utils.get(bot.get_all_members(), id=target_user_id)
+            if not user:
+                logger.warning(
+                    "remind_fines skip: discord member not found in cache account_id=%s discord_user_id=%s fine_id=%s stage=%s",
+                    account_id,
+                    target_user_id,
+                    fine.get("id"),
+                    stage,
+                )
+                continue
+
+            if stage == "overdue":
+                message_text = (
+                    f"⚠️ Штраф #{fine['id']} просрочен с {format_moscow_date(due_date)}.\n"
+                    "Проверьте детали и погасите его как можно быстрее через `/myfines`.\n"
+                    "Если считаете штраф ошибочным — обратитесь к модератору."
+                )
+            else:
+                days_hint = "1 дня" if stage == "due_1d" else "3 дней"
+                message_text = (
+                    f"⏰ Напоминание: штраф #{fine['id']} нужно оплатить до {format_moscow_date(due_date)} "
+                    f"(меньше {days_hint}).\n"
+                    "Откройте `/myfines`, чтобы посмотреть детали и оплатить штраф."
+                )
+            try:
+                await safe_send(user, message_text)
+            except discord.Forbidden:
+                logger.warning(
+                    "remind_fines delivery forbidden discord_user_id=%s fine_id=%s stage=%s",
+                    target_user_id,
+                    fine.get("id"),
+                    stage,
+                )
+                continue
+            except Exception:
+                logger.exception(
+                    "remind_fines delivery failed discord_user_id=%s fine_id=%s stage=%s",
+                    target_user_id,
+                    fine.get("id"),
+                    stage,
+                )
+                continue
+
+            if not db.mark_fine_reminder_sent(int(fine.get("id")), stage):
+                logger.error(
+                    "remind_fines failed to persist sent marker fine_id=%s stage=%s discord_user_id=%s",
+                    fine.get("id"),
+                    stage,
+                    target_user_id,
                 )
         except Exception:
             logger.exception("remind_fines processing failed fine_id=%s", fine.get("id"))
