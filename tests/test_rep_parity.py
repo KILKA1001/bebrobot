@@ -141,7 +141,7 @@ def test_rep_help_visibility_for_telegram_and_discord() -> None:
     assert "preview" in telegram_help
     assert "вручную вводить не нужно" in telegram_help
     assert "Рейтинг должников больше не используется" in telegram_help
-    assert "/myfines" in telegram_help
+    assert "кнопкой «Оплатить legacy-штраф»" in telegram_help
     assert "Рейтинг должников выведен из основного продукта" in regular_embed.description
     assert "/rep" in veteran_embed.description
     assert "reply/mention" in veteran_embed.description

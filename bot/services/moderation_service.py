@@ -47,7 +47,7 @@ class ModerationService:
     )
     MODSTATUS_PAYMENT_HINT = (
         "Если штраф уже удержан автоматически — дополнительная оплата не нужна. "
-        "Если штраф ждёт оплаты или частично оплачен, оплатите его через /myfines на том же общем аккаунте."
+        "Если штраф ждёт оплаты или частично оплачен, оплатите его кнопкой в /modstatus на том же общем аккаунте."
     )
 
     @staticmethod
@@ -535,7 +535,7 @@ class ModerationService:
                     lines.append(
                         f"• Денежный штраф #{item.get('fine_id')} — осталось {ModerationService._format_points_value(item.get('value') or 0)} баллов, срок {due_text}, статус: {status}."
                     )
-                    lines.append("  ↳ Это legacy-штраф переходного периода: оплата вручную через экран legacy-штрафов.")
+                    lines.append("  ↳ Это legacy-штраф переходного периода: оплата вручную кнопкой в /modstatus.")
                 elif kind == "case_fine":
                     due = ModerationService._parse_dt(item.get("ends_at"))
                     due_text = due.strftime('%d.%m.%Y') if due else "дата не указана"

@@ -83,7 +83,7 @@ async def fine(
                 description=(
                     f"{member.mention}, вам назначен штраф.\n\n"
                     "ℹ️ Чтобы просмотреть и оплатить его, "
-                    "используйте команду `/myfines`"
+                    "откройте `/modstatus` и нажмите кнопку оплаты legacy-штрафа"
                 ),
                 color=discord.Color.red(),
             )
@@ -123,21 +123,24 @@ async def fine(
         await send_temp(ctx, "❌ Введите корректную сумму.")
 
 
-@bot.hybrid_command(
-    name="myfines", description="Посмотреть и оплатить свои legacy-штрафы"
-)
-async def myfines(ctx):
-    user_id = ctx.author.id
-    fines = FinesService.get_user_fines(user_id)
+def get_legacy_fines_for_discord_user(user_id: int) -> list[dict]:
+    return FinesService.get_user_fines(user_id)
 
+
+async def send_legacy_fines_for_discord_destination(
+    *,
+    user_id: int,
+    send_embed,
+) -> bool:
+    fines = get_legacy_fines_for_discord_user(user_id)
     if not fines:
-        await send_temp(ctx, "✅ У вас нет активных legacy-штрафов. Для новой модерации используйте `/rep`.")
-        return
+        return False
 
     for fine in fines:
         embed = build_fine_embed(fine)
         view = FineView(fine)
-        await send_temp(ctx, embed=embed, view=view)
+        await send_embed(embed=embed, view=view)
+    return True
 
 
 async def all_fines(ctx):
@@ -346,7 +349,7 @@ async def topfines(ctx):
         name="Что использовать вместо этого",
         value=(
             "• `/rep` — открыть кейс модерации, увидеть автонаказание, предупреждения, активное наказание и следующий шаг эскалации.\n"
-            "• `/myfines` — посмотреть свои активные legacy-денежные штрафы.\n"
+            "• `/modstatus` — посмотреть активные наказания и открыть кнопку оплаты legacy-штрафов.\n"
             "• `/finehistory [@пользователь] [страница]` — открыть историю legacy-штрафов на переходный период.\n"
             "• В кейсе /rep отдельно видно, был ли списан штраф в банк, какое наказание активно сейчас и что будет дальше по эскалации."
         ),

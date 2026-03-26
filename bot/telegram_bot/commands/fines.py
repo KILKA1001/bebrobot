@@ -3,12 +3,10 @@ from __future__ import annotations
 import logging
 
 from aiogram import F, Router
-from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.data import db
 from bot.services import AccountsService, FinesService
-from bot.telegram_bot.identity import persist_telegram_identity_from_user
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -49,16 +47,12 @@ def _pay_keyboard(fine_id: int) -> InlineKeyboardMarkup:
     )
 
 
-@router.message(Command("myfines"))
-async def myfines_command(message: Message) -> None:
-    if not message.from_user:
-        return
-    persist_telegram_identity_from_user(message.from_user)
-    actor_id = str(message.from_user.id)
+async def send_legacy_fines_panel(*, message: Message, telegram_user_id: int) -> None:
+    actor_id = str(telegram_user_id)
     account_id = AccountsService.resolve_account_id("telegram", actor_id)
     if not account_id:
-        logger.warning("telegram myfines account unresolved actor_id=%s chat_id=%s", actor_id, message.chat.id)
-        await message.answer("❌ Сначала привяжите общий аккаунт, затем повторите /myfines.")
+        logger.warning("telegram legacy fines panel account unresolved actor_id=%s chat_id=%s", actor_id, message.chat.id)
+        await message.answer("❌ Сначала привяжите общий аккаунт, затем повторите /modstatus.")
         return
 
     fines = FinesService.get_user_fines_by_account(str(account_id), active_only=True)
@@ -70,13 +64,14 @@ async def myfines_command(message: Message) -> None:
         return
 
     await message.answer(
-        "💳 Ваши legacy-штрафы. Выберите кнопку оплаты под нужным штрафом.\n"
+        "💳 Панель оплаты legacy-штрафов из /modstatus.\n"
+        "Выберите кнопку оплаты под нужным штрафом.\n"
         "Если штраф уже списан автоматически в кейсе /rep, повторно платить не нужно."
     )
     for fine in fines:
         fine_id = int(fine.get("id") or 0)
         if fine_id <= 0:
-            logger.warning("telegram myfines skip invalid fine id actor_id=%s fine=%s", actor_id, fine)
+            logger.warning("telegram legacy fines panel skip invalid fine id actor_id=%s fine=%s", actor_id, fine)
             continue
         await message.answer(_format_fine_line(fine), reply_markup=_pay_keyboard(fine_id))
 

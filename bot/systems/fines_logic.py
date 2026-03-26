@@ -666,7 +666,7 @@ async def remind_fines(bot):
             if stage == "overdue":
                 message_text = (
                     f"⚠️ Штраф #{fine['id']} просрочен с {format_moscow_date(due_date)}.\n"
-                    "Проверьте детали и погасите его как можно быстрее через `/myfines`.\n"
+                    "Проверьте детали в `/modstatus` и нажмите кнопку оплаты legacy-штрафа.\n"
                     "Если считаете штраф ошибочным — обратитесь к модератору."
                 )
             else:
@@ -674,7 +674,7 @@ async def remind_fines(bot):
                 message_text = (
                     f"⏰ Напоминание: штраф #{fine['id']} нужно оплатить до {format_moscow_date(due_date)} "
                     f"(меньше {days_hint}).\n"
-                    "Откройте `/myfines`, чтобы посмотреть детали и оплатить штраф."
+                    "Откройте `/modstatus` и используйте кнопку оплаты legacy-штрафа."
                 )
             try:
                 await safe_send(user, message_text)
