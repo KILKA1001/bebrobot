@@ -4,16 +4,19 @@ import logging
 from typing import Any
 
 from aiogram import Router
+from aiogram import F
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.services import AccountsService, AuthorityService, ModerationService
+from bot.telegram_bot.commands.fines import send_legacy_fines_panel
 from bot.telegram_bot.commands.roles_admin import _resolve_telegram_target
 from bot.telegram_bot.identity import persist_telegram_identity_from_user
 
 logger = logging.getLogger(__name__)
 router = Router()
 _PAYMENT_HINT = ModerationService.MODSTATUS_PAYMENT_HINT
+_OPEN_LEGACY_FINES_CALLBACK = "modstatus:open_legacy_fines"
 
 
 @router.message(Command("modstatus"))
@@ -113,7 +116,17 @@ async def modstatus_command(message: Message) -> None:
             await message.answer(f"❌ {snapshot.get('message') or 'Не удалось загрузить модерационный статус.'}")
             return
 
-        await message.answer(ModerationService.render_user_moderation_snapshot(snapshot, payment_hint=_PAYMENT_HINT))
+        reply_markup = None
+        if snapshot.get("target_is_self") and list(snapshot.get("active_fines") or []):
+            reply_markup = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="💳 Оплатить legacy-штраф", callback_data=_OPEN_LEGACY_FINES_CALLBACK)]
+                ]
+            )
+        await message.answer(
+            ModerationService.render_user_moderation_snapshot(snapshot, payment_hint=_PAYMENT_HINT),
+            reply_markup=reply_markup,
+        )
     except Exception:
         logger.exception(
             "telegram modstatus command failed provider=%s chat_id=%s viewer_id=%s target_id=%s account_id=%s",
@@ -124,3 +137,20 @@ async def modstatus_command(message: Message) -> None:
             (target_subject or {}).get("account_id") if target_subject else viewer_account_id,
         )
         await message.answer("❌ Не удалось загрузить модерационный статус. Подробности записаны в консоль.")
+
+
+@router.callback_query(F.data == _OPEN_LEGACY_FINES_CALLBACK)
+async def modstatus_open_legacy_fines(callback: CallbackQuery) -> None:
+    if not callback.from_user or not callback.message:
+        return
+    try:
+        await send_legacy_fines_panel(message=callback.message, telegram_user_id=int(callback.from_user.id))
+        await callback.answer()
+    except Exception:
+        logger.exception(
+            "telegram modstatus open legacy fines failed provider=%s chat_id=%s viewer_id=%s",
+            "telegram",
+            callback.message.chat.id,
+            callback.from_user.id,
+        )
+        await callback.answer("❌ Не удалось открыть панель оплаты. Подробности в консоли.", show_alert=True)

@@ -41,6 +41,8 @@ def test_discord_help_embed_shows_veteran_fine_but_never_owner_command() -> None
     visibility = SimpleNamespace(level=30, titles=("Ветеран города",), is_administrator=False)
     embed = get_help_embed("fines", visibility=visibility)
 
-    assert "/fine @пользователь сумма тип [причина]" in embed.description
+    assert "/modstatus" in embed.description
+    assert "/rep" in embed.description
+    assert "/fine @пользователь сумма тип [причина]" not in embed.description
     assert "/cancel_fine" not in embed.description
     assert "guiy_owner" not in embed.description

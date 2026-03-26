@@ -761,26 +761,16 @@ def get_help_embed(category: str, visibility: HelpVisibilityContext | None = Non
     elif category == "fines":
         lines = [
             "Рейтинг должников больше не используется. Теперь свой активный статус удобнее проверять через `/modstatus`, а модерация кейсов начинается с `/rep`.",
-            "`/myfines` — ваши активные legacy-штрафы, если старые денежные штрафы ещё нужны на переходный период.",
-            "`/finehistory [@пользователь] [страница]` — история legacy-штрафов, чтобы не потерять старые записи до полной миграции.",
-            "`/finedetails ID` — детали конкретного legacy-штрафа.",
-            "Активные наказания, предупреждения, последние кейсы и legacy-штрафы смотрите через `/modstatus`; назначение новых кейсов остаётся в `/rep`.",
+            "`/modstatus` — единый экран чтения: активные наказания, предупреждения, последние кейсы и legacy-штрафы.",
+            "Оплата legacy-штрафа запускается кнопкой в `/modstatus` (если штраф не списан автоматически в кейсе).",
+            "Назначение новых кейсов и санкций делается только через `/rep`.",
+            "Чужой профиль смотрите через reply, чтобы не путаться с целями и случайными lookup.",
         ]
         extra_lines = ["", "**Дополнительно доступно по вашему званию:**", "`/modstatus` — показать свои активные наказания, предупреждения, последние кейсы и legacy-штрафы; чужой профиль в сервере открывается только через reply, а в личке — только модератору по явному lookup."]
         if _help_can_create_fines(visibility) or _help_can_use_rep(visibility):
             if _help_can_use_rep(visibility):
                 extra_lines.append("`/rep` — основная точка входа в модерацию: выбрать нарушителя через reply/mention, выбрать нарушение кнопками, увидеть preview, активное наказание и итоговый авторасчёт по типу нарушения из БД и числу предупреждений; себя выбрать нельзя, а для равного/старшего звания кейс будет отклонён.")
-            if _help_can_create_fines(visibility):
-                extra_lines.append("`/fine @пользователь сумма тип [причина]` — legacy-команда совместимости для денежного штрафа; новые модерационные сценарии начинайте с `/rep`.")
-        lines.extend(extra_lines)
-        if _help_can_manage_fines(visibility):
-            lines.extend(
-                [
-                    "`/editfine ID сумма тип дата причина` — изменить параметры legacy-штрафа.",
-                    "`/cancel_fine ID` — отменить legacy-штраф.",
-                    "`/allfines` — список всех активных legacy-штрафов на переходный период.",
-                ]
-            )
+            lines.extend(extra_lines)
         embed.title = "📉 Штрафы и модерация"
         embed.description = "\n".join(lines)
     elif category == "misc":
@@ -819,17 +809,7 @@ def get_help_embed(category: str, visibility: HelpVisibilityContext | None = Non
         ]
         if _help_can_use_rep(visibility):
             description.append("`/rep` — основная точка входа: reply/mention для цели, кнопки нарушения, preview до применения, авторасчёт наказания по типу нарушения из БД и числу предупреждений, активное наказание, следующий шаг эскалации и итоговый кейс без ручного выбора наказания; себя и равное/старшее звание наказать нельзя.")
-        if _help_can_create_fines(visibility):
-            description.append("`/fine @пользователь сумма тип [причина]` — legacy-команда совместимости для денежного штрафа; не используйте её как основной moderation flow.")
-        if _help_can_manage_fines(visibility):
-            description.extend(
-                [
-                    "`/editfine ID сумма тип дата причина` — изменить параметры legacy-штрафа.",
-                    "`/cancel_fine ID` — отменить legacy-штраф.",
-                    "`/allfines` — список всех активных legacy-штрафов на переходный период.",
-                    "Историю кейсов, активные наказания, предупреждения, снятия и отмен ищите в moderation cases, а не в рейтинге должников.",
-                ]
-            )
+        description.append("Историю кейсов, активные наказания, предупреждения, снятия и отмен ищите в moderation cases и в `/modstatus`, а не в рейтинге должников.")
         embed.description = "\n".join(description)
     elif category == "admin_bank":
         embed.title = "🏦 Мод-команды: банк"

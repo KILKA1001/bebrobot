@@ -38,7 +38,6 @@ def has_manage_permission(ctx):
     return AuthorityService.has_command_permission("discord", str(ctx.author.id), "fine_manage")
 
 
-@bot.hybrid_command(name="fine", description="Назначить штраф пользователю")
 async def fine(
     ctx,
     member: discord.Member,
@@ -84,7 +83,7 @@ async def fine(
                 description=(
                     f"{member.mention}, вам назначен штраф.\n\n"
                     "ℹ️ Чтобы просмотреть и оплатить его, "
-                    "используйте команду `/myfines`"
+                    "откройте `/modstatus` и нажмите кнопку оплаты legacy-штрафа"
                 ),
                 color=discord.Color.red(),
             )
@@ -124,26 +123,26 @@ async def fine(
         await send_temp(ctx, "❌ Введите корректную сумму.")
 
 
-@bot.hybrid_command(
-    name="myfines", description="Посмотреть и оплатить свои legacy-штрафы"
-)
-async def myfines(ctx):
-    user_id = ctx.author.id
-    fines = FinesService.get_user_fines(user_id)
+def get_legacy_fines_for_discord_user(user_id: int) -> list[dict]:
+    return FinesService.get_user_fines(user_id)
 
+
+async def send_legacy_fines_for_discord_destination(
+    *,
+    user_id: int,
+    send_embed,
+) -> bool:
+    fines = get_legacy_fines_for_discord_user(user_id)
     if not fines:
-        await send_temp(ctx, "✅ У вас нет активных legacy-штрафов. Для новой модерации используйте `/rep`.")
-        return
+        return False
 
     for fine in fines:
         embed = build_fine_embed(fine)
         view = FineView(fine)
-        await send_temp(ctx, embed=embed, view=view)
+        await send_embed(embed=embed, view=view)
+    return True
 
 
-@bot.hybrid_command(
-    name="allfines", description="Список всех неоплаченных штрафов"
-)
 async def all_fines(ctx):
     if not has_manage_permission(ctx):
         await send_temp(ctx, "❌ Недостаточно полномочий для просмотра всех штрафов.")
@@ -162,7 +161,6 @@ async def all_fines(ctx):
     await send_temp(ctx, embed=view.get_page_embed(), view=view)
 
 
-@bot.hybrid_command(name="finedetails", description="Подробности legacy-штрафа по ID")
 async def finedetails(ctx, fine_id: int):
     fine = db.get_fine_by_id(fine_id)
     if not fine:
@@ -183,7 +181,6 @@ async def finedetails(ctx, fine_id: int):
     await send_temp(ctx, embed=embed)
 
 
-@bot.hybrid_command(name="editfine", description="Изменить параметры штрафа")
 async def editfine(
     ctx,
     fine_id: int,
@@ -234,7 +231,6 @@ async def editfine(
     await send_temp(ctx, f"✏️ Штраф #{fine_id} успешно обновлён.")
 
 
-@bot.hybrid_command(name="cancel_fine", description="Отменить штраф по ID")
 async def cancel_fine(ctx, fine_id: int):
     if not has_manage_permission(ctx):
         await send_temp(ctx, "❌ Недостаточно полномочий для отмены штрафов.")
@@ -273,9 +269,6 @@ async def cancel_fine(ctx, fine_id: int):
     await send_temp(ctx, f"❌ Штраф #{fine_id} успешно отменён.")
 
 
-@bot.hybrid_command(
-    name="finehistory", description="История legacy-штрафов пользователя"
-)
 async def finehistory(
     ctx, member: Optional[discord.Member] = None, page: int = 1
 ):
@@ -338,9 +331,6 @@ async def finehistory(
     await send_temp(ctx, embed=embed)
 
 
-@bot.hybrid_command(
-    name="topfines", description="Legacy-режим: перенаправление со старого штрафного топа"
-)
 async def topfines(ctx):
     logger.warning(
         "legacy topfines command invoked actor_id=%s guild_id=%s reason=topfines_retired",
@@ -359,7 +349,7 @@ async def topfines(ctx):
         name="Что использовать вместо этого",
         value=(
             "• `/rep` — открыть кейс модерации, увидеть автонаказание, предупреждения, активное наказание и следующий шаг эскалации.\n"
-            "• `/myfines` — посмотреть свои активные legacy-денежные штрафы.\n"
+            "• `/modstatus` — посмотреть активные наказания и открыть кнопку оплаты legacy-штрафов.\n"
             "• `/finehistory [@пользователь] [страница]` — открыть историю legacy-штрафов на переходный период.\n"
             "• В кейсе /rep отдельно видно, был ли списан штраф в банк, какое наказание активно сейчас и что будет дальше по эскалации."
         ),

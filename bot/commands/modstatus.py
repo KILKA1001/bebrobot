@@ -7,12 +7,37 @@ import discord
 from discord.ext import commands
 
 from bot.commands.base import bot
+from bot.commands.fines import send_legacy_fines_for_discord_destination
 from bot.commands.roles_admin import _resolve_discord_target
 from bot.services import AccountsService, AuthorityService, ModerationService
 from bot.utils import send_temp
 
 logger = logging.getLogger(__name__)
 _PAYMENT_HINT = ModerationService.MODSTATUS_PAYMENT_HINT
+
+
+class _ModstatusFineView(discord.ui.View):
+    def __init__(self, *, actor_id: int):
+        super().__init__(timeout=180)
+        self.actor_id = actor_id
+
+    @discord.ui.button(label="💳 Оплатить legacy-штраф", style=discord.ButtonStyle.green)
+    async def open_fines(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        if interaction.user.id != self.actor_id:
+            await interaction.response.send_message("❌ Эта кнопка открыта для другого пользователя.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            sent = await send_legacy_fines_for_discord_destination(
+                user_id=interaction.user.id,
+                send_embed=lambda **kwargs: interaction.followup.send(ephemeral=True, **kwargs),
+            )
+        except Exception:
+            logger.exception("modstatus legacy fines open failed actor_id=%s", interaction.user.id)
+            await interaction.followup.send("❌ Не удалось открыть список штрафов. Подробности в консоли.", ephemeral=True)
+            return
+        if not sent:
+            await interaction.followup.send("✅ У вас нет активных legacy-штрафов.", ephemeral=True)
 
 
 async def _resolve_reply_message(ctx: commands.Context) -> discord.Message | None:
@@ -111,9 +136,13 @@ async def modstatus(ctx: commands.Context, *, target: str | None = None) -> None
             await send_temp(ctx, f"❌ {snapshot.get('message') or 'Не удалось загрузить модерационный статус.'}")
             return
 
+        view = None
+        if snapshot.get("target_is_self") and list(snapshot.get("active_fines") or []):
+            view = _ModstatusFineView(actor_id=ctx.author.id)
         await send_temp(
             ctx,
             ModerationService.render_user_moderation_snapshot(snapshot, payment_hint=_PAYMENT_HINT),
+            view=view,
             delete_after=None,
         )
     except Exception:
