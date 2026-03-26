@@ -40,13 +40,7 @@ This matrix reflects the current command parity between Discord and Telegram imp
 | Points | `/bankspend` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Points | `/bankhistory` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Points | `/balance` | `/balance [reply|id]` | partial | Read-only balance view is available in Telegram; Discord supports optional member argument via mention. |
-| Fines | `/fine` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
-| Fines | `/myfines` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
-| Fines | `/allfines` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
-| Fines | `/finedetails` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
-| Fines | `/editfine` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
-| Fines | `/cancel_fine` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
-| Fines | `/finehistory` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
+| Fines (legacy payment only) | `/myfines` | — | partial | Transitional payment UI for legacy fines remains Discord-only; user-facing read/status now goes through `/modstatus`, and new moderation actions go through `/rep`. |
 | Tournament | `/createtournament` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Tournament | `/tournamentadmin` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Tournament | `/managetournament` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |

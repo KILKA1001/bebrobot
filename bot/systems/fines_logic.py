@@ -28,6 +28,7 @@ latest_report_message_id = None
 logger = logging.getLogger(__name__)
 PROCESSING_TEXT = "⏳ Обрабатываю…"
 PAYMENT_RECORDING_TEXT = "💳 Платёж записывается…"
+_REMINDER_TRACKING_WARNING_LOGGED = False
 
 
 def _log_db_duration(
@@ -606,7 +607,16 @@ async def debt_repayment_loop(bot):
 
 # 🔔 Напоминания перед сроком
 async def remind_fines(bot):
+    global _REMINDER_TRACKING_WARNING_LOGGED
     await bot.wait_until_ready()
+    if not getattr(db, "has_fine_reminder_tracking", False):
+        if not _REMINDER_TRACKING_WARNING_LOGGED:
+            logger.error(
+                "fines reminder tracking disabled: missing reminder columns in fines table; reminders skipped to avoid duplicate-spam after restarts"
+            )
+            _REMINDER_TRACKING_WARNING_LOGGED = True
+        return
+
     now = datetime.now(timezone.utc)
     for fine in db.fines:
         if fine.get("is_paid") or fine.get("is_canceled"):
@@ -643,6 +653,7 @@ async def remind_fines(bot):
                     allow_dm_delivery=True,
                 )
         except Exception:
+            logger.exception("remind_fines processing failed fine_id=%s", fine.get("id"))
             continue
 
 async def reminder_loop(bot):
