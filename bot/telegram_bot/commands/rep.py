@@ -9,7 +9,7 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from bot.services import AuthorityService, ModerationService
+from bot.services import AuthorityService, ModerationNotificationsService, ModerationService
 from bot.systems.moderation_rep_ui import (
     render_rep_apply_error_text,
     render_rep_authority_deny_text,
@@ -384,25 +384,52 @@ async def rep_callback(callback: CallbackQuery) -> None:
                 error_code=None,
             )
             await callback.message.edit_text(render_rep_result_text(ui_payload, compact=True), reply_markup=None)
-            target_user_id = int(str((target or {}).get("provider_user_id") or "0") or 0)
-            if target_user_id:
-                try:
-                    await callback.bot.send_message(target_user_id, render_violator_notification_text(ui_payload))
-                except Exception:
-                    _log_rep(
-                        "exception",
-                        message="rep target notify failed",
+            try:
+                selected_actions = set(ui_payload.get("selected_actions") or [])
+                text = render_violator_notification_text(ui_payload)
+                if "mute" in selected_actions:
+                    await ModerationNotificationsService.dispatch_notification(
+                        runtime_bot=callback.bot,
                         provider="telegram",
-                        chat_id=callback.message.chat.id,
-                        actor=callback.from_user.id,
-                        actor_account_id=ui_payload.get("actor_account_id"),
-                        target=str(target_user_id),
                         target_account_id=ui_payload.get("target_account_id"),
-                        violation_code=ui_payload.get("violation_code"),
-                        selected_actions=list(ui_payload.get("selected_actions") or []),
+                        event_type=ModerationNotificationsService.EVENT_MUTE_STARTED,
+                        message_text=text,
                         case_id=ui_payload.get("case_id"),
-                        error_code="target_notify_failed",
+                        source_chat_id=callback.message.chat.id,
+                        requires_chat_delivery=True,
+                        allow_dm_delivery=True,
                     )
+                if "fine_points" in selected_actions:
+                    await ModerationNotificationsService.dispatch_notification(
+                        runtime_bot=callback.bot,
+                        provider="telegram",
+                        target_account_id=ui_payload.get("target_account_id"),
+                        event_type=ModerationNotificationsService.EVENT_FINE_CREATED,
+                        message_text=text,
+                        case_id=ui_payload.get("case_id"),
+                        source_chat_id=callback.message.chat.id,
+                        requires_chat_delivery=True,
+                        allow_dm_delivery=True,
+                    )
+                if not selected_actions.intersection({"mute", "fine_points"}):
+                    target_user_id = int(str((target or {}).get("provider_user_id") or "0") or 0)
+                    if target_user_id:
+                        await callback.bot.send_message(target_user_id, text)
+            except Exception:
+                _log_rep(
+                    "exception",
+                    message="rep target notify failed",
+                    provider="telegram",
+                    chat_id=callback.message.chat.id,
+                    actor=callback.from_user.id,
+                    actor_account_id=ui_payload.get("actor_account_id"),
+                    target=str((target or {}).get("provider_user_id") or "") or None,
+                    target_account_id=ui_payload.get("target_account_id"),
+                    violation_code=ui_payload.get("violation_code"),
+                    selected_actions=list(ui_payload.get("selected_actions") or []),
+                    case_id=ui_payload.get("case_id"),
+                    error_code="target_notify_failed",
+                )
             await callback.answer()
             return
         except Exception:
