@@ -142,6 +142,7 @@ class Database:
         else:
             self.supabase = None
         self.has_was_on_time = True
+        self.has_fine_reminder_tracking = True
         self._core_data_loaded = False
         self._core_data_loading = False
         self._fines_data_loaded = False
@@ -275,6 +276,14 @@ class Database:
             except Exception:
                 self.has_was_on_time = False
                 logger.warning("Столбец 'was_on_time' отсутствует в таблице fines")
+            try:
+                self.supabase.table("fines").select("reminder_3d_sent_at,reminder_1d_sent_at,overdue_notice_sent_at").limit(1).execute()
+                self.has_fine_reminder_tracking = True
+            except Exception:
+                self.has_fine_reminder_tracking = False
+                logger.warning(
+                    "Столбцы reminder_3d_sent_at/reminder_1d_sent_at/overdue_notice_sent_at отсутствуют в таблице fines"
+                )
         except Exception as e:
             raise RuntimeError(f"Таблица fines не существует или недоступна: {str(e)}")
 
@@ -1049,6 +1058,64 @@ class Database:
             if fine["id"] == fine_id:
                 return fine
         return None
+
+    def is_fine_reminder_sent(self, fine: dict, stage: str) -> bool:
+        field_map = {
+            "due_3d": "reminder_3d_sent_at",
+            "due_1d": "reminder_1d_sent_at",
+            "overdue": "overdue_notice_sent_at",
+        }
+        field_name = field_map.get(str(stage or "").strip())
+        if not field_name:
+            logger.warning("is_fine_reminder_sent called with unknown stage=%s", stage)
+            return False
+        return bool((fine or {}).get(field_name))
+
+    def mark_fine_reminder_sent(self, fine_id: int, stage: str, sent_at: Optional[datetime] = None) -> bool:
+        if not self.supabase:
+            logger.warning("mark_fine_reminder_sent skipped: supabase is not initialized fine_id=%s stage=%s", fine_id, stage)
+            return False
+        if not self.has_fine_reminder_tracking:
+            logger.warning(
+                "mark_fine_reminder_sent skipped: reminder tracking columns unavailable fine_id=%s stage=%s",
+                fine_id,
+                stage,
+            )
+            return False
+
+        field_map = {
+            "due_3d": "reminder_3d_sent_at",
+            "due_1d": "reminder_1d_sent_at",
+            "overdue": "overdue_notice_sent_at",
+        }
+        field_name = field_map.get(str(stage or "").strip())
+        if not field_name:
+            logger.warning("mark_fine_reminder_sent called with unknown stage=%s fine_id=%s", stage, fine_id)
+            return False
+
+        timestamp = (sent_at or datetime.now(timezone.utc)).isoformat()
+        try:
+            started_at = time.perf_counter()
+            self.supabase.table("fines").update({field_name: timestamp}).eq("id", fine_id).execute()
+            self._log_db_timing(
+                table="fines",
+                operation=f"update_reminder_{stage}",
+                started_at=started_at,
+                fine_id=fine_id,
+            )
+            fine = self.get_fine_by_id(fine_id)
+            if fine is not None:
+                fine[field_name] = timestamp
+            return True
+        except Exception as e:
+            logger.error(
+                "mark_fine_reminder_sent failed fine_id=%s stage=%s field=%s error=%s",
+                fine_id,
+                stage,
+                field_name,
+                e,
+            )
+            return False
 
     def get_bank_balance(self):
         try:
