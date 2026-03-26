@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from bot.services.authority_service import AuthorityService
+from bot.services.profile_titles import normalize_protected_profile_title, protected_profile_title_canonical_keys
 
 
 class AuthorityServiceTests(unittest.TestCase):
@@ -31,6 +32,27 @@ class AuthorityServiceTests(unittest.TestCase):
         self.assertFalse(AuthorityService.has_command_permission("discord", "200", "moderation_ban"))
         self.assertFalse(AuthorityService.has_command_permission("discord", "200", "moderation_manage_rules"))
 
+        mock_titles.return_value = ["Младший админ"]
+        self.assertTrue(AuthorityService.has_command_permission("discord", "200", "moderation_mute"))
+        self.assertFalse(AuthorityService.has_command_permission("discord", "200", "moderation_warn"))
+
+        mock_titles.return_value = ["Вице города"]
+        self.assertTrue(AuthorityService.has_command_permission("discord", "200", "moderation_warn"))
+        self.assertFalse(AuthorityService.has_command_permission("discord", "200", "moderation_ban"))
+
+        mock_titles.return_value = ["Админ"]
+        self.assertTrue(AuthorityService.has_command_permission("discord", "200", "moderation_warn"))
+        self.assertFalse(AuthorityService.has_command_permission("discord", "200", "moderation_ban"))
+
+        mock_titles.return_value = ["Главный вице"]
+        self.assertTrue(AuthorityService.has_command_permission("discord", "200", "moderation_ban"))
+
+        mock_titles.return_value = ["Глава клуба"]
+        self.assertTrue(AuthorityService.has_command_permission("discord", "200", "moderation_ban"))
+
+        mock_titles.return_value = ["Оператор"]
+        self.assertTrue(AuthorityService.has_command_permission("discord", "200", "moderation_ban"))
+
     @patch("bot.services.authority_service.AccountsService.get_account_titles")
     @patch("bot.services.authority_service.AccountsService.resolve_account_id")
     def test_hierarchy_allows_peer_roles_for_head_club_and_main_vice(self, mock_resolve, mock_titles):
@@ -49,12 +71,77 @@ class AuthorityServiceTests(unittest.TestCase):
 
     @patch("bot.services.authority_service.AccountsService.get_account_titles")
     @patch("bot.services.authority_service.AccountsService.resolve_account_id")
+    def test_hierarchy_allows_head_club_to_manage_main_vice(self, mock_resolve, mock_titles):
+        def _resolve(_provider, user_id):
+            return f"acc-{user_id}"
+
+        def _titles(account_id):
+            if account_id == "acc-1":
+                return ["Глава клуба"]
+            return ["Главный вице"]
+
+        mock_resolve.side_effect = _resolve
+        mock_titles.side_effect = _titles
+
+        self.assertTrue(AuthorityService.can_manage_target("discord", "1", "discord", "2"))
+
+    @patch("bot.services.authority_service.AccountsService.get_account_titles")
+    @patch("bot.services.authority_service.AccountsService.resolve_account_id")
+    def test_hierarchy_denies_operator_against_top_peer_roles(self, mock_resolve, mock_titles):
+        def _resolve(_provider, user_id):
+            return f"acc-{user_id}"
+
+        def _titles(account_id):
+            if account_id == "acc-operator":
+                return ["Оператор"]
+            if account_id == "acc-main-vice":
+                return ["Главный вице"]
+            return ["Глава клуба"]
+
+        mock_resolve.side_effect = _resolve
+        mock_titles.side_effect = _titles
+
+        self.assertFalse(AuthorityService.can_manage_target("discord", "operator", "discord", "main-vice"))
+        self.assertFalse(AuthorityService.can_manage_target("discord", "operator", "discord", "head"))
+
+    @patch("bot.services.authority_service.AccountsService.get_account_titles")
+    @patch("bot.services.authority_service.AccountsService.resolve_account_id")
+    def test_hierarchy_denies_top_peer_roles_against_operator(self, mock_resolve, mock_titles):
+        def _resolve(_provider, user_id):
+            return f"acc-{user_id}"
+
+        def _titles(account_id):
+            if account_id == "acc-head":
+                return ["Глава клуба"]
+            return ["Оператор"]
+
+        mock_resolve.side_effect = _resolve
+        mock_titles.side_effect = _titles
+
+        self.assertFalse(AuthorityService.can_manage_target("discord", "head", "discord", "operator"))
+
+    @patch("bot.services.authority_service.AccountsService.get_account_titles")
+    @patch("bot.services.authority_service.AccountsService.resolve_account_id")
     def test_hierarchy_still_prevents_equal_non_peer_roles(self, mock_resolve, mock_titles):
         def _resolve(_provider, user_id):
             return f"acc-{user_id}"
 
         def _titles(_account_id):
             return ["Вице города"]
+
+        mock_resolve.side_effect = _resolve
+        mock_titles.side_effect = _titles
+
+        self.assertFalse(AuthorityService.can_manage_target("discord", "1", "discord", "2"))
+
+    @patch("bot.services.authority_service.AccountsService.get_account_titles")
+    @patch("bot.services.authority_service.AccountsService.resolve_account_id")
+    def test_hierarchy_prevents_equal_operator_roles(self, mock_resolve, mock_titles):
+        def _resolve(_provider, user_id):
+            return f"acc-{user_id}"
+
+        def _titles(_account_id):
+            return ["Оператор"]
 
         mock_resolve.side_effect = _resolve
         mock_titles.side_effect = _titles
@@ -235,6 +322,33 @@ class AuthorityServiceTests(unittest.TestCase):
 
     @patch("bot.services.authority_service.AccountsService.get_account_titles")
     @patch("bot.services.authority_service.AccountsService.resolve_account_id")
+    def test_top_tier_moderation_policy_is_explicit_for_operator_and_peers(self, mock_resolve, mock_titles):
+        def _resolve(_provider, user_id):
+            return f"acc-{user_id}"
+
+        def _titles(account_id):
+            mapping = {
+                "acc-head": ["Глава клуба"],
+                "acc-main-vice": ["Главный вице"],
+                "acc-operator": ["Оператор"],
+            }
+            return mapping[account_id]
+
+        mock_resolve.side_effect = _resolve
+        mock_titles.side_effect = _titles
+
+        self.assertTrue(AuthorityService.can_apply_moderation_action("discord", "head", "discord", "main-vice", "ban").allowed)
+        self.assertTrue(AuthorityService.can_apply_moderation_action("discord", "main-vice", "discord", "head", "ban").allowed)
+        operator_vs_head = AuthorityService.can_apply_moderation_action("discord", "operator", "discord", "head", "ban")
+        head_vs_operator = AuthorityService.can_apply_moderation_action("discord", "head", "discord", "operator", "ban")
+
+        self.assertFalse(operator_vs_head.allowed)
+        self.assertEqual(operator_vs_head.deny_reason, "hierarchy_denied")
+        self.assertFalse(head_vs_operator.allowed)
+        self.assertEqual(head_vs_operator.deny_reason, "hierarchy_denied")
+
+    @patch("bot.services.authority_service.AccountsService.get_account_titles")
+    @patch("bot.services.authority_service.AccountsService.resolve_account_id")
     def test_equal_roles_are_denied_for_moderation(self, mock_resolve, mock_titles):
         def _resolve(_provider, user_id):
             return f"acc-{user_id}"
@@ -267,6 +381,58 @@ class AuthorityServiceTests(unittest.TestCase):
 
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.message, "Бан доступен только Главному вице, Главе клуба и Оператору")
+
+    @patch("bot.services.authority_service.AccountsService.get_account_titles")
+    @patch("bot.services.authority_service.AccountsService.resolve_account_id")
+    def test_unknown_action_returns_explicit_decision(self, mock_resolve, mock_titles):
+        def _resolve(_provider, user_id):
+            return f"acc-{user_id}"
+
+        def _titles(account_id):
+            return ["Админ"] if account_id == "acc-actor" else ["Участник клубов"]
+
+        mock_resolve.side_effect = _resolve
+        mock_titles.side_effect = _titles
+
+        decision = AuthorityService.can_apply_moderation_action("discord", "actor", "discord", "target", "freeze")
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.deny_reason, "unknown_action")
+        self.assertEqual(decision.message, "Неизвестный тип модерации")
+
+    @patch("bot.services.authority_service.AccountsService.get_account_titles")
+    @patch("bot.services.authority_service.AccountsService.resolve_account_id")
+    def test_discord_and_telegram_keep_same_deny_message(self, mock_resolve, mock_titles):
+        def _resolve(_provider, user_id):
+            return f"acc-{user_id}"
+
+        def _titles(account_id):
+            return ["Вице города"] if account_id == "acc-actor" else ["Участник клубов"]
+
+        mock_resolve.side_effect = _resolve
+        mock_titles.side_effect = _titles
+
+        discord_decision = AuthorityService.can_apply_moderation_action("discord", "actor", "discord", "target", "ban")
+        telegram_decision = AuthorityService.can_apply_moderation_action("telegram", "actor", "telegram", "target", "ban")
+
+        self.assertEqual(discord_decision.message, "Бан доступен только Главному вице, Главе клуба и Оператору")
+        self.assertEqual(telegram_decision.message, discord_decision.message)
+        self.assertEqual(telegram_decision.deny_reason, discord_decision.deny_reason)
+
+    def test_profile_titles_include_all_required_moderation_titles(self):
+        required_titles = {
+            "Глава клуба",
+            "Главный вице",
+            "Оператор",
+            "Вице города",
+            "Админ",
+            "Ветеран города",
+            "Младший админ",
+        }
+
+        canonical_keys = protected_profile_title_canonical_keys()
+
+        self.assertEqual({normalize_protected_profile_title(title) for title in required_titles}, canonical_keys - {"участник клубов"})
 
 
 if __name__ == "__main__":
