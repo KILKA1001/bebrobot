@@ -39,6 +39,7 @@ import bot.commands.tournament
 import bot.commands.maps
 from datetime import datetime
 from bot.systems import fines_logic
+from bot.services.moderation_notifications import ModerationNotificationsService
 from bot.systems.profile_titles_logic import (
     handle_member_join_for_profile_titles,
     handle_member_update_for_profile_titles,
@@ -432,6 +433,12 @@ async def on_ready():
             fines_logic.fines_summary_loop(bot),
             step="fines_summary_loop",
             operation_id="startup-loop-4",
+            startup_burst=True,
+        )
+        _create_task_with_startup_logging(
+            ModerationNotificationsService.mute_reconciliation_loop(bot),
+            step="mute_reconciliation_loop",
+            operation_id="startup-loop-4b",
             startup_burst=True,
         )
         from bot.systems.tournament_logic import tournament_reminder_loop, registration_deadline_loop

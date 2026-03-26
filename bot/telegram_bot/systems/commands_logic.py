@@ -38,6 +38,8 @@ _PUBLIC_HELP_COMMANDS: tuple[str, ...] = (
     "/link_discord — получить код для привязки Discord",
     "/roles — единый каталог ролей по категориям, с описанием и подсказкой по получению",
     "/balance [reply|id] — показать баланс пользователя",
+    "/modstatus [reply] — показать свои активные наказания, кейсы и legacy-штрафы; чужой профиль в группе открывается только через reply",
+    "/myfines — посмотреть и оплатить свои legacy-штрафы",
     "/helpy — показать это сообщение",
 )
 
@@ -47,7 +49,8 @@ _ROLES_ADMIN_HELP_LINE = (
     "/roles_admin / /rolesadmin — панель ролей с кнопками и встроенной справкой "
     "(в Telegram меню показывает /roles_admin, alias /rolesadmin нужен для паритета с Discord)"
 )
-_REP_HELP_LINE = "/rep — основная точка входа в модерацию: лучше reply/@username для цели, нарушение выбирается кнопками, бот показывает кейс, активное наказание, предупреждения и штраф в банк, если он был частью кейса"
+_REP_HELP_LINE = "/rep — основная точка входа в модерацию: выбери цель через reply/@username, выбери нарушение кнопками, проверь preview с предупреждениями, активным наказанием и следующим шагом эскалации; наказание вручную вводить не нужно; себя выбрать нельзя, а для однозванца и старшего звания кейс будет отклонён по иерархии"
+_MODSTATUS_HELP_LINE = "/modstatus — показать свои активные наказания, последние кейсы и legacy-штрафы; чужой профиль в группе открывается только через reply, в личке — только по явному lookup-правилу для модераторов"
 
 
 def _can_manage_points(actor_level: int) -> bool:
@@ -71,6 +74,7 @@ def _build_helpy_text(*, actor_level: int = 0, actor_titles: tuple[str, ...] = t
         privileged_lines.append(_TICKETS_HELP_LINE)
     if actor_level >= 80:
         privileged_lines.append(_ROLES_ADMIN_HELP_LINE)
+    privileged_lines.append(_MODSTATUS_HELP_LINE)
     if can_use_rep:
         privileged_lines.append(_REP_HELP_LINE)
 
@@ -80,7 +84,8 @@ def _build_helpy_text(*, actor_level: int = 0, actor_titles: tuple[str, ...] = t
         lines.extend(privileged_lines)
 
     lines.append("")
-    lines.append("ℹ️ Штрафной monthly-top больше не используется: вместо рейтинга должников смотрите /rep, активные наказания и историю кейсов.")
+    lines.append("ℹ️ Рейтинг должников больше не используется. Теперь активный статус, кейсы и предупреждения удобнее смотреть через /modstatus, а назначение наказаний начинается с /rep.")
+    lines.append("ℹ️ Старые денежные штрафы можно смотреть и оплачивать через /myfines; их наличие и остаток также видны в /modstatus.")
     lines.append(
         "ℹ️ В help показываются только доступные вам команды. Owner-команды специально скрыты и здесь не отображаются."
     )

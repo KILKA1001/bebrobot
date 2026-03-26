@@ -130,6 +130,8 @@ class _FakeDb:
             "moderation_actions": [],
             "moderation_mutes": [],
             "moderation_bans": [],
+            "moderation_case_fines": [],
+            "fines": [],
             "bank": [{"id": 1, "total": 0.0}],
             "bank_history": [],
         }
@@ -139,6 +141,8 @@ class _FakeDb:
             "moderation_warn_state": 0,
             "moderation_mutes": 200,
             "moderation_bans": 300,
+            "moderation_case_fines": 400,
+            "fines": 500,
             "bank_history": 0,
         }
         self.supabase = _FakeSupabase(self)
@@ -175,6 +179,36 @@ class _FakeDb:
         self.tables["bank"][0]["total"] += amount
         self.operations.append({"table": "bank", "action": "add", "amount": amount})
         return True
+
+    def add_fine(self, account_id, author_account_id, amount, fine_type, reason, due_date):
+        self.sequences["fines"] += 1
+        row = {
+            "id": self.sequences["fines"],
+            "account_id": account_id,
+            "author_account_id": author_account_id,
+            "amount": amount,
+            "type": fine_type,
+            "reason": reason,
+            "due_date": due_date.isoformat(),
+            "paid_amount": 0.0,
+            "is_paid": False,
+            "is_canceled": False,
+            "created_at": "2026-03-01T00:00:00+00:00",
+        }
+        self.tables["fines"].append(row)
+        return row
+
+    def get_fine_by_id(self, fine_id):
+        for row in self.tables["fines"]:
+            if int(row["id"]) == int(fine_id):
+                return row
+        return None
+
+    def get_user_fines_by_account(self, account_id, active_only=True):
+        rows = [row for row in self.tables["fines"] if row.get("account_id") == account_id]
+        if not active_only:
+            return rows
+        return [row for row in rows if not row.get("is_paid") and not row.get("is_canceled")]
 
     def log_bank_income_by_account(self, account_id, amount, reason):
         if self.fail_log_bank_income:
@@ -262,6 +296,29 @@ class ModerationServiceTests(unittest.TestCase):
             [row["action_type"] for row in self.fake_db.tables["moderation_actions"]],
             ["warn", "ban"],
         )
+
+    def test_apply_violation_creates_manual_case_fine_when_rule_requires_payment(self):
+        self.mock_resolve.side_effect = ["acc-actor", "acc-target"]
+        self.fake_db.tables["moderation_penalty_rules"][0]["fine_payment_mode"] = "manual"
+
+        result = ModerationService.apply_violation(
+            provider="discord",
+            actor="111",
+            target="222",
+            violation_code="spam",
+            reason_text="Manual payment path",
+            source_platform="discord",
+            source_chat_id="987",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(self.fake_db.tables["bank"][0]["total"], 0.0)
+        self.assertEqual(len(self.fake_db.tables["moderation_case_fines"]), 1)
+        self.assertEqual(self.fake_db.tables["moderation_case_fines"][0]["status"], "pending")
+        self.assertEqual(self.fake_db.tables["moderation_case_fines"][0]["payment_mode"], "manual")
+        self.assertEqual(self.fake_db.tables["moderation_actions"][-1]["action_type"], "fine_points")
+        self.assertIn("payment_mode=manual", self.fake_db.tables["moderation_actions"][-1]["value_text"])
+        self.assertIn("ждёт оплаты", result["ui_payload"]["moderator_result_text"])
 
     def test_apply_violation_does_not_auto_ban_without_active_ban_rule(self):
         self.mock_resolve.side_effect = ["acc-actor", "acc-target"]
@@ -431,6 +488,10 @@ class ModerationServiceTests(unittest.TestCase):
         self.assertTrue(second["ok"])
         self.assertEqual(first["case_id"], second["case_id"])
         self.assertEqual(second["status"], ModerationService.STATUS_DUPLICATE)
+        self.assertEqual(
+            second["message"],
+            "Кейс уже был подтверждён ранее. Повторное применение пропущено; ничего дополнительно не применено.",
+        )
         self.assertEqual(len(self.fake_db.tables["moderation_cases"]), 1)
 
     def test_commit_case_rolls_back_when_mute_apply_fails_after_warn_increment(self):

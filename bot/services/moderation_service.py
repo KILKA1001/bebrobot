@@ -4,6 +4,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from bot.data import db
+from bot.systems.moderation_rep_ui import REP_HOW_IT_WORKS_LINES, render_rep_duplicate_submit_text
 
 from .accounts_service import AccountsService
 from .authority_service import AuthorityService, ModerationAuthorityDecision
@@ -36,10 +37,17 @@ class ModerationService:
     STATUS_FAILED = "failed"
     STATUS_ROLLED_BACK = "rolled_back"
     STATUS_DUPLICATE = "duplicate"
+    FINE_PAYMENT_MODE_INSTANT = "instant"
+    FINE_PAYMENT_MODE_MANUAL = "manual"
+    FINE_PAYMENT_MODE_LEGACY = "legacy"
     FRIENDLY_ERROR_MESSAGE = (
         "Не удалось завершить кейс модерации. Действие не подтверждено.\n"
         "Попробуйте ещё раз позже.\n"
         "Подробности ошибки записаны в консоль."
+    )
+    MODSTATUS_PAYMENT_HINT = (
+        "Если штраф уже удержан автоматически — дополнительная оплата не нужна. "
+        "Если штраф ждёт оплаты или частично оплачен, оплатите его через /myfines на том же общем аккаунте."
     )
 
     @staticmethod
@@ -182,6 +190,415 @@ class ModerationService:
             logger.warning("moderation invalid datetime raw_value=%s", raw_value)
             return None
 
+
+    @staticmethod
+    def _is_private_context(source_chat_id: Any, reply_context: dict[str, Any] | None) -> bool:
+        context = reply_context or {}
+        if "is_private" in context:
+            return bool(context.get("is_private"))
+        return str(source_chat_id or "").strip().lower() in {"dm", "private", "pm"}
+
+    @staticmethod
+    def _snapshot_warning(
+        message: str,
+        *,
+        provider: str,
+        chat_id: Any,
+        viewer_id: Any,
+        target_id: Any,
+        account_id: Any,
+        **extra: Any,
+    ) -> None:
+        logger.warning(
+            "%s provider=%s chat_id=%s viewer_id=%s target_id=%s account_id=%s extra=%s",
+            message,
+            provider,
+            chat_id,
+            viewer_id,
+            target_id,
+            account_id,
+            extra,
+        )
+
+    @staticmethod
+    def _account_display_name(account_id: str) -> str:
+        profile = AccountsService.get_profile_by_account(account_id)
+        if profile:
+            custom_nick = str(profile.get("custom_nick") or "").strip()
+            if custom_nick:
+                return custom_nick
+        return f"Аккаунт {account_id}"
+
+    @staticmethod
+    def _has_view_access(
+        *,
+        account_id: str,
+        viewer_account_id: str,
+        provider: str,
+        source_chat_id: Any,
+        reply_context: dict[str, Any] | None,
+    ) -> tuple[bool, str | None]:
+        context = dict(reply_context or {})
+        if account_id == viewer_account_id:
+            return True, None
+
+        selected_via_reply = bool(context.get("selected_via_reply"))
+        explicit_target = bool(context.get("explicit_target"))
+        explicit_rule = bool(context.get("allow_lookup_others"))
+        is_private = ModerationService._is_private_context(source_chat_id, context)
+
+        if is_private:
+            if not explicit_rule:
+                return False, "В личке просмотр чужого профиля доступен только модераторам по явному lookup-правилу."
+            if not explicit_target:
+                return False, "В личке чужой профиль можно открыть только при явном выборе цели."
+            return True, None
+
+        if not selected_via_reply:
+            return False, "Чужой профиль можно открыть только через reply на сообщение пользователя."
+        return True, None
+
+    @staticmethod
+    def _active_warn_actions(account_id: str) -> list[dict[str, Any]]:
+        now = datetime.now(timezone.utc)
+        active_rows: list[dict[str, Any]] = []
+        for case_row in ModerationService._select_many("moderation_cases", account_id=account_id):
+            if str(case_row.get("status") or "").strip().lower() != ModerationService.STATUS_APPLIED:
+                continue
+            for action_row in ModerationService._select_many("moderation_actions", case_id=case_row.get("id")):
+                if str(action_row.get("action_type") or "").strip().lower() != ModerationService.ACTION_WARN:
+                    continue
+                ends_at = ModerationService._parse_dt(action_row.get("ends_at"))
+                if ends_at is not None and ends_at <= now:
+                    continue
+                row = dict(action_row)
+                row["case_status"] = case_row.get("status")
+                row["case_created_at"] = case_row.get("created_at")
+                active_rows.append(row)
+        active_rows.sort(key=lambda item: ModerationService._parse_dt(item.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        return active_rows
+
+    @staticmethod
+    def list_active_penalties(account_id: str) -> list[dict[str, Any]]:
+        now = datetime.now(timezone.utc)
+        penalties: list[dict[str, Any]] = []
+
+        warn_state = ModerationService._load_warn_state(account_id)
+        for warn_action in ModerationService._active_warn_actions(account_id):
+            penalties.append(
+                {
+                    "kind": ModerationService.ACTION_WARN,
+                    "case_id": warn_action.get("case_id"),
+                    "value": max(1, ModerationService._safe_int(warn_action.get("value_numeric"), 1)),
+                    "reason": str(warn_action.get("value_text") or "Предупреждение"),
+                    "starts_at": warn_action.get("starts_at") or warn_action.get("created_at"),
+                    "ends_at": warn_action.get("ends_at"),
+                    "status": "active",
+                }
+            )
+        if not penalties and ModerationService._current_warn_count(warn_state) > 0:
+            penalties.append(
+                {
+                    "kind": ModerationService.ACTION_WARN,
+                    "case_id": None,
+                    "value": ModerationService._current_warn_count(warn_state),
+                    "reason": "Активные предупреждения из moderation_warn_state",
+                    "starts_at": None,
+                    "ends_at": None,
+                    "status": "active",
+                }
+            )
+
+        for mute_row in ModerationService._select_many("moderation_mutes", account_id=account_id):
+            ends_at = ModerationService._parse_dt(mute_row.get("ends_at"))
+            if not ModerationService._is_truthy(mute_row.get("is_active")):
+                continue
+            if ends_at is not None and ends_at <= now:
+                continue
+            penalties.append(
+                {
+                    "kind": ModerationService.ACTION_MUTE,
+                    "case_id": mute_row.get("case_id"),
+                    "value": None,
+                    "reason": str(mute_row.get("reason_text") or "Мут"),
+                    "starts_at": mute_row.get("starts_at") or mute_row.get("created_at"),
+                    "ends_at": mute_row.get("ends_at"),
+                    "status": "active",
+                }
+            )
+
+        try:
+            fines = list(db.get_user_fines_by_account(account_id, active_only=True)) if hasattr(db, "get_user_fines_by_account") else []
+        except Exception:
+            logger.exception("moderation snapshot fines lookup failed account_id=%s", account_id)
+            fines = []
+        for fine in fines:
+            amount = ModerationService._safe_float(fine.get("amount"), 0.0)
+            paid_amount = ModerationService._safe_float(fine.get("paid_amount"), 0.0)
+            remaining = round(max(0.0, amount - paid_amount), 2)
+            if remaining <= 0 or ModerationService._is_truthy(fine.get("is_paid")) or ModerationService._is_truthy(fine.get("is_canceled")):
+                continue
+            penalties.append(
+                {
+                    "kind": "legacy_fine",
+                    "fine_id": fine.get("id"),
+                    "case_id": None,
+                    "value": remaining,
+                    "amount": amount,
+                    "paid_amount": paid_amount,
+                    "reason": str(fine.get("reason") or "Legacy-штраф"),
+                    "starts_at": fine.get("created_at"),
+                    "ends_at": fine.get("due_date"),
+                    "status": "overdue" if ModerationService._is_truthy(fine.get("is_overdue")) else "unpaid",
+                    "type": fine.get("type"),
+                }
+            )
+
+        for case_fine in ModerationService._select_many("moderation_case_fines", account_id=account_id):
+            payment_mode = str(case_fine.get("payment_mode") or ModerationService.FINE_PAYMENT_MODE_MANUAL).strip().lower()
+            amount_total = ModerationService._safe_float(case_fine.get("amount_total"), 0.0)
+            amount_paid = ModerationService._safe_float(case_fine.get("amount_paid"), 0.0)
+            legacy_fine_id = case_fine.get("legacy_fine_id")
+            if legacy_fine_id and hasattr(db, "get_fine_by_id"):
+                linked_fine = db.get_fine_by_id(int(legacy_fine_id))
+                if linked_fine:
+                    amount_total = ModerationService._safe_float(linked_fine.get("amount"), amount_total)
+                    amount_paid = ModerationService._safe_float(linked_fine.get("paid_amount"), amount_paid)
+            fine_status = ModerationService._fine_status_from_values(
+                amount_total=amount_total,
+                amount_paid=amount_paid,
+                status=str(case_fine.get("status") or ""),
+            )
+            if payment_mode != ModerationService.FINE_PAYMENT_MODE_INSTANT and fine_status == "paid":
+                continue
+            if fine_status == "canceled":
+                continue
+            penalties.append(
+                {
+                    "kind": "case_fine",
+                    "fine_id": case_fine.get("id"),
+                    "case_id": case_fine.get("source_case_id"),
+                    "value": round(max(0.0, amount_total - amount_paid), 2),
+                    "amount": amount_total,
+                    "paid_amount": amount_paid,
+                    "reason": str(case_fine.get("reason_text") or "Штраф по кейсу модерации"),
+                    "starts_at": case_fine.get("created_at"),
+                    "ends_at": case_fine.get("due_date"),
+                    "status": fine_status,
+                    "payment_mode": payment_mode,
+                    "legacy_fine_id": legacy_fine_id,
+                }
+            )
+
+        penalties.sort(key=lambda item: ModerationService._parse_dt(item.get("starts_at")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        return penalties
+
+    @staticmethod
+    def list_recent_cases(account_id: str, limit: int = 5, cursor: str | None = None) -> dict[str, Any]:
+        safe_limit = max(1, min(int(limit or 5), 20))
+        case_rows = ModerationService._select_many("moderation_cases", account_id=account_id)
+        case_rows.sort(
+            key=lambda row: (
+                ModerationService._parse_dt(row.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc),
+                str(row.get("id") or ""),
+            ),
+            reverse=True,
+        )
+
+        if cursor:
+            cursor_ts, _, cursor_id = str(cursor).partition("|")
+            cursor_dt = ModerationService._parse_dt(cursor_ts)
+            filtered: list[dict[str, Any]] = []
+            for row in case_rows:
+                row_dt = ModerationService._parse_dt(row.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc)
+                if cursor_dt and row_dt > cursor_dt:
+                    continue
+                if cursor_dt and row_dt == cursor_dt and str(row.get("id") or "") >= cursor_id:
+                    continue
+                filtered.append(row)
+            case_rows = filtered
+
+        items: list[dict[str, Any]] = []
+        for row in case_rows[:safe_limit]:
+            actions = ModerationService._select_many("moderation_actions", case_id=row.get("id"))
+            actions.sort(key=lambda item: ModerationService._parse_dt(item.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc))
+            items.append(
+                {
+                    "case": dict(row),
+                    "actions": [dict(action) for action in actions],
+                }
+            )
+
+        next_cursor = None
+        if len(case_rows) > safe_limit and items:
+            last_case = items[-1]["case"]
+            next_cursor = f"{last_case.get('created_at') or ''}|{last_case.get('id') or ''}"
+        return {"items": items, "next_cursor": next_cursor, "limit": safe_limit}
+
+    @staticmethod
+    def get_user_moderation_snapshot(
+        account_id: str,
+        viewer_account_id: str,
+        provider: str,
+        source_chat_id: Any,
+        reply_context: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        context = dict(reply_context or {})
+        viewer_id = context.get("viewer_id")
+        target_id = context.get("target_id")
+        if not account_id or not viewer_account_id:
+            ModerationService._snapshot_warning(
+                "moderation snapshot denied unresolved account",
+                provider=provider,
+                chat_id=source_chat_id,
+                viewer_id=viewer_id,
+                target_id=target_id,
+                account_id=account_id,
+            )
+            return {"ok": False, "error_code": "identity_unresolved", "message": "Не удалось определить общий аккаунт для просмотра модерации."}
+
+        allowed, deny_message = ModerationService._has_view_access(
+            account_id=account_id,
+            viewer_account_id=viewer_account_id,
+            provider=provider,
+            source_chat_id=source_chat_id,
+            reply_context=context,
+        )
+        if not allowed:
+            ModerationService._snapshot_warning(
+                "moderation snapshot access denied",
+                provider=provider,
+                chat_id=source_chat_id,
+                viewer_id=viewer_id,
+                target_id=target_id,
+                account_id=account_id,
+                selected_via_reply=bool(context.get("selected_via_reply")),
+                explicit_target=bool(context.get("explicit_target")),
+                allow_lookup_others=bool(context.get("allow_lookup_others")),
+            )
+            return {"ok": False, "error_code": "access_denied", "message": deny_message or "Просмотр недоступен."}
+
+        warn_state = ModerationService._load_warn_state(account_id)
+        active_penalties = ModerationService.list_active_penalties(account_id)
+        cases_payload = ModerationService.list_recent_cases(account_id, limit=5, cursor=context.get("cursor"))
+        completed_cases = [item for item in cases_payload["items"] if str((item.get("case") or {}).get("status") or "").strip().lower() in {ModerationService.STATUS_APPLIED, ModerationService.STATUS_ROLLED_BACK, ModerationService.STATUS_FAILED, ModerationService.STATUS_DUPLICATE}]
+        active_fines = [item for item in active_penalties if item.get("kind") in {"legacy_fine", "case_fine"}]
+
+        snapshot = {
+            "ok": True,
+            "provider": provider,
+            "chat_id": source_chat_id,
+            "viewer_account_id": viewer_account_id,
+            "account_id": account_id,
+            "profile_name": ModerationService._account_display_name(account_id),
+            "warn_state": warn_state,
+            "active_warn_count": ModerationService._current_warn_count(warn_state),
+            "active_penalties": active_penalties,
+            "active_fines": active_fines,
+            "recent_cases": cases_payload["items"],
+            "recent_cases_next_cursor": cases_payload.get("next_cursor"),
+            "completed_case_count": len(completed_cases),
+            "target_is_self": account_id == viewer_account_id,
+            "selected_via_reply": bool(context.get("selected_via_reply")),
+        }
+        return snapshot
+
+    @staticmethod
+    def render_user_moderation_snapshot(snapshot: dict[str, Any], *, payment_hint: str) -> str:
+        if not snapshot.get("ok"):
+            return str(snapshot.get("message") or "Не удалось загрузить модерационный статус.")
+
+        lines = [
+            f"🛡️ Модерационный статус: {snapshot.get('profile_name')}",
+            "",
+            "Что сейчас активно:",
+        ]
+
+        active_penalties = list(snapshot.get("active_penalties") or [])
+        if not active_penalties:
+            lines.append("• Активных наказаний и неоплаченных штрафов сейчас нет.")
+        else:
+            for item in active_penalties:
+                kind = str(item.get("kind") or "")
+                if kind == ModerationService.ACTION_WARN:
+                    ttl = ModerationService._parse_dt(item.get("ends_at"))
+                    ttl_text = f" до {ttl.strftime('%d.%m.%Y %H:%M UTC')}" if ttl else ""
+                    lines.append(f"• Предупреждение ×{item.get('value') or 1}{ttl_text}. Причина: {item.get('reason') or 'не указана'}.")
+                elif kind == ModerationService.ACTION_MUTE:
+                    ends_at = ModerationService._parse_dt(item.get("ends_at"))
+                    until = ends_at.strftime('%d.%m.%Y %H:%M UTC') if ends_at else "без даты окончания"
+                    lines.append(f"• Мут активен до {until}. Причина: {item.get('reason') or 'не указана'}.")
+                elif kind == "legacy_fine":
+                    due = ModerationService._parse_dt(item.get("ends_at"))
+                    due_text = due.strftime('%d.%m.%Y') if due else "дата не указана"
+                    status = "просрочен" if str(item.get("status") or "") == "overdue" else "не оплачен"
+                    lines.append(
+                        f"• Денежный штраф #{item.get('fine_id')} — осталось {ModerationService._format_points_value(item.get('value') or 0)} баллов, срок {due_text}, статус: {status}."
+                    )
+                    lines.append("  ↳ Это legacy-штраф переходного периода: оплата вручную через экран legacy-штрафов.")
+                elif kind == "case_fine":
+                    due = ModerationService._parse_dt(item.get("ends_at"))
+                    due_text = due.strftime('%d.%m.%Y') if due else "дата не указана"
+                    payment_mode = str(item.get("payment_mode") or ModerationService.FINE_PAYMENT_MODE_MANUAL).strip().lower()
+                    status = ModerationService._render_case_fine_status(str(item.get("status") or "pending"), payment_mode)
+                    lines.append(
+                        f"• Денежный штраф по кейсу #{item.get('case_id')} — сумма {ModerationService._format_points_value(item.get('amount') or 0)} баллов, осталось {ModerationService._format_points_value(item.get('value') or 0)}. Статус: {status}, срок {due_text}."
+                    )
+                    if payment_mode == ModerationService.FINE_PAYMENT_MODE_INSTANT:
+                        lines.append("  ↳ Этот штраф уже удержан автоматически.")
+                    else:
+                        lines.append("  ↳ Этот штраф нужно оплатить вручную.")
+
+        lines.extend([
+            "",
+            "Что уже завершилось:",
+        ])
+        completed_lines: list[str] = []
+        for item in list(snapshot.get("recent_cases") or [])[:5]:
+            case_row = dict(item.get("case") or {})
+            status = str(case_row.get("status") or "").strip().lower()
+            if status not in {ModerationService.STATUS_APPLIED, ModerationService.STATUS_ROLLED_BACK, ModerationService.STATUS_FAILED, ModerationService.STATUS_DUPLICATE}:
+                continue
+            created_at = ModerationService._parse_dt(case_row.get("created_at"))
+            created_text = created_at.strftime('%d.%m.%Y %H:%M UTC') if created_at else "дата неизвестна"
+            actions = []
+            for action in item.get("actions") or []:
+                action_type = str(action.get("action_type") or "").strip().lower()
+                if action_type == ModerationService.ACTION_WARN:
+                    actions.append("warn")
+                elif action_type == ModerationService.ACTION_MUTE:
+                    actions.append("mute")
+                elif action_type == ModerationService.ACTION_FINE_POINTS:
+                    fine_value = ModerationService._format_points_value(action.get("value_numeric") or 0)
+                    text_marker = str(action.get("value_text") or "")
+                    if "payment_mode=manual" in text_marker:
+                        actions.append(f"fine {fine_value} (ждёт оплаты)")
+                    else:
+                        actions.append(f"fine {fine_value} (уже удержан автоматически)")
+                elif action_type:
+                    actions.append(action_type)
+            action_text = ", ".join(actions) if actions else str(case_row.get("applied_actions") or "без действий")
+            completed_lines.append(f"• Кейс #{case_row.get('id')} от {created_text}: {action_text}. Статус: {status}.")
+        if completed_lines:
+            lines.extend(completed_lines)
+        else:
+            lines.append("• Завершённых кейсов в последних записях пока нет.")
+
+        lines.extend([
+            "",
+            "Как оплатить штраф:",
+            f"• {payment_hint}",
+            "",
+            "Как посмотреть другого пользователя:",
+            "• В группе/на сервере открой команду reply на сообщение нужного пользователя — без reply команда показывает только тебя.",
+            "• В личке чужой профиль можно открыть только модератору по явному lookup-правилу.",
+        ])
+
+        next_cursor = snapshot.get("recent_cases_next_cursor")
+        if next_cursor:
+            lines.extend(["", "ℹ️ Кейсов больше, чем помещается в один ответ. Для следующей страницы нужен cursor."])
+
+        return "\n".join(lines)
     @staticmethod
     def list_active_violation_types() -> list[dict[str, Any]]:
         rows = ModerationService._select_many("moderation_violation_types", is_active=True)
@@ -578,6 +995,89 @@ class ModerationService:
         return str(int(numeric)) if numeric.is_integer() else str(numeric)
 
     @staticmethod
+    def _fine_payment_mode(rule: dict[str, Any]) -> str:
+        raw_mode = str(rule.get("fine_payment_mode") or rule.get("payment_mode") or "").strip().lower()
+        if raw_mode in {ModerationService.FINE_PAYMENT_MODE_MANUAL, "debt", "pending"}:
+            return ModerationService.FINE_PAYMENT_MODE_MANUAL
+        return ModerationService.FINE_PAYMENT_MODE_INSTANT
+
+    @staticmethod
+    def _fine_status_from_values(*, amount_total: float, amount_paid: float, status: str | None) -> str:
+        normalized_status = str(status or "").strip().lower()
+        if normalized_status in {"canceled", "cancelled"}:
+            return "canceled"
+        if amount_total <= 0:
+            return "paid"
+        if amount_paid <= 0:
+            return "pending"
+        if amount_paid < amount_total:
+            return "partial"
+        return "paid"
+
+    @staticmethod
+    def _render_case_fine_status(status: str, payment_mode: str) -> str:
+        if payment_mode == ModerationService.FINE_PAYMENT_MODE_INSTANT:
+            return "уже удержан автоматически"
+        if status == "partial":
+            return "частично оплачен"
+        if status == "paid":
+            return "оплачен вручную"
+        return "ждёт оплаты"
+
+    @staticmethod
+    def _create_case_fine_debt(
+        *,
+        account_id: str,
+        actor_account_id: str,
+        case_id: Any,
+        amount_total: float,
+        reason_text: str,
+        created_at_iso: str,
+    ) -> dict[str, Any] | None:
+        try:
+            due_at_dt = datetime.fromisoformat(created_at_iso) + timedelta(days=14)
+        except ValueError:
+            due_at_dt = datetime.now(timezone.utc) + timedelta(days=14)
+
+        legacy_fine = db.add_fine(
+            account_id,
+            actor_account_id,
+            amount_total,
+            1,
+            reason_text,
+            due_at_dt,
+        )
+        if not legacy_fine:
+            logger.error(
+                "❌ moderation case fine debt create failed: legacy fine insert failed case_id=%s account_id=%s amount=%s",
+                case_id,
+                account_id,
+                amount_total,
+            )
+            return None
+
+        payload = {
+            "account_id": account_id,
+            "status": "pending",
+            "amount_total": amount_total,
+            "amount_paid": 0.0,
+            "due_date": due_at_dt.isoformat(),
+            "source_case_id": case_id,
+            "payment_mode": ModerationService.FINE_PAYMENT_MODE_MANUAL,
+            "legacy_fine_id": legacy_fine.get("id"),
+            "created_at": created_at_iso,
+            "updated_at": created_at_iso,
+        }
+        case_fine_row = ModerationService._insert_row("moderation_case_fines", payload)
+        if not case_fine_row:
+            logger.error(
+                "❌ moderation case fine debt create failed: moderation_case_fines insert failed case_id=%s legacy_fine_id=%s",
+                case_id,
+                legacy_fine.get("id"),
+            )
+        return case_fine_row
+
+    @staticmethod
     def _warn_limit_from_rules(rules: list[dict[str, Any]]) -> int | None:
         limits: list[int] = []
         for rule in rules:
@@ -598,11 +1098,7 @@ class ModerationService:
 
     @staticmethod
     def _how_it_works_lines() -> list[str]:
-        return [
-            "• Наказание выбрано автоматически по типу нарушения и числу предупреждений.",
-            "• Изменение вручную в этом сценарии не требуется.",
-            "• Если наказание выглядит неверным — отмените и проверьте историю пользователя.",
-        ]
+        return [line.replace("выбирается", "выбрано").replace("Пока кейс не подтверждён, ничего не применяется.", "До подтверждения ничего не применяется.") for line in REP_HOW_IT_WORKS_LINES]
 
     @staticmethod
     def _build_ui_payload(
@@ -660,7 +1156,7 @@ class ModerationService:
             f"Предупреждений теперь: {warn_after_text}",
             next_step_text,
         ]
-        history_hint = "Историю кейсов, активные наказания, историю нарушений и списания в банк по кейсу смотри в журнале moderation cases."
+        history_hint = "Историю кейсов, активные наказания, историю нарушений и списания в банк по кейсу смотри в журнале moderation cases и профиле пользователя."
         return {
             "provider": provider,
             "target_label": target_subject.get("label"),
@@ -724,6 +1220,16 @@ class ModerationService:
         target_subject = ModerationService._resolve_subject(provider, target, role="target")
         if not actor_subject.get("account_id") or not target_subject.get("account_id"):
             return {"ok": False, "error_code": "identity_unresolved", "message": "Не удалось определить аккаунт модератора или нарушителя."}
+        if actor_subject.get("account_id") == target_subject.get("account_id"):
+            logger.warning(
+                "moderation self-target denied provider=%s chat_id=%s viewer_id=%s target_id=%s account_id=%s",
+                provider,
+                context.get("chat_id"),
+                actor_subject.get("provider_user_id"),
+                target_subject.get("provider_user_id"),
+                target_subject.get("account_id"),
+            )
+            return {"ok": False, "error_code": "self_target_denied", "message": "Нельзя выбрать самого себя для наказания в /rep."}
 
         violation_type = ModerationService._load_violation_type(violation_code)
         if not violation_type:
@@ -1122,7 +1628,7 @@ class ModerationService:
             result_ui_payload = dict(ui_payload)
             result_ui_payload["case_id"] = existing_case.get("id")
             result_ui_payload["moderation_op_key"] = moderation_op_key
-            duplicate_message = "Кейс уже был подтверждён ранее. Повторное применение пропущено."
+            duplicate_message = render_rep_duplicate_submit_text()
             ModerationService._log_case_event(
                 "warning",
                 message="moderation duplicate submit ignored",
@@ -1190,6 +1696,7 @@ class ModerationService:
         mute_until = None
         ban_until = None
         fine_points = float(rule.get("fine_points") or 0)
+        fine_payment_mode = ModerationService._fine_payment_mode(rule)
         warn_increment = ModerationService._rule_warn_increment(rule)
         warn_ttl_minutes = ModerationService._rule_warn_ttl_minutes(rule)
         ban_minutes = ModerationService._rule_ban_minutes(rule)
@@ -1366,28 +1873,40 @@ class ModerationService:
                 current_step = "fine_apply"
                 fine_reason = f"Модерация кейс #{moderation_case['id']}: {context.get('reason_text') or context.get('reason') or violation_code}"
                 bank_reason = f"Поступление штрафа moderation case #{moderation_case['id']} op_key={moderation_op_key}: {context.get('reason_text') or context.get('reason') or violation_code}"
-                if not db.add_action_by_account(
-                    target_subject["account_id"],
-                    -fine_points,
-                    fine_reason,
-                    actor_subject["account_id"],
-                    op_key=f"{moderation_op_key}:fine_points",
-                ):
-                    logger.error(
-                        "❌ moderation fine apply failed case_id=%s op_key=%s target_account_id=%s amount=%s",
-                        moderation_case["id"],
-                        moderation_op_key,
-                        target_subject["account_id"],
-                        fine_points,
+                if fine_payment_mode == ModerationService.FINE_PAYMENT_MODE_MANUAL:
+                    case_fine_row = ModerationService._create_case_fine_debt(
+                        account_id=target_subject["account_id"],
+                        actor_account_id=actor_subject["account_id"],
+                        case_id=moderation_case["id"],
+                        amount_total=fine_points,
+                        reason_text=fine_reason,
+                        created_at_iso=created_at,
                     )
-                    raise RuntimeError("Не удалось применить денежный штраф")
-                fine_applied = True
+                    if not case_fine_row:
+                        raise RuntimeError("Не удалось создать штраф к оплате")
+                else:
+                    if not db.add_action_by_account(
+                        target_subject["account_id"],
+                        -fine_points,
+                        fine_reason,
+                        actor_subject["account_id"],
+                        op_key=f"{moderation_op_key}:fine_points",
+                    ):
+                        logger.error(
+                            "❌ moderation fine apply failed case_id=%s op_key=%s target_account_id=%s amount=%s",
+                            moderation_case["id"],
+                            moderation_op_key,
+                            target_subject["account_id"],
+                            fine_points,
+                        )
+                        raise RuntimeError("Не удалось применить денежный штраф")
+                    fine_applied = True
                 fine_action = ModerationService._create_action(
                     case_id=moderation_case["id"],
                     action_type=ModerationService.ACTION_FINE_POINTS,
                     op_key=moderation_op_key,
                     value_numeric=fine_points,
-                    value_text=fine_reason,
+                    value_text=f"{fine_reason} payment_mode={fine_payment_mode}",
                     starts_at=created_at,
                     created_at=created_at,
                 )
@@ -1402,66 +1921,67 @@ class ModerationService:
                 applied_actions.append(fine_action)
                 completed_steps.append(current_step)
 
-                current_step = "bank_income_apply"
-                if not db.add_to_bank(fine_points):
-                    logger.error(
-                        "❌ moderation bank income apply failed case_id=%s op_key=%s amount=%s",
-                        moderation_case["id"],
-                        moderation_op_key,
-                        fine_points,
-                    )
-                    raise RuntimeError("Не удалось зачислить штраф в банк")
-                bank_income_applied = True
-                completed_steps.append(current_step)
+                if fine_payment_mode == ModerationService.FINE_PAYMENT_MODE_INSTANT:
+                    current_step = "bank_income_apply"
+                    if not db.add_to_bank(fine_points):
+                        logger.error(
+                            "❌ moderation bank income apply failed case_id=%s op_key=%s amount=%s",
+                            moderation_case["id"],
+                            moderation_op_key,
+                            fine_points,
+                        )
+                        raise RuntimeError("Не удалось зачислить штраф в банк")
+                    bank_income_applied = True
+                    completed_steps.append(current_step)
 
-                current_step = "bank_income_log"
-                log_bank_income_by_account = getattr(db, "log_bank_income_by_account", None)
-                bank_logged = False
-                if callable(log_bank_income_by_account):
-                    bank_logged = bool(log_bank_income_by_account(target_subject["account_id"], fine_points, bank_reason))
-                else:
-                    provider_user_id = target_subject.get("provider_user_id")
-                    if provider_user_id is not None:
-                        try:
-                            bank_logged = bool(db.log_bank_income(int(provider_user_id), fine_points, bank_reason))
-                        except (TypeError, ValueError):
-                            logger.error(
-                                "❌ moderation bank income fallback log failed invalid provider_user_id case_id=%s op_key=%s provider_user_id=%s",
-                                moderation_case["id"],
-                                moderation_op_key,
-                                provider_user_id,
-                            )
-                if not bank_logged:
-                    logger.error(
-                        "❌ moderation bank income log failed case_id=%s op_key=%s target_account_id=%s amount=%s",
-                        moderation_case["id"],
-                        moderation_op_key,
-                        target_subject["account_id"],
-                        fine_points,
-                    )
-                    raise RuntimeError("Не удалось записать поступление штрафа в банк")
-                completed_steps.append(current_step)
+                    current_step = "bank_income_log"
+                    log_bank_income_by_account = getattr(db, "log_bank_income_by_account", None)
+                    bank_logged = False
+                    if callable(log_bank_income_by_account):
+                        bank_logged = bool(log_bank_income_by_account(target_subject["account_id"], fine_points, bank_reason))
+                    else:
+                        provider_user_id = target_subject.get("provider_user_id")
+                        if provider_user_id is not None:
+                            try:
+                                bank_logged = bool(db.log_bank_income(int(provider_user_id), fine_points, bank_reason))
+                            except (TypeError, ValueError):
+                                logger.error(
+                                    "❌ moderation bank income fallback log failed invalid provider_user_id case_id=%s op_key=%s provider_user_id=%s",
+                                    moderation_case["id"],
+                                    moderation_op_key,
+                                    provider_user_id,
+                                )
+                    if not bank_logged:
+                        logger.error(
+                            "❌ moderation bank income log failed case_id=%s op_key=%s target_account_id=%s amount=%s",
+                            moderation_case["id"],
+                            moderation_op_key,
+                            target_subject["account_id"],
+                            fine_points,
+                        )
+                        raise RuntimeError("Не удалось записать поступление штрафа в банк")
+                    completed_steps.append(current_step)
 
-                current_step = "bank_income_action"
-                bank_action = ModerationService._create_action(
-                    case_id=moderation_case["id"],
-                    action_type=ModerationService.ACTION_BANK_INCOME,
-                    op_key=moderation_op_key,
-                    value_numeric=fine_points,
-                    value_text=bank_reason,
-                    starts_at=created_at,
-                    created_at=created_at,
-                )
-                if not bank_action:
-                    logger.error(
-                        "❌ moderation bank income action create failed case_id=%s op_key=%s amount=%s",
-                        moderation_case["id"],
-                        moderation_op_key,
-                        fine_points,
+                    current_step = "bank_income_action"
+                    bank_action = ModerationService._create_action(
+                        case_id=moderation_case["id"],
+                        action_type=ModerationService.ACTION_BANK_INCOME,
+                        op_key=moderation_op_key,
+                        value_numeric=fine_points,
+                        value_text=bank_reason,
+                        starts_at=created_at,
+                        created_at=created_at,
                     )
-                    raise RuntimeError("Не удалось привязать поступление штрафа к истории кейса")
-                applied_actions.append(bank_action)
-                completed_steps.append(current_step)
+                    if not bank_action:
+                        logger.error(
+                            "❌ moderation bank income action create failed case_id=%s op_key=%s amount=%s",
+                            moderation_case["id"],
+                            moderation_op_key,
+                            fine_points,
+                        )
+                        raise RuntimeError("Не удалось привязать поступление штрафа к истории кейса")
+                    applied_actions.append(bank_action)
+                    completed_steps.append(current_step)
 
             current_step = "finalize_case"
             finalized_case_rows = ModerationService._update_rows(
@@ -1575,7 +2095,12 @@ class ModerationService:
         if ModerationService.ACTION_KICK in selected_actions:
             result_lines.append("Зафиксирован кик")
         if ModerationService.ACTION_FINE_POINTS in selected_actions and fine_points > 0:
-            result_lines.append(f"Списан штраф {ModerationService._format_points_value(fine_points)} баллов в банк")
+            if fine_payment_mode == ModerationService.FINE_PAYMENT_MODE_MANUAL:
+                result_lines.append(
+                    f"Назначен штраф {ModerationService._format_points_value(fine_points)} баллов к оплате вручную (статус: ждёт оплаты)"
+                )
+            else:
+                result_lines.append(f"Списан штраф {ModerationService._format_points_value(fine_points)} баллов в банк")
         if ModerationService.ACTION_BAN in selected_actions:
             if permanent_ban:
                 result_lines.append("Применён перманентный бан")
@@ -1603,7 +2128,7 @@ class ModerationService:
         violator_lines.append("Наказание выбирается автоматически по типу нарушения и числу предупреждений.")
         if next_step_text:
             violator_lines.append(next_step_text)
-        violator_lines.append("Чтобы избежать следующего усиления, не повторяйте это нарушение и при необходимости запросите у модератора историю кейсов, активные наказания и текущий счётчик предупреждений.")
+        violator_lines.append("Чтобы избежать следующего усиления, не повторяйте это нарушение и при необходимости запросите у модератора историю кейсов, активные наказания, историю нарушений и текущий счётчик предупреждений.")
         ui_payload["violator_result_lines"] = violator_lines
         ui_payload["violator_result_text"] = "\n".join(violator_lines)
         moderator_message = f"Кейс #{moderation_case.get('id')} успешно применён."

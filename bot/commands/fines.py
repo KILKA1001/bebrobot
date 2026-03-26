@@ -38,7 +38,6 @@ def has_manage_permission(ctx):
     return AuthorityService.has_command_permission("discord", str(ctx.author.id), "fine_manage")
 
 
-@bot.hybrid_command(name="fine", description="Назначить штраф пользователю")
 async def fine(
     ctx,
     member: discord.Member,
@@ -125,14 +124,14 @@ async def fine(
 
 
 @bot.hybrid_command(
-    name="myfines", description="Посмотреть и оплатить свои штрафы"
+    name="myfines", description="Посмотреть и оплатить свои legacy-штрафы"
 )
 async def myfines(ctx):
     user_id = ctx.author.id
     fines = FinesService.get_user_fines(user_id)
 
     if not fines:
-        await send_temp(ctx, "✅ У вас нет активных штрафов!")
+        await send_temp(ctx, "✅ У вас нет активных legacy-штрафов. Для новой модерации используйте `/rep`.")
         return
 
     for fine in fines:
@@ -141,9 +140,6 @@ async def myfines(ctx):
         await send_temp(ctx, embed=embed, view=view)
 
 
-@bot.hybrid_command(
-    name="allfines", description="Список всех неоплаченных штрафов"
-)
 async def all_fines(ctx):
     if not has_manage_permission(ctx):
         await send_temp(ctx, "❌ Недостаточно полномочий для просмотра всех штрафов.")
@@ -162,7 +158,6 @@ async def all_fines(ctx):
     await send_temp(ctx, embed=view.get_page_embed(), view=view)
 
 
-@bot.hybrid_command(name="finedetails", description="Подробности штрафа по ID")
 async def finedetails(ctx, fine_id: int):
     fine = db.get_fine_by_id(fine_id)
     if not fine:
@@ -183,7 +178,6 @@ async def finedetails(ctx, fine_id: int):
     await send_temp(ctx, embed=embed)
 
 
-@bot.hybrid_command(name="editfine", description="Изменить параметры штрафа")
 async def editfine(
     ctx,
     fine_id: int,
@@ -234,7 +228,6 @@ async def editfine(
     await send_temp(ctx, f"✏️ Штраф #{fine_id} успешно обновлён.")
 
 
-@bot.hybrid_command(name="cancel_fine", description="Отменить штраф по ID")
 async def cancel_fine(ctx, fine_id: int):
     if not has_manage_permission(ctx):
         await send_temp(ctx, "❌ Недостаточно полномочий для отмены штрафов.")
@@ -273,9 +266,6 @@ async def cancel_fine(ctx, fine_id: int):
     await send_temp(ctx, f"❌ Штраф #{fine_id} успешно отменён.")
 
 
-@bot.hybrid_command(
-    name="finehistory", description="История штрафов пользователя"
-)
 async def finehistory(
     ctx, member: Optional[discord.Member] = None, page: int = 1
 ):
@@ -313,7 +303,11 @@ async def finehistory(
         return
 
     embed = discord.Embed(
-        title=f"📚 История штрафов — {member.display_name}",
+        title=f"📚 История legacy-штрафов — {member.display_name}",
+        description=(
+            "Это переходный экран для старых денежных штрафов. "
+            "Рейтинг должников больше не используется; для новой модерации открывайте `/rep`."
+        ),
         color=discord.Color.teal(),
     )
     start = (page - 1) * fines_per_page
@@ -330,13 +324,10 @@ async def finehistory(
             inline=False,
         )
 
-    embed.set_footer(text=f"Страница {page}/{total_pages}")
+    embed.set_footer(text=f"Legacy-данные переходного периода • Страница {page}/{total_pages}")
     await send_temp(ctx, embed=embed)
 
 
-@bot.hybrid_command(
-    name="topfines", description="Legacy-режим: перенаправление со старого штрафного топа"
-)
 async def topfines(ctx):
     logger.warning(
         "legacy topfines command invoked actor_id=%s guild_id=%s reason=topfines_retired",
@@ -346,20 +337,29 @@ async def topfines(ctx):
     embed = discord.Embed(
         title="🧭 /topfines больше не используется",
         description=(
-            "Штрафной monthly-top и рейтинг должников выведены в legacy-only режим. "
-            "Основной сценарий модерации теперь начинается с `/rep`, а не с `/topfines`."
+            "Рейтинг должников и штрафной monthly-top выведены из использования. "
+            "Теперь модерация ведётся через кейсы, а основной сценарий начинается с `/rep`, а не с `/topfines`."
         ),
         color=discord.Color.orange(),
     )
     embed.add_field(
         name="Что использовать вместо этого",
         value=(
-            "• `/rep` — открыть кейс модерации, увидеть автонаказание, предупреждения и следующий шаг эскалации.\n"
-            "• `/myfines` — посмотреть свои активные денежные штрафы.\n"
+            "• `/rep` — открыть кейс модерации, увидеть автонаказание, предупреждения, активное наказание и следующий шаг эскалации.\n"
+            "• `/myfines` — посмотреть свои активные legacy-денежные штрафы.\n"
             "• `/finehistory [@пользователь] [страница]` — открыть историю legacy-штрафов на переходный период.\n"
-            "• В кейсе /rep отдельно видно, был ли списан штраф в банк и какое наказание активно сейчас."
+            "• В кейсе /rep отдельно видно, был ли списан штраф в банк, какое наказание активно сейчас и что будет дальше по эскалации."
         ),
         inline=False,
     )
-    embed.set_footer(text="Legacy-вызов записан в лог, чтобы можно было добить оставшиеся ссылки на /topfines.")
+    embed.add_field(
+        name="Что происходит прямо сейчас",
+        value=(
+            "• Старая механика больше не участвует в новой продуктовой логике.\n"
+            "• Активные legacy-штрафы пока остаются отдельным переходным экраном.\n"
+            "• История кейсов и нарушений сейчас смотрится через `/rep` и журнал модерации; позже она будет вынесена в отдельный экран."
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Используйте `/rep`. Legacy-вызов записан в лог, чтобы можно было добить оставшиеся ссылки на /topfines.")
     await send_temp(ctx, embed=embed)

@@ -9,8 +9,23 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from bot.services import AuthorityService, ModerationService
-from bot.systems.moderation_rep_ui import render_rep_preview_text, render_rep_result_text, render_violator_notification_text
+from bot.services import AuthorityService, ModerationNotificationsService, ModerationService
+from bot.systems.moderation_rep_ui import (
+    render_rep_apply_error_text,
+    render_rep_authority_deny_text,
+    render_rep_cancelled_text,
+    render_rep_duplicate_submit_text,
+    render_rep_expired_text,
+    render_rep_foreign_actor_text,
+    render_rep_preview_text,
+    render_rep_preview_failed_text,
+    render_rep_result_text,
+    render_rep_start_text,
+    render_rep_target_not_found_text,
+    render_rep_target_prompt_text,
+    render_violator_notification_text,
+    render_rep_violation_prompt_text,
+)
 from bot.telegram_bot.commands.roles_admin import _resolve_telegram_target, _telegram_user_lookup_hint
 from bot.telegram_bot.identity import persist_telegram_identity_from_user
 
@@ -31,7 +46,7 @@ _PENDING_REP: dict[int, PendingRepState] = {}
 
 
 def _friendly_rep_error_text() -> str:
-    return "Не удалось завершить /rep. Ничего не применено: попробуйте ещё раз чуть позже."
+    return render_rep_apply_error_text()
 
 
 def _is_pending_expired(state: PendingRepState) -> bool:
@@ -117,39 +132,22 @@ def _log_rep(
 
 
 def _start_text() -> str:
-    return (
-        "🛡️ /rep — единый интерактивный мастер модерации.\n\n"
-        "Как пользоваться:\n"
-        "• Шаг 1: выберите нарушителя. Лучше всего reply на его сообщение; в личке можно написать @username / username, lookup или id как резерв.\n"
-        "• Шаг 2: нарушение выбирается кнопками.\n"
-        "• Шаг 3: бот покажет авторасчёт наказания, предупреждения и следующий шаг эскалации.\n"
-        "• Шаг 4: вы явно подтверждаете действие.\n\n"
-        "ℹ️ Наказание определяется автоматически по типу нарушения и числу предупреждений."
+    return render_rep_start_text(
+        target_selection_hint="reply на сообщение нарушителя; в личке — @username / username, lookup или id только как резерв.",
+        compact=True,
     )
 
 
 def _target_prompt_text(target_label: str | None = None) -> str:
-    base = ["👤 Шаг 1: выберите пользователя."]
-    if target_label:
-        base.append(f"Сейчас выбран: {target_label}")
-    base.extend(
-        [
-            "",
-            "Подсказка:",
-            f"• { _telegram_user_lookup_hint() }",
-            "• reply на сообщение нарушителя — самый быстрый и безопасный вариант.",
-            "• После выбора цели бот сам покажет предпросмотр наказания.",
-        ]
+    return render_rep_target_prompt_text(
+        target_selection_hint=f"{_telegram_user_lookup_hint()}. Reply на сообщение нарушителя — самый быстрый и безопасный вариант.",
+        target_label=target_label,
+        compact=True,
     )
-    return "\n".join(base)
 
 
 def _violation_prompt_text(target_label: str) -> str:
-    return (
-        "📘 Шаг 2: выберите вид нарушения кнопками.\n\n"
-        f"Цель: {target_label}\n"
-        "Бот автоматически рассчитает текущее наказание, сколько предупреждений станет после него и что произойдёт при следующем повторе."
-    )
+    return render_rep_violation_prompt_text(target_label=target_label, compact=True)
 
 
 @router.message(Command("rep"))
@@ -158,7 +156,21 @@ async def rep_command(message: Message) -> None:
         return
     persist_telegram_identity_from_user(message.from_user)
     if not AuthorityService.has_command_permission("telegram", str(message.from_user.id), "moderation_mute"):
-        await message.answer("❌ Команда /rep доступна только ролям модерации. Если доступ должен быть, проверьте authority и попробуйте ещё раз.")
+        _log_rep(
+            "warning",
+            message="rep authority deny",
+            provider="telegram",
+            chat_id=message.chat.id,
+            actor=message.from_user.id,
+            actor_account_id=None,
+            target=None,
+            target_account_id=None,
+            violation_code=None,
+            selected_actions=[],
+            case_id=None,
+            error_code="authority_denied",
+        )
+        await message.answer(f"❌ {render_rep_authority_deny_text('Команда /rep доступна только ролям модерации. Если доступ должен быть, проверьте authority и попробуйте ещё раз.')}")
         return
     pending = PendingRepState(step="await_target", created_at=time.time(), payload={"chat_id": message.chat.id})
     _PENDING_REP[message.from_user.id] = pending
@@ -205,17 +217,17 @@ async def rep_callback(callback: CallbackQuery) -> None:
     owner_id = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
     action = parts[2] if len(parts) > 2 else ""
     if callback.from_user.id != owner_id:
-        await callback.answer("Эта панель /rep открыта другим модератором.", show_alert=True)
+        await callback.answer(render_rep_foreign_actor_text(), show_alert=True)
         return
     pending = _PENDING_REP.get(callback.from_user.id)
     if action == "cancel":
         _PENDING_REP.pop(callback.from_user.id, None)
-        await callback.message.edit_text("/rep отменён. Никаких действий не применено. Запусти команду заново, если нужно начать сначала.", reply_markup=None)
+        await callback.message.edit_text(render_rep_cancelled_text(), reply_markup=None)
         await callback.answer()
         return
     if not pending or _is_pending_expired(pending):
         _PENDING_REP.pop(callback.from_user.id, None)
-        await callback.answer("Сессия /rep устарела. Запусти /rep заново.", show_alert=True)
+        await callback.answer(render_rep_expired_text(), show_alert=True)
         return
     if action == "back":
         destination = parts[3] if len(parts) > 3 else "target"
@@ -266,7 +278,7 @@ async def rep_callback(callback: CallbackQuery) -> None:
                 case_id=None,
                 error_code="preview_exception",
             )
-            await callback.answer(_friendly_rep_error_text(), show_alert=True)
+            await callback.answer(render_rep_preview_failed_text(), show_alert=True)
             return
         if not preview.get("ok"):
             _log_rep(
@@ -283,7 +295,7 @@ async def rep_callback(callback: CallbackQuery) -> None:
                 case_id=None,
                 error_code=str(preview.get("error_code") or "preview_failed"),
             )
-            await callback.answer(preview.get("message") or "Действие сейчас недоступно.", show_alert=True)
+            await callback.answer(render_rep_authority_deny_text(preview.get("message") or "Действие сейчас недоступно."), show_alert=True)
             return
         payload["violation_code"] = code
         payload["preview"] = preview
@@ -306,12 +318,12 @@ async def rep_callback(callback: CallbackQuery) -> None:
             case_id=None,
             error_code=None,
         )
-        await callback.message.edit_text(render_rep_preview_text(ui_payload), reply_markup=_preview_keyboard(callback.from_user.id))
+        await callback.message.edit_text(render_rep_preview_text(ui_payload, compact=True), reply_markup=_preview_keyboard(callback.from_user.id))
         await callback.answer()
         return
     if action == "confirm":
         if pending.is_applying or pending.step == "done":
-            await callback.answer("Это действие уже обработано. Для нового кейса запусти /rep заново.", show_alert=True)
+            await callback.answer(render_rep_duplicate_submit_text(), show_alert=True)
             return
         payload = dict(pending.payload)
         preview = payload.get("preview") or {}
@@ -371,26 +383,53 @@ async def rep_callback(callback: CallbackQuery) -> None:
                 case_id=ui_payload.get("case_id"),
                 error_code=None,
             )
-            await callback.message.edit_text(render_rep_result_text(ui_payload), reply_markup=None)
-            target_user_id = int(str((target or {}).get("provider_user_id") or "0") or 0)
-            if target_user_id:
-                try:
-                    await callback.bot.send_message(target_user_id, render_violator_notification_text(ui_payload))
-                except Exception:
-                    _log_rep(
-                        "exception",
-                        message="rep target notify failed",
+            await callback.message.edit_text(render_rep_result_text(ui_payload, compact=True), reply_markup=None)
+            try:
+                selected_actions = set(ui_payload.get("selected_actions") or [])
+                text = render_violator_notification_text(ui_payload)
+                if "mute" in selected_actions:
+                    await ModerationNotificationsService.dispatch_notification(
+                        runtime_bot=callback.bot,
                         provider="telegram",
-                        chat_id=callback.message.chat.id,
-                        actor=callback.from_user.id,
-                        actor_account_id=ui_payload.get("actor_account_id"),
-                        target=str(target_user_id),
                         target_account_id=ui_payload.get("target_account_id"),
-                        violation_code=ui_payload.get("violation_code"),
-                        selected_actions=list(ui_payload.get("selected_actions") or []),
+                        event_type=ModerationNotificationsService.EVENT_MUTE_STARTED,
+                        message_text=text,
                         case_id=ui_payload.get("case_id"),
-                        error_code="target_notify_failed",
+                        source_chat_id=callback.message.chat.id,
+                        requires_chat_delivery=True,
+                        allow_dm_delivery=True,
                     )
+                if "fine_points" in selected_actions:
+                    await ModerationNotificationsService.dispatch_notification(
+                        runtime_bot=callback.bot,
+                        provider="telegram",
+                        target_account_id=ui_payload.get("target_account_id"),
+                        event_type=ModerationNotificationsService.EVENT_FINE_CREATED,
+                        message_text=text,
+                        case_id=ui_payload.get("case_id"),
+                        source_chat_id=callback.message.chat.id,
+                        requires_chat_delivery=True,
+                        allow_dm_delivery=True,
+                    )
+                if not selected_actions.intersection({"mute", "fine_points"}):
+                    target_user_id = int(str((target or {}).get("provider_user_id") or "0") or 0)
+                    if target_user_id:
+                        await callback.bot.send_message(target_user_id, text)
+            except Exception:
+                _log_rep(
+                    "exception",
+                    message="rep target notify failed",
+                    provider="telegram",
+                    chat_id=callback.message.chat.id,
+                    actor=callback.from_user.id,
+                    actor_account_id=ui_payload.get("actor_account_id"),
+                    target=str((target or {}).get("provider_user_id") or "") or None,
+                    target_account_id=ui_payload.get("target_account_id"),
+                    violation_code=ui_payload.get("violation_code"),
+                    selected_actions=list(ui_payload.get("selected_actions") or []),
+                    case_id=ui_payload.get("case_id"),
+                    error_code="target_notify_failed",
+                )
             await callback.answer()
             return
         except Exception:
@@ -421,7 +460,7 @@ async def rep_pending_handler(message: Message) -> None:
     pending = _PENDING_REP.get(message.from_user.id)
     if not pending or _is_pending_expired(pending):
         _PENDING_REP.pop(message.from_user.id, None)
-        await message.answer("❌ Сессия /rep устарела. Запусти /rep заново.")
+        await message.answer(f"❌ {render_rep_expired_text()}")
         return
     if pending.step != "await_target":
         return
@@ -435,7 +474,21 @@ async def rep_pending_handler(message: Message) -> None:
         source="group" if message.chat.type != "private" else "private",
     )
     if not resolved or resolved.get("error"):
-        await message.answer((resolved or {}).get("message") or "❌ Не удалось определить нарушителя. Попробуй ещё раз.")
+        _log_rep(
+            "warning",
+            message="rep target resolve failed",
+            provider="telegram",
+            chat_id=message.chat.id,
+            actor=message.from_user.id,
+            actor_account_id=None,
+            target=str(message.text or "") or None,
+            target_account_id=None,
+            violation_code=None,
+            selected_actions=[],
+            case_id=None,
+            error_code="target_not_found",
+        )
+        await message.answer((resolved or {}).get("message") or render_rep_target_not_found_text(target_selection_hint="reply на сообщение нарушителя; в ЛС можно ввести @username / username"))
         return
     pending.step = "await_violation"
     pending.created_at = time.time()
