@@ -13,10 +13,7 @@ from bot.telegram_bot.identity import persist_telegram_identity_from_user
 
 logger = logging.getLogger(__name__)
 router = Router()
-_PAYMENT_HINT = (
-    "Если висит legacy-денежный штраф, оплатите его через Discord-команду /myfines на этом же общем аккаунте: "
-    "там доступны кнопки оплаты, а статус потом обновится и здесь."
-)
+_PAYMENT_HINT = ModerationService.MODSTATUS_PAYMENT_HINT
 
 
 @router.message(Command("modstatus"))

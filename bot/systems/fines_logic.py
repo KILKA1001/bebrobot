@@ -151,13 +151,17 @@ def _load_points_by_account(account_id: str) -> float:
 
 def _process_payment_sync(
     *,
-    user_id: int,
+    user_id: int | None,
+    account_id: str | None,
     fine: dict,
     percent: float,
 ) -> tuple[bool, str, float | None, dict | None]:
-    account_id = _resolve_payment_account_id(user_id, handler="process_payment")
+    resolved_account_id = str(account_id or "").strip()
+    if not resolved_account_id and user_id is not None:
+        resolved_account_id = str(_resolve_payment_account_id(user_id, handler="process_payment") or "").strip()
+    account_id = resolved_account_id
     if not account_id:
-        logger.error("process_payment: unresolved account_id for discord_user_id=%s", user_id)
+        logger.error("process_payment: unresolved account_id user_id=%s", user_id)
         return False, "❌ Не удалось определить ваш аккаунт.", None, None
 
     user_points = _load_points_by_account(account_id)
@@ -273,12 +277,23 @@ async def process_payment(interaction: discord.Interaction, fine: dict, percent:
     ok, message, _to_pay, fine_snapshot = await asyncio.to_thread(
         _process_payment_sync,
         user_id=user_id,
+        account_id=None,
         fine=fine,
         percent=percent,
     )
     if fine_snapshot:
         fine.update(fine_snapshot)
     await safe_followup_send(interaction, message, ephemeral=True)
+
+
+def process_payment_for_account(account_id: str, fine: dict, percent: float) -> tuple[bool, str, float | None, dict | None]:
+    """Account-first helper for cross-platform fine payment сценариев."""
+    return _process_payment_sync(
+        user_id=None,
+        account_id=account_id,
+        fine=fine,
+        percent=percent,
+    )
 
 
 

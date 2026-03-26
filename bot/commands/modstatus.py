@@ -12,10 +12,7 @@ from bot.services import AccountsService, AuthorityService, ModerationService
 from bot.utils import send_temp
 
 logger = logging.getLogger(__name__)
-_PAYMENT_HINT = (
-    "Если висит legacy-денежный штраф, оплатите его через Discord-команду `/myfines` на этом же общем аккаунте: "
-    "там доступны кнопки оплаты, а статус потом обновится и здесь."
-)
+_PAYMENT_HINT = ModerationService.MODSTATUS_PAYMENT_HINT
 
 
 async def _resolve_reply_message(ctx: commands.Context) -> discord.Message | None:
