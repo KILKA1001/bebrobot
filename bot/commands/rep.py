@@ -9,7 +9,7 @@ from discord.ext import commands
 
 from bot.commands.base import bot
 from bot.commands.roles_admin import _resolve_discord_target
-from bot.services import AuthorityService, ModerationService
+from bot.services import AuthorityService, ModerationNotificationsService, ModerationService
 from bot.systems.moderation_rep_ui import (
     render_rep_apply_error_text,
     render_rep_authority_deny_text,
@@ -396,11 +396,38 @@ class DiscordRepFlowView(discord.ui.View):
         return embed
 
     async def notify_target(self, ui_payload: dict[str, Any]) -> None:
-        member = (self.state.target or {}).get("member")
-        if not member:
-            return
+        target_account_id = str(ui_payload.get("target_account_id") or "") or None
+        selected_actions = set(ui_payload.get("selected_actions") or [])
+        text = render_violator_notification_text(ui_payload)
         try:
-            await safe_send(member, render_violator_notification_text(ui_payload))
+            if "mute" in selected_actions:
+                await ModerationNotificationsService.dispatch_notification(
+                    runtime_bot=getattr(self, "bot", None),
+                    provider="discord",
+                    target_account_id=target_account_id,
+                    event_type=ModerationNotificationsService.EVENT_MUTE_STARTED,
+                    message_text=text,
+                    case_id=ui_payload.get("case_id"),
+                    source_chat_id=self.state.chat_id,
+                    requires_chat_delivery=True,
+                    allow_dm_delivery=True,
+                )
+            if "fine_points" in selected_actions:
+                await ModerationNotificationsService.dispatch_notification(
+                    runtime_bot=getattr(self, "bot", None),
+                    provider="discord",
+                    target_account_id=target_account_id,
+                    event_type=ModerationNotificationsService.EVENT_FINE_CREATED,
+                    message_text=text,
+                    case_id=ui_payload.get("case_id"),
+                    source_chat_id=self.state.chat_id,
+                    requires_chat_delivery=True,
+                    allow_dm_delivery=True,
+                )
+            if not selected_actions.intersection({"mute", "fine_points"}):
+                member = (self.state.target or {}).get("member")
+                if member:
+                    await safe_send(member, text)
         except Exception:
             self.log_event("exception", message="rep target notify failed", error_code="target_notify_failed")
 
@@ -458,6 +485,7 @@ async def rep(ctx: commands.Context, *, target: str | None = None):
         guild_id=ctx.guild.id if ctx.guild else None,
         chat_id=ctx.channel.id if ctx.channel else (ctx.guild.id if ctx.guild else None),
     )
+    view.bot = ctx.bot
     prefilled_target = await _prefill_target_from_context(ctx, target)
     if target and not prefilled_target:
         logger.warning(
