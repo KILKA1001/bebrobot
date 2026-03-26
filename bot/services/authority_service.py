@@ -53,6 +53,7 @@ ROLE_LEVELS: dict[str, int] = {
 MIN_ROLE_MANAGER_LEVEL = 80
 SUPER_ADMIN_ROLE_KEYS = {"глава клуба", "главный вице"}
 SUPER_ADMIN_LEVEL = 100
+TOP_HIERARCHY_MUTUAL_TITLES = {"глава клуба", "главный вице"}
 
 MODERATION_ACTIONS = {"mute", "warn", "ban"}
 MODERATION_MUTE_TITLES = {
@@ -148,6 +149,22 @@ class AuthorityService:
         return decision
 
     @staticmethod
+    def _can_manage_target_authority(
+        actor: AuthorityResult,
+        target: AuthorityResult,
+    ) -> tuple[bool, set[str], set[str]]:
+        actor_titles = AuthorityService._normalized_titles(actor.titles)
+        target_titles = AuthorityService._normalized_titles(target.titles)
+
+        actor_is_top_peer = bool(actor_titles & TOP_HIERARCHY_MUTUAL_TITLES)
+        target_is_top_peer = bool(target_titles & TOP_HIERARCHY_MUTUAL_TITLES)
+
+        allowed = actor.rank_weight > target.rank_weight
+        if not allowed and actor.rank_weight == target.rank_weight == 100 and actor_is_top_peer and target_is_top_peer:
+            allowed = True
+        return allowed, actor_titles, target_titles
+
+    @staticmethod
     def is_super_admin(actor_provider: str, actor_user_id: str) -> bool:
         actor = AuthorityService.resolve_authority(actor_provider, actor_user_id)
         actor_titles = AuthorityService._normalized_titles(actor.titles)
@@ -240,16 +257,7 @@ class AuthorityService:
         actor = AuthorityService.resolve_authority(actor_provider, actor_user_id)
         target = AuthorityService.resolve_authority(target_provider, target_user_id)
 
-        actor_titles = AuthorityService._normalized_titles(actor.titles)
-        target_titles = AuthorityService._normalized_titles(target.titles)
-
-        peer_titles = {"глава клуба", "главный вице"}
-        actor_is_peer = bool(actor_titles & peer_titles)
-        target_is_peer = bool(target_titles & peer_titles)
-
-        allowed = actor.rank_weight > target.rank_weight
-        if not allowed and actor.rank_weight == target.rank_weight == 100 and actor_is_peer and target_is_peer:
-            allowed = True
+        allowed, actor_titles, target_titles = AuthorityService._can_manage_target_authority(actor, target)
         logger.info(
             "authority hierarchy check actor=%s:%s (%s:%s) target=%s:%s (%s:%s) allowed=%s",
             actor_provider,
@@ -301,7 +309,8 @@ class AuthorityService:
                 requested_action=requested_action,
             )
 
-        if not AuthorityService.can_manage_target(actor_provider, actor_user_id, target_provider, target_user_id):
+        can_manage_target, _, _ = AuthorityService._can_manage_target_authority(actor, target)
+        if not can_manage_target:
             return AuthorityService._build_moderation_decision(
                 allowed=False,
                 deny_reason="hierarchy_denied",
