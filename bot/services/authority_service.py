@@ -156,7 +156,12 @@ class AuthorityService:
         actor_titles = AuthorityService._normalized_titles(actor.titles)
         target_titles = AuthorityService._normalized_titles(target.titles)
 
+        actor_is_top_peer = bool(actor_titles & TOP_HIERARCHY_MUTUAL_TITLES)
+        target_is_top_peer = bool(target_titles & TOP_HIERARCHY_MUTUAL_TITLES)
+
         allowed = actor.rank_weight > target.rank_weight
+        if not allowed and actor.rank_weight == target.rank_weight == 100 and actor_is_top_peer and target_is_top_peer:
+            allowed = True
         return allowed, actor_titles, target_titles
 
     @staticmethod
