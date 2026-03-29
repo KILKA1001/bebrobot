@@ -3,6 +3,7 @@ import logging
 import discord
 
 from bot.commands.base import bot
+from bot.services import AuthorityService
 from bot.services.shop_service import (
     SHOP_PAGE_SIZE,
     SHOP_TEXT_ACQUIRE_HINT_PLACEHOLDER,
@@ -40,6 +41,7 @@ class ShopView(discord.ui.View):
         self.total_pages = 1
         self.mode = "categories"
         self.selected_item_id: str | None = None
+        self.is_superadmin = AuthorityService.is_super_admin("discord", str(self.author_id))
         self._render()
 
     def _render(self) -> None:
@@ -67,6 +69,7 @@ class ShopView(discord.ui.View):
             self.author_id,
         )
         roles_btn = discord.ui.Button(label="Роли", style=discord.ButtonStyle.primary)
+        admin_btn = discord.ui.Button(label="⚙️ Настройка магазина", style=discord.ButtonStyle.secondary, row=1)
 
         async def roles_cb(interaction: discord.Interaction):
             logger.info(
@@ -94,6 +97,16 @@ class ShopView(discord.ui.View):
 
         roles_btn.callback = roles_cb
         self.add_item(roles_btn)
+        if self.is_superadmin:
+            async def admin_cb(interaction: discord.Interaction):
+                logger.info("shop_admin_entry_open provider=discord actor_user_id=%s", self.author_id)
+                await interaction.response.send_message(
+                    "⚙️ Настройка магазина\n\nШаг 1/2: выберите категорию: Роли.\nШаг 2/2: выберите действие изменения витрины.",
+                    ephemeral=True,
+                )
+
+            admin_btn.callback = admin_cb
+            self.add_item(admin_btn)
 
     def _render_grid(self) -> None:
         self.clear_items()

@@ -6,6 +6,7 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.telegram_bot.identity import persist_telegram_identity_from_user
+from bot.services import AuthorityService
 from bot.services.shop_service import (
     SHOP_PAGE_SIZE,
     SHOP_TEXT_ACQUIRE_HINT_PLACEHOLDER,
@@ -117,13 +118,18 @@ def _shop_categories_text(account_id: str | None) -> str:
 
 
 def _build_categories_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="Роли", callback_data="shop:category:roles"),
-            ]
-        ]
-    )
+    return _build_categories_keyboard_with_admin(False)
+
+
+def _build_categories_keyboard_with_admin(is_superadmin: bool) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text="Роли", callback_data="shop:category:roles")]]
+    if is_superadmin:
+        rows.append([InlineKeyboardButton(text="⚙️ Настройка магазина", callback_data="shop:admin:entry")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _shop_is_superadmin(user_id: int) -> bool:
+    return AuthorityService.is_super_admin("telegram", str(user_id))
 
 
 def _item_card_text(item, account_id: str | None) -> str:
@@ -155,6 +161,18 @@ def _item_confirm_text(item, account_id: str | None) -> str:
     )
 
 
+def _admin_actions_keyboard() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="➕ Добавить товар на витрину", callback_data="shop:admin_action:add")],
+        [InlineKeyboardButton(text="➖ Убрать товар с витрины", callback_data="shop:admin_action:remove")],
+        [InlineKeyboardButton(text="💳 Изменить цену", callback_data="shop:admin_action:price")],
+        [InlineKeyboardButton(text="↕️ Изменить позицию", callback_data="shop:admin_action:position")],
+        [InlineKeyboardButton(text="⏱ Вкл/выкл акцию", callback_data="shop:admin_action:sale")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="shop:categories")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 @router.message(Command("shop"))
 async def shop_command(message: Message) -> None:
     persist_telegram_identity_from_user(message.from_user)
@@ -176,7 +194,8 @@ async def shop_command(message: Message) -> None:
         return
 
     text = _shop_categories_text(profile_check.account_id)
-    reply_markup = _build_categories_keyboard()
+    is_superadmin = _shop_is_superadmin(message.from_user.id)
+    reply_markup = _build_categories_keyboard_with_admin(is_superadmin)
     logger.info(
         "shop_category_screen_open provider=telegram actor_user_id=%s account_id=%s",
         message.from_user.id,
@@ -233,6 +252,58 @@ async def shop_callback(callback: CallbackQuery) -> None:
             await callback.answer()
             return
 
+        if len(parts) >= 3 and parts[1] == "admin" and parts[2] == "entry":
+            if not _shop_is_superadmin(callback.from_user.id):
+                logger.warning(
+                    "shop_admin_denied_not_superadmin provider=telegram actor_user_id=%s action=entry",
+                    callback.from_user.id,
+                )
+                await callback.answer("Недостаточно прав", show_alert=True)
+                return
+            logger.info("shop_admin_entry_open provider=telegram actor_user_id=%s", callback.from_user.id)
+            await callback.message.edit_text(
+                "⚙️ <b>Настройка магазина</b>\n\nШаг 1/2: выберите категорию.\nШаг 2/2: выберите действие.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text="Роли", callback_data="shop:admin_category:roles")],
+                        [InlineKeyboardButton(text="⬅️ Назад", callback_data="shop:categories")],
+                    ]
+                ),
+            )
+            await callback.answer()
+            return
+
+        if len(parts) >= 3 and parts[1] == "admin_category":
+            if not _shop_is_superadmin(callback.from_user.id):
+                logger.warning(
+                    "shop_admin_denied_not_superadmin provider=telegram actor_user_id=%s action=category_select",
+                    callback.from_user.id,
+                )
+                await callback.answer("Недостаточно прав", show_alert=True)
+                return
+            logger.info("shop_admin_category_select provider=telegram actor_user_id=%s category=%s", callback.from_user.id, parts[2])
+            await callback.message.edit_text(
+                "⚙️ <b>Настройка магазина</b>\n\nШаг 1/2: категория выбрана.\nШаг 2/2: выберите, что изменить на витрине.",
+                parse_mode="HTML",
+                reply_markup=_admin_actions_keyboard(),
+            )
+            await callback.answer()
+            return
+
+        if len(parts) >= 3 and parts[1] == "admin_action":
+            if not _shop_is_superadmin(callback.from_user.id):
+                logger.warning(
+                    "shop_admin_denied_not_superadmin provider=telegram actor_user_id=%s action=action_select",
+                    callback.from_user.id,
+                )
+                await callback.answer("Недостаточно прав", show_alert=True)
+                return
+            action = parts[2]
+            logger.info("shop_admin_action_selected provider=telegram actor_user_id=%s action=%s", callback.from_user.id, action)
+            await callback.answer("Готово, используйте команды /roles_admin для изменения витрины.")
+            return
+
         if len(parts) >= 3 and parts[1] == "category":
             category = parts[2]
             if category != "roles":
@@ -277,7 +348,7 @@ async def shop_callback(callback: CallbackQuery) -> None:
                 await callback.message.edit_text(
                     _shop_categories_text(profile_check.account_id),
                     parse_mode="HTML",
-                    reply_markup=_build_categories_keyboard(),
+                    reply_markup=_build_categories_keyboard_with_admin(_shop_is_superadmin(callback.from_user.id)),
                 )
             except Exception as error:  # noqa: BLE001
                 logger.exception(
@@ -389,7 +460,7 @@ async def shop_callback(callback: CallbackQuery) -> None:
                 await callback.message.edit_text(
                     f"{_shop_categories_text(profile_check.account_id)}\n\n{result.message}",
                     parse_mode="HTML",
-                    reply_markup=_build_categories_keyboard(),
+                    reply_markup=_build_categories_keyboard_with_admin(_shop_is_superadmin(callback.from_user.id)),
                 )
             except Exception as error:  # noqa: BLE001
                 logger.exception(

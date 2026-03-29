@@ -670,17 +670,11 @@ def _build_actions_keyboard(
     section: str | None = None,
     *,
     can_manage_categories: bool | None = None,
-    can_manage_shop_settings: bool | None = None,
 ) -> InlineKeyboardMarkup:
     allow_categories = (
         AuthorityService.can_manage_role_categories("telegram", str(actor_id))
         if can_manage_categories is None
         else can_manage_categories
-    )
-    allow_shop_settings = (
-        _can_manage_shop_settings("telegram", str(actor_id))
-        if can_manage_shop_settings is None
-        else can_manage_shop_settings
     )
     rows: list[list[InlineKeyboardButton]] = []
 
@@ -693,8 +687,6 @@ def _build_actions_keyboard(
                     [InlineKeyboardButton(text="🗑 Удалить категорию", callback_data=f"roles_admin:{actor_id}:start:category_delete")],
                 ]
             )
-            if allow_shop_settings:
-                rows.append([InlineKeyboardButton(text="⚙️ Настройка магазина", callback_data=f"roles_admin:{actor_id}:shop_settings")])
     elif section == "roles":
         rows.extend(
             [
@@ -1737,24 +1729,6 @@ async def roles_admin_command(message: Message) -> None:
 
         subcommand = parts[1].lower()
         args = parts[2:]
-        shop_admin_subcommands = {"shop_settings", "shop_add", "shop_remove", "shop_price", "shop_position", "shop_sale"}
-        if subcommand in shop_admin_subcommands:
-            actor_id = message.from_user.id if message.from_user else None
-            if not actor_id or not _can_manage_shop_settings("telegram", str(actor_id)):
-                logger.warning(
-                    "shop_admin_denied provider=telegram actor_id=%s reason=not_superadmin source=text_command subcommand=%s",
-                    actor_id,
-                    subcommand,
-                )
-                await message.answer("Недостаточно прав")
-                return
-            logger.info(
-                "shop_admin_open provider=telegram actor_id=%s role=superadmin source=text_command subcommand=%s",
-                actor_id,
-                subcommand,
-            )
-
-
         if subcommand == "list":
             grouped = RoleManagementService.list_roles_grouped()
             if not grouped:

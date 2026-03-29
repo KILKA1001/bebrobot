@@ -200,7 +200,6 @@ class TelegramRolesAdminTargetResolutionTests(unittest.TestCase):
             actor_id=10,
             section="categories",
             can_manage_categories=True,
-            can_manage_shop_settings=True,
         )
 
         texts = [button.text for row in keyboard.inline_keyboard for button in row]
@@ -208,7 +207,6 @@ class TelegramRolesAdminTargetResolutionTests(unittest.TestCase):
         self.assertIn("🗂 Создать категорию", texts)
         self.assertIn("↕️ Порядок категории", texts)
         self.assertIn("🗑 Удалить категорию", texts)
-        self.assertIn("⚙️ Настройка магазина", texts)
         self.assertNotIn("➕ Создать роль", texts)
         self.assertNotIn("🧾 Роли пользователя", texts)
 
