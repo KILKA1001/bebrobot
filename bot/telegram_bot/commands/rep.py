@@ -84,14 +84,21 @@ def _violations_keyboard(actor_id: int, violations: list[dict[str, Any]] | None 
     rows.append([InlineKeyboardButton(text="🔧 Пред", callback_data=f"rep:{actor_id}:manual:warn")])
     rows.append([InlineKeyboardButton(text="🔧 Бан", callback_data=f"rep:{actor_id}:manual:ban")])
     rows.append([InlineKeyboardButton(text="🔧 Кик", callback_data=f"rep:{actor_id}:manual:kick")])
-    rows.append([InlineKeyboardButton(text="──────── Нарушения из правил ────────", callback_data=f"rep:{actor_id}:noop")])
+    rows.append([InlineKeyboardButton(text="📚 Нарушения из правил", callback_data=f"rep:{actor_id}:rules_menu")])
+    rows.append([InlineKeyboardButton(text="Назад", callback_data=f"rep:{actor_id}:back:target")])
+    rows.append([InlineKeyboardButton(text="Отмена", callback_data=f"rep:{actor_id}:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _rules_keyboard(actor_id: int, violations: list[dict[str, Any]] | None = None, *, show_escalation: bool = False) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
     source = violations if violations is not None else ModerationService.list_active_violation_types()
     for violation in source[:12]:
         code = str(violation.get("code") or "").strip()
         if not code:
             continue
         rows.append([InlineKeyboardButton(text=str(violation.get("title") or code), callback_data=f"rep:{actor_id}:violation:{code}")])
-    rows.append([InlineKeyboardButton(text="Назад", callback_data=f"rep:{actor_id}:back:target")])
+    rows.append([InlineKeyboardButton(text="⬅️ К действиям", callback_data=f"rep:{actor_id}:back:actions")])
     if show_escalation:
         rows.append([InlineKeyboardButton(text="📨 Заявка старшему админу", callback_data=f"rep:{actor_id}:escalate")])
     rows.append([InlineKeyboardButton(text="Отмена", callback_data=f"rep:{actor_id}:cancel")])
@@ -183,6 +190,15 @@ def _violation_prompt_text(target_label: str) -> str:
     return render_rep_violation_prompt_text(target_label=target_label, compact=True)
 
 
+def _actions_menu_text(target_label: str, hidden: int) -> str:
+    suffix = f"\n\n🔒 Скрыто нарушений по полномочиям: {hidden}" if hidden > 0 else ""
+    return (
+        _violation_prompt_text(target_label)
+        + "\n\nВыберите 1 из 4 ручных действий или нажмите 5-ю кнопку «Нарушения из правил»."
+        + suffix
+    )
+
+
 @router.message(Command("rep"))
 async def rep_command(message: Message) -> None:
     if not message.from_user:
@@ -244,14 +260,9 @@ async def rep_command(message: Message) -> None:
             pending.payload["unavailable_count"] = len(list(availability.get("unavailable") or []))
             pending.created_at = time.time()
             hidden = int(pending.payload.get("unavailable_count") or 0)
-            suffix = f"\n\n🔒 Скрыто нарушений по полномочиям: {hidden}" if hidden > 0 else ""
             await message.answer(
-                _violation_prompt_text(str(resolved.get("label") or "неизвестный пользователь")) + suffix,
-                reply_markup=_violations_keyboard(
-                    message.from_user.id,
-                    pending.payload.get("available_violations"),
-                    show_escalation=hidden > 0,
-                ),
+                _actions_menu_text(str(resolved.get("label") or "неизвестный пользователь"), hidden),
+                reply_markup=_violations_keyboard(message.from_user.id),
             )
             return
 
@@ -291,7 +302,7 @@ async def rep_callback(callback: CallbackQuery) -> None:
             pending.payload.pop("preview", None)
             pending.payload.pop("violation_code", None)
             await callback.message.edit_text(_target_prompt_text(), reply_markup=_target_keyboard(callback.from_user.id))
-        else:
+        elif destination == "violation":
             target = pending.payload.get("target") or {}
             pending.step = "await_violation"
             pending.created_at = time.time()
@@ -299,11 +310,22 @@ async def rep_callback(callback: CallbackQuery) -> None:
             pending.payload.pop("violation_code", None)
             await callback.message.edit_text(
                 _violation_prompt_text(str(target.get("label") or "неизвестный пользователь")),
-                reply_markup=_violations_keyboard(
+                reply_markup=_rules_keyboard(
                     callback.from_user.id,
                     pending.payload.get("available_violations"),
                     show_escalation=int(pending.payload.get("unavailable_count") or 0) > 0,
                 ),
+            )
+        else:
+            target = pending.payload.get("target") or {}
+            pending.step = "await_violation"
+            pending.created_at = time.time()
+            pending.payload.pop("preview", None)
+            pending.payload.pop("violation_code", None)
+            hidden = int(pending.payload.get("unavailable_count") or 0)
+            await callback.message.edit_text(
+                _actions_menu_text(str(target.get("label") or "неизвестный пользователь"), hidden),
+                reply_markup=_violations_keyboard(callback.from_user.id),
             )
         _PENDING_REP[callback.from_user.id] = pending
         await callback.answer()
@@ -330,6 +352,18 @@ async def rep_callback(callback: CallbackQuery) -> None:
                 callback.message.chat.id,
             )
             await callback.answer("❌ Не удалось отправить заявку. Подробности в консоли.", show_alert=True)
+        return
+    if action == "rules_menu":
+        target = pending.payload.get("target") or {}
+        await callback.message.edit_text(
+            _violation_prompt_text(str(target.get("label") or "неизвестный пользователь")),
+            reply_markup=_rules_keyboard(
+                callback.from_user.id,
+                pending.payload.get("available_violations"),
+                show_escalation=int(pending.payload.get("unavailable_count") or 0) > 0,
+            ),
+        )
+        await callback.answer()
         return
     if action == "violation":
         code = parts[3] if len(parts) > 3 else ""
@@ -700,12 +734,7 @@ async def rep_pending_handler(message: Message) -> None:
         error_code=None,
     )
     hidden = int(pending.payload.get("unavailable_count") or 0)
-    suffix = f"\n\n🔒 Скрыто нарушений по полномочиям: {hidden}" if hidden > 0 else ""
     await message.answer(
-        _violation_prompt_text(str(resolved.get("label") or "неизвестный пользователь")) + suffix,
-        reply_markup=_violations_keyboard(
-            message.from_user.id,
-            pending.payload.get("available_violations"),
-            show_escalation=hidden > 0,
-        ),
+        _actions_menu_text(str(resolved.get("label") or "неизвестный пользователь"), hidden),
+        reply_markup=_violations_keyboard(message.from_user.id),
     )
