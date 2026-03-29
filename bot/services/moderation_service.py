@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import uuid4
@@ -159,6 +160,34 @@ class ModerationService:
             return "could not find the table" in message
         return "could not find the table" in str(exc).lower()
 
+    @staticmethod
+    def _extract_missing_column(exc: Exception, table: str) -> str | None:
+        """Best-effort parser for PostgREST/supabase missing-column errors."""
+        error_text = str(exc or "")
+        payload = getattr(exc, "args", ())
+        if payload and isinstance(payload[0], dict):
+            message = str(payload[0].get("message") or "")
+            details = str(payload[0].get("details") or "")
+            error_text = " | ".join(part for part in (message, details, error_text) if part)
+
+        lowered = error_text.lower()
+        table_name = str(table or "").strip().lower()
+
+        # Example: "column moderation_cases.escalation_step does not exist"
+        pg_match = re.search(r"column\\s+([a-zA-Z0-9_]+)\\.([a-zA-Z0-9_]+)\\s+does not exist", lowered)
+        if pg_match:
+            matched_table, matched_column = pg_match.group(1), pg_match.group(2)
+            if not table_name or matched_table == table_name:
+                return matched_column
+
+        # Example: "Could not find the 'escalation_step' column of 'moderation_cases' in the schema cache"
+        pgrst_match = re.search(r"could not find the '([a-zA-Z0-9_]+)' column of '([a-zA-Z0-9_]+)'", lowered)
+        if pgrst_match:
+            matched_column, matched_table = pgrst_match.group(1), pgrst_match.group(2)
+            if not table_name or matched_table == table_name:
+                return matched_column
+        return None
+
     @classmethod
     def _mark_table_missing(cls, table: str) -> None:
         normalized_table = str(table or "").strip()
@@ -184,26 +213,60 @@ class ModerationService:
             logger.warning("moderation insert skipped missing fake table=%s payload=%s", table, payload)
             return None
 
-        try:
-            response = db.supabase.table(table).insert(payload).execute()
-            rows = response.data or []
-            if not rows:
-                logger.error("moderation insert returned empty payload table=%s payload=%s", table, payload)
-                return None
-            return dict(rows[0])
-        except Exception as exc:
-            if ModerationService._is_missing_table_error(exc):
-                ModerationService._mark_table_missing(table)
-                logger.error(
-                    "moderation insert failed missing table=%s payload=%s error=%s. "
-                    "Create table in DB or refresh schema cache.",
+        working_payload = dict(payload)
+        dropped_columns: list[str] = []
+        while working_payload:
+            try:
+                response = db.supabase.table(table).insert(working_payload).execute()
+                rows = response.data or []
+                if not rows:
+                    logger.error(
+                        "moderation insert returned empty payload table=%s payload=%s dropped_columns=%s",
+                        table,
+                        working_payload,
+                        dropped_columns,
+                    )
+                    return None
+                if dropped_columns:
+                    logger.warning(
+                        "moderation insert schema-compat mode table=%s dropped_columns=%s original_payload_keys=%s",
+                        table,
+                        dropped_columns,
+                        sorted(payload.keys()),
+                    )
+                return dict(rows[0])
+            except Exception as exc:
+                if ModerationService._is_missing_table_error(exc):
+                    ModerationService._mark_table_missing(table)
+                    logger.error(
+                        "moderation insert failed missing table=%s payload=%s error=%s. "
+                        "Create table in DB or refresh schema cache.",
+                        table,
+                        payload,
+                        exc,
+                    )
+                    return None
+                missing_column = ModerationService._extract_missing_column(exc, table)
+                if missing_column and missing_column in working_payload and len(working_payload) > 1:
+                    dropped_columns.append(missing_column)
+                    working_payload.pop(missing_column, None)
+                    logger.warning(
+                        "moderation insert retry without missing column table=%s missing_column=%s error=%s",
+                        table,
+                        missing_column,
+                        exc,
+                    )
+                    continue
+                logger.exception(
+                    "moderation insert failed table=%s payload=%s dropped_columns=%s error=%s",
                     table,
-                    payload,
+                    working_payload,
+                    dropped_columns,
                     exc,
                 )
                 return None
-            logger.exception("moderation insert failed table=%s payload=%s error=%s", table, payload, exc)
-            return None
+        logger.error("moderation insert aborted: payload emptied by schema fallback table=%s original_payload=%s", table, payload)
+        return None
 
     @staticmethod
     def _update_rows(table: str, filters: dict[str, Any], payload: dict[str, Any]) -> list[dict]:
@@ -2712,7 +2775,28 @@ class ModerationService:
             },
         )
         if not case_row:
-            return {"ok": False, "error_code": "case_create_failed", "message": "Не удалось создать кейс ручного наказания."}
+            existing_case = ModerationService._select_single("moderation_cases", op_key=op_key)
+            if existing_case:
+                logger.warning(
+                    "manual moderation case insert returned empty but existing op_key found; treating as duplicate op_key=%s existing_case_id=%s actor_account_id=%s target_account_id=%s",
+                    op_key,
+                    existing_case.get("id"),
+                    actor_subject.get("account_id"),
+                    target_subject.get("account_id"),
+                )
+                case_row = dict(existing_case)
+            else:
+                logger.error(
+                    "manual moderation case create failed provider=%s action=%s actor_account_id=%s target_account_id=%s op_key=%s reason=%s duration_minutes=%s",
+                    provider,
+                    normalized_action,
+                    actor_subject.get("account_id"),
+                    target_subject.get("account_id"),
+                    op_key,
+                    reason,
+                    duration,
+                )
+                return {"ok": False, "error_code": "case_create_failed", "message": "Не удалось создать кейс ручного наказания."}
 
         ends_at = (now + timedelta(minutes=duration)).isoformat()
         action_row = ModerationService._create_action(
