@@ -2566,7 +2566,7 @@ class ModerationService:
                 "actor_account_id": actor_subject["account_id"],
                 "violation_type_id": violation_type.get("id"),
                 "penalty_rule_id": None,
-                "escalation_step": None,
+                "escalation_step": 1,
                 "status": ModerationService.STATUS_PENDING,
                 "source_platform": str(context.get("source_platform") or provider),
                 "source_chat_id": str(context.get("chat_id") or context.get("source_chat_id") or "") or None,
