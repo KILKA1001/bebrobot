@@ -12,7 +12,7 @@ from bot.systems.shop_logic import (
     SHOP_TEXT_CONFIRM_PURCHASE,
     SHOP_TEXT_ITEM_NOT_FOUND,
     SHOP_TEXT_ITEM_PLACEHOLDER,
-    SHOP_TEXT_PAGINATION_ERROR,
+    SHOP_TEXT_PROTECTED_FAILURE,
     build_shop_render_payload,
     check_shop_profile_access,
     find_shop_item,
@@ -119,12 +119,12 @@ def _item_confirm_text(item, account_id: str | None) -> str:
 async def shop_command(message: Message) -> None:
     persist_telegram_identity_from_user(message.from_user)
     if message.from_user is None:
-        logger.error("shop telegram actor missing provider=telegram source=unknown")
+        logger.error("shop_actor_missing provider=telegram source=unknown")
         return
 
     source = "dm" if message.chat.type == "private" else "group"
     logger.info(
-        "shop flow step=received provider=telegram source=%s actor_user_id=%s chat_id=%s",
+        "shop_flow_received provider=telegram source=%s actor_user_id=%s chat_id=%s",
         source,
         message.from_user.id,
         message.chat.id if message.chat else None,
@@ -153,7 +153,7 @@ async def shop_command(message: Message) -> None:
         return
 
     await message.answer(SHOP_OPEN_PROMPT_TEXT)
-    logger.info("shop flow step=group_notice_sent provider=telegram source=group actor_user_id=%s", message.from_user.id)
+    logger.info("shop_flow_group_notice_sent provider=telegram source=group actor_user_id=%s", message.from_user.id)
     try:
         await message.bot.send_message(
             chat_id=message.from_user.id,
@@ -170,7 +170,7 @@ async def shop_command(message: Message) -> None:
             SHOP_PAGE_SIZE,
         )
     except (TelegramForbiddenError, TelegramBadRequest) as error:
-        logger.warning("shop flow step=dm_attempt provider=telegram actor_user_id=%s dm_sent=false error=%s", message.from_user.id, error)
+        logger.exception("shop_dm_transfer_error provider=telegram actor_user_id=%s dm_sent=false error=%s", message.from_user.id, error)
         await message.answer(DM_FALLBACK_TEXT, parse_mode="HTML")
 
 
@@ -320,7 +320,7 @@ async def shop_callback(callback: CallbackQuery) -> None:
             return
     except Exception as error:  # noqa: BLE001
         logger.exception("shop_pagination_error provider=telegram actor_user_id=%s data=%s error=%s", callback.from_user.id, data, error)
-        await callback.answer(SHOP_TEXT_PAGINATION_ERROR, show_alert=True)
+        await callback.answer(SHOP_TEXT_PROTECTED_FAILURE, show_alert=True)
         return
 
     logger.error("shop_pagination_error provider=telegram reason=unknown_callback data=%s", data)
