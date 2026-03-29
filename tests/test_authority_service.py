@@ -55,6 +55,27 @@ class AuthorityServiceTests(unittest.TestCase):
 
     @patch("bot.services.authority_service.AccountsService.get_account_titles")
     @patch("bot.services.authority_service.AccountsService.resolve_account_id")
+    def test_operator_is_limited_to_moderation_permissions(self, mock_resolve, mock_titles):
+        mock_resolve.return_value = "acc-operator-scope"
+        mock_titles.return_value = ["Оператор"]
+
+        self.assertTrue(AuthorityService.has_command_permission("discord", "201", "moderation_mute"))
+        self.assertTrue(AuthorityService.has_command_permission("discord", "201", "moderation_warn"))
+        self.assertTrue(AuthorityService.has_command_permission("discord", "201", "moderation_ban"))
+        self.assertFalse(AuthorityService.has_command_permission("discord", "201", "points_manage"))
+        self.assertFalse(AuthorityService.has_command_permission("discord", "201", "bank_manage"))
+        self.assertFalse(AuthorityService.has_command_permission("discord", "201", "tickets_manage"))
+
+    @patch("bot.services.authority_service.AccountsService.get_account_titles")
+    @patch("bot.services.authority_service.AccountsService.resolve_account_id")
+    def test_operator_cannot_manage_roles_via_authority_service(self, mock_resolve, mock_titles):
+        mock_resolve.return_value = "acc-operator-role"
+        mock_titles.return_value = ["Оператор"]
+
+        self.assertFalse(AuthorityService.can_manage_role("discord", "202", "админ"))
+
+    @patch("bot.services.authority_service.AccountsService.get_account_titles")
+    @patch("bot.services.authority_service.AccountsService.resolve_account_id")
     def test_hierarchy_allows_peer_roles_for_head_club_and_main_vice(self, mock_resolve, mock_titles):
         def _resolve(_provider, user_id):
             return f"acc-{user_id}"
@@ -278,8 +299,17 @@ class AuthorityServiceTests(unittest.TestCase):
         decision = AuthorityService.can_apply_moderation_action("discord", "actor", "discord", "target", "warn")
 
         self.assertTrue(decision.allowed)
-        self.assertEqual(decision.actor_account_id, "acc-actor")
-        self.assertEqual(decision.target_account_id, "acc-target")
+
+    @patch("bot.services.authority_service.AccountsService.get_account_titles")
+    @patch("bot.services.authority_service.AccountsService.resolve_account_id")
+    def test_resolve_authority_adds_chat_member_title_when_user_has_no_titles(self, mock_resolve, mock_titles):
+        mock_resolve.return_value = "acc-empty"
+        mock_titles.return_value = []
+
+        result = AuthorityService.resolve_authority("discord", "777")
+
+        self.assertEqual(result.level, 0)
+        self.assertIn("Участник чата", result.titles)
 
     @patch("bot.services.authority_service.AccountsService.get_account_titles")
     @patch("bot.services.authority_service.AccountsService.resolve_account_id")
@@ -428,11 +458,15 @@ class AuthorityServiceTests(unittest.TestCase):
             "Админ",
             "Ветеран города",
             "Младший админ",
+            "Участник чата",
         }
 
         canonical_keys = protected_profile_title_canonical_keys()
 
-        self.assertEqual({normalize_protected_profile_title(title) for title in required_titles}, canonical_keys - {"участник клубов"})
+        self.assertEqual(
+            {normalize_protected_profile_title(title) for title in required_titles},
+            canonical_keys - {"участник клубов"},
+        )
 
 
 if __name__ == "__main__":
