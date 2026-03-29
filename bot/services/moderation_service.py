@@ -2534,18 +2534,43 @@ class ModerationService:
             target_subject,
             f"manual_{normalized_action}",
         )
+        manual_violation_code = f"manual_{normalized_action}"
+        violation_type = ModerationService._load_violation_type(manual_violation_code)
+        if not violation_type:
+            fallback_types = ModerationService.list_active_violation_types()
+            violation_type = dict(fallback_types[0]) if fallback_types else None
+            logger.warning(
+                "manual moderation violation fallback action=%s actor_account_id=%s target_account_id=%s selected_violation_id=%s selected_violation_code=%s",
+                normalized_action,
+                actor_subject.get("account_id"),
+                target_subject.get("account_id"),
+                (violation_type or {}).get("id"),
+                (violation_type or {}).get("code"),
+            )
+        if not violation_type or violation_type.get("id") is None:
+            logger.error(
+                "manual moderation violation type unresolved action=%s actor_account_id=%s target_account_id=%s",
+                normalized_action,
+                actor_subject.get("account_id"),
+                target_subject.get("account_id"),
+            )
+            return {
+                "ok": False,
+                "error_code": "manual_violation_type_missing",
+                "message": "Не найден тип нарушения для ручного наказания. Сообщите администратору: нужна настройка moderation_violation_types.",
+            }
         case_row = ModerationService._insert_row(
             "moderation_cases",
             {
                 "account_id": target_subject["account_id"],
                 "actor_account_id": actor_subject["account_id"],
-                "violation_type_id": None,
+                "violation_type_id": violation_type.get("id"),
                 "penalty_rule_id": None,
                 "escalation_step": None,
                 "status": ModerationService.STATUS_PENDING,
                 "source_platform": str(context.get("source_platform") or provider),
                 "source_chat_id": str(context.get("chat_id") or context.get("source_chat_id") or "") or None,
-                "reason_text": f"[manual_{normalized_action}] {reason}",
+                "reason_text": f"[{manual_violation_code}] {reason}",
                 "op_key": op_key,
                 "created_at": created_at,
             },
