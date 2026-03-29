@@ -30,6 +30,11 @@ _SECTION_LABELS = {
 }
 _DISCORD_CATALOG_SYNC_MIN_INTERVAL_SECONDS = 45
 _LAST_IMPLICIT_DISCORD_CATALOG_SYNC_AT: dict[int, float] = {}
+_SHOP_ADMIN_ACTION_CHOICES: tuple[tuple[str, str], ...] = (
+    ("category_create", "Создать/обновить категорию"),
+    ("category_order", "Изменить порядок категории"),
+    ("category_delete", "Удалить категорию"),
+)
 
 
 def _role_assignment_error_message(result: dict[str, Any], *, default_message: str) -> str:
@@ -264,6 +269,19 @@ async def _role_category_autocomplete(
         if len(categories) >= 25:
             break
     return categories
+
+
+async def _shop_settings_action_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    query = str(current or "").strip().lower()
+    choices: list[app_commands.Choice[str]] = []
+    for action_key, label in _SHOP_ADMIN_ACTION_CHOICES:
+        if query and query not in action_key and query not in label.lower():
+            continue
+        choices.append(app_commands.Choice(name=f"{label} ({action_key})"[:100], value=action_key))
+    return choices[:25]
 
 
 def _log_role_create_category_selection(
@@ -708,6 +726,7 @@ class RolesAdminHelpView(discord.ui.View):
         self.guild_id = guild_id
         if visibility.can_manage_categories:
             self.add_item(_RolesAdminSectionButton(section="categories"))
+            self.add_item(_RolesAdminShopSettingsButton())
         if visibility.can_manage_roles:
             self.add_item(_RolesAdminSectionButton(section="roles"))
             self.add_item(_RolesAdminSectionButton(section="users"))
@@ -767,6 +786,47 @@ class _RolesAdminSectionButton(discord.ui.Button):
                 await interaction.followup.send("❌ Ошибка открытия раздела rolesadmin (смотри логи).", ephemeral=True)
             else:
                 await interaction.response.send_message("❌ Ошибка открытия раздела rolesadmin (смотри логи).", ephemeral=True)
+
+
+class _RolesAdminShopSettingsButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="⚙️ Настройка магазина",
+            style=discord.ButtonStyle.primary,
+            custom_id="rolesadmin_help:shop_settings",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        try:
+            if not AuthorityService.is_super_admin("discord", str(interaction.user.id)):
+                logger.warning(
+                    "shop_admin_denied provider=discord actor_id=%s reason=insufficient_permissions source=help_button",
+                    interaction.user.id,
+                )
+                await interaction.response.send_message("Недостаточно прав", ephemeral=True)
+                return
+            logger.info(
+                "shop_admin_open provider=discord actor_id=%s step=category_pick source=help_button",
+                interaction.user.id,
+            )
+            grouped = RoleManagementService.list_roles_grouped()
+            categories = [str(item.get("category") or "Без категории") for item in grouped[:15]]
+            categories_list = "\n".join(f"• {category}" for category in categories) or "• Категории пока отсутствуют."
+            await interaction.response.send_message(
+                (
+                    "⚙️ Настройка магазина\n\n"
+                    "Шаг 1/2: выберите категорию.\n"
+                    f"{categories_list}\n\n"
+                    "Шаг 2/2: выберите действие настройки категории через `/rolesadmin shop_settings`."
+                ),
+                ephemeral=True,
+            )
+        except Exception:
+            logger.exception("shop_admin_open failed provider=discord actor_id=%s source=help_button", interaction.user.id)
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Ошибка открытия настроек магазина (смотри логи).", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Ошибка открытия настроек магазина (смотри логи).", ephemeral=True)
 
 
 class _DiscordUserRoleCategorySelect(discord.ui.Select):
@@ -1080,6 +1140,68 @@ async def rolesadmin_list(ctx: commands.Context):
             lines.append(_format_role_line(role))
         embed.add_field(name=category, value="\n".join(lines), inline=False)
     await send_temp(ctx, embed=embed)
+
+
+@rolesadmin.command(name="shop_settings", description="⚙️ Настройка магазина по категориям")
+@app_commands.describe(category="Категория магазина", action="Действие настройки")
+@app_commands.autocomplete(category=_role_category_autocomplete, action=_shop_settings_action_autocomplete)
+async def rolesadmin_shop_settings(ctx: commands.Context, category: str | None = None, action: str | None = None):
+    if not await _ensure_roles_admin(ctx):
+        return
+    if not await _ensure_category_manager(ctx):
+        logger.warning(
+            "shop_admin_denied provider=discord actor_id=%s reason=insufficient_permissions source=command",
+            ctx.author.id,
+        )
+        await send_temp(ctx, "Недостаточно прав")
+        return
+
+    grouped = RoleManagementService.list_roles_grouped() or []
+    category_names = [str(item.get("category") or "Без категории") for item in grouped]
+    if not category:
+        logger.info("shop_admin_open provider=discord actor_id=%s step=category_pick source=command", ctx.author.id)
+        categories_preview = "\n".join(f"• {name}" for name in category_names[:20]) or "• Категории пока отсутствуют."
+        await send_temp(
+            ctx,
+            "⚙️ Настройка магазина\n\n"
+            "Шаг 1/2: выберите категорию (параметр `category`).\n"
+            f"{categories_preview}\n\n"
+            "Шаг 2/2: выберите действие (параметр `action`).",
+            delete_after=None,
+        )
+        return
+
+    if category not in category_names:
+        logger.warning(
+            "shop_admin_denied provider=discord actor_id=%s reason=category_not_found category=%s",
+            ctx.author.id,
+            category,
+        )
+        await send_temp(ctx, "❌ Категория не найдена. Выберите категорию из автодополнения.")
+        return
+
+    logger.info("shop_admin_category_select provider=discord actor_id=%s category=%s", ctx.author.id, category)
+    if not action:
+        actions_preview = "\n".join(f"• {label} (`{key}`)" for key, label in _SHOP_ADMIN_ACTION_CHOICES)
+        await send_temp(
+            ctx,
+            "⚙️ Настройка магазина\n\n"
+            f"Шаг 1/2 завершён: **{category}**\n"
+            "Шаг 2/2: выберите действие (параметр `action`).\n"
+            f"{actions_preview}",
+            delete_after=None,
+        )
+        return
+
+    if action not in {item[0] for item in _SHOP_ADMIN_ACTION_CHOICES}:
+        await send_temp(ctx, "❌ Неизвестное действие. Используйте варианты из автодополнения.")
+        return
+    await send_temp(
+        ctx,
+        f"⚙️ Настройка магазина\nКатегория: **{category}**\nДействие: **{action}**\n\n"
+        "Готово: выбрано действие для категории. Используйте соответствующую команду /rolesadmin для выполнения изменения.",
+        delete_after=None,
+    )
 
 
 @rolesadmin.command(name="category_create", description="Создать категорию ролей")

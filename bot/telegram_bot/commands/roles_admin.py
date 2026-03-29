@@ -41,6 +41,11 @@ _SECTION_OPERATIONS = {
     "roles": ("role_create", "role_edit_acquire_hint", "role_move", "role_order", "role_delete"),
     "users": ("user_roles", "user_grant", "user_revoke"),
 }
+_SHOP_ADMIN_CATEGORY_ACTIONS: tuple[tuple[str, str], ...] = (
+    ("category_create", "🗂 Создать/обновить категорию"),
+    ("category_order", "↕️ Изменить порядок категории"),
+    ("category_delete", "🗑 Удалить категорию"),
+)
 
 
 @dataclass
@@ -677,6 +682,7 @@ def _build_actions_keyboard(
                     [InlineKeyboardButton(text="🗂 Создать категорию", callback_data=f"roles_admin:{actor_id}:start:category_create")],
                     [InlineKeyboardButton(text="↕️ Порядок категории", callback_data=f"roles_admin:{actor_id}:start:category_order")],
                     [InlineKeyboardButton(text="🗑 Удалить категорию", callback_data=f"roles_admin:{actor_id}:start:category_delete")],
+                    [InlineKeyboardButton(text="⚙️ Настройка магазина", callback_data=f"roles_admin:{actor_id}:shop_settings")],
                 ]
             )
     elif section == "roles":
@@ -1270,6 +1276,20 @@ def _build_pick_category_keyboard(
             )
         ]
     )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _build_shop_admin_action_keyboard(actor_id: int, selected_category: str) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(
+                text=label,
+                callback_data=f"roles_admin:{actor_id}:shop_settings_action:{action}:{selected_category[:48]}",
+            )
+        ]
+        for action, label in _SHOP_ADMIN_CATEGORY_ACTIONS
+    ]
+    rows.append([InlineKeyboardButton(text="⬅️ Назад к категориям", callback_data=f"roles_admin:{actor_id}:actions:categories")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -2110,6 +2130,70 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
             await _safe_callback_answer(callback)
             return
 
+        if action == "shop_settings":
+            if not actor_can_manage_categories:
+                logger.warning(
+                    "shop_admin_denied provider=telegram actor_id=%s reason=insufficient_permissions",
+                    callback.from_user.id,
+                )
+                await _safe_callback_answer(callback, "Недостаточно прав", show_alert=True)
+                return
+            logger.info(
+                "shop_admin_open provider=telegram actor_id=%s step=category_pick",
+                callback.from_user.id,
+            )
+            await _safe_edit_message_text(
+                callback,
+                (
+                    "⚙️ <b>Настройка магазина</b>\n\n"
+                    "Шаг 1/2: выберите категорию.\n"
+                    "Шаг 2/2: выберите действие настройки категории."
+                ),
+                parse_mode="HTML",
+                reply_markup=_build_pick_category_keyboard(
+                    grouped,
+                    owner_id,
+                    "shop_settings",
+                    allow_create_new=False,
+                ),
+            )
+            await _safe_callback_answer(callback)
+            return
+
+        if action == "shop_settings_action":
+            if not actor_can_manage_categories:
+                logger.warning(
+                    "shop_admin_denied provider=telegram actor_id=%s reason=insufficient_permissions action=%s",
+                    callback.from_user.id,
+                    parts[3] if len(parts) > 3 else None,
+                )
+                await _safe_callback_answer(callback, "Недостаточно прав", show_alert=True)
+                return
+            selected_action = parts[3] if len(parts) > 3 else ""
+            selected_category = parts[4] if len(parts) > 4 else ""
+            operation_hint = _operation_hint(selected_action)
+            _PENDING_ACTIONS[callback.from_user.id] = PendingRolesAdminAction(
+                operation=selected_action,
+                created_at=time.time(),
+            )
+            await _safe_edit_message_text(
+                callback,
+                (
+                    "⚙️ <b>Настройка магазина</b>\n\n"
+                    f"Категория: <b>{selected_category}</b>\n"
+                    f"Выбрано действие: <b>{selected_action}</b>\n\n"
+                    f"{operation_hint}"
+                ),
+                parse_mode="HTML",
+                reply_markup=_build_actions_keyboard(
+                    owner_id,
+                    "categories",
+                    can_manage_categories=actor_can_manage_categories,
+                ),
+            )
+            await _safe_callback_answer(callback, "Действие выбрано", show_alert=False)
+            return
+
         if action == "start":
             operation = parts[3] if len(parts) > 3 else ""
             if operation.startswith("category_") and not actor_can_manage_categories:
@@ -2207,6 +2291,31 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
                 return
             category_name = str(grouped[category_idx]["category"])
+            if operation == "shop_settings":
+                if not actor_can_manage_categories:
+                    logger.warning(
+                        "shop_admin_denied provider=telegram actor_id=%s reason=insufficient_permissions operation=shop_settings_category_pick",
+                        callback.from_user.id,
+                    )
+                    await _safe_callback_answer(callback, "Недостаточно прав", show_alert=True)
+                    return
+                logger.info(
+                    "shop_admin_category_select provider=telegram actor_id=%s category=%s",
+                    callback.from_user.id,
+                    category_name,
+                )
+                await _safe_edit_message_text(
+                    callback,
+                    (
+                        "⚙️ <b>Настройка магазина</b>\n\n"
+                        f"Шаг 1/2 завершён: <b>{category_name}</b>\n"
+                        "Шаг 2/2: выберите действие настройки категории."
+                    ),
+                    parse_mode="HTML",
+                    reply_markup=_build_shop_admin_action_keyboard(owner_id, category_name),
+                )
+                await _safe_callback_answer(callback)
+                return
             if operation == "category_delete":
                 ok = RoleManagementService.delete_category(category_name)
                 await _safe_callback_answer(callback, "Категория удалена" if ok else "Не удалось удалить категорию", show_alert=not ok)
