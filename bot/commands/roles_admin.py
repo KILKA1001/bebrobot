@@ -37,6 +37,18 @@ _SHOP_ADMIN_ACTION_CHOICES: tuple[tuple[str, str], ...] = (
 )
 
 
+
+
+def _parse_sellable_choice(value: str | None) -> bool | None:
+    token = str(value or "").strip().lower()
+    if not token:
+        return None
+    if token in {"yes", "true", "1", "sellable", "on", "продается", "продаётся"}:
+        return True
+    if token in {"no", "false", "0", "not_sellable", "off", "непродается", "непродаётся", "не_продается", "не_продаётся"}:
+        return False
+    return None
+
 def _role_assignment_error_message(result: dict[str, Any], *, default_message: str) -> str:
     if result.get("reason") == ROLE_ASSIGNMENT_REASON_PRIVILEGED_DISCORD_ROLE:
         return f"❌ {result.get('message') or PRIVILEGED_DISCORD_ROLE_MESSAGE}"
@@ -673,9 +685,10 @@ def _rolesadmin_help_embed(
             "Роли",
             "С чего начать: после категории создай роль, затем сразу заполни описание и способ получения.\n"
             "`/rolesadmin list` — показать роли по категориям (с автосинхронизацией Discord-каталога)\n"
-            "`/rolesadmin role_create <category> <name> [description] [acquire_hint] [discord_role] [position]` — создать роль\n"
+            "`/rolesadmin role_create <category> <name> [description] [acquire_hint] [discord_role] [position] [is_sellable]` — создать роль\n"
             "`/rolesadmin role_edit_description <name> <description>` — обновить описание роли\n"
             "`/rolesadmin role_edit_acquire_hint <name> <acquire_hint>` — обновить способ получения роли\n"
+            "`/rolesadmin role_edit_sellable <name> <sellable|not_sellable>` — управлять продажей роли в магазине\n"
             "`/rolesadmin role_move <role_name> <category> [position]` — переместить роль\n"
             "`/rolesadmin role_order <role_name> <category> <position>` — изменить порядок роли\n"
             "`/rolesadmin role_delete <name>` — удалить роль\n"
@@ -1156,10 +1169,17 @@ async def rolesadmin_shop_settings(ctx: commands.Context, category: str | None =
         await send_temp(ctx, "Недостаточно прав")
         return
 
-    grouped = RoleManagementService.list_roles_grouped() or []
+    grouped = RoleManagementService.list_public_roles_catalog(log_context="rolesadmin:shop_settings", only_sellable=True) or []
     category_names = [str(item.get("category") or "Без категории") for item in grouped]
     if not category:
         logger.info("shop_admin_open provider=discord actor_id=%s step=category_pick source=command", ctx.author.id)
+        if not category_names:
+            await send_temp(
+                ctx,
+                "⚠️ В магазине сейчас нет ролей, доступных к продаже (`is_sellable = true`).",
+                delete_after=None,
+            )
+            return
         categories_preview = "\n".join(f"• {name}" for name in category_names[:20]) or "• Категории пока отсутствуют."
         await send_temp(
             ctx,
@@ -1248,6 +1268,7 @@ async def rolesadmin_category_order(ctx: commands.Context, name: str, position: 
     acquire_hint="Как получить роль: турнир, заявка, выдача админа и т.д.",
     discord_role="Связанная Discord-роль, если нужна",
     position="Позиция в категории; если пусто, роль будет добавлена последней",
+    is_sellable="Продается ли роль в магазине: sellable / not_sellable",
 )
 @app_commands.autocomplete(category=_role_category_autocomplete)
 async def rolesadmin_role_create(
@@ -1258,6 +1279,7 @@ async def rolesadmin_role_create(
     acquire_hint: str | None = None,
     discord_role: discord.Role | None = None,
     position: int | None = None,
+    is_sellable: str | None = None,
 ):
     if not await _ensure_roles_admin(ctx):
         return
@@ -1278,6 +1300,7 @@ async def rolesadmin_role_create(
             role_acquire_hint=acquire_hint,
         ),
     )
+    parsed_sellable = _parse_sellable_choice(is_sellable)
     create_result = RoleManagementService.create_role_result(
         name,
         category,
@@ -1292,10 +1315,25 @@ async def rolesadmin_role_create(
         operation="role_create",
         source="discord_command",
     )
+    if parsed_sellable is not None and create_result.get("ok"):
+        RoleManagementService.update_role_sellable(
+            name,
+            parsed_sellable,
+            actor_id=str(ctx.author.id),
+            actor_provider="discord",
+            actor_user_id=str(ctx.author.id),
+            operation="role_edit_sellable",
+            source="discord_command",
+        )
     if create_result.get("ok"):
         description_note = f" Описание: {description}." if str(description or "").strip() else ""
         acquire_hint_note = f" Как получить: {acquire_hint}." if str(acquire_hint or "").strip() else ""
-        await send_temp(ctx, f"✅ Роль **{name}** создана в категории **{category}**.{description_note}{acquire_hint_note}")
+        sellable_note = ""
+        if parsed_sellable is True:
+            sellable_note = " Продажа в магазине: включена."
+        elif parsed_sellable is False:
+            sellable_note = " Продажа в магазине: выключена."
+        await send_temp(ctx, f"✅ Роль **{name}** создана в категории **{category}**.{description_note}{acquire_hint_note}{sellable_note}")
     else:
         _log_role_position_error(
             actor_id=ctx.author.id,
@@ -1344,6 +1382,29 @@ async def rolesadmin_role_edit_acquire_hint(ctx: commands.Context, name: str, ac
         await send_temp(ctx, f"✅ Способ получения роли **{name}** обновлён.")
     else:
         await send_temp(ctx, "❌ Не удалось обновить способ получения роли (смотри логи).")
+
+
+@rolesadmin.command(name="role_edit_sellable", description="Включить/выключить продажу роли в магазине")
+async def rolesadmin_role_edit_sellable(ctx: commands.Context, name: str, is_sellable: str):
+    if not await _ensure_roles_admin(ctx):
+        return
+    parsed_sellable = _parse_sellable_choice(is_sellable)
+    if parsed_sellable is None:
+        await send_temp(ctx, "❌ Используйте is_sellable: sellable или not_sellable.")
+        return
+    if RoleManagementService.update_role_sellable(
+        name,
+        parsed_sellable,
+        actor_id=str(ctx.author.id),
+        actor_provider="discord",
+        actor_user_id=str(ctx.author.id),
+        operation="role_edit_sellable",
+        source="discord_command",
+    ):
+        status = "Продается в магазине" if parsed_sellable else "Не продается"
+        await send_temp(ctx, f"✅ Роль **{name}** обновлена: **{status}**.")
+    else:
+        await send_temp(ctx, "❌ Не удалось обновить признак продажи роли (смотри логи).")
 
 
 @rolesadmin.command(name="role_delete", description="Удалить роль из каталога")

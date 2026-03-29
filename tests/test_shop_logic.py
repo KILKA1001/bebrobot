@@ -42,6 +42,7 @@ def test_find_shop_item_logs_when_missing():
             category_position=0,
             description="",
             acquire_hint="",
+            price_points=0,
         )
     ]
     with patch.object(shop_logic.logger, "error") as error_mock:

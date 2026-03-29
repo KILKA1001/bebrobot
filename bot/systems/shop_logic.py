@@ -102,7 +102,7 @@ def _normalize_shop_page(requested_page: int, total_items: int, *, page_size: in
 
 
 def get_shop_catalog_items(*, log_context: str = "shop") -> list[ShopItem]:
-    grouped = RoleManagementService.list_public_roles_catalog(log_context=f"{log_context}:catalog")
+    grouped = RoleManagementService.list_public_roles_catalog(log_context=f"{log_context}:catalog", only_sellable=True)
     items: list[ShopItem] = []
     for category in grouped:
         category_name = str(category.get("category") or "Без категории").strip() or "Без категории"
@@ -210,6 +210,18 @@ def purchase_shop_item(
                 item_key,
             )
             return ShopPurchaseResult(ok=False, message="❌ Товар недоступен или отключён.", reason="item_unavailable")
+
+        role_state = RoleManagementService.get_role(item.role_name) or {}
+        if not bool(role_state.get("is_sellable")):
+            logger.error(
+                "shop_purchase_filter_bypass_blocked provider=%s actor_user_id=%s account_id=%s shop_item_id=%s role_name=%s reason=role_not_sellable",
+                provider,
+                actor_id,
+                account_key,
+                item_key,
+                item.role_name,
+            )
+            return ShopPurchaseResult(ok=False, message="❌ Эта роль не продаётся в магазине.", reason="role_not_sellable")
 
         if expected_price_points is not None and int(expected_price_points) != int(item.price_points):
             logger.warning(
