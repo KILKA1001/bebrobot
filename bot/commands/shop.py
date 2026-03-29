@@ -4,7 +4,7 @@ import os
 import discord
 
 from bot.commands.base import bot
-from bot.systems.shop_logic import build_shop_prompt_text, check_shop_profile_access
+from bot.systems.shop_logic import build_shop_render_payload, check_shop_profile_access
 from bot.utils import send_temp
 
 logger = logging.getLogger(__name__)
@@ -14,8 +14,6 @@ DM_FALLBACK_TEXT = (
     "❌ Не удалось отправить инструкцию в личные сообщения.\n"
     "Откройте ЛС с ботом: нажмите на профиль бота → Message, включите личные сообщения для сервера и снова выполните /shop."
 )
-SHOP_BUTTON_TEXT = "Открыть магазин"
-SHOP_DEEPLINK_HINT = "Откройте ЛС с ботом и выполните /shop"
 SHOP_URL = os.getenv("SHOP_URL", "").strip()
 
 
@@ -23,11 +21,23 @@ class ShopOpenView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=600)
         if SHOP_URL:
-            self.add_item(discord.ui.Button(label=SHOP_BUTTON_TEXT, style=discord.ButtonStyle.link, url=SHOP_URL))
+            self.add_item(discord.ui.Button(label="Роли", style=discord.ButtonStyle.link, url=SHOP_URL))
+        else:
+            logger.warning("shop_empty_catalog provider=discord reason=missing_shop_url")
 
 
-def _shop_dm_content() -> str:
-    return build_shop_prompt_text().replace("<b>", "**").replace("</b>", "**")
+def _build_shop_embed(account_id: str | None) -> discord.Embed:
+    try:
+        payload = build_shop_render_payload(account_id)
+        embed = discord.Embed(title=payload.title, description=payload.discord_description, color=discord.Color.blurple())
+        return embed
+    except Exception as error:  # noqa: BLE001
+        logger.exception("shop_render_error provider=discord account_id=%s error=%s", account_id, error)
+        return discord.Embed(
+            title="Магазин",
+            description="Категория: **Роли**\nБаланс: **0 баллов**\nНажмите на товар, чтобы посмотреть описание и купить.",
+            color=discord.Color.red(),
+        )
 
 
 def _extract_dm_failure_code(error: Exception) -> str:
@@ -57,11 +67,11 @@ async def shop(ctx):
         await send_temp(ctx, profile_check.user_message or "Сначала создайте профиль и повторите команду /shop.", delete_after=None)
         return
 
-    dm_content = _shop_dm_content()
+    dm_embed = _build_shop_embed(profile_check.account_id)
     dm_view = ShopOpenView()
 
     if source == "dm":
-        await send_temp(ctx, dm_content, view=dm_view, delete_after=None)
+        await send_temp(ctx, embed=dm_embed, view=dm_view, delete_after=None)
         logger.info("shop flow step=completed provider=discord source=dm actor_user_id=%s dm_sent=true reason=ok", actor_id)
         return
 
@@ -69,7 +79,7 @@ async def shop(ctx):
     logger.info("shop flow step=group_notice_sent provider=discord source=group actor_user_id=%s", actor_id)
 
     try:
-        await ctx.author.send(dm_content, view=dm_view)
+        await ctx.author.send(embed=dm_embed, view=dm_view)
         logger.info("shop flow step=dm_attempt provider=discord source=group actor_user_id=%s dm_sent=true reason=ok", actor_id)
     except Exception as error:  # noqa: BLE001
         reason = _extract_dm_failure_code(error)

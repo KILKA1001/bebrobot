@@ -222,7 +222,7 @@ class TelegramCommandsLogicTests(unittest.TestCase):
     def test_shop_command_contains_open_shop_hint(self):
         result = process_shop_command()
         self.assertIn("Магазин", result)
-        self.assertIn("Открыть магазин", result)
+        self.assertIn("Нажмите на товар", result)
 
 
 if __name__ == "__main__":

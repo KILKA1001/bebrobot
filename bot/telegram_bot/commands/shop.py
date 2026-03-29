@@ -7,8 +7,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 
 from bot.telegram_bot.identity import persist_telegram_identity_from_user
-from bot.systems.shop_logic import check_shop_profile_access
-from bot.telegram_bot.systems.commands_logic import process_shop_command
+from bot.systems.shop_logic import build_shop_render_payload, check_shop_profile_access
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -18,20 +17,19 @@ DM_FALLBACK_TEXT = (
     "❌ Не удалось отправить инструкцию в личные сообщения.\n"
     "Откройте ЛС с ботом: нажмите на профиль бота → <b>Start</b> / <b>Начать</b>, затем снова отправьте <code>/shop</code>."
 )
-SHOP_BUTTON_TEXT = "Открыть магазин"
-SHOP_DEEPLINK_HINT = "Открыть ЛС с ботом и запустить /shop"
 SHOP_URL = os.getenv("SHOP_URL", "").strip()
 
 
 def _shop_markup(bot_username: str | None) -> InlineKeyboardMarkup | None:
     if SHOP_URL:
-        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=SHOP_BUTTON_TEXT, url=SHOP_URL)]])
+        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Роли", url=SHOP_URL)]])
 
     username = (bot_username or "").strip().lstrip("@")
     if not username:
+        logger.warning("shop_empty_catalog provider=telegram reason=missing_shop_url_and_username")
         return None
     deeplink = f"https://t.me/{username}?start=shop"
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=SHOP_BUTTON_TEXT, url=deeplink)]])
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Роли", url=deeplink)]])
 
 
 def _extract_dm_failure_code(error: Exception) -> str:
@@ -67,7 +65,8 @@ async def shop_command(message: Message) -> None:
         await message.answer(profile_check.user_message or "Сначала создайте профиль и повторите команду /shop.", parse_mode="HTML")
         return
 
-    text = process_shop_command()
+    payload = build_shop_render_payload(profile_check.account_id)
+    text = payload.telegram_text
     reply_markup = _shop_markup(getattr(message.bot, "username", None))
 
     if message.chat.type == "private":
