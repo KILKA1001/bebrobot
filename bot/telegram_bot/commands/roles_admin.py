@@ -113,17 +113,23 @@ def _telegram_user_lookup_hint() -> str:
     )
 
 
-async def _sync_linked_discord_role(target: dict[str, str], role_name: str, *, revoke: bool, source: str = "telegram_command") -> None:
+async def _sync_linked_discord_role(
+    target: dict[str, str],
+    role_name: str,
+    *,
+    revoke: bool,
+    source: str = "telegram_command",
+) -> dict[str, str | bool]:
     try:
         provider = str(target.get("provider") or "").strip()
         provider_user_id = str(target.get("provider_user_id") or "").strip()
         account_id = str(target.get("account_id") or "").strip() or AccountsService.resolve_account_id(provider, provider_user_id)
         if not account_id or not db.supabase:
-            return
+            return {"synced": False, "reason": "account_or_db_unavailable"}
         role_info = RoleManagementService.get_role(role_name)
         discord_role_id = str((role_info or {}).get("discord_role_id") or "").strip()
         if not discord_role_id:
-            return
+            return {"synced": False, "reason": "role_without_discord_binding"}
         identity_resp = (
             db.supabase.table("account_identities")
             .select("provider_user_id")
@@ -133,10 +139,28 @@ async def _sync_linked_discord_role(target: dict[str, str], role_name: str, *, r
             .execute()
         )
         if not identity_resp.data:
-            return
+            logger.info(
+                "telegram roles_admin discord sync skipped: account has no discord identity account_id=%s provider=%s provider_user_id=%s role=%s revoke=%s source=%s",
+                account_id,
+                provider,
+                provider_user_id,
+                role_name,
+                revoke,
+                source,
+            )
+            return {"synced": False, "reason": "discord_not_linked"}
         discord_user_id = int(identity_resp.data[0].get("provider_user_id") or 0)
         if not discord_user_id:
-            return
+            logger.warning(
+                "telegram roles_admin discord sync skipped invalid discord identity account_id=%s provider=%s provider_user_id=%s role=%s revoke=%s source=%s",
+                account_id,
+                provider,
+                provider_user_id,
+                role_name,
+                revoke,
+                source,
+            )
+            return {"synced": False, "reason": "invalid_discord_identity"}
 
         from bot.commands.base import bot as discord_bot
 
@@ -160,7 +184,7 @@ async def _sync_linked_discord_role(target: dict[str, str], role_name: str, *, r
                 error_code="discord_bot_unavailable",
                 error_message="discord bot guilds unavailable for telegram sync",
             )
-            return
+            return {"synced": False, "reason": "discord_bot_unavailable"}
         for guild in discord_bot.guilds:
             member = guild.get_member(discord_user_id)
             guild_role = guild.get_role(int(discord_role_id))
@@ -195,7 +219,8 @@ async def _sync_linked_discord_role(target: dict[str, str], role_name: str, *, r
                     error_code="discord_sync_failed",
                     error_message="telegram-triggered discord role sync failed",
                 )
-            return
+                return {"synced": False, "reason": "discord_sync_failed"}
+            return {"synced": True, "reason": "ok"}
         logger.warning(
             "telegram roles_admin discord sync target not found account_id=%s provider=%s provider_user_id=%s discord_user_id=%s role_id=%s revoke=%s",
             account_id,
@@ -218,6 +243,7 @@ async def _sync_linked_discord_role(target: dict[str, str], role_name: str, *, r
             error_code="discord_target_not_found",
             error_message="linked discord member or role not found for sync",
         )
+        return {"synced": False, "reason": "discord_target_not_found"}
     except Exception:
         logger.exception(
             "telegram roles_admin discord sync crashed provider=%s provider_user_id=%s account_id=%s role=%s revoke=%s",
@@ -240,6 +266,22 @@ async def _sync_linked_discord_role(target: dict[str, str], role_name: str, *, r
             error_code="discord_sync_crashed",
             error_message="telegram-triggered discord role sync crashed",
         )
+        return {"synced": False, "reason": "discord_sync_crashed"}
+
+
+def _discord_sync_status_note(sync_result: dict[str, str | bool] | None) -> str:
+    if not sync_result:
+        return ""
+    if bool(sync_result.get("synced")):
+        return "\nℹ️ Discord-синхронизация выполнена."
+    reason = str(sync_result.get("reason") or "").strip()
+    if reason == "discord_not_linked":
+        return "\nℹ️ Роль сохранена в боте, но в Discord не выдана: у аккаунта нет привязки Discord."
+    if reason == "discord_target_not_found":
+        return "\nℹ️ Роль сохранена в боте, но в Discord не выдана: пользователь/роль не найдены на сервере."
+    if reason in {"discord_bot_unavailable", "discord_sync_failed", "discord_sync_crashed"}:
+        return "\nℹ️ Роль сохранена в боте, но Discord-синхронизация завершилась с ошибкой (смотри логи)."
+    return ""
 
 
 def _should_skip_implicit_discord_catalog_sync(*, force: bool = False) -> tuple[bool, float]:
@@ -1906,10 +1948,12 @@ async def roles_admin_command(message: Message) -> None:
                     actor_provider="telegram",
                     actor_user_id=str(message.from_user.id) if message.from_user else None,
                 )
+                sync_result = None
                 if ok.get("ok"):
-                    await _sync_linked_discord_role(resolved, role_name, revoke=False, source="telegram_command")
+                    sync_result = await _sync_linked_discord_role(resolved, role_name, revoke=False, source="telegram_command")
                 await message.answer(
                     f"✅ Роль выдана пользователю {resolved['label']}."
+                    f"{_discord_sync_status_note(sync_result)}"
                     if ok.get("ok")
                     else _role_assignment_error_message(ok, default_message=f"❌ Не удалось выдать роль. {_telegram_user_lookup_hint()}")
                 )
@@ -1920,10 +1964,12 @@ async def roles_admin_command(message: Message) -> None:
                     actor_provider="telegram",
                     actor_user_id=str(message.from_user.id) if message.from_user else None,
                 )
+                sync_result = None
                 if ok.get("ok"):
-                    await _sync_linked_discord_role(resolved, role_name, revoke=True, source="telegram_command")
+                    sync_result = await _sync_linked_discord_role(resolved, role_name, revoke=True, source="telegram_command")
                 await message.answer(
                     f"✅ Роль снята у пользователя {resolved['label']}."
+                    f"{_discord_sync_status_note(sync_result)}"
                     if ok.get("ok")
                     else _role_assignment_error_message(ok, default_message=f"❌ Не удалось снять роль. {_telegram_user_lookup_hint()}")
                 )
@@ -3263,10 +3309,12 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                     source="telegram_pending_text",
                 )
                 ok = bool(result.get("grant_success"))
+                sync_result = None
                 if ok:
-                    await _sync_linked_discord_role(resolved, role_name, revoke=False, source="telegram_pending_text")
+                    sync_result = await _sync_linked_discord_role(resolved, role_name, revoke=False, source="telegram_pending_text")
                 await message.answer(
                     f"✅ Роль выдана пользователю {resolved['label']}."
+                    f"{_discord_sync_status_note(sync_result)}"
                     if ok
                     else _role_assignment_error_message(
                         result.get("grant_denied", [{}])[0] if result.get("grant_denied") else result,
@@ -3285,10 +3333,12 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                     source="telegram_pending_text",
                 )
                 ok = bool(result.get("revoke_success"))
+                sync_result = None
                 if ok:
-                    await _sync_linked_discord_role(resolved, role_name, revoke=True, source="telegram_pending_text")
+                    sync_result = await _sync_linked_discord_role(resolved, role_name, revoke=True, source="telegram_pending_text")
                 await message.answer(
                     f"✅ Роль снята у пользователя {resolved['label']}."
+                    f"{_discord_sync_status_note(sync_result)}"
                     if ok
                     else _role_assignment_error_message(
                         result.get("revoke_denied", [{}])[0] if result.get("revoke_denied") else result,
