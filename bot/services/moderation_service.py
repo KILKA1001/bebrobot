@@ -649,6 +649,7 @@ class ModerationService:
         target: Any,
         *,
         chat_id: Any = None,
+        case_id: Any = None,
     ) -> dict[str, Any]:
         actor_subject = ModerationService._resolve_subject(provider, actor, role="actor")
         target_subject = ModerationService._resolve_subject(provider, target, role="target")
@@ -669,15 +670,23 @@ class ModerationService:
             return {"ok": False, "error_code": "self_target_denied", "message": "Нельзя откатывать свои наказания через /modstatus."}
 
         recent = ModerationService.list_recent_cases(target_account_id, limit=10)
-        applied_case = next(
-            (
-                item for item in list(recent.get("items") or [])
-                if str((item.get("case") or {}).get("status") or "").strip().lower() == ModerationService.STATUS_APPLIED
-            ),
-            None,
-        )
+        normalized_case_id = str(case_id or "").strip()
+        applied_case = None
+        for item in list(recent.get("items") or []):
+            case_row = dict(item.get("case") or {})
+            status = str(case_row.get("status") or "").strip().lower()
+            if status != ModerationService.STATUS_APPLIED:
+                continue
+            if normalized_case_id and str(case_row.get("id") or "").strip() != normalized_case_id:
+                continue
+            applied_case = item
+            break
         if not applied_case:
-            return {"ok": False, "error_code": "case_not_found", "message": "Нет активных кейсов для отката."}
+            return {
+                "ok": False,
+                "error_code": "case_not_found",
+                "message": "Нет активных кейсов для отката." if not normalized_case_id else "Выбранный кейс не найден или уже закрыт.",
+            }
         case_row = dict(applied_case.get("case") or {})
         actions = list(applied_case.get("actions") or [])
         case_actor_account_id = str(case_row.get("actor_account_id") or "").strip()

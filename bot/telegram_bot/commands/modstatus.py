@@ -18,6 +18,7 @@ router = Router()
 _PAYMENT_HINT = ModerationService.MODSTATUS_PAYMENT_HINT
 _OPEN_LEGACY_FINES_CALLBACK = "modstatus:open_legacy_fines"
 _ROLLBACK_CALLBACK = "modstatus:rollback"
+_ROLLBACK_SELECT_CALLBACK = "modstatus:rollback_select"
 
 
 @router.message(Command("modstatus"))
@@ -130,10 +131,10 @@ async def modstatus_command(message: Message) -> None:
             and str((target_subject or {}).get("provider_user_id")).strip().lower() not in {"none", "null"}
             and AuthorityService.has_command_permission("telegram", viewer_id, "moderation_mute")
         ):
-            callback = f"{_ROLLBACK_CALLBACK}:{str(target_subject.get('provider_user_id')).strip()}"
+            callback = f"{_ROLLBACK_SELECT_CALLBACK}:{str(target_subject.get('provider_user_id')).strip()}"
             reply_markup = InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [InlineKeyboardButton(text="🧹 Убрать наказание", callback_data=callback)],
+                    [InlineKeyboardButton(text="🧹 Выбрать наказание для снятия", callback_data=callback)],
                 ]
             )
         await message.answer(
@@ -176,7 +177,10 @@ async def modstatus_rollback_case(callback: CallbackQuery) -> None:
     try:
         raw_data = str(callback.data or "").strip()
         prefix = f"{_ROLLBACK_CALLBACK}:"
-        target_user_id = raw_data[len(prefix):].strip() if raw_data.startswith(prefix) else ""
+        payload = raw_data[len(prefix):].strip() if raw_data.startswith(prefix) else ""
+        parts = payload.split(":", maxsplit=1)
+        target_user_id = str(parts[0] or "").strip()
+        case_id = str(parts[1] or "").strip() if len(parts) > 1 else ""
     except Exception:
         await callback.answer("❌ Некорректные данные кнопки.", show_alert=True)
         return
@@ -192,6 +196,7 @@ async def modstatus_rollback_case(callback: CallbackQuery) -> None:
             {"provider": "telegram", "provider_user_id": str(callback.from_user.id), "label": f"@{callback.from_user.username}" if callback.from_user.username else str(callback.from_user.id)},
             {"provider": "telegram", "provider_user_id": target_user_id, "label": target_user_id},
             chat_id=callback.message.chat.id,
+            case_id=case_id or None,
         )
     except Exception:
         logger.exception("telegram modstatus rollback failed actor_id=%s target_id=%s", callback.from_user.id, target_user_id)
@@ -220,3 +225,45 @@ async def modstatus_rollback_case(callback: CallbackQuery) -> None:
             )
         except Exception:
             logger.exception("telegram modstatus rollback notify failed case_id=%s", result.get("case_id"))
+
+
+@router.callback_query(F.data.startswith(f"{_ROLLBACK_SELECT_CALLBACK}:"))
+async def modstatus_rollback_select_case(callback: CallbackQuery) -> None:
+    if not callback.from_user or not callback.message:
+        return
+    raw_data = str(callback.data or "").strip()
+    prefix = f"{_ROLLBACK_SELECT_CALLBACK}:"
+    target_user_id = raw_data[len(prefix):].strip() if raw_data.startswith(prefix) else ""
+    if not target_user_id or target_user_id.lower() in {"none", "null"}:
+        await callback.answer("❌ Не удалось определить цель для отката.", show_alert=True)
+        return
+    target_account_id = AccountsService.resolve_account_id("telegram", target_user_id)
+    if not target_account_id:
+        await callback.answer("❌ Цель не привязана к общему аккаунту.", show_alert=True)
+        return
+    items = [
+        item
+        for item in list(ModerationService.list_recent_cases(str(target_account_id), limit=10).get("items") or [])
+        if str((item.get("case") or {}).get("status") or "").strip().lower() == ModerationService.STATUS_APPLIED
+    ]
+    if not items:
+        await callback.answer("❌ Нет активных кейсов для отката.", show_alert=True)
+        return
+    rows: list[list[InlineKeyboardButton]] = []
+    for item in items[:8]:
+        case_row = dict(item.get("case") or {})
+        case_id = str(case_row.get("id") or "").strip()
+        if not case_id:
+            continue
+        rows.append([InlineKeyboardButton(text=f"Кейс #{case_id}", callback_data=f"{_ROLLBACK_CALLBACK}:{target_user_id}:{case_id}")])
+    rows.append([InlineKeyboardButton(text="Отмена", callback_data="noop")])
+    await callback.message.answer(
+        "Выберите конкретный кейс, который нужно снять:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "noop")
+async def modstatus_noop(callback: CallbackQuery) -> None:
+    await callback.answer()
