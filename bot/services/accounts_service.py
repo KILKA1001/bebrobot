@@ -860,6 +860,15 @@ class AccountsService:
     def _is_unique_violation(error: Exception) -> bool:
         return str(getattr(error, "code", "")) == "23505" or "duplicate key value" in str(error).lower()
 
+    @staticmethod
+    def _is_missing_column_error(error: Exception, *, table: str, column: str) -> bool:
+        code = str(getattr(error, "code", "") or "").strip()
+        if code == "42703":
+            return True
+        lowered = AccountsService._format_db_error(error).lower()
+        expected_marker = f"column {table}.{column} does not exist"
+        return expected_marker in lowered
+
 
     @staticmethod
     def _rebind_account_id(from_account_id: str, to_account_id: str) -> None:
@@ -1804,12 +1813,20 @@ class AccountsService:
                     )
                     action_rows = action_response.data or []
                 except Exception as e:
-                    logger.exception(
-                        "get_profile actions fallback failed account_id=%s discord_user_id=%s error=%s",
-                        account_id,
-                        discord_user_id,
-                        AccountsService._format_db_error(e),
-                    )
+                    if AccountsService._is_missing_column_error(e, table="actions", column="user_id"):
+                        logger.warning(
+                            "get_profile actions legacy fallback skipped because schema has no actions.user_id account_id=%s discord_user_id=%s error=%s",
+                            account_id,
+                            discord_user_id,
+                            AccountsService._format_db_error(e),
+                        )
+                    else:
+                        logger.exception(
+                            "get_profile actions fallback failed account_id=%s discord_user_id=%s error=%s",
+                            account_id,
+                            discord_user_id,
+                            AccountsService._format_db_error(e),
+                        )
 
         if action_rows:
             return sum(float(row.get("points") or 0) for row in action_rows)
@@ -2008,11 +2025,18 @@ class AccountsService:
             if points_rows:
                 points_from_scores = float(points_rows[0].get("points") or 0)
         except Exception as e:
-            logger.exception(
-                "get_profile_by_account points failed account_id=%s error=%s",
-                account_id,
-                AccountsService._format_db_error(e),
-            )
+            if AccountsService._is_missing_column_error(e, table="scores", column="user_id"):
+                logger.warning(
+                    "get_profile_by_account legacy score fallback skipped because schema has no scores.user_id account_id=%s error=%s",
+                    account_id,
+                    AccountsService._format_db_error(e),
+                )
+            else:
+                logger.exception(
+                    "get_profile_by_account points failed account_id=%s error=%s",
+                    account_id,
+                    AccountsService._format_db_error(e),
+                )
 
         if points_from_scores is not None:
             points = AccountsService._format_points(points_from_scores)

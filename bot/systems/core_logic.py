@@ -29,6 +29,14 @@ active_timers = {}
 logger = logging.getLogger(__name__)
 
 
+def _is_missing_column_error(error: Exception, *, table: str, column: str) -> bool:
+    code = str(getattr(error, "code", "") or "").strip()
+    if code == "42703":
+        return True
+    lowered = str(error).lower()
+    return f"column {table}.{column} does not exist" in lowered
+
+
 def _resolve_account_id_from_discord(discord_user_id: int, *, handler: str) -> str | None:
     log_legacy_identity_path_detected(
         logger,
@@ -73,7 +81,7 @@ def _get_score_row_for_account(
     try:
         score_result = (
             db.supabase.table("scores")
-            .select("points,tickets_normal,tickets_gold,account_id,user_id")
+            .select("points,tickets_normal,tickets_gold,account_id")
             .eq("account_id", str(account_id))
             .limit(1)
             .execute()
@@ -108,7 +116,7 @@ def _get_score_row_for_account(
     try:
         score_result = (
             db.supabase.table("scores")
-            .select("points,tickets_normal,tickets_gold,account_id,user_id")
+            .select("points,tickets_normal,tickets_gold,account_id")
             .eq("user_id", str(discord_user_id))
             .limit(1)
             .execute()
@@ -116,13 +124,22 @@ def _get_score_row_for_account(
         rows = score_result.data or []
         if rows:
             return rows[0]
-    except Exception:
-        logger.exception(
-            "%s legacy score fallback failed account_id=%s discord_user_id=%s",
-            handler,
-            account_id,
-            discord_user_id,
-        )
+    except Exception as error:
+        if _is_missing_column_error(error, table="scores", column="user_id"):
+            logger.warning(
+                "%s legacy score fallback skipped because schema has no scores.user_id account_id=%s discord_user_id=%s error=%s",
+                handler,
+                account_id,
+                discord_user_id,
+                error,
+            )
+        else:
+            logger.exception(
+                "%s legacy score fallback failed account_id=%s discord_user_id=%s",
+                handler,
+                account_id,
+                discord_user_id,
+            )
     return None
 
 
@@ -226,7 +243,7 @@ def _get_leaderboard_place(
         try:
             score_result = (
                 db.supabase.table("scores")
-                .select("account_id,user_id,points")
+                .select("account_id,points")
                 .order("points", desc=True)
                 .execute()
             )
@@ -234,23 +251,6 @@ def _get_leaderboard_place(
             for index, row in enumerate(score_rows, start=1):
                 if str(row.get("account_id") or "") == str(account_id):
                     return index
-            if discord_user_id is not None:
-                for index, row in enumerate(score_rows, start=1):
-                    if str(row.get("user_id") or "") == str(discord_user_id):
-                        log_legacy_schema_fallback(
-                            logger,
-                            module=__name__,
-                            table="scores",
-                            field="user_id",
-                            action="replace_leaderboard_place_lookup_with_account_id",
-                            continue_execution=True,
-                            handler=handler,
-                            account_id=account_id,
-                            discord_user_id=discord_user_id,
-                            recommended_field="account_id",
-                            developer_hint="temporary compatibility path; backfill scores.account_id for leaderboard place",
-                        )
-                        return index
         except Exception:
             logger.exception(
                 "%s leaderboard lookup failed account_id=%s discord_user_id=%s",
