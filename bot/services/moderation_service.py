@@ -2659,6 +2659,7 @@ class ModerationService:
                 "target_account_id": target_subject.get("account_id"),
                 "target_provider_user_id": target_subject.get("provider_user_id"),
                 "violation_title": f"Ручное наказание: {normalized_action}",
+                "action_duration_minutes": duration,
                 "selected_action_summary": f"{normalized_action} на {ModerationService._format_duration(duration)}",
                 "moderator_result_text": f"Применено: {normalized_action} на {ModerationService._format_duration(duration)}\nПричина: {reason}",
                 "violator_result_text": f"К вам применено наказание: {normalized_action} на {ModerationService._format_duration(duration)}.\nПричина: {reason}",

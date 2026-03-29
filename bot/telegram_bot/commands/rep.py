@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
 from typing import Any
 
 from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.services import AuthorityService, ModerationNotificationsService, ModerationService
 from bot.systems.moderation_rep_ui import (
@@ -48,6 +49,42 @@ _MANUAL_DURATION_PRESETS: tuple[tuple[str, int], ...] = (("15м", 15), ("1ч", 6
 
 def _friendly_rep_error_text() -> str:
     return render_rep_apply_error_text()
+
+
+async def _apply_telegram_sanctions(*, bot: Any, chat_id: int, actor_id: int | None, target: dict[str, Any], ui_payload: dict[str, Any]) -> None:
+    target_user_id = int(str((target or {}).get("provider_user_id") or "0") or 0)
+    if not target_user_id:
+        return
+    actions = set(ui_payload.get("selected_actions") or [])
+    duration_minutes = int(ui_payload.get("mute_minutes") or ui_payload.get("ban_minutes") or ui_payload.get("action_duration_minutes") or 0)
+    until_date = datetime.now(timezone.utc) + timedelta(minutes=max(1, duration_minutes)) if duration_minutes > 0 else None
+    try:
+        if "mute" in actions:
+            await bot.restrict_chat_member(
+                chat_id=chat_id,
+                user_id=target_user_id,
+                permissions=ChatPermissions(can_send_messages=False),
+                until_date=until_date,
+            )
+        if "ban" in actions:
+            await bot.ban_chat_member(
+                chat_id=chat_id,
+                user_id=target_user_id,
+                until_date=until_date,
+                revoke_messages=False,
+            )
+        if "kick" in actions:
+            await bot.ban_chat_member(chat_id=chat_id, user_id=target_user_id, revoke_messages=False)
+            await bot.unban_chat_member(chat_id=chat_id, user_id=target_user_id, only_if_banned=True)
+    except Exception:
+        logger.exception(
+            "telegram rep sanction apply failed actor_id=%s target_id=%s chat_id=%s actions=%s duration_minutes=%s",
+            actor_id,
+            target_user_id,
+            chat_id,
+            list(actions),
+            duration_minutes,
+        )
 
 
 def _is_pending_expired(state: PendingRepState) -> bool:
@@ -547,6 +584,13 @@ async def rep_callback(callback: CallbackQuery) -> None:
                 case_id=ui_payload.get("case_id"),
                 error_code=None,
             )
+            await _apply_telegram_sanctions(
+                bot=callback.bot,
+                chat_id=callback.message.chat.id,
+                actor_id=callback.from_user.id,
+                target=target or {},
+                ui_payload=ui_payload,
+            )
             await callback.message.edit_text(render_rep_result_text(ui_payload, compact=True), reply_markup=None)
             try:
                 selected_actions = set(ui_payload.get("selected_actions") or [])
@@ -670,6 +714,13 @@ async def rep_pending_handler(message: Message) -> None:
                 await message.answer(f"❌ {result.get('message') or _friendly_rep_error_text()}")
                 return
             _PENDING_REP.pop(message.from_user.id, None)
+            await _apply_telegram_sanctions(
+                bot=message.bot,
+                chat_id=message.chat.id,
+                actor_id=message.from_user.id,
+                target=target or {},
+                ui_payload=result.get("ui_payload") or {},
+            )
             await message.answer(
                 "✅ Ручное наказание применено.\n"
                 f"Действие: {action_key}\n"
