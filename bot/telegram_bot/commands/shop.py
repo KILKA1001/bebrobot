@@ -86,12 +86,18 @@ def _item_card_text(item, account_id: str | None) -> str:
     payload = build_shop_render_payload(account_id)
     description = item.description or "Описание пока не добавлено."
     acquire_hint = item.acquire_hint or "Способ получения пока не указан."
+    price_line = f"Цена: <b>{item.price_points} баллов</b>"
+    if item.is_sale_active and item.sale_price_points is not None:
+        price_line = (
+            f"Цена: <b>{item.price_points} баллов</b> (акция)\n"
+            f"Базовая цена: <s>{item.base_price_points} баллов</s>"
+        )
     return (
         f"🛒 <b>{payload.title}</b>\n"
         f"Баланс: <b>{payload.points} баллов</b>\n\n"
         f"<b>{item.role_name}</b>\n"
         f"Категория: <b>{item.category}</b>\n"
-        f"Цена: <b>{item.price_points} баллов</b>\n"
+        f"{price_line}\n"
         f"Описание: {description}\n"
         f"Как получить: {acquire_hint}"
     )

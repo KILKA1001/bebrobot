@@ -21,7 +21,14 @@ def test_shop_catalog_items_sorted_and_paged():
             ],
         },
     ]
-    with patch("bot.systems.shop_logic.RoleManagementService.list_public_roles_catalog", return_value=grouped):
+    shop_rows = [
+        {"role_name": "Role 1", "display_position": 1, "effective_price_points": 11, "base_price_points": 11, "sale_price_points": None, "is_sale_active": False},
+        {"role_name": "Role 2", "display_position": 0, "effective_price_points": 10, "base_price_points": 10, "sale_price_points": None, "is_sale_active": False},
+        {"role_name": "Role 3", "display_position": 2, "effective_price_points": 12, "base_price_points": 12, "sale_price_points": None, "is_sale_active": False},
+    ]
+    with patch("bot.systems.shop_logic.RoleManagementService.list_public_roles_catalog", return_value=grouped), patch(
+        "bot.systems.shop_logic.RoleManagementService.list_active_shop_role_items", return_value=shop_rows
+    ):
         items = shop_logic.get_shop_catalog_items(log_context="test")
 
     assert [item.role_name for item in items] == ["Role 2", "Role 1", "Role 3"]
@@ -43,6 +50,9 @@ def test_find_shop_item_logs_when_missing():
             description="",
             acquire_hint="",
             price_points=0,
+            base_price_points=0,
+            sale_price_points=None,
+            is_sale_active=False,
         )
     ]
     with patch.object(shop_logic.logger, "error") as error_mock:
