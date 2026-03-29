@@ -5,6 +5,7 @@ from bot.telegram_bot.systems.commands_logic import (
     get_helpy_text,
     process_link_command,
     process_link_discord_command,
+    process_shop_command,
     prepare_roles_catalog_pages,
     process_profile_command,
     process_roles_catalog_command,
@@ -217,6 +218,11 @@ class TelegramCommandsLogicTests(unittest.TestCase):
     def test_link_discord_command_restricted_to_private_chat(self):
         result = process_link_discord_command(telegram_user_id=100, is_private_chat=False)
         self.assertEqual(result, '❌ Команда привязки доступна только в личных сообщениях с ботом.')
+
+    def test_shop_command_contains_open_shop_hint(self):
+        result = process_shop_command()
+        self.assertIn("Магазин", result)
+        self.assertIn("Открыть магазин", result)
 
 
 if __name__ == "__main__":
