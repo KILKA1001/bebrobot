@@ -142,7 +142,19 @@ def _target_keyboard(actor_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def _violations_keyboard(actor_id: int) -> InlineKeyboardMarkup:
+def _violations_keyboard(actor_id: int, violations: list[dict[str, Any]] | None = None, *, show_escalation: bool = False) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    rows.append([InlineKeyboardButton(text="🔧 Мут", callback_data=f"rep:{actor_id}:manual:mute")])
+    rows.append([InlineKeyboardButton(text="🔧 Пред", callback_data=f"rep:{actor_id}:manual:warn")])
+    rows.append([InlineKeyboardButton(text="🔧 Бан", callback_data=f"rep:{actor_id}:manual:ban")])
+    rows.append([InlineKeyboardButton(text="🔧 Кик", callback_data=f"rep:{actor_id}:manual:kick")])
+    rows.append([InlineKeyboardButton(text="📚 Нарушения из правил", callback_data=f"rep:{actor_id}:rules_menu")])
+    rows.append([InlineKeyboardButton(text="Назад", callback_data=f"rep:{actor_id}:back:target")])
+    rows.append([InlineKeyboardButton(text="Отмена", callback_data=f"rep:{actor_id}:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _rules_keyboard(actor_id: int, violations: list[dict[str, Any]] | None = None, *, show_escalation: bool = False) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     rows.append([InlineKeyboardButton(text="🔧 Мут", callback_data=f"rep:{actor_id}:manual:mute")])
     rows.append([InlineKeyboardButton(text="🔧 Пред", callback_data=f"rep:{actor_id}:manual:warn")])
