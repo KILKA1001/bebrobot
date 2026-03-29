@@ -74,16 +74,16 @@ def _target_label(target: dict[str, Any] | None) -> str:
     return str(target.get("label") or target.get("provider_user_id") or "не выбран")
 
 
-async def _apply_discord_sanctions(*, interaction: discord.Interaction, target: dict[str, Any], ui_payload: dict[str, Any]) -> None:
+async def _apply_discord_sanctions(*, interaction: discord.Interaction, target: dict[str, Any], ui_payload: dict[str, Any]) -> dict[str, Any]:
     guild = interaction.guild
     if guild is None:
-        return
+        return {"ok": False, "reason": "guild_missing"}
     target_user_id = int(str((target or {}).get("provider_user_id") or "0") or 0)
     if not target_user_id:
-        return
+        return {"ok": False, "reason": "target_not_found"}
     member = guild.get_member(target_user_id)
     if member is None:
-        return
+        return {"ok": False, "reason": "member_missing"}
     actions = set(ui_payload.get("selected_actions") or [])
     duration_minutes = int(ui_payload.get("mute_minutes") or ui_payload.get("ban_minutes") or ui_payload.get("action_duration_minutes") or 0)
     try:
@@ -94,6 +94,7 @@ async def _apply_discord_sanctions(*, interaction: discord.Interaction, target: 
             await guild.ban(member, reason=f"/rep ban by {interaction.user.id}", delete_message_days=0)
         if "kick" in actions:
             await guild.kick(member, reason=f"/rep kick by {interaction.user.id}")
+        return {"ok": True}
     except Exception:
         logger.exception(
             "discord rep sanction apply failed actor_id=%s target_id=%s guild_id=%s actions=%s duration_minutes=%s",
@@ -103,6 +104,7 @@ async def _apply_discord_sanctions(*, interaction: discord.Interaction, target: 
             list(actions),
             duration_minutes,
         )
+        return {"ok": False, "reason": "sanction_apply_failed"}
 
 
 @dataclass
@@ -286,7 +288,12 @@ class _RepConfirmButton(discord.ui.Button):
             view.state.result = result
             view.state.status_text = "Шаг 5 завершён: кейс создан, итог показан модератору, уведомление нарушителю отправляется отдельно."
             view.log_event("info", message="rep apply success")
-            await _apply_discord_sanctions(interaction=interaction, target=view.state.target or {}, ui_payload=result.get("ui_payload") or {})
+            sanction_result = await _apply_discord_sanctions(interaction=interaction, target=view.state.target or {}, ui_payload=result.get("ui_payload") or {})
+            if not sanction_result.get("ok"):
+                view.state.status_text = (
+                    "Кейс создан, но санкция не применилась на сервере "
+                    "(права бота/роль цели). Проверьте /modstatus."
+                )
             await view.notify_target(result["ui_payload"])
             view.disable_all_items()
             await interaction.response.edit_message(embed=view.build_embed(), view=view)

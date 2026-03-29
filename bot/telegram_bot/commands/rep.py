@@ -9,6 +9,7 @@ from typing import Any
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.exceptions import TelegramBadRequest
 
 from bot.services import AuthorityService, ModerationNotificationsService, ModerationService
 from bot.systems.moderation_rep_ui import (
@@ -51,14 +52,24 @@ def _friendly_rep_error_text() -> str:
     return render_rep_apply_error_text()
 
 
-async def _apply_telegram_sanctions(*, bot: Any, chat_id: int, actor_id: int | None, target: dict[str, Any], ui_payload: dict[str, Any]) -> None:
+async def _apply_telegram_sanctions(*, bot: Any, chat_id: int, actor_id: int | None, target: dict[str, Any], ui_payload: dict[str, Any]) -> dict[str, Any]:
     target_user_id = int(str((target or {}).get("provider_user_id") or "0") or 0)
     if not target_user_id:
-        return
+        return {"ok": False, "reason": "target_not_found"}
     actions = set(ui_payload.get("selected_actions") or [])
     duration_minutes = int(ui_payload.get("mute_minutes") or ui_payload.get("ban_minutes") or ui_payload.get("action_duration_minutes") or 0)
     until_date = datetime.now(timezone.utc) + timedelta(minutes=max(1, duration_minutes)) if duration_minutes > 0 else None
     try:
+        member = await bot.get_chat_member(chat_id=chat_id, user_id=target_user_id)
+        if str(getattr(member, "status", "")).lower() in {"administrator", "creator"} and actions.intersection({"mute", "ban", "kick"}):
+            logger.warning(
+                "telegram rep sanction skipped target is admin actor_id=%s target_id=%s chat_id=%s actions=%s",
+                actor_id,
+                target_user_id,
+                chat_id,
+                list(actions),
+            )
+            return {"ok": False, "reason": "target_is_admin"}
         if "mute" in actions:
             await bot.restrict_chat_member(
                 chat_id=chat_id,
@@ -76,6 +87,21 @@ async def _apply_telegram_sanctions(*, bot: Any, chat_id: int, actor_id: int | N
         if "kick" in actions:
             await bot.ban_chat_member(chat_id=chat_id, user_id=target_user_id, revoke_messages=False)
             await bot.unban_chat_member(chat_id=chat_id, user_id=target_user_id, only_if_banned=True)
+        return {"ok": True}
+    except TelegramBadRequest as exc:
+        text = str(exc)
+        logger.warning(
+            "telegram rep sanction rejected actor_id=%s target_id=%s chat_id=%s actions=%s duration_minutes=%s error=%s",
+            actor_id,
+            target_user_id,
+            chat_id,
+            list(actions),
+            duration_minutes,
+            text,
+        )
+        if "administrator of the chat" in text.lower():
+            return {"ok": False, "reason": "target_is_admin"}
+        return {"ok": False, "reason": "telegram_bad_request", "error": text}
     except Exception:
         logger.exception(
             "telegram rep sanction apply failed actor_id=%s target_id=%s chat_id=%s actions=%s duration_minutes=%s",
@@ -85,6 +111,7 @@ async def _apply_telegram_sanctions(*, bot: Any, chat_id: int, actor_id: int | N
             list(actions),
             duration_minutes,
         )
+        return {"ok": False, "reason": "sanction_apply_failed"}
 
 
 def _is_pending_expired(state: PendingRepState) -> bool:
@@ -116,6 +143,18 @@ def _target_keyboard(actor_id: int) -> InlineKeyboardMarkup:
 
 
 def _violations_keyboard(actor_id: int, violations: list[dict[str, Any]] | None = None, *, show_escalation: bool = False) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    rows.append([InlineKeyboardButton(text="🔧 Мут", callback_data=f"rep:{actor_id}:manual:mute")])
+    rows.append([InlineKeyboardButton(text="🔧 Пред", callback_data=f"rep:{actor_id}:manual:warn")])
+    rows.append([InlineKeyboardButton(text="🔧 Бан", callback_data=f"rep:{actor_id}:manual:ban")])
+    rows.append([InlineKeyboardButton(text="🔧 Кик", callback_data=f"rep:{actor_id}:manual:kick")])
+    rows.append([InlineKeyboardButton(text="📚 Нарушения из правил", callback_data=f"rep:{actor_id}:rules_menu")])
+    rows.append([InlineKeyboardButton(text="Назад", callback_data=f"rep:{actor_id}:back:target")])
+    rows.append([InlineKeyboardButton(text="Отмена", callback_data=f"rep:{actor_id}:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _rules_keyboard(actor_id: int, violations: list[dict[str, Any]] | None = None, *, show_escalation: bool = False) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     rows.append([InlineKeyboardButton(text="🔧 Мут", callback_data=f"rep:{actor_id}:manual:mute")])
     rows.append([InlineKeyboardButton(text="🔧 Пред", callback_data=f"rep:{actor_id}:manual:warn")])
@@ -584,13 +623,19 @@ async def rep_callback(callback: CallbackQuery) -> None:
                 case_id=ui_payload.get("case_id"),
                 error_code=None,
             )
-            await _apply_telegram_sanctions(
+            sanction_result = await _apply_telegram_sanctions(
                 bot=callback.bot,
                 chat_id=callback.message.chat.id,
                 actor_id=callback.from_user.id,
                 target=target or {},
                 ui_payload=ui_payload,
             )
+            if not sanction_result.get("ok"):
+                await callback.message.answer(
+                    "⚠️ Наказание записано в кейс, но не применилось в чате.\n"
+                    "Причина: пользователь администратор или у бота не хватает прав.\n"
+                    "Кейс автоматически откатывать не стал — проверьте /modstatus."
+                )
             await callback.message.edit_text(render_rep_result_text(ui_payload, compact=True), reply_markup=None)
             try:
                 selected_actions = set(ui_payload.get("selected_actions") or [])
@@ -714,13 +759,19 @@ async def rep_pending_handler(message: Message) -> None:
                 await message.answer(f"❌ {result.get('message') or _friendly_rep_error_text()}")
                 return
             _PENDING_REP.pop(message.from_user.id, None)
-            await _apply_telegram_sanctions(
+            sanction_result = await _apply_telegram_sanctions(
                 bot=message.bot,
                 chat_id=message.chat.id,
                 actor_id=message.from_user.id,
                 target=target or {},
                 ui_payload=result.get("ui_payload") or {},
             )
+            if not sanction_result.get("ok"):
+                await message.answer(
+                    "⚠️ Наказание записано в кейс, но не применилось в чате.\n"
+                    "Причина: пользователь администратор или у бота не хватает прав.\n"
+                    "Проверьте /modstatus и при необходимости снимите кейс."
+                )
             await message.answer(
                 "✅ Ручное наказание применено.\n"
                 f"Действие: {action_key}\n"
