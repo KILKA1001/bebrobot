@@ -36,6 +36,22 @@ class TitleManagementService:
         return AuthorityService.is_super_admin(provider, provider_user_id)
 
     @staticmethod
+    def get_target_titles(target_provider: str, target_user_id: str) -> tuple[str, ...]:
+        account_id = AccountsService.resolve_account_id(target_provider, target_user_id)
+        if not account_id:
+            return tuple()
+        try:
+            return tuple(AccountsService.get_account_titles(account_id))
+        except Exception:
+            logger.exception(
+                "title fetch target titles failed target=%s:%s account_id=%s",
+                target_provider,
+                target_user_id,
+                account_id,
+            )
+            return tuple()
+
+    @staticmethod
     def apply_title_change(
         *,
         actor_provider: str,

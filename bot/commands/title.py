@@ -19,6 +19,7 @@ class DiscordTitleFlowState:
     actor_id: int
     target: dict[str, str]
     mode: str = "promote"
+    target_titles: tuple[str, ...] = tuple()
 
 
 class _TitleModeButtons(discord.ui.View):
@@ -47,8 +48,13 @@ class _TitleModeButtons(discord.ui.View):
 class _TitleSelect(discord.ui.Select):
     def __init__(self, *, state: DiscordTitleFlowState):
         self.state = state
+        selected_titles = {str(item or "").strip().casefold() for item in state.target_titles if str(item or "").strip()}
         options = [
-            discord.SelectOption(label=label[:100], value=key, description="Выбор звания для изменения")
+            discord.SelectOption(
+                label=(f"✅ {label}" if key.casefold() in selected_titles else label)[:100],
+                value=key,
+                description="Выбор звания для изменения",
+            )
             for key, label in TitleManagementService.managed_titles()[:25]
         ]
         super().__init__(
@@ -87,6 +93,7 @@ class _TitleSelect(discord.ui.Select):
             return
 
         target_label = str(self.state.target.get("label") or self.state.target.get("provider_user_id") or "пользователь")
+        self.state.target_titles = tuple(result.titles)
         await interaction.response.send_message(
             f"{result.message}\nПользователь: {target_label}\nТекущие звания: {', '.join(result.titles) if result.titles else 'нет'}",
             ephemeral=True,
@@ -111,13 +118,21 @@ async def title(ctx: commands.Context, *, target: str | None = None) -> None:
     if resolved is None:
         return
 
-    state = DiscordTitleFlowState(actor_id=ctx.author.id, target=resolved)
+    state = DiscordTitleFlowState(
+        actor_id=ctx.author.id,
+        target=resolved,
+        target_titles=TitleManagementService.get_target_titles(
+            str(resolved.get("provider") or "discord"),
+            str(resolved.get("provider_user_id") or ""),
+        ),
+    )
     view = _TitleModeButtons(state=state)
     await send_temp(
         ctx,
         "🛠️ Управление званием\n"
         "1) Выбери режим: повышение или понижение.\n"
         "2) Выбери звание из списка.\n"
+        "✅ возле звания = у пользователя оно уже есть.\n"
         "Команда /title объединяет оба сценария в одном интерфейсе.",
         view=view,
     )
