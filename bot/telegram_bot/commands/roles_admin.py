@@ -38,7 +38,7 @@ _SECTION_LABELS = {
 }
 _SECTION_OPERATIONS = {
     "categories": ("category_create", "category_order", "category_delete"),
-    "roles": ("role_create", "role_edit_acquire_hint", "role_move", "role_order", "role_delete"),
+    "roles": ("role_create", "role_edit_acquire_hint", "role_edit_sellable", "role_move", "role_order", "role_delete"),
     "users": ("user_roles", "user_grant", "user_revoke"),
 }
 _SHOP_ADMIN_CATEGORY_ACTIONS: tuple[tuple[str, str], ...] = (
@@ -690,6 +690,7 @@ def _build_actions_keyboard(
             [
                 [InlineKeyboardButton(text="➕ Создать роль", callback_data=f"roles_admin:{actor_id}:start:role_create")],
                 [InlineKeyboardButton(text="🧭 Как получить роль", callback_data=f"roles_admin:{actor_id}:start:role_edit_acquire_hint")],
+                [InlineKeyboardButton(text="🛒 Продажа в магазине", callback_data=f"roles_admin:{actor_id}:start:role_edit_sellable")],
                 [InlineKeyboardButton(text="🚚 Переместить роль", callback_data=f"roles_admin:{actor_id}:start:role_move")],
                 [InlineKeyboardButton(text="🔢 Порядок роли", callback_data=f"roles_admin:{actor_id}:start:role_order")],
                 [InlineKeyboardButton(text="🗑 Удалить роль", callback_data=f"roles_admin:{actor_id}:start:role_delete")],
@@ -775,11 +776,12 @@ def _operation_hint(operation: str) -> str:
         "category_create": "Отправь: <code>Название категории | position(опционально)</code>",
         "category_order": "Отправь: <code>Название категории | position</code>",
         "category_delete": "Отправь: <code>Название категории</code>",
-        "role_create": "Сначала выбери категорию кнопкой. Потом отправь: <code>Название роли | Описание | Как получить(опц) | discord_role_id(опц) | position(опц)</code>. Описание и способ получения можно оставить пустыми. Если позицию не указывать, роль будет добавлена последней.",
-        "role_create_enter_name": "Отправь: <code>Название роли | Описание | Как получить(опц) | discord_role_id(опц) | position(опц)</code>. Категория уже выбрана кнопками, осталось заполнить параметры роли.",
+        "role_create": "Сначала выбери категорию кнопкой. Потом отправь: <code>Название роли | Описание | Как получить(опц) | discord_role_id(опц) | sellable/not_sellable(опц) | position(опц)</code>. Описание и способ получения можно оставить пустыми. Если позицию не указывать, роль будет добавлена последней.",
+        "role_create_enter_name": "Отправь: <code>Название роли | Описание | Как получить(опц) | discord_role_id(опц) | sellable/not_sellable(опц) | position(опц)</code>. Категория уже выбрана кнопками, осталось заполнить параметры роли.",
         "role_create_new_category_name": "Отправь только <code>Название новой категории</code>. После этого бот сразу попросит параметры роли в этой категории.",
         "role_edit_description": "Отправь: <code>Название роли | Описание</code>. Так роль будет понятнее пользователям прямо в интерфейсе.",
         "role_edit_acquire_hint": "Отправь: <code>Название роли | Как получить</code>. Пиши коротко и понятно: через активность, выдачу админа, турнир, заявку и т.д.",
+        "role_edit_sellable": "Отправь: <code>Название роли | sellable</code> или <code>Название роли | not_sellable</code>. Это включает/выключает продажу роли в магазине.",
         "role_move": "Отправь: <code>Название роли | Категория | position(опц)</code>. Если позицию не указывать, роль будет добавлена последней. Внешнюю Discord-роль можно переместить.",
         "role_order": "Отправь: <code>Название роли | Категория | position</code>. Внешнюю Discord-роль можно отсортировать.",
         "role_delete": "Отправь: <code>Название роли</code>. Внешние Discord-роли удалить нельзя.",
@@ -802,6 +804,17 @@ def _looks_like_discord_role_id(value: str | None) -> bool:
     return bool(token) and token.isdigit()
 
 
+def _parse_sellable_choice(value: str | None) -> bool | None:
+    token = str(value or "").strip().lower()
+    if not token:
+        return None
+    if token in {"yes", "true", "1", "sellable", "on", "продается", "продаётся"}:
+        return True
+    if token in {"no", "false", "0", "not_sellable", "off", "непродается", "непродаётся", "не_продается", "не_продаётся"}:
+        return False
+    return None
+
+
 def _parse_role_create_metadata_args(args: list[str]) -> dict[str, Any]:
     role_name = args[0] if args else ""
     category = args[1] if len(args) > 1 else ""
@@ -814,11 +827,17 @@ def _parse_role_create_metadata_args(args: list[str]) -> dict[str, Any]:
 
     acquire_hint = None
     discord_role_id = None
+    is_sellable = None
     if len(extras) >= 2:
         acquire_hint = extras[0] or None
         discord_role_id = extras[1] or None
+        if len(extras) >= 3:
+            is_sellable = _parse_sellable_choice(extras[2])
     elif len(extras) == 1:
-        if _looks_like_discord_role_id(extras[0]):
+        parsed_sellable = _parse_sellable_choice(extras[0])
+        if parsed_sellable is not None:
+            is_sellable = parsed_sellable
+        elif _looks_like_discord_role_id(extras[0]):
             discord_role_id = extras[0]
         else:
             acquire_hint = extras[0] or None
@@ -830,6 +849,7 @@ def _parse_role_create_metadata_args(args: list[str]) -> dict[str, Any]:
         "acquire_hint": acquire_hint,
         "discord_role_id": discord_role_id,
         "position": position,
+        "is_sellable": is_sellable,
     }
 
 
@@ -844,11 +864,17 @@ def _parse_role_create_selected_category_args(args: list[str], *, category: str)
 
     acquire_hint = None
     discord_role_id = None
+    is_sellable = None
     if len(extras) >= 2:
         acquire_hint = extras[0] or None
         discord_role_id = extras[1] or None
+        if len(extras) >= 3:
+            is_sellable = _parse_sellable_choice(extras[2])
     elif len(extras) == 1:
-        if _looks_like_discord_role_id(extras[0]):
+        parsed_sellable = _parse_sellable_choice(extras[0])
+        if parsed_sellable is not None:
+            is_sellable = parsed_sellable
+        elif _looks_like_discord_role_id(extras[0]):
             discord_role_id = extras[0]
         else:
             acquire_hint = extras[0] or None
@@ -860,6 +886,7 @@ def _parse_role_create_selected_category_args(args: list[str], *, category: str)
         "acquire_hint": acquire_hint,
         "discord_role_id": discord_role_id,
         "position": position,
+        "is_sellable": is_sellable,
     }
 
 
@@ -1424,7 +1451,7 @@ def _render_fallback_text() -> str:
         "<b>С чего начать: 2 подхода</b>\n"
         "<b>Подход 1 — настрой каталог</b>\n"
         "1. <code>/roles_admin category_create &lt;name&gt; [position]</code>\n"
-        "2. <code>/roles_admin role_create &lt;category&gt; | &lt;name&gt; | &lt;description&gt; | [&lt;как получить&gt;] | [discord_role_id] | [position]</code>\n"
+        "2. <code>/roles_admin role_create &lt;category&gt; | &lt;name&gt; | &lt;description&gt; | [&lt;как получить&gt;] | [discord_role_id] | [sellable|not_sellable] | [position]</code>\n"
         "3. При необходимости: <code>/roles_admin role_edit_description ...</code> и <code>/roles_admin role_edit_acquire_hint ...</code>\n"
         "<b>Подход 2 — работай с пользователем</b>\n"
         "4. Для выдачи: <code>/roles_admin user_grant &lt;@username|ds:username&gt; &lt;role_name&gt;</code>\n"
@@ -1456,7 +1483,7 @@ def _render_help_text() -> str:
         "<b>С чего начать: 2 подхода</b>\n"
         "<b>Подход 1 — настрой каталог</b>\n"
         "1. <code>category_create &lt;name&gt; [position]</code> — создай или обнови категорию (<b>только Глава клуба/Главный вице</b>).\n"
-        "2. <code>role_create &lt;category&gt; | &lt;name&gt; | &lt;description&gt; | [&lt;как получить&gt;] | [discord_role_id] | [position]</code> — создай роль внутри категории.\n"
+        "2. <code>role_create &lt;category&gt; | &lt;name&gt; | &lt;description&gt; | [&lt;как получить&gt;] | [discord_role_id] | [sellable|not_sellable] | [position]</code> — создай роль внутри категории.\n"
         "3. <code>role_edit_description</code> и <code>role_edit_acquire_hint</code> — дополни описание роли и способ получения, если нужно изменить их позже.\n"
         "<b>Подход 2 — работай с пользователем</b>\n"
         "4. <code>user_grant</code> / <code>user_revoke</code> — выдай или сними роль у пользователя.\n\n"
@@ -1742,7 +1769,7 @@ async def roles_admin_command(message: Message) -> None:
             pipe_args = _parse_pipe_args(raw_payload)
             if len(pipe_args) < 2:
                 await message.answer(
-                    "❌ Формат: /roles_admin role_create <Категория> | <Название роли> | <Описание> | [Как получить] | [discord_role_id] | [position]"
+                    "❌ Формат: /roles_admin role_create <Категория> | <Название роли> | <Описание> | [Как получить] | [discord_role_id] | [sellable|not_sellable] | [position]"
                 )
                 return
             parsed = _parse_role_create_metadata_args([pipe_args[1], pipe_args[0], *pipe_args[2:]])
@@ -1764,7 +1791,39 @@ async def roles_admin_command(message: Message) -> None:
                 operation="role_create",
                 source="telegram_command",
             )
+            if create_result.get("ok") and parsed.get("is_sellable") is not None:
+                RoleManagementService.update_role_sellable(
+                    parsed["role_name"],
+                    bool(parsed.get("is_sellable")),
+                    actor_id=str(message.from_user.id) if message.from_user else None,
+                    actor_provider="telegram",
+                    actor_user_id=str(message.from_user.id) if message.from_user else None,
+                    operation="role_edit_sellable",
+                    source="telegram_command",
+                )
             await message.answer("✅ Роль создана." if create_result.get("ok") else f"❌ {create_result.get('message') or 'Не удалось создать роль (смотри логи).'}")
+            return
+
+        if subcommand == "role_edit_sellable":
+            raw_payload = text.split(None, 2)[2] if len(parts) >= 3 else ""
+            pipe_args = _parse_pipe_args(raw_payload)
+            if len(pipe_args) < 2:
+                await message.answer("❌ Формат: /roles_admin role_edit_sellable <Название роли> | <sellable|not_sellable>")
+                return
+            parsed_sellable = _parse_sellable_choice(pipe_args[1])
+            if parsed_sellable is None:
+                await message.answer("❌ Используйте sellable или not_sellable.")
+                return
+            ok = RoleManagementService.update_role_sellable(
+                pipe_args[0],
+                parsed_sellable,
+                actor_id=str(message.from_user.id) if message.from_user else None,
+                actor_provider="telegram",
+                actor_user_id=str(message.from_user.id) if message.from_user else None,
+                operation="role_edit_sellable",
+                source="telegram_command",
+            )
+            await message.answer("✅ Признак продажи роли обновлён." if ok else "❌ Не удалось обновить признак продажи роли (смотри логи).")
             return
 
         if subcommand == "role_edit_description":
@@ -2142,6 +2201,13 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 "shop_admin_open provider=telegram actor_id=%s step=category_pick",
                 callback.from_user.id,
             )
+            shop_grouped = RoleManagementService.list_public_roles_catalog(
+                log_context="telegram:roles_admin:shop_settings",
+                only_sellable=True,
+            ) or []
+            if not shop_grouped:
+                await _safe_callback_answer(callback, "Нет ролей с продажей в магазине.", show_alert=True)
+                return
             await _safe_edit_message_text(
                 callback,
                 (
@@ -2151,7 +2217,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 ),
                 parse_mode="HTML",
                 reply_markup=_build_pick_category_keyboard(
-                    grouped,
+                    shop_grouped,
                     owner_id,
                     "shop_settings",
                     allow_create_new=False,
@@ -2234,7 +2300,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                 )
                 await _safe_callback_answer(callback)
                 return
-            if operation in {"role_move", "role_order", "role_delete", "role_edit_acquire_hint"}:
+            if operation in {"role_move", "role_order", "role_delete", "role_edit_acquire_hint", "role_edit_sellable"}:
                 flattened_roles = _flatten_roles(grouped)
                 if operation == "role_delete":
                     flattened_roles = [item for item in flattened_roles if not item.get("is_discord_managed")]
@@ -2287,10 +2353,19 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
         if action == "pick_category":
             operation = parts[3] if len(parts) > 3 else ""
             category_idx = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else -1
-            if category_idx < 0 or category_idx >= len(grouped):
+            category_source = grouped
+            if operation == "shop_settings":
+                category_source = RoleManagementService.list_public_roles_catalog(
+                    log_context="telegram:roles_admin:shop_settings:pick",
+                    only_sellable=True,
+                ) or []
+                if not category_source:
+                    await _safe_callback_answer(callback, "Нет ролей с продажей в магазине.", show_alert=True)
+                    return
+            if category_idx < 0 or category_idx >= len(category_source):
                 await _safe_callback_answer(callback, "Категория не найдена", show_alert=True)
                 return
-            category_name = str(grouped[category_idx]["category"])
+            category_name = str(category_source[category_idx]["category"])
             if operation == "shop_settings":
                 if not actor_can_manage_categories:
                     logger.warning(
@@ -2368,7 +2443,7 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     callback,
                     (
                         f"Категория выбрана: <b>{category_name}</b>\n\n"
-                        "Теперь отправь: <code>Название роли | Описание | Как получить(опц) | discord_role_id(опц) | position(опц)</code>\n"
+                        "Теперь отправь: <code>Название роли | Описание | Как получить(опц) | discord_role_id(опц) | sellable/not_sellable(опц) | position(опц)</code>\n"
                         "Сначала идёт название роли, затем описание, способ получения и остальные опциональные параметры."
                     ),
                     parse_mode="HTML",
@@ -2738,6 +2813,20 @@ async def roles_admin_callback(callback: CallbackQuery) -> None:
                     parse_mode="HTML",
                 )
                 return
+            if operation == "role_edit_sellable":
+                _PENDING_ACTIONS[callback.from_user.id] = PendingRolesAdminAction(
+                    operation="role_edit_sellable",
+                    created_at=time.time(),
+                    payload={"role": role_name},
+                )
+                await _safe_callback_answer(callback, "Ожидаю новый статус продажи", show_alert=True)
+                await callback.message.reply(
+                    f"Выбрана роль: <b>{role_name}</b>\n"
+                    "Отправь: <code>Название роли | sellable</code> или <code>Название роли | not_sellable</code>.\n"
+                    "Можно отправить только <code>sellable</code> / <code>not_sellable</code> после выбора роли.",
+                    parse_mode="HTML",
+                )
+                return
             if operation in {"role_move", "role_order"}:
                 available_roles = {item["role"] for item in RoleManagementService.list_roles_available_for_admin_reorder()}
                 if role_name not in available_roles:
@@ -3079,7 +3168,7 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
             await message.answer("✅ Категория удалена." if ok else "❌ Не удалось удалить категорию (смотри логи).")
         elif op == "role_create":
             if len(args) < 2:
-                await message.answer("❌ Формат: Категория | Роль | Описание | Как получить(опц) | discord_role_id(опц) | position(опц)")
+                await message.answer("❌ Формат: Категория | Роль | Описание | Как получить(опц) | discord_role_id(опц) | sellable/not_sellable(опц) | position(опц)")
                 return
             parsed = _parse_role_create_metadata_args([args[1], args[0], *args[2:]])
             _log_role_create_category_selection(
@@ -3100,6 +3189,16 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                 operation="role_create",
                 source="telegram_pending_text",
             )
+            if create_result.get("ok") and parsed.get("is_sellable") is not None:
+                RoleManagementService.update_role_sellable(
+                    parsed["role_name"],
+                    bool(parsed.get("is_sellable")),
+                    actor_id=str(message.from_user.id) if message.from_user else None,
+                    actor_provider="telegram",
+                    actor_user_id=str(message.from_user.id) if message.from_user else None,
+                    operation="role_edit_sellable",
+                    source="telegram_pending_text",
+                )
             await message.answer("✅ Роль создана." if create_result.get("ok") else f"❌ {create_result.get('message') or 'Не удалось создать роль (смотри логи).'}")
         elif op == "role_edit_description":
             if len(args) < 2:
@@ -3135,12 +3234,33 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
                 source="telegram_pending_text",
             )
             await message.answer("✅ Способ получения роли обновлён." if ok else "❌ Не удалось обновить способ получения роли (смотри логи).")
+        elif op == "role_edit_sellable":
+            role_name = str((pending.payload or {}).get("role") or "").strip()
+            value = None
+            if len(args) >= 2 and args[0] == role_name:
+                value = args[1]
+            elif args:
+                value = args[0]
+            parsed_sellable = _parse_sellable_choice(value)
+            if not role_name or parsed_sellable is None:
+                await message.answer("❌ Формат: Название роли | sellable|not_sellable или только sellable|not_sellable после выбора роли.")
+                return
+            ok = RoleManagementService.update_role_sellable(
+                role_name,
+                parsed_sellable,
+                actor_id=str(message.from_user.id) if message.from_user else None,
+                actor_provider="telegram",
+                actor_user_id=str(message.from_user.id) if message.from_user else None,
+                operation="role_edit_sellable",
+                source="telegram_pending_text",
+            )
+            await message.answer("✅ Признак продажи роли обновлён." if ok else "❌ Не удалось обновить признак продажи роли (смотри логи).")
         elif op == "role_create_enter_name":
             if not pending.payload or not pending.payload.get("category"):
                 await message.answer("❌ Сессия выбора категории устарела. Начните заново: /roles_admin")
                 return
             if not args:
-                await message.answer("❌ Формат: Название роли | Описание | Как получить(опц) | discord_role_id(опц) | position(опц)")
+                await message.answer("❌ Формат: Название роли | Описание | Как получить(опц) | discord_role_id(опц) | sellable/not_sellable(опц) | position(опц)")
                 return
             category = str(pending.payload.get("category") or "")
             parsed = _parse_role_create_selected_category_args(args, category=category)
@@ -3201,7 +3321,7 @@ async def roles_admin_pending_action_handler(message: Message) -> None:
             await message.answer(
                 (
                     f"✅ Категория <b>{category_name}</b> создана и выбрана.\n\n"
-                    "Теперь отправь: <code>Название роли | Описание | Как получить(опц) | discord_role_id(опц) | position(опц)</code>\n"
+                    "Теперь отправь: <code>Название роли | Описание | Как получить(опц) | discord_role_id(опц) | sellable/not_sellable(опц) | position(опц)</code>\n"
                     "Сначала идёт название роли, затем описание и инструкция, как получить роль."
                 ),
                 parse_mode="HTML",

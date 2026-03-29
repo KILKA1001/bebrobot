@@ -39,6 +39,8 @@ ACQUIRE_METHOD_POINTS = "за баллы"
 ACQUIRE_METHOD_ADMIN = "выдаёт администратор"
 ACQUIRE_METHOD_DISCORD_SYNC = "автоматически синхронизируется с Discord"
 ROLE_PUBLIC_VISIBILITY_COLUMN = "show_in_roles_catalog"
+ROLE_SELLABLE_COLUMN = "is_sellable"
+ROLE_SELLABLE_FALSE_MESSAGE = "Эта роль отключена для продажи в магазине."
 _ROLE_CACHE_MISS = object()
 
 
@@ -135,6 +137,7 @@ class RoleManagementService:
                     ROLE_PUBLIC_VISIBILITY_COLUMN: RoleManagementService._public_catalog_visibility(
                         role.get(ROLE_PUBLIC_VISIBILITY_COLUMN)
                     ),
+                    ROLE_SELLABLE_COLUMN: RoleManagementService._sellable_visibility(role.get(ROLE_SELLABLE_COLUMN)),
                 }
         logger.debug("role lookup cache miss role_name=%s", role_key)
         return None
@@ -162,6 +165,20 @@ class RoleManagementService:
         if not normalized:
             return True
         return normalized not in {"0", "false", "f", "no", "n", "off"}
+
+
+    @staticmethod
+    def _sellable_visibility(value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        normalized = str(value).strip().lower()
+        if not normalized:
+            return False
+        return normalized in {"1", "true", "t", "yes", "y", "on"}
 
     @staticmethod
     def _jsonable(value: Any) -> Any:
@@ -579,15 +596,15 @@ class RoleManagementService:
             return []
 
         select_variants = (
-            "name,category_name,description,acquire_hint,position,is_discord_managed,discord_role_id,is_privileged_discord_role,show_in_roles_catalog",
-            "name,category_name,acquire_hint,position,is_discord_managed,discord_role_id,is_privileged_discord_role,show_in_roles_catalog",
-            "name,category_name,position,is_discord_managed,discord_role_id,is_privileged_discord_role,show_in_roles_catalog",
-            "name,category_name,description,acquire_hint,position,is_discord_managed,discord_role_id,show_in_roles_catalog",
-            "name,category_name,acquire_hint,position,is_discord_managed,discord_role_id,show_in_roles_catalog",
-            "name,category_name,position,is_discord_managed,discord_role_id,show_in_roles_catalog",
+            "name,category_name,description,acquire_hint,position,is_discord_managed,discord_role_id,is_privileged_discord_role,show_in_roles_catalog,is_sellable",
+            "name,category_name,acquire_hint,position,is_discord_managed,discord_role_id,is_privileged_discord_role,show_in_roles_catalog,is_sellable",
+            "name,category_name,position,is_discord_managed,discord_role_id,is_privileged_discord_role,show_in_roles_catalog,is_sellable",
+            "name,category_name,description,acquire_hint,position,is_discord_managed,discord_role_id,show_in_roles_catalog,is_sellable",
+            "name,category_name,acquire_hint,position,is_discord_managed,discord_role_id,show_in_roles_catalog,is_sellable",
+            "name,category_name,position,is_discord_managed,discord_role_id,show_in_roles_catalog,is_sellable",
             "name,category_name,description,acquire_hint,position,is_discord_managed,discord_role_id,is_privileged_discord_role",
             "name,category_name,acquire_hint,position,is_discord_managed,discord_role_id,is_privileged_discord_role",
-            "name,category_name,position,is_discord_managed,discord_role_id,is_privileged_discord_role",
+            "name,category_name,position,is_discord_managed,discord_role_id,is_privileged_discord_role,is_sellable",
             "name,category_name,description,acquire_hint,position,is_discord_managed,discord_role_id",
             "name,category_name,acquire_hint,position,is_discord_managed,discord_role_id",
             "name,category_name,position,is_discord_managed,discord_role_id",
@@ -695,6 +712,7 @@ class RoleManagementService:
                     ROLE_PUBLIC_VISIBILITY_COLUMN: RoleManagementService._public_catalog_visibility(
                         row.get(ROLE_PUBLIC_VISIBILITY_COLUMN)
                     ),
+                    ROLE_SELLABLE_COLUMN: RoleManagementService._sellable_visibility(row.get(ROLE_SELLABLE_COLUMN)),
                 }
             )
 
@@ -758,6 +776,7 @@ class RoleManagementService:
             "discord_role_id": role_id,
             "discord_role_name": role_name,
             "is_privileged_discord_role": bool((existing or {}).get("is_privileged_discord_role")),
+            ROLE_SELLABLE_COLUMN: RoleManagementService._sellable_visibility((existing or {}).get(ROLE_SELLABLE_COLUMN)),
             ROLE_PUBLIC_VISIBILITY_COLUMN: RoleManagementService._public_catalog_visibility(
                 (existing or {}).get(ROLE_PUBLIC_VISIBILITY_COLUMN)
             ),
@@ -931,6 +950,7 @@ class RoleManagementService:
         *,
         role_name_resolver: Callable[[int], str | None] | None = None,
         log_context: str | None = None,
+        only_sellable: bool = False,
     ) -> list[dict[str, Any]]:
         grouped = RoleManagementService.list_roles_grouped(log_context=log_context)
         public_grouped: list[dict[str, Any]] = []
@@ -961,6 +981,16 @@ class RoleManagementService:
                     )
                     continue
                 public_role = dict(role)
+                public_role[ROLE_SELLABLE_COLUMN] = RoleManagementService._sellable_visibility(role.get(ROLE_SELLABLE_COLUMN))
+                if only_sellable and not public_role[ROLE_SELLABLE_COLUMN]:
+                    hidden_roles_count += 1
+                    logger.warning(
+                        "public roles catalog blocked non-sellable role command=%s category=%s role_name=%s filter=only_sellable",
+                        log_context or "n/a",
+                        category_name,
+                        str(role.get("name") or "").strip() or None,
+                    )
+                    continue
                 public_role["points_required"] = None
                 public_role["acquire_method"] = (
                     ACQUIRE_METHOD_DISCORD_SYNC if public_role.get("is_discord_managed") else ACQUIRE_METHOD_ADMIN
@@ -1002,6 +1032,7 @@ class RoleManagementService:
                     "points_required": points_needed,
                     "acquire_method": ACQUIRE_METHOD_POINTS,
                     "acquire_method_label": ACQUIRE_METHOD_POINTS,
+                    ROLE_SELLABLE_COLUMN: True,
                 }
             )
 
@@ -1149,6 +1180,7 @@ class RoleManagementService:
             ROLE_PUBLIC_VISIBILITY_COLUMN: RoleManagementService._public_catalog_visibility(
                 before_role.get(ROLE_PUBLIC_VISIBILITY_COLUMN)
             ),
+            ROLE_SELLABLE_COLUMN: RoleManagementService._sellable_visibility(before_role.get(ROLE_SELLABLE_COLUMN)),
         }
 
         conflict = RoleManagementService._find_active_profile_title_role_conflict(role_name)
@@ -1986,6 +2018,41 @@ class RoleManagementService:
                     error_message=str(guard_result.get("message") or "role grant denied"),
                 )
                 return guard_result
+            if str(source or "").strip().startswith("shop_purchase"):
+                role_state = RoleManagementService.get_role(role_key) or {}
+                if not RoleManagementService._sellable_visibility(role_state.get(ROLE_SELLABLE_COLUMN)):
+                    logger.error(
+                        "assign_user_role_by_account blocked non-sellable shop grant account_id=%s role_name=%s actor_provider=%s actor_user_id=%s target_provider=%s target_user_id=%s source=%s",
+                        account_key,
+                        role_key,
+                        actor_provider,
+                        actor_user_id,
+                        target_provider,
+                        target_user_id,
+                        source,
+                    )
+                    RoleManagementService.record_role_change_audit(
+                        action="role_grant_denied",
+                        role_name=role_key,
+                        source=source,
+                        actor_provider=actor_provider,
+                        actor_user_id=actor_user_id,
+                        actor_account_id=actor_account_id,
+                        target_provider=target_provider,
+                        target_user_id=target_user_id,
+                        target_account_id=account_key,
+                        before={"assigned": False, ROLE_SELLABLE_COLUMN: False},
+                        after={"assigned": False},
+                        status="denied",
+                        error_code="role_not_sellable",
+                        error_message=ROLE_SELLABLE_FALSE_MESSAGE,
+                    )
+                    return RoleManagementService._role_action_result(
+                        False,
+                        reason="role_not_sellable",
+                        message=ROLE_SELLABLE_FALSE_MESSAGE,
+                        role_name=role_key,
+                    )
             metadata = {"category": RoleManagementService._normalized_category(category)} if category else {}
             db.supabase.table("account_role_assignments").upsert(
                 {
@@ -2222,15 +2289,15 @@ class RoleManagementService:
             return cached_role
 
         select_variants = (
-            "name,category_name,description,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role,show_in_roles_catalog",
-            "name,category_name,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role,show_in_roles_catalog",
-            "name,category_name,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role,show_in_roles_catalog",
+            "name,category_name,description,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role,show_in_roles_catalog,is_sellable",
+            "name,category_name,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role,show_in_roles_catalog,is_sellable",
+            "name,category_name,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role,show_in_roles_catalog,is_sellable",
             "name,category_name,description,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,show_in_roles_catalog",
             "name,category_name,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,show_in_roles_catalog",
             "name,category_name,is_discord_managed,discord_role_id,discord_role_name,show_in_roles_catalog",
             "name,category_name,description,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role",
             "name,category_name,acquire_hint,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role",
-            "name,category_name,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role",
+            "name,category_name,is_discord_managed,discord_role_id,discord_role_name,is_privileged_discord_role,is_sellable",
             "name,category_name,description,acquire_hint,is_discord_managed,discord_role_id,discord_role_name",
             "name,category_name,acquire_hint,is_discord_managed,discord_role_id,discord_role_name",
             "name,category_name,is_discord_managed,discord_role_id,discord_role_name",
@@ -2251,12 +2318,93 @@ class RoleManagementService:
                     row[ROLE_PUBLIC_VISIBILITY_COLUMN] = RoleManagementService._public_catalog_visibility(
                         row.get(ROLE_PUBLIC_VISIBILITY_COLUMN)
                     )
+                    row[ROLE_SELLABLE_COLUMN] = RoleManagementService._sellable_visibility(row.get(ROLE_SELLABLE_COLUMN))
                     RoleManagementService._set_cached_role(role_key, row)
                     return row
             except Exception:
                 logger.exception("get_role failed role_name=%s select=%s", role_key, select_clause)
         RoleManagementService._set_cached_role(role_key, None)
         return None
+
+    @staticmethod
+    def update_role_sellable(
+        role_name: str,
+        is_sellable: bool,
+        *,
+        actor_id: str | None = None,
+        actor_provider: str | None = None,
+        actor_user_id: str | None = None,
+        actor_account_id: str | None = None,
+        operation: str = "role_edit_sellable",
+        source: str = "unknown",
+    ) -> bool:
+        if not db.supabase:
+            return False
+        role_key = str(role_name or "").strip()
+        if not role_key:
+            return False
+
+        normalized_sellable = RoleManagementService._sellable_visibility(is_sellable)
+        before_role = RoleManagementService.get_role(role_key) or {}
+        try:
+            response = (
+                db.supabase.table("roles")
+                .update({ROLE_SELLABLE_COLUMN: normalized_sellable})
+                .eq("name", role_key)
+                .execute()
+            )
+            if response is not None and hasattr(response, "data") and response.data == []:
+                logger.warning(
+                    "update_role_sellable skipped role_name=%s actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s operation=%s source=%s reason=%s",
+                    role_key,
+                    actor_id,
+                    actor_provider,
+                    actor_user_id,
+                    actor_account_id,
+                    operation,
+                    source,
+                    "not_found",
+                )
+                return False
+            RoleManagementService.invalidate_catalog_cache(reason="update_role_sellable")
+            role = RoleManagementService.get_role(role_key) or {}
+            logger.info(
+                "update_role_sellable completed role_name=%s is_sellable=%s actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s operation=%s source=%s before=%s after=%s",
+                role_key,
+                normalized_sellable,
+                actor_id,
+                actor_provider,
+                actor_user_id,
+                actor_account_id,
+                operation,
+                source,
+                RoleManagementService._jsonable(before_role),
+                RoleManagementService._jsonable(role),
+            )
+            RoleManagementService.record_role_change_audit(
+                action="role_edit_sellable",
+                role_name=role_key,
+                source=source,
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id or actor_id,
+                actor_account_id=actor_account_id,
+                before=before_role,
+                after=role,
+            )
+            return True
+        except Exception:
+            logger.exception(
+                "update_role_sellable failed role_name=%s is_sellable=%s actor_id=%s actor_provider=%s actor_user_id=%s actor_account_id=%s operation=%s source=%s",
+                role_key,
+                normalized_sellable,
+                actor_id,
+                actor_provider,
+                actor_user_id,
+                actor_account_id,
+                operation,
+                source,
+            )
+            return False
 
     @staticmethod
     def update_role_description(

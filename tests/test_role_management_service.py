@@ -339,6 +339,7 @@ class RoleManagementServiceTests(unittest.TestCase):
                 "acquire_hint": "Назначается вручную",
                 "is_discord_managed": False,
                 "discord_role_id": None,
+                "is_sellable": True,
             },
             {
                 "name": "Синхронизируемая",
@@ -348,6 +349,7 @@ class RoleManagementServiceTests(unittest.TestCase):
                 "acquire_hint": "Поддерживайте роль в Discord",
                 "is_discord_managed": True,
                 "discord_role_id": "555",
+                "is_sellable": True,
             },
         ]
         self.fake_db.tables["role_categories"] = [
@@ -374,6 +376,7 @@ class RoleManagementServiceTests(unittest.TestCase):
                 "is_discord_managed": True,
                 "discord_role_id": "101",
                 "show_in_roles_catalog": True,
+                "is_sellable": True,
             },
             {
                 "name": "Скрытая",
@@ -384,6 +387,7 @@ class RoleManagementServiceTests(unittest.TestCase):
                 "is_discord_managed": True,
                 "discord_role_id": "102",
                 "show_in_roles_catalog": False,
+                "is_sellable": True,
             },
         ]
         self.fake_db.tables["role_categories"] = [{"name": "Discord", "position": 0}]
@@ -407,6 +411,7 @@ class RoleManagementServiceTests(unittest.TestCase):
                 "acquire_hint": "",
                 "is_discord_managed": False,
                 "discord_role_id": "1105906310131744868",
+                "is_sellable": True,
             },
         ]
         self.fake_db.tables["role_categories"] = [{"name": "Основные", "position": 0}]
