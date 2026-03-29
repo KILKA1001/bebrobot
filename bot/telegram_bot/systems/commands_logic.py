@@ -14,6 +14,7 @@ from bot.systems.roles_catalog_shared import (
     build_roles_catalog_intro_lines,
     format_roles_catalog_category_title,
     prepare_public_roles_catalog_pages,
+    build_role_visual_tags,
 )
 
 
@@ -143,8 +144,10 @@ def render_roles_catalog_page(page_data: dict[str, object]) -> str:
             description = escape(str(role.get("description") or "").strip() or ROLE_DESCRIPTION_PLACEHOLDER)
             acquire_method = escape(str(role.get("acquire_method_label") or "Не указан").strip())
             acquire_hint = escape(str(role.get("acquire_hint") or "").strip() or USER_ACQUIRE_HINT_PLACEHOLDER)
+            visual_tags = escape(build_role_visual_tags(role))
             parts.append(
                 f"\n• <b>{role_name}</b>\n"
+                f"Метки: <code>{visual_tags}</code>\n"
                 f"Описание: {description}\n"
                 f"Способ получения: {acquire_method}\n"
                 f"Как получить: {acquire_hint}"

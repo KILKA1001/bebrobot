@@ -41,10 +41,12 @@ class DiscordRolesCatalogRenderTests(IsolatedAsyncioTestCase):
         assert "Что это" in embed.description
         assert "Где смотреть способ получения" in embed.description
         assert "выдаются вручную" in embed.description
+        assert "Как читать оформление" in embed.description
         assert embed.fields[0].name == "Турниры"
         assert "Победитель сезона" in embed.fields[0].value
         assert "выдаёт администратор" in embed.fields[0].value
         assert "Выиграть финал сезона" in embed.fields[0].value
+        assert "Метки: `ЛОКАЛЬНАЯ`" in embed.fields[0].value
 
     async def test_roles_command_renders_placeholders_for_empty_description_and_hint(self):
         ctx = SimpleNamespace(guild=SimpleNamespace(id=321), author=SimpleNamespace(id=111))

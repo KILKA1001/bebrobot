@@ -28,7 +28,20 @@ def build_roles_catalog_intro_lines(*, current_page: int, total_pages: int) -> l
         "Как листать: используй кнопки ниже — ⬅️ назад, 🔄 обновить каталог, ➡️ вперёд.",
         "Где смотреть способ получения: у каждой роли есть строки Способ получения и Как получить.",
         "Как читать статус: роли со способом выдаёт администратор обычно выдаются вручную, а роли с пометками вроде автоматически, за баллы или через активность приходят автоматически после нужного условия.",
+        "Как читать оформление: в Discord цвет роли берётся из самой роли сервера, а в Telegram показываются текстовые метки роли.",
     ]
+
+
+def build_role_visual_tags(role: dict[str, Any]) -> str:
+    tags: list[str] = []
+    discord_role_id = str(role.get("discord_role_id") or "").strip()
+    if discord_role_id:
+        tags.append("DISCORD")
+    else:
+        tags.append("ЛОКАЛЬНАЯ")
+    if bool(role.get("is_privileged_discord_role")):
+        tags.append("ПРИВИЛЕГИЯ")
+    return " • ".join(tags)
 
 
 def _normalized_position(value: Any) -> int:

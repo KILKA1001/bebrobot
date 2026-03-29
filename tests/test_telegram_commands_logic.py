@@ -105,10 +105,12 @@ class TelegramCommandsLogicTests(unittest.TestCase):
         self.assertIn("используй кнопки ниже", result.lower())
         self.assertIn("Где смотреть способ получения", result)
         self.assertIn("выдаются вручную", result)
+        self.assertIn("Как читать оформление", result)
         self.assertIn("Чемпион", result)
         self.assertIn("Победитель сезона", result)
         self.assertIn("выдаёт администратор", result)
         self.assertIn("Выиграть сезонный турнир", result)
+        self.assertIn("Метки: <code>ЛОКАЛЬНАЯ</code>", result)
 
     @patch("bot.telegram_bot.systems.commands_logic.RoleManagementService.list_public_roles_catalog")
     def test_roles_catalog_command_uses_placeholder_when_acquire_hint_missing(self, mock_list_roles_grouped):

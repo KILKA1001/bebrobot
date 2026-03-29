@@ -34,6 +34,7 @@ from bot.systems.roles_catalog_shared import (
     build_roles_catalog_intro_lines,
     format_roles_catalog_category_title,
     prepare_public_roles_catalog_pages,
+    build_role_visual_tags,
 )
 from bot import COMMAND_PREFIX
 
@@ -188,7 +189,35 @@ def _validate_roles_catalog_embed_limits(
             raise ValueError("roles catalog embed field exceeds limit")
 
 
-def _build_discord_roles_catalog_embed(page_data: dict[str, Any]) -> discord.Embed:
+def _resolve_discord_role_title(role: dict[str, Any], guild: discord.Guild | None) -> str:
+    role_name = str(role.get("name") or "Без названия")
+    discord_role_id = str(role.get("discord_role_id") or "").strip()
+    if not discord_role_id:
+        return role_name
+    if not guild:
+        logger.info("roles catalog discord role mention fallback: guild missing role_name=%s role_id=%s", role_name, discord_role_id)
+        return role_name
+    try:
+        guild_role = guild.get_role(int(discord_role_id))
+    except (TypeError, ValueError):
+        logger.warning(
+            "roles catalog discord role mention fallback: invalid role id role_name=%s role_id=%s",
+            role_name,
+            discord_role_id,
+        )
+        return role_name
+    if not guild_role:
+        logger.info(
+            "roles catalog discord role mention fallback: guild role not found role_name=%s role_id=%s guild_id=%s",
+            role_name,
+            discord_role_id,
+            guild.id,
+        )
+        return role_name
+    return guild_role.mention
+
+
+def _build_discord_roles_catalog_embed(page_data: dict[str, Any], guild: discord.Guild | None = None) -> discord.Embed:
     current_page = max(int(page_data.get("page_index") or 0) + 1, 1)
     total_pages = max(int(page_data.get("total_pages") or 1), 1)
     description_lines: list[str] = []
@@ -210,12 +239,14 @@ def _build_discord_roles_catalog_embed(page_data: dict[str, Any]) -> discord.Emb
 
         lines = []
         for role in roles:
-            role_name = str(role.get("name") or "Без названия")
+            role_title = _resolve_discord_role_title(role, guild)
             role_description = str(role.get("description") or "").strip() or ROLE_DESCRIPTION_PLACEHOLDER
             acquire_method = str(role.get("acquire_method_label") or "Не указан").strip()
             acquire_hint = str(role.get("acquire_hint") or "").strip() or USER_ACQUIRE_HINT_PLACEHOLDER
+            visual_tags = build_role_visual_tags(role)
             lines.append(
-                f"**{role_name}**\n"
+                f"**{role_title}**\n"
+                f"Метки: `{visual_tags}`\n"
                 f"Описание: {role_description}\n"
                 f"Способ получения: {acquire_method}\n"
                 f"Как получить: {acquire_hint}"
@@ -297,7 +328,7 @@ class RolesCatalogDiscordView(discord.ui.View):
         self._sync_buttons()
         page_data = pages[self.page_index]
         try:
-            return _build_discord_roles_catalog_embed(page_data)
+            return _build_discord_roles_catalog_embed(page_data, self.guild)
         except Exception:
             logger.exception(
                 "roles catalog discord page build failed guild_id=%s page=%s total_pages=%s category_count=%s role_count=%s",
@@ -360,7 +391,7 @@ async def roles_list(ctx):
         return
 
     try:
-        embed = _build_discord_roles_catalog_embed(pages[0])
+        embed = _build_discord_roles_catalog_embed(pages[0], ctx.guild)
     except Exception:
         logger.exception(
             "roles catalog discord initial page build failed guild_id=%s page=%s",
