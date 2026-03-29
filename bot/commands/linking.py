@@ -5,6 +5,7 @@ import discord
 
 from bot.commands.base import bot
 from bot.services import AccountsService
+from bot.services.ux_texts import compose_three_block_plain
 from bot.systems.linking_logic import (
     consume_discord_link_code,
     issue_discord_telegram_link_code,
@@ -305,15 +306,44 @@ class ProfileEditView(discord.ui.View):
 async def register_account(ctx):
     _persist_discord_identity(ctx.author)
     success, payload = await asyncio.to_thread(register_discord_account, ctx.author.id)
-    prefix = "✅" if success else "❌"
-    await send_temp(ctx, f"{prefix} {payload}", delete_after=None)
+    if success:
+        await send_temp(
+            ctx,
+            compose_three_block_plain(
+                what="Профиль создан.",
+                now="Откройте /profile и проверьте данные.",
+                next_step="Станут доступны магазин, роли и остальные команды профиля.",
+                emoji="✅",
+            ),
+            delete_after=None,
+        )
+        return
+    await send_temp(
+        ctx,
+        compose_three_block_plain(
+            what="Профиль пока не создан.",
+            now="Повторите /register_account через минуту.",
+            next_step=f"Если ошибка повторяется, передайте администратору: {payload}",
+            emoji="❌",
+        ),
+        delete_after=None,
+    )
 
 
 @bot.hybrid_command(name="link_telegram", description="Сгенерировать код для привязки Telegram аккаунта")
 async def link_telegram(ctx):
     _persist_discord_identity(ctx.author)
     if not _is_private_context(ctx):
-        await send_temp(ctx, "❌ Команда привязки доступна только в личных сообщениях с ботом.", delete_after=None)
+        await send_temp(
+            ctx,
+            compose_three_block_plain(
+                what="Привязка работает только в личном чате.",
+                now="Откройте личные сообщения с ботом и повторите команду.",
+                next_step="Бот покажет код для привязки Telegram.",
+                emoji="❌",
+            ),
+            delete_after=None,
+        )
         return
 
     success, payload = await asyncio.to_thread(issue_discord_telegram_link_code, ctx.author.id)
@@ -337,7 +367,16 @@ async def link_telegram(ctx):
 async def link(ctx, code: str):
     _persist_discord_identity(ctx.author)
     if not _is_private_context(ctx):
-        await send_temp(ctx, "❌ Команда привязки доступна только в личных сообщениях с ботом.", delete_after=None)
+        await send_temp(
+            ctx,
+            compose_three_block_plain(
+                what="Привязка работает только в личном чате.",
+                now="Откройте личные сообщения с ботом и повторите команду.",
+                next_step="Бот примет код и свяжет Discord с общим аккаунтом.",
+                emoji="❌",
+            ),
+            delete_after=None,
+        )
         return
 
     success, payload = await asyncio.to_thread(consume_discord_link_code, ctx.author.id, code)

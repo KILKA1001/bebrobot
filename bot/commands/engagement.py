@@ -238,7 +238,12 @@ class EngagementMenuView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.actor_id:
-            await interaction.response.send_message("Чушка, не суй свой пятак в чужой пердак", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ Эта панель открыта для другого администратора.\n"
+                "Что делать сейчас: откройте свою команду /points или /tickets.\n"
+                "Что будет дальше: бот покажет ваши кнопки управления.",
+                ephemeral=True,
+            )
             logger.warning(
                 "discord engagement button denied foreign actor actor_id=%s owner_id=%s custom_id=%s",
                 interaction.user.id,
@@ -331,7 +336,12 @@ async def points_menu(ctx, member: discord.Member = None):
 
         authority = AuthorityService.resolve_authority("discord", str(ctx.author.id))
         if not _can_manage_points(authority):
-            await send_temp(ctx, "Недоступно по вашему званию.")
+            await send_temp(
+                ctx,
+                "❌ Команда пока недоступна для вашего звания.\n"
+                "Что делать сейчас: обратитесь к старшему администратору.\n"
+                "Что будет дальше: после выдачи прав сможете управлять баллами.",
+            )
             return
 
         if target.id == ctx.author.id:
@@ -373,7 +383,12 @@ async def tickets_menu(ctx, member: discord.Member = None):
 
         authority = AuthorityService.resolve_authority("discord", str(ctx.author.id))
         if not _can_manage_tickets(authority):
-            await send_temp(ctx, "Недоступно по вашему званию.")
+            await send_temp(
+                ctx,
+                "❌ Команда пока недоступна для вашего звания.\n"
+                "Что делать сейчас: обратитесь к старшему администратору.\n"
+                "Что будет дальше: после выдачи прав сможете управлять билетами.",
+            )
             return
 
         if target.id == ctx.author.id:

@@ -56,6 +56,16 @@ class ShopView(discord.ui.View):
 
     def _render_categories(self) -> None:
         self.clear_items()
+        logger.info(
+            "ux_screen_open event=ux_screen_open screen=shop_categories provider=discord account_id=%s actor_user_id=%s",
+            self.account_id,
+            self.author_id,
+        )
+        logger.info(
+            "ux_action_hint_shown event=ux_action_hint_shown screen=shop_categories provider=discord account_id=%s actor_user_id=%s",
+            self.account_id,
+            self.author_id,
+        )
         roles_btn = discord.ui.Button(label="Роли", style=discord.ButtonStyle.primary)
 
         async def roles_cb(interaction: discord.Interaction):
@@ -75,6 +85,11 @@ class ShopView(discord.ui.View):
                     self.author_id,
                     error,
                 )
+                logger.exception(
+                    "ux_render_error event=ux_render_error screen=shop_list provider=discord actor_user_id=%s error=%s",
+                    self.author_id,
+                    error,
+                )
                 await interaction.response.send_message(SHOP_TEXT_PROTECTED_FAILURE, ephemeral=True)
 
         roles_btn.callback = roles_cb
@@ -82,6 +97,11 @@ class ShopView(discord.ui.View):
 
     def _render_grid(self) -> None:
         self.clear_items()
+        logger.info(
+            "ux_action_hint_shown event=ux_action_hint_shown screen=shop_list provider=discord account_id=%s actor_user_id=%s",
+            self.account_id,
+            self.author_id,
+        )
         items = get_shop_catalog_items(log_context="shop:discord:view")
         page_data = get_shop_page_slice(items, self.page, page_size=SHOP_PAGE_SIZE)
         self.page = page_data.page
@@ -422,4 +442,8 @@ async def shop(ctx):
         await ctx.author.send(embed=dm_embed, view=dm_view)
     except Exception as error:  # noqa: BLE001
         logger.exception("shop_dm_transfer_error provider=discord actor_user_id=%s dm_sent=false error=%s", actor_id, error)
+        logger.error(
+            "ux_fallback_shown event=ux_fallback_shown screen=shop_dm_transfer provider=discord actor_user_id=%s",
+            actor_id,
+        )
         await send_temp(ctx, DM_FALLBACK_TEXT, delete_after=None)
