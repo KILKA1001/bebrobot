@@ -7,6 +7,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 
 from bot.telegram_bot.identity import persist_telegram_identity_from_user
+from bot.systems.shop_logic import check_shop_profile_access
 from bot.telegram_bot.systems.commands_logic import process_shop_command
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,11 @@ async def shop_command(message: Message) -> None:
         message.from_user.id,
         message.chat.id if message.chat else None,
     )
+
+    profile_check = check_shop_profile_access("telegram", message.from_user.id, register_command="/register")
+    if not profile_check.ok:
+        await message.answer(profile_check.user_message or "Сначала создайте профиль и повторите команду /shop.", parse_mode="HTML")
+        return
 
     text = process_shop_command()
     reply_markup = _shop_markup(getattr(message.bot, "username", None))

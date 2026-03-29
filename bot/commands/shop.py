@@ -4,6 +4,7 @@ import os
 import discord
 
 from bot.commands.base import bot
+from bot.systems.shop_logic import build_shop_prompt_text, check_shop_profile_access
 from bot.utils import send_temp
 
 logger = logging.getLogger(__name__)
@@ -26,11 +27,7 @@ class ShopOpenView(discord.ui.View):
 
 
 def _shop_dm_content() -> str:
-    return (
-        "🛒 **Магазин**\n"
-        f"Нажмите кнопку **«{SHOP_BUTTON_TEXT}»** ниже.\n"
-        f"Если кнопка недоступна, {SHOP_DEEPLINK_HINT}."
-    )
+    return build_shop_prompt_text().replace("<b>", "**").replace("</b>", "**")
 
 
 def _extract_dm_failure_code(error: Exception) -> str:
@@ -54,6 +51,11 @@ async def shop(ctx):
         getattr(getattr(ctx, "guild", None), "id", None),
         getattr(getattr(ctx, "channel", None), "id", None),
     )
+
+    profile_check = check_shop_profile_access("discord", actor_id, register_command="/register_account")
+    if not profile_check.ok:
+        await send_temp(ctx, profile_check.user_message or "Сначала создайте профиль и повторите команду /shop.", delete_after=None)
+        return
 
     dm_content = _shop_dm_content()
     dm_view = ShopOpenView()
