@@ -1,4 +1,6 @@
 import logging
+import time
+from dataclasses import dataclass
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
@@ -6,7 +8,7 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.telegram_bot.identity import persist_telegram_identity_from_user
-from bot.services import AuthorityService
+from bot.services import AuthorityService, RoleManagementService
 from bot.services.shop_service import (
     SHOP_PAGE_SIZE,
     SHOP_TEXT_ACQUIRE_HINT_PLACEHOLDER,
@@ -27,6 +29,17 @@ from bot.services.shop_service import (
 
 logger = logging.getLogger(__name__)
 router = Router()
+_SHOP_ADMIN_PENDING_TTL_SECONDS = 900
+
+
+@dataclass
+class PendingShopAdminAction:
+    action: str
+    role_name: str
+    created_at: float
+
+
+_SHOP_ADMIN_PENDING_ACTIONS: dict[int, PendingShopAdminAction] = {}
 
 SHOP_OPEN_PROMPT_TEXT = "Откройте магазин в личных сообщениях, я уже отправил вам инструкцию."
 DM_FALLBACK_TEXT = (
@@ -173,6 +186,28 @@ def _admin_actions_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def _shop_admin_roles() -> list[str]:
+    grouped = RoleManagementService.list_public_roles_catalog(
+        log_context="shop:telegram:admin_roles",
+        only_sellable=True,
+    ) or []
+    roles: list[str] = []
+    for category in grouped:
+        for role in list(category.get("roles") or []):
+            role_name = str(role.get("role") or "").strip()
+            if role_name:
+                roles.append(role_name)
+    return roles
+
+
+def _build_shop_admin_role_picker(action: str, roles: list[str]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for idx, role_name in enumerate(roles[:20]):
+        rows.append([InlineKeyboardButton(text=f"🎭 {role_name}"[:64], callback_data=f"shop:admin_pick_role:{action}:{idx}")])
+    rows.append([InlineKeyboardButton(text="⬅️ К действиям", callback_data="shop:admin_category:roles")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 @router.message(Command("shop"))
 async def shop_command(message: Message) -> None:
     persist_telegram_identity_from_user(message.from_user)
@@ -300,8 +335,135 @@ async def shop_callback(callback: CallbackQuery) -> None:
                 await callback.answer("Недостаточно прав", show_alert=True)
                 return
             action = parts[2]
+            action_help: dict[str, str] = {
+                "add": "➕ Добавить товар на витрину",
+                "remove": "➖ Убрать товар с витрины",
+                "price": "💳 Изменить цену",
+                "position": "↕️ Изменить позицию",
+                "sale": "⏱ Вкл/выкл акцию",
+            }
+            if action not in action_help:
+                logger.error(
+                    "shop_admin_action_unknown provider=telegram actor_user_id=%s action=%s callback_data=%s",
+                    callback.from_user.id,
+                    action,
+                    callback.data,
+                )
+                await callback.answer("Неизвестное действие. Попробуйте снова.", show_alert=True)
+                return
+            action_title = action_help[action]
             logger.info("shop_admin_action_selected provider=telegram actor_user_id=%s action=%s", callback.from_user.id, action)
-            await callback.answer("Готово, используйте команды /roles_admin для изменения витрины.")
+            roles = _shop_admin_roles()
+            if not roles:
+                logger.error(
+                    "shop_admin_roles_empty provider=telegram actor_user_id=%s action=%s",
+                    callback.from_user.id,
+                    action,
+                )
+                await callback.answer("Нет ролей с признаком продаваемости. Включите продаваемость в /roles_admin.", show_alert=True)
+                return
+            try:
+                await callback.message.edit_text(
+                    (
+                        "⚙️ <b>Настройка магазина</b>\n\n"
+                        f"Выбрано действие: <b>{action_title}</b>\n"
+                        "Шаг 1/2: выберите роль кнопкой ниже.\n"
+                        "Шаг 2/2: бот подскажет, что ввести для завершения изменения."
+                    ),
+                    parse_mode="HTML",
+                    reply_markup=_build_shop_admin_role_picker(action, roles),
+                )
+            except Exception as error:  # noqa: BLE001
+                logger.exception(
+                    "shop_admin_action_render_error provider=telegram actor_user_id=%s action=%s error=%s",
+                    callback.from_user.id,
+                    action,
+                    error,
+                )
+                await callback.answer(SHOP_TEXT_PROTECTED_FAILURE, show_alert=True)
+                return
+            await callback.answer("Инструкция обновлена ниже 👇")
+            return
+
+        if len(parts) >= 4 and parts[1] == "admin_pick_role":
+            if not _shop_is_superadmin(callback.from_user.id):
+                logger.warning(
+                    "shop_admin_denied_not_superadmin provider=telegram actor_user_id=%s action=pick_role",
+                    callback.from_user.id,
+                )
+                await callback.answer("Недостаточно прав", show_alert=True)
+                return
+            action = parts[2]
+            idx_raw = parts[3] if len(parts) > 3 else ""
+            if not idx_raw.isdigit():
+                logger.error(
+                    "shop_admin_role_pick_invalid_index provider=telegram actor_user_id=%s action=%s index=%s",
+                    callback.from_user.id,
+                    action,
+                    idx_raw,
+                )
+                await callback.answer("Не удалось определить роль. Выберите снова.", show_alert=True)
+                return
+            roles = _shop_admin_roles()
+            idx = int(idx_raw)
+            if idx < 0 or idx >= len(roles):
+                logger.error(
+                    "shop_admin_role_pick_out_of_range provider=telegram actor_user_id=%s action=%s index=%s roles_count=%s",
+                    callback.from_user.id,
+                    action,
+                    idx,
+                    len(roles),
+                )
+                await callback.answer("Список ролей обновился, выберите снова.", show_alert=True)
+                return
+            role_name = roles[idx]
+            _SHOP_ADMIN_PENDING_ACTIONS[callback.from_user.id] = PendingShopAdminAction(
+                action=action,
+                role_name=role_name,
+                created_at=time.time(),
+            )
+            logger.info(
+                "shop_admin_role_selected provider=telegram actor_user_id=%s action=%s role_name=%s",
+                callback.from_user.id,
+                action,
+                role_name,
+            )
+            if action == "remove":
+                ok = RoleManagementService.deactivate_shop_role_item(
+                    role_name,
+                    actor_provider="telegram",
+                    actor_user_id=callback.from_user.id,
+                    source="shop_admin_buttons",
+                )
+                _SHOP_ADMIN_PENDING_ACTIONS.pop(callback.from_user.id, None)
+                await callback.message.edit_text(
+                    "✅ Роль убрана с витрины." if ok else "❌ Не удалось убрать роль с витрины (смотри логи).",
+                    reply_markup=_admin_actions_keyboard(),
+                )
+                await callback.answer()
+                return
+            action_prompts = {
+                "add": "Введите: <code>цена | [позиция]</code>\nПример: <code>150 | 3</code>",
+                "price": "Введите новую цену:\nПример: <code>250</code>",
+                "position": "Введите новую позицию:\nПример: <code>2</code>",
+                "sale": (
+                    "Введите: <code>цена_акции | YYYY-MM-DDTHH:MM | YYYY-MM-DDTHH:MM</code>\n"
+                    "или <code>off</code>, чтобы выключить акцию."
+                ),
+            }
+            await callback.message.edit_text(
+                (
+                    "⚙️ <b>Настройка магазина</b>\n\n"
+                    f"Действие: <b>{action}</b>\n"
+                    f"Роль: <b>{role_name}</b>\n\n"
+                    f"{action_prompts.get(action, 'Введите параметры сообщением.')}"
+                ),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[[InlineKeyboardButton(text="⬅️ К действиям", callback_data="shop:admin_category:roles")]]
+                ),
+            )
+            await callback.answer("Ожидаю параметры сообщением")
             return
 
         if len(parts) >= 3 and parts[1] == "category":
@@ -561,3 +723,110 @@ async def shop_callback(callback: CallbackQuery) -> None:
 
     logger.error("shop_pagination_error provider=telegram reason=unknown_callback data=%s", data)
     await callback.answer("Неизвестное действие, обновите страницу.", show_alert=True)
+
+
+@router.message(F.from_user, F.text)
+async def shop_admin_pending_input(message: Message) -> None:
+    if message.from_user is None:
+        return
+    pending = _SHOP_ADMIN_PENDING_ACTIONS.get(message.from_user.id)
+    if pending is None:
+        return
+    if not _shop_is_superadmin(message.from_user.id):
+        _SHOP_ADMIN_PENDING_ACTIONS.pop(message.from_user.id, None)
+        logger.warning("shop_admin_pending_denied provider=telegram actor_user_id=%s", message.from_user.id)
+        return
+    if (time.time() - pending.created_at) > _SHOP_ADMIN_PENDING_TTL_SECONDS:
+        _SHOP_ADMIN_PENDING_ACTIONS.pop(message.from_user.id, None)
+        await message.answer("⌛ Сессия настройки магазина истекла. Откройте /shop заново.")
+        return
+
+    text = str(message.text or "").strip()
+    role_name = pending.role_name
+    action = pending.action
+    try:
+        if action == "add":
+            parts = [p.strip() for p in text.split("|")]
+            if not parts or not parts[0].lstrip("-").isdigit():
+                await message.answer("❌ Формат: <code>цена | [позиция]</code>", parse_mode="HTML")
+                return
+            price = int(parts[0])
+            position = int(parts[1]) if len(parts) > 1 and parts[1].lstrip("-").isdigit() else None
+            ok = RoleManagementService.upsert_shop_role_item(
+                role_name=role_name,
+                base_price_points=price,
+                display_position=position,
+                actor_provider="telegram",
+                actor_user_id=message.from_user.id,
+                source="shop_admin_buttons",
+            )
+            await message.answer("✅ Роль добавлена на витрину магазина." if ok else "❌ Не удалось добавить роль на витрину (смотри логи).")
+        elif action == "price":
+            if not text.lstrip("-").isdigit():
+                await message.answer("❌ Введите цену числом.")
+                return
+            ok = RoleManagementService.upsert_shop_role_item(
+                role_name=role_name,
+                base_price_points=int(text),
+                actor_provider="telegram",
+                actor_user_id=message.from_user.id,
+                source="shop_admin_buttons",
+            )
+            await message.answer("✅ Цена обновлена." if ok else "❌ Не удалось обновить цену (смотри логи).")
+        elif action == "position":
+            if not text.lstrip("-").isdigit():
+                await message.answer("❌ Введите позицию числом.")
+                return
+            current_shop = RoleManagementService.get_shop_role_item(role_name) or {}
+            ok = RoleManagementService.upsert_shop_role_item(
+                role_name=role_name,
+                base_price_points=int(current_shop.get("base_price_points") or 0),
+                display_position=int(text),
+                actor_provider="telegram",
+                actor_user_id=message.from_user.id,
+                source="shop_admin_buttons",
+            )
+            await message.answer("✅ Позиция обновлена." if ok else "❌ Не удалось обновить позицию (смотри логи).")
+        elif action == "sale":
+            if text.lower() == "off":
+                ok = RoleManagementService.upsert_shop_role_item(
+                    role_name=role_name,
+                    base_price_points=int((RoleManagementService.get_shop_role_item(role_name) or {}).get("base_price_points") or 0),
+                    sale_price_points=None,
+                    sale_starts_at=None,
+                    sale_ends_at=None,
+                    actor_provider="telegram",
+                    actor_user_id=message.from_user.id,
+                    source="shop_admin_buttons",
+                )
+                await message.answer("✅ Акция выключена." if ok else "❌ Не удалось выключить акцию (смотри логи).")
+            else:
+                parts = [p.strip() for p in text.split("|")]
+                if len(parts) < 3 or not parts[0].lstrip("-").isdigit():
+                    await message.answer("❌ Формат: <code>цена_акции | YYYY-MM-DDTHH:MM | YYYY-MM-DDTHH:MM</code>", parse_mode="HTML")
+                    return
+                ok = RoleManagementService.upsert_shop_role_item(
+                    role_name=role_name,
+                    base_price_points=int((RoleManagementService.get_shop_role_item(role_name) or {}).get("base_price_points") or 0),
+                    sale_price_points=int(parts[0]),
+                    sale_starts_at=parts[1],
+                    sale_ends_at=parts[2],
+                    actor_provider="telegram",
+                    actor_user_id=message.from_user.id,
+                    source="shop_admin_buttons",
+                )
+                await message.answer("✅ Акция сохранена." if ok else "❌ Не удалось обновить акцию (смотри логи).")
+        else:
+            logger.error("shop_admin_pending_unknown_action provider=telegram actor_user_id=%s action=%s", message.from_user.id, action)
+            await message.answer("❌ Неизвестное действие. Откройте /shop заново.")
+            return
+        _SHOP_ADMIN_PENDING_ACTIONS.pop(message.from_user.id, None)
+    except Exception as error:  # noqa: BLE001
+        logger.exception(
+            "shop_admin_pending_apply_failed provider=telegram actor_user_id=%s action=%s role_name=%s error=%s",
+            message.from_user.id,
+            action,
+            role_name,
+            error,
+        )
+        await message.answer("❌ Не удалось применить изменение (смотри логи).")
