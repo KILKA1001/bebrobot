@@ -16,6 +16,7 @@ def test_telegram_command_registry_exposes_roles_parity_commands() -> None:
 
     assert "roles" in public_commands
     assert "roles_admin" in public_commands
+    assert "title" in public_commands
     assert "guiy_owner" not in public_commands
     assert "guiy_owner" in owner_commands
 
@@ -23,12 +24,13 @@ def test_telegram_command_registry_exposes_roles_parity_commands() -> None:
 def test_telegram_help_text_marks_rolesadmin_alias_and_limits() -> None:
     with patch(
         "bot.telegram_bot.systems.commands_logic.AuthorityService.resolve_authority",
-        return_value=SimpleNamespace(level=80, titles=("Вице города",)),
+        return_value=SimpleNamespace(level=100, titles=("Главный вице",)),
     ):
         helpy_text = get_helpy_text(telegram_user_id=42)
     roles_admin_help = render_telegram_roles_admin_help()
 
     assert "/roles_admin / /rolesadmin" in helpy_text
+    assert "/title @username" in helpy_text
     assert "/guiy_owner" not in helpy_text
     assert "sync_discord_roles" in roles_admin_help
     assert "текстовый alias <code>/rolesadmin</code>" in roles_admin_help
@@ -45,11 +47,13 @@ def test_discord_roles_sources_expose_matching_commands() -> None:
     base_source = (REPO_ROOT / "bot" / "commands" / "base.py").read_text()
     roles_admin_source = (REPO_ROOT / "bot" / "commands" / "roles_admin.py").read_text()
     guiy_owner_source = (REPO_ROOT / "bot" / "commands" / "guiy_owner.py").read_text()
+    title_source = (REPO_ROOT / "bot" / "commands" / "title.py").read_text()
 
     assert 'name="roles"' in base_source
     assert 'name="helpy"' in base_source
     assert '@bot.hybrid_group(name="rolesadmin"' in roles_admin_source
     assert 'name="guiy_owner"' in guiy_owner_source
+    assert 'name="title"' in title_source
 
 
 def test_discord_rolesadmin_help_source_marks_alias_and_batch_limits() -> None:

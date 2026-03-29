@@ -85,6 +85,7 @@ BOT_COMMANDS = [
     BotCommand(command="myfines", description="Посмотреть и оплатить legacy-штрафы"),
     BotCommand(command="tickets", description="Меню управления билетами"),
     BotCommand(command="roles_admin", description="Управление ролями и категориями (/rolesadmin тоже работает)"),
+    BotCommand(command="title", description="Повысить/понизить звание пользователя (суперадмины)"),
     BotCommand(command="helpy", description="Список команд"),
     BotCommand(command="guiy", description="Обратиться к Гую (особенно в группе)"),
 ]
