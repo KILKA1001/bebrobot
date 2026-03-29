@@ -196,7 +196,12 @@ class TelegramRolesAdminTargetResolutionTests(unittest.TestCase):
         self.assertIn("🗂 Категории", texts)
 
     def test_actions_keyboard_shows_only_category_actions(self):
-        keyboard = _build_actions_keyboard(actor_id=10, section="categories", can_manage_categories=True)
+        keyboard = _build_actions_keyboard(
+            actor_id=10,
+            section="categories",
+            can_manage_categories=True,
+            can_manage_shop_settings=True,
+        )
 
         texts = [button.text for row in keyboard.inline_keyboard for button in row]
 

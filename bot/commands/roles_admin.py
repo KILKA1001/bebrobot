@@ -64,6 +64,7 @@ class RolesAdminVisibilityContext:
     can_manage_categories: bool
     can_manage_roles: bool
     hidden_sections: tuple[str, ...]
+    can_manage_shop_settings: bool = False
 
 
 @dataclass
@@ -610,6 +611,7 @@ def _resolve_rolesadmin_visibility(ctx: commands.Context) -> RolesAdminVisibilit
         "discord",
         actor_id,
     )
+    can_manage_shop_settings = AuthorityService.is_super_admin("discord", actor_id)
     hidden_sections = []
     if not can_manage_categories:
         hidden_sections.append("categories")
@@ -621,6 +623,7 @@ def _resolve_rolesadmin_visibility(ctx: commands.Context) -> RolesAdminVisibilit
         can_manage_categories=can_manage_categories,
         can_manage_roles=can_manage_roles,
         hidden_sections=tuple(hidden_sections),
+        can_manage_shop_settings=can_manage_shop_settings,
     )
 
 
@@ -739,6 +742,7 @@ class RolesAdminHelpView(discord.ui.View):
         self.guild_id = guild_id
         if visibility.can_manage_categories:
             self.add_item(_RolesAdminSectionButton(section="categories"))
+        if visibility.can_manage_shop_settings:
             self.add_item(_RolesAdminShopSettingsButton())
         if visibility.can_manage_roles:
             self.add_item(_RolesAdminSectionButton(section="roles"))
@@ -813,13 +817,13 @@ class _RolesAdminShopSettingsButton(discord.ui.Button):
         try:
             if not AuthorityService.is_super_admin("discord", str(interaction.user.id)):
                 logger.warning(
-                    "shop_admin_denied provider=discord actor_id=%s reason=insufficient_permissions source=help_button",
+                    "shop_admin_denied provider=discord actor_id=%s reason=not_superadmin source=help_button",
                     interaction.user.id,
                 )
                 await interaction.response.send_message("Недостаточно прав", ephemeral=True)
                 return
             logger.info(
-                "shop_admin_open provider=discord actor_id=%s step=category_pick source=help_button",
+                "shop_admin_open provider=discord actor_id=%s role=superadmin step=category_pick source=help_button",
                 interaction.user.id,
             )
             grouped = RoleManagementService.list_roles_grouped()
@@ -1102,6 +1106,18 @@ async def _ensure_category_manager(ctx: commands.Context) -> bool:
     return True
 
 
+async def _ensure_shop_superadmin(ctx: commands.Context, *, source: str) -> bool:
+    if not AuthorityService.is_super_admin("discord", str(ctx.author.id)):
+        logger.warning(
+            "shop_admin_denied provider=discord actor_id=%s reason=not_superadmin source=%s",
+            ctx.author.id,
+            source,
+        )
+        await send_temp(ctx, "Недостаточно прав")
+        return False
+    return True
+
+
 @bot.hybrid_group(name="rolesadmin", description="Управление ролями и категориями", with_app_command=True)
 async def rolesadmin(ctx: commands.Context):
     if ctx.invoked_subcommand is None:
@@ -1161,18 +1177,13 @@ async def rolesadmin_list(ctx: commands.Context):
 async def rolesadmin_shop_settings(ctx: commands.Context, category: str | None = None, action: str | None = None):
     if not await _ensure_roles_admin(ctx):
         return
-    if not await _ensure_category_manager(ctx):
-        logger.warning(
-            "shop_admin_denied provider=discord actor_id=%s reason=insufficient_permissions source=command",
-            ctx.author.id,
-        )
-        await send_temp(ctx, "Недостаточно прав")
+    if not await _ensure_shop_superadmin(ctx, source="command"):
         return
 
     grouped = RoleManagementService.list_public_roles_catalog(log_context="rolesadmin:shop_settings", only_sellable=True) or []
     category_names = [str(item.get("category") or "Без категории") for item in grouped]
     if not category:
-        logger.info("shop_admin_open provider=discord actor_id=%s step=category_pick source=command", ctx.author.id)
+        logger.info("shop_admin_open provider=discord actor_id=%s role=superadmin step=category_pick source=command", ctx.author.id)
         if not category_names:
             await send_temp(
                 ctx,
@@ -1411,6 +1422,8 @@ async def rolesadmin_role_edit_sellable(ctx: commands.Context, name: str, is_sel
 async def rolesadmin_shop_add(ctx: commands.Context, role_name: str, base_price_points: int, display_position: int | None = None):
     if not await _ensure_roles_admin(ctx):
         return
+    if not await _ensure_shop_superadmin(ctx, source="shop_add"):
+        return
     ok = RoleManagementService.upsert_shop_role_item(
         role_name,
         base_price_points=base_price_points,
@@ -1427,6 +1440,8 @@ async def rolesadmin_shop_add(ctx: commands.Context, role_name: str, base_price_
 async def rolesadmin_shop_remove(ctx: commands.Context, role_name: str):
     if not await _ensure_roles_admin(ctx):
         return
+    if not await _ensure_shop_superadmin(ctx, source="shop_remove"):
+        return
     ok = RoleManagementService.deactivate_shop_role_item(
         role_name,
         actor_provider="discord",
@@ -1439,6 +1454,8 @@ async def rolesadmin_shop_remove(ctx: commands.Context, role_name: str):
 @rolesadmin.command(name="shop_price", description="Изменить базовую цену роли на витрине")
 async def rolesadmin_shop_price(ctx: commands.Context, role_name: str, base_price_points: int):
     if not await _ensure_roles_admin(ctx):
+        return
+    if not await _ensure_shop_superadmin(ctx, source="shop_price"):
         return
     ok = RoleManagementService.upsert_shop_role_item(
         role_name,
@@ -1454,6 +1471,8 @@ async def rolesadmin_shop_price(ctx: commands.Context, role_name: str, base_pric
 @rolesadmin.command(name="shop_position", description="Изменить позицию роли на витрине")
 async def rolesadmin_shop_position(ctx: commands.Context, role_name: str, display_position: int):
     if not await _ensure_roles_admin(ctx):
+        return
+    if not await _ensure_shop_superadmin(ctx, source="shop_position"):
         return
     current_shop = RoleManagementService.get_shop_role_item(role_name) or {}
     base_price = int(current_shop.get("base_price_points") or 0)
@@ -1478,6 +1497,8 @@ async def rolesadmin_shop_sale(
     sale_ends_at: str | None = None,
 ):
     if not await _ensure_roles_admin(ctx):
+        return
+    if not await _ensure_shop_superadmin(ctx, source="shop_sale"):
         return
     current_shop = RoleManagementService.get_shop_role_item(role_name) or {}
     base_price = int(current_shop.get("base_price_points") or 0)

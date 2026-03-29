@@ -124,13 +124,14 @@ class DiscordRolesAdminTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Роли", labels)
         self.assertIn("Пользователи", labels)
 
-    def test_rolesadmin_help_view_shows_shop_settings_for_category_managers(self):
+    def test_rolesadmin_help_view_shows_shop_settings_for_superadmins(self):
         visibility = roles_admin.RolesAdminVisibilityContext(
             actor_level=100,
             actor_titles=("Глава клуба",),
             can_manage_categories=True,
             can_manage_roles=True,
             hidden_sections=(),
+            can_manage_shop_settings=True,
         )
 
         view = roles_admin.RolesAdminHelpView(actor_id=111, visibility=visibility, guild_id=222)
