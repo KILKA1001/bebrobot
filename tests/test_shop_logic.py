@@ -2,7 +2,7 @@ from pathlib import Path
 import re
 from unittest.mock import patch
 
-from bot.systems import shop_logic
+from bot.services import shop_service as shop_logic
 
 
 def test_shop_catalog_items_sorted_and_paged():
@@ -28,8 +28,8 @@ def test_shop_catalog_items_sorted_and_paged():
         {"role_name": "Role 2", "display_position": 0, "effective_price_points": 10, "base_price_points": 10, "sale_price_points": None, "is_sale_active": False},
         {"role_name": "Role 3", "display_position": 2, "effective_price_points": 12, "base_price_points": 12, "sale_price_points": None, "is_sale_active": False},
     ]
-    with patch("bot.systems.shop_logic.RoleManagementService.list_public_roles_catalog", return_value=grouped), patch(
-        "bot.systems.shop_logic.RoleManagementService.list_active_shop_role_items", return_value=shop_rows
+    with patch("bot.services.shop_service.RoleManagementService.list_public_roles_catalog", return_value=grouped), patch(
+        "bot.services.shop_service.RoleManagementService.list_active_shop_role_items", return_value=shop_rows
     ):
         items = shop_logic.get_shop_catalog_items(log_context="test")
 
@@ -108,3 +108,27 @@ def test_shop_ux_checklist_contains_next_step_for_each_screen():
     assert len(shop_logic.SHOP_UX_CHECKLIST) == 4
     assert "следующий шаг" in shop_logic.SHOP_UX_CHECKLIST[0].lower()
     assert "кнопку «купить»" in shop_logic.SHOP_UX_CHECKLIST[1].lower()
+
+
+def test_shop_flow_parity_matrix_covers_required_scenarios():
+    expected = {
+        "shop_entry",
+        "dm_transfer",
+        "profile_check",
+        "category_selection",
+        "pagination",
+        "item_card",
+        "purchase",
+        "back_to_shop",
+        "admin_settings",
+    }
+    matrix_scenarios = {row["scenario"] for row in shop_logic.SHOP_FLOW_PARITY_MATRIX}
+
+    assert expected.issubset(matrix_scenarios)
+
+
+def test_shop_flow_parity_matrix_limits_platform_differences():
+    allowed_differences = {"none", "transport_only", "button_layout_limits", "text_length_limits"}
+
+    for row in shop_logic.SHOP_FLOW_PARITY_MATRIX:
+        assert row["platform_diff"] in allowed_differences
