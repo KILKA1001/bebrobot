@@ -52,6 +52,7 @@ class ModerationService:
     )
     CITY_HIERARCHY_DEMOTION_CHAIN = ("вице города", "ветеран города", "участник клубов")
     MODERATION_HIERARCHY_DEMOTION_CHAIN = ("оператор", "админ", "младший админ", "участник чата")
+    _SUPER_ADMIN_TITLES = {"глава клуба", "главный вице"}
 
     @staticmethod
     def _resolve_account_id(provider: str, provider_user_id: str | int, *, role: str) -> Optional[str]:
@@ -681,14 +682,24 @@ class ModerationService:
         actions = list(applied_case.get("actions") or [])
         case_actor_account_id = str(case_row.get("actor_account_id") or "").strip()
         if case_actor_account_id and case_actor_account_id != actor_account_id:
-            decision = AuthorityService.can_manage_target(
-                actor_subject["provider"],
-                actor_subject["provider_user_id"],
-                target_subject["provider"],
-                target_subject["provider_user_id"],
-            )
-            if not decision:
-                return {"ok": False, "error_code": "rollback_not_allowed", "message": "Можно снять только своё наказание или наказание нижестоящего."}
+            actor_is_super = ModerationService._account_is_super_admin(actor_account_id)
+            case_actor_is_super = ModerationService._account_is_super_admin(case_actor_account_id)
+            if actor_is_super and case_actor_is_super:
+                logger.info(
+                    "rollback latest case allowed for peer super-admins actor_account_id=%s case_actor_account_id=%s case_id=%s",
+                    actor_account_id,
+                    case_actor_account_id,
+                    case_row.get("id"),
+                )
+            else:
+                decision = AuthorityService.can_manage_target(
+                    actor_subject["provider"],
+                    actor_subject["provider_user_id"],
+                    target_subject["provider"],
+                    target_subject["provider_user_id"],
+                )
+                if not decision:
+                    return {"ok": False, "error_code": "rollback_not_allowed", "message": "Можно снять только своё наказание или наказание нижестоящего."}
 
         op_key = str(case_row.get("op_key") or case_row.get("moderation_op_key") or "").strip()
         if not op_key:
@@ -729,6 +740,23 @@ class ModerationService:
                 or any(str(row.get("action_type") or "").strip().lower() == ModerationService.ACTION_KICK for row in actions)
             ),
         }
+
+    @staticmethod
+    def _account_is_super_admin(account_id: str | None) -> bool:
+        normalized_id = str(account_id or "").strip()
+        if not normalized_id:
+            return False
+        try:
+            titles = AccountsService.get_account_titles(normalized_id)
+        except Exception:
+            logger.exception("rollback super-admin title resolve failed account_id=%s", normalized_id)
+            return False
+        normalized_titles = {
+            normalize_protected_profile_title(title)
+            for title in titles
+            if str(title).strip()
+        }
+        return bool(normalized_titles & ModerationService._SUPER_ADMIN_TITLES)
 
     @staticmethod
     def _load_violation_type(violation_code: str) -> Optional[dict]:
