@@ -8,6 +8,7 @@ from bot.systems.moderation_rep_ui import REP_HOW_IT_WORKS_LINES, render_rep_dup
 
 from .accounts_service import AccountsService
 from .authority_service import AuthorityService, ModerationAuthorityDecision
+from .profile_titles import normalize_protected_profile_title
 
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,8 @@ class ModerationService:
         "Если штраф уже удержан автоматически — дополнительная оплата не нужна. "
         "Если штраф ждёт оплаты или частично оплачен, оплатите его кнопкой в /modstatus на том же общем аккаунте."
     )
+    CITY_HIERARCHY_DEMOTION_CHAIN = ("вице города", "ветеран города", "участник клубов")
+    MODERATION_HIERARCHY_DEMOTION_CHAIN = ("оператор", "админ", "младший админ", "участник чата")
 
     @staticmethod
     def _resolve_account_id(provider: str, provider_user_id: str | int, *, role: str) -> Optional[str]:
@@ -909,7 +912,54 @@ class ModerationService:
         return " ".join(parts)
 
     @staticmethod
-    def _planned_actions(rule: dict[str, Any], warn_count_before: int) -> tuple[list[str], int, bool]:
+    def _normalized_target_titles(target_titles: tuple[str, ...] | list[str] | None) -> set[str]:
+        return {
+            normalize_protected_profile_title(title)
+            for title in (target_titles or [])
+            if str(title).strip()
+        }
+
+    @staticmethod
+    def _resolve_demotion_transition(target_titles: tuple[str, ...] | list[str] | None) -> tuple[str, str] | None:
+        normalized_titles = ModerationService._normalized_target_titles(target_titles)
+        for chain in (ModerationService.CITY_HIERARCHY_DEMOTION_CHAIN, ModerationService.MODERATION_HIERARCHY_DEMOTION_CHAIN):
+            for index, title in enumerate(chain[:-1]):
+                if title in normalized_titles:
+                    return title, chain[index + 1]
+        return None
+
+    @staticmethod
+    def _target_is_on_demotion_floor(target_titles: tuple[str, ...] | list[str] | None) -> bool:
+        normalized_titles = ModerationService._normalized_target_titles(target_titles)
+        return (
+            "участник клубов" in normalized_titles
+            or "участник чата" in normalized_titles
+        )
+
+    @staticmethod
+    def _apply_staff_escalation_override(
+        actions: list[str],
+        *,
+        target_titles: tuple[str, ...] | list[str] | None,
+    ) -> tuple[list[str], tuple[str, str] | None]:
+        transition = ModerationService._resolve_demotion_transition(target_titles)
+        if not transition:
+            return actions, None
+
+        adjusted = [action for action in actions if action != ModerationService.ACTION_KICK]
+        if ModerationService.ACTION_BAN in adjusted and not ModerationService._target_is_on_demotion_floor(target_titles):
+            adjusted = [action for action in adjusted if action != ModerationService.ACTION_BAN]
+        if ModerationService.ACTION_DEMOTION not in adjusted:
+            adjusted.append(ModerationService.ACTION_DEMOTION)
+        return adjusted, transition
+
+    @staticmethod
+    def _planned_actions(
+        rule: dict[str, Any],
+        warn_count_before: int,
+        *,
+        target_titles: tuple[str, ...] | list[str] | None = None,
+    ) -> tuple[list[str], int, bool, tuple[str, str] | None]:
         actions: list[str] = []
         warn_count_after = warn_count_before
         warn_increment = ModerationService._rule_warn_increment(rule)
@@ -929,7 +979,12 @@ class ModerationService:
             actions.append(ModerationService.ACTION_BAN)
         if ModerationService._is_truthy(rule.get("apply_demotion")):
             actions.append(ModerationService.ACTION_DEMOTION)
-        return actions, warn_count_after, should_ban
+        actions, demotion_transition = ModerationService._apply_staff_escalation_override(
+            actions,
+            target_titles=target_titles,
+        )
+        should_ban = ModerationService.ACTION_BAN in actions
+        return actions, warn_count_after, should_ban, demotion_transition
 
     @staticmethod
     def _required_authority_action(actions: list[str]) -> str:
@@ -943,8 +998,17 @@ class ModerationService:
         return max(moderation_actions, key=lambda item: ModerationService._ACTION_PRIORITY[item])
 
     @staticmethod
-    def _action_summary_lines(rule: dict[str, Any], warn_count_before: int) -> tuple[list[str], int, bool]:
-        actions, warn_count_after, should_ban = ModerationService._planned_actions(rule, warn_count_before)
+    def _action_summary_lines(
+        rule: dict[str, Any],
+        warn_count_before: int,
+        *,
+        target_titles: tuple[str, ...] | list[str] | None = None,
+    ) -> tuple[list[str], int, bool, tuple[str, str] | None]:
+        actions, warn_count_after, should_ban, demotion_transition = ModerationService._planned_actions(
+            rule,
+            warn_count_before,
+            target_titles=target_titles,
+        )
         lines: list[str] = []
         mute_minutes = int(rule.get("mute_minutes") or 0)
         fine_points = float(rule.get("fine_points") or 0)
@@ -971,8 +1035,11 @@ class ModerationService:
             else:
                 lines.append("бан")
         if ModerationService.ACTION_DEMOTION in actions:
-            lines.append("понижение")
-        return lines, warn_count_after, should_ban
+            if demotion_transition:
+                lines.append(f"понижение {demotion_transition[0]} → {demotion_transition[1]}")
+            else:
+                lines.append("понижение")
+        return lines, warn_count_after, should_ban, demotion_transition
 
     @staticmethod
     def _join_human_actions(lines: list[str]) -> str:
@@ -983,10 +1050,19 @@ class ModerationService:
         return " + ".join(lines)
 
     @staticmethod
-    def _next_step_explanation(next_rule: dict[str, Any] | None, warn_count_after: int) -> str:
+    def _next_step_explanation(
+        next_rule: dict[str, Any] | None,
+        warn_count_after: int,
+        *,
+        target_titles: tuple[str, ...] | list[str] | None = None,
+    ) -> str:
         if not next_rule:
             return "Следующего шага эскалации пока нет в таблице правил. Если поведение повторится, обнови экран и проверь логи."
-        next_lines, _, _ = ModerationService._action_summary_lines(next_rule, warn_count_after)
+        next_lines, _, _, _ = ModerationService._action_summary_lines(
+            next_rule,
+            warn_count_after,
+            target_titles=target_titles,
+        )
         return f"При следующем таком нарушении наказание усилится: {ModerationService._join_human_actions(next_lines)}."
 
     @staticmethod
@@ -1116,9 +1192,19 @@ class ModerationService:
         case_id: Any | None = None,
         moderation_op_key: str | None = None,
     ) -> dict[str, Any]:
-        action_lines, warn_count_after, should_ban = ModerationService._action_summary_lines(rule, warn_count_before)
+        authority_target_titles = getattr(authority, "target_titles", tuple()) if authority else tuple()
+        target_titles = authority_target_titles if authority_target_titles else tuple(target_subject.get("titles") or ())
+        action_lines, warn_count_after, should_ban, demotion_transition = ModerationService._action_summary_lines(
+            rule,
+            warn_count_before,
+            target_titles=target_titles,
+        )
         violation_title = ModerationService._human_violation_title(violation_type)
-        next_step_text = ModerationService._next_step_explanation(next_rule, warn_count_after)
+        next_step_text = ModerationService._next_step_explanation(
+            next_rule,
+            warn_count_after,
+            target_titles=target_titles,
+        )
         warn_limit = ModerationService._warn_limit_from_rules(all_rules)
         warn_before_text = ModerationService._warn_progress_text(
             warn_count=warn_count_before,
@@ -1130,7 +1216,11 @@ class ModerationService:
             warn_limit=warn_limit,
             suffix="после применения",
         )
-        selected_actions, _, _ = ModerationService._planned_actions(rule, warn_count_before)
+        selected_actions, _, _, _ = ModerationService._planned_actions(
+            rule,
+            warn_count_before,
+            target_titles=target_titles,
+        )
         required_authority_action = ModerationService._required_authority_action(selected_actions)
         selected_action_summary = ModerationService._join_human_actions(action_lines)
         warn_increment = ModerationService._rule_warn_increment(rule)
@@ -1202,6 +1292,8 @@ class ModerationService:
             "ban_minutes": ban_minutes,
             "kick_applied": ModerationService.ACTION_KICK in selected_actions,
             "demotion_applied": ModerationService.ACTION_DEMOTION in selected_actions,
+            "demotion_transition_from": demotion_transition[0] if demotion_transition else None,
+            "demotion_transition_to": demotion_transition[1] if demotion_transition else None,
             "soft_warning_only": ModerationService._rule_only_if_clean_record(rule),
             "mute_minutes": mute_minutes,
             "fine_points": fine_points,
@@ -1259,7 +1351,12 @@ class ModerationService:
         if not rule:
             return {"ok": False, "error_code": "rule_not_found", "message": "Не найдено правило наказания. Проверь логи и таблицу moderation_penalty_rules."}
 
-        selected_actions, _, _ = ModerationService._planned_actions(rule, warn_count_before)
+        target_titles = tuple(AccountsService.get_account_titles(str(target_subject["account_id"])))
+        selected_actions, _, _, _ = ModerationService._planned_actions(
+            rule,
+            warn_count_before,
+            target_titles=target_titles,
+        )
         requested_action = ModerationService._required_authority_action(selected_actions)
         if context.get("skip_authority"):
             authority = ModerationAuthorityDecision(
@@ -1269,7 +1366,7 @@ class ModerationService:
                 actor_account_id=actor_subject.get("account_id"),
                 target_account_id=target_subject.get("account_id"),
                 actor_titles=tuple(),
-                target_titles=tuple(),
+                target_titles=target_titles,
                 requested_action=requested_action,
             )
         else:
@@ -1291,6 +1388,12 @@ class ModerationService:
                 "violation_code": str(violation_type.get("code") or ""),
                 "selected_actions": selected_actions,
             }
+
+        selected_actions, _, _, _ = ModerationService._planned_actions(
+            rule,
+            warn_count_before,
+            target_titles=getattr(authority, "target_titles", target_titles),
+        )
 
         next_rule = ModerationService._load_penalty_rule(violation_type["id"], warn_count_before + ModerationService._rule_warn_increment(rule))
         moderation_op_key = ModerationService._build_op_key(context, actor_subject, target_subject, str(violation_type.get("code") or violation_code))
@@ -1859,17 +1962,68 @@ class ModerationService:
 
             if ModerationService.ACTION_DEMOTION in selected_actions:
                 current_step = "demotion_apply"
+                before_titles = AccountsService.get_account_titles(str(target_subject["account_id"]))
+                demotion_transition = ModerationService._resolve_demotion_transition(before_titles)
+                if not demotion_transition:
+                    logger.error(
+                        "moderation demotion apply failed: transition not found account_id=%s current_titles=%s case_id=%s",
+                        target_subject["account_id"],
+                        before_titles,
+                        moderation_case["id"],
+                    )
+                    raise RuntimeError("Не удалось определить ступень понижения")
+                demotion_from, demotion_to = demotion_transition
+                updated_titles: list[str] = []
+                removed_source = False
+                already_has_target = False
+                for title in before_titles:
+                    normalized = normalize_protected_profile_title(title)
+                    if normalized == demotion_from:
+                        removed_source = True
+                        continue
+                    if normalized == demotion_to:
+                        already_has_target = True
+                    updated_titles.append(title)
+                if not removed_source:
+                    logger.error(
+                        "moderation demotion apply failed: source title not present account_id=%s source=%s titles=%s case_id=%s",
+                        target_subject["account_id"],
+                        demotion_from,
+                        before_titles,
+                        moderation_case["id"],
+                    )
+                    raise RuntimeError("Не удалось выполнить понижение: исходное звание отсутствует")
+                if not already_has_target:
+                    updated_titles.append(demotion_to[:1].upper() + demotion_to[1:])
+                if not AccountsService.save_account_titles(
+                    str(target_subject["account_id"]),
+                    updated_titles,
+                    source="moderation_case_demotion",
+                ):
+                    logger.error(
+                        "moderation demotion apply failed: save_account_titles returned false account_id=%s from=%s to=%s case_id=%s",
+                        target_subject["account_id"],
+                        demotion_from,
+                        demotion_to,
+                        moderation_case["id"],
+                    )
+                    raise RuntimeError("Не удалось сохранить новое звание после понижения")
                 demotion_action = ModerationService._create_action(
                     case_id=moderation_case["id"],
                     action_type=ModerationService.ACTION_DEMOTION,
                     op_key=moderation_op_key,
-                    value_text=str(context.get("reason_text") or context.get("reason") or rule.get("description_for_user") or violation_code),
+                    value_text=(
+                        f"{demotion_from} -> {demotion_to}; "
+                        f"reason={context.get('reason_text') or context.get('reason') or rule.get('description_for_user') or violation_code}"
+                    ),
                     starts_at=created_at,
                     created_at=created_at,
                 )
                 if not demotion_action:
                     raise RuntimeError("Не удалось создать demotion action")
                 applied_actions.append(demotion_action)
+                ui_payload["demotion_transition_from"] = demotion_from
+                ui_payload["demotion_transition_to"] = demotion_to
                 completed_steps.append(current_step)
 
             if ModerationService.ACTION_FINE_POINTS in selected_actions and fine_points > 0:
@@ -2112,7 +2266,12 @@ class ModerationService:
             else:
                 result_lines.append("Применён бан")
         if ModerationService.ACTION_DEMOTION in selected_actions:
-            result_lines.append("Зафиксировано понижение")
+            demotion_from = str(ui_payload.get("demotion_transition_from") or "").strip()
+            demotion_to = str(ui_payload.get("demotion_transition_to") or "").strip()
+            if demotion_from and demotion_to:
+                result_lines.append(f"Выполнено понижение: {demotion_from} → {demotion_to}")
+            else:
+                result_lines.append("Зафиксировано понижение")
         result_lines.append(next_step_text if (next_step_text := str(ui_payload.get("next_step_text") or "").strip()) else "")
         ui_payload["moderator_result_lines"] = [line for line in result_lines if line]
         ui_payload["moderator_result_text"] = "\n".join(ui_payload["moderator_result_lines"])

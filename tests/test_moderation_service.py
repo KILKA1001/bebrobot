@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 
+from bot.services.accounts_service import AccountsService
 from bot.services.moderation_service import ModerationService
 
 
@@ -132,6 +133,10 @@ class _FakeDb:
             "moderation_bans": [],
             "moderation_case_fines": [],
             "fines": [],
+            "accounts": [
+                {"id": "acc-actor", "titles": ["Админ"]},
+                {"id": "acc-target", "titles": ["Участник клубов"]},
+            ],
             "bank": [{"id": 1, "total": 0.0}],
             "bank_history": [],
         }
@@ -230,15 +235,38 @@ class _FakeDb:
 
 class ModerationServiceTests(unittest.TestCase):
     def setUp(self):
+        AccountsService._account_titles_cache = {}
         self.fake_db = _FakeDb()
         self.db_patcher = patch("bot.services.moderation_service.db", self.fake_db)
         self.resolve_patcher = patch("bot.services.moderation_service.AccountsService.resolve_account_id")
+        self.titles_patcher = patch("bot.services.moderation_service.AccountsService.get_account_titles")
+        self.save_titles_patcher = patch("bot.services.moderation_service.AccountsService.save_account_titles")
         self.mock_resolve = self.resolve_patcher.start()
+        self.mock_titles = self.titles_patcher.start()
+        self.mock_save_titles = self.save_titles_patcher.start()
         self.db_patcher.start()
+        self.mock_titles.side_effect = self._fake_get_account_titles
+        self.mock_save_titles.side_effect = self._fake_save_account_titles
 
     def tearDown(self):
         self.resolve_patcher.stop()
+        self.titles_patcher.stop()
+        self.save_titles_patcher.stop()
         self.db_patcher.stop()
+
+    def _fake_get_account_titles(self, account_id):
+        for row in self.fake_db.tables.get("accounts", []):
+            if str(row.get("id")) == str(account_id):
+                return list(row.get("titles") or [])
+        return []
+
+    def _fake_save_account_titles(self, account_id, titles, source="discord"):
+        for row in self.fake_db.tables.get("accounts", []):
+            if str(row.get("id")) == str(account_id):
+                row["titles"] = list(titles or [])
+                row["titles_source"] = source
+                return True
+        return False
 
     def test_apply_violation_creates_case_warn_mute_and_fine_point_action(self):
         self.mock_resolve.side_effect = ["acc-actor", "acc-target"]
@@ -446,6 +474,92 @@ class ModerationServiceTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertTrue(result["ban_applied"])
         self.assertEqual(self.fake_db.tables["moderation_bans"][0]["ends_at"], result["case"]["ban_until"])
+        self.assertEqual(
+            [row["action_type"] for row in self.fake_db.tables["moderation_actions"]],
+            ["warn", "ban"],
+        )
+
+    def test_apply_violation_demotes_staff_instead_of_kick(self):
+        self.mock_resolve.side_effect = ["acc-actor", "acc-target"]
+        self.fake_db.tables["accounts"] = [
+            {"id": "acc-actor", "titles": ["Админ"]},
+            {"id": "acc-target", "titles": ["Ветеран города"]},
+        ]
+        self.fake_db.tables["moderation_penalty_rules"] = [
+            {
+                "id": 50,
+                "violation_type_id": 1,
+                "escalation_step": 4,
+                "warn_count_before": 3,
+                "warn_increment": 1,
+                "warn_ttl_minutes": 14400,
+                "mute_minutes": 0,
+                "fine_points": 0,
+                "apply_kick": True,
+                "apply_ban": False,
+                "is_active": True,
+                "description_for_admin": "Последний пред до кика",
+                "description_for_user": "Эскалация",
+            },
+        ]
+        self.fake_db.tables["moderation_warn_state"] = [
+            {"id": 1, "account_id": "acc-target", "active_warn_count": 3}
+        ]
+
+        result = ModerationService.apply_violation(
+            provider="discord",
+            actor="111",
+            target="222",
+            violation_code="spam",
+            reason_text="override kick to demotion",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["ui_payload"]["kick_applied"])
+        self.assertTrue(result["ui_payload"]["demotion_applied"])
+        self.assertIn("понижение", result["ui_payload"]["selected_action_summary"])
+        self.assertEqual(
+            [row["action_type"] for row in self.fake_db.tables["moderation_actions"]],
+            ["warn", "demotion"],
+        )
+        self.assertEqual(self.fake_db.tables["accounts"][1]["titles"], ["Участник клубов"])
+
+    def test_apply_violation_bans_staff_on_demotion_floor(self):
+        self.mock_resolve.side_effect = ["acc-actor", "acc-target"]
+        self.fake_db.tables["accounts"] = [
+            {"id": "acc-actor", "titles": ["Админ"]},
+            {"id": "acc-target", "titles": ["Участник клубов"]},
+        ]
+        self.fake_db.tables["moderation_penalty_rules"] = [
+            {
+                "id": 51,
+                "violation_type_id": 1,
+                "escalation_step": 5,
+                "warn_count_before": 4,
+                "warn_increment": 1,
+                "warn_ttl_minutes": 14400,
+                "mute_minutes": 0,
+                "fine_points": 0,
+                "apply_ban": True,
+                "is_active": True,
+                "description_for_admin": "Финальная эскалация",
+                "description_for_user": "Бан",
+            },
+        ]
+        self.fake_db.tables["moderation_warn_state"] = [
+            {"id": 1, "account_id": "acc-target", "active_warn_count": 4}
+        ]
+
+        result = ModerationService.apply_violation(
+            provider="discord",
+            actor="111",
+            target="222",
+            violation_code="spam",
+            reason_text="ban floor",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["ban_applied"])
         self.assertEqual(
             [row["action_type"] for row in self.fake_db.tables["moderation_actions"]],
             ["warn", "ban"],

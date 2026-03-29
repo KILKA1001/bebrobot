@@ -36,6 +36,7 @@ TITLE_WEIGHTS: dict[str, int] = {
     "ветеран города": 30,
     "младший админ": 30,
     "участник клубов": 0,
+    "участник чата": 0,
 }
 
 
@@ -48,6 +49,7 @@ ROLE_LEVELS: dict[str, int] = {
     "ветеран города": 30,
     "младший админ": 30,
     "участник клубов": 0,
+    "участник чата": 0,
 }
 
 MIN_ROLE_MANAGER_LEVEL = 80
@@ -102,8 +104,24 @@ COMMAND_LEVELS: dict[str, int] = {
     "undo_manage": 100,
 }
 
+FALLBACK_CHAT_MEMBER_TITLE = "Участник чата"
+
 
 class AuthorityService:
+    @staticmethod
+    def _effective_titles(raw_titles: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+        normalized_existing = {
+            normalize_protected_profile_title(title)
+            for title in raw_titles
+            if str(title).strip()
+        }
+        if "участник чата" in normalized_existing:
+            return tuple(raw_titles)
+        has_non_chat_member_title = bool(normalized_existing - {"участник чата"})
+        if has_non_chat_member_title:
+            return tuple(raw_titles)
+        return (*tuple(raw_titles), FALLBACK_CHAT_MEMBER_TITLE)
+
     @staticmethod
     def _normalized_titles(titles: tuple[str, ...]) -> set[str]:
         return {normalize_protected_profile_title(title) for title in titles if str(title).strip()}
@@ -186,7 +204,7 @@ class AuthorityService:
             if not account_id:
                 return AuthorityResult(level=0, rank_weight=0, titles=tuple(), account_id=None)
             account_id = str(account_id)
-            titles = tuple(AccountsService.get_account_titles(account_id))
+            titles = AuthorityService._effective_titles(tuple(AccountsService.get_account_titles(account_id)))
             max_weight = 0
             for title in titles:
                 weight = TITLE_WEIGHTS.get(normalize_protected_profile_title(title), 0)

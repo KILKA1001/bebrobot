@@ -9,6 +9,7 @@ PROTECTED_PROFILE_TITLES: tuple[str, ...] = (
     "Ветеран города",
     "Младший админ",
     "Участник клубов",
+    "Участник чата",
 )
 
 PROTECTED_PROFILE_TITLE_ALIASES: dict[str, str] = {

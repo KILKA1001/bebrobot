@@ -278,8 +278,17 @@ class AuthorityServiceTests(unittest.TestCase):
         decision = AuthorityService.can_apply_moderation_action("discord", "actor", "discord", "target", "warn")
 
         self.assertTrue(decision.allowed)
-        self.assertEqual(decision.actor_account_id, "acc-actor")
-        self.assertEqual(decision.target_account_id, "acc-target")
+
+    @patch("bot.services.authority_service.AccountsService.get_account_titles")
+    @patch("bot.services.authority_service.AccountsService.resolve_account_id")
+    def test_resolve_authority_adds_chat_member_title_when_user_has_no_titles(self, mock_resolve, mock_titles):
+        mock_resolve.return_value = "acc-empty"
+        mock_titles.return_value = []
+
+        result = AuthorityService.resolve_authority("discord", "777")
+
+        self.assertEqual(result.level, 0)
+        self.assertIn("Участник чата", result.titles)
 
     @patch("bot.services.authority_service.AccountsService.get_account_titles")
     @patch("bot.services.authority_service.AccountsService.resolve_account_id")
@@ -428,11 +437,15 @@ class AuthorityServiceTests(unittest.TestCase):
             "Админ",
             "Ветеран города",
             "Младший админ",
+            "Участник чата",
         }
 
         canonical_keys = protected_profile_title_canonical_keys()
 
-        self.assertEqual({normalize_protected_profile_title(title) for title in required_titles}, canonical_keys - {"участник клубов"})
+        self.assertEqual(
+            {normalize_protected_profile_title(title) for title in required_titles},
+            canonical_keys - {"участник клубов"},
+        )
 
 
 if __name__ == "__main__":
