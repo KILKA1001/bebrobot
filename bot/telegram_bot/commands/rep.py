@@ -43,6 +43,7 @@ class PendingRepState:
 
 
 _PENDING_REP: dict[int, PendingRepState] = {}
+_MANUAL_DURATION_PRESETS: tuple[tuple[str, int], ...] = (("15м", 15), ("1ч", 60), ("12ч", 720), ("1д", 1440))
 
 
 def _friendly_rep_error_text() -> str:
@@ -79,14 +80,53 @@ def _target_keyboard(actor_id: int) -> InlineKeyboardMarkup:
 
 def _violations_keyboard(actor_id: int) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
-    for violation in ModerationService.list_active_violation_types()[:12]:
+    rows.append([InlineKeyboardButton(text="🔧 Мут", callback_data=f"rep:{actor_id}:manual:mute")])
+    rows.append([InlineKeyboardButton(text="🔧 Пред", callback_data=f"rep:{actor_id}:manual:warn")])
+    rows.append([InlineKeyboardButton(text="🔧 Бан", callback_data=f"rep:{actor_id}:manual:ban")])
+    rows.append([InlineKeyboardButton(text="🔧 Кик", callback_data=f"rep:{actor_id}:manual:kick")])
+    rows.append([InlineKeyboardButton(text="📚 Нарушения из правил", callback_data=f"rep:{actor_id}:rules_menu")])
+    rows.append([InlineKeyboardButton(text="Назад", callback_data=f"rep:{actor_id}:back:target")])
+    rows.append([InlineKeyboardButton(text="Отмена", callback_data=f"rep:{actor_id}:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _rules_keyboard(actor_id: int, violations: list[dict[str, Any]] | None = None, *, show_escalation: bool = False) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    source = violations if violations is not None else ModerationService.list_active_violation_types()
+    for violation in source[:12]:
         code = str(violation.get("code") or "").strip()
         if not code:
             continue
         rows.append([InlineKeyboardButton(text=str(violation.get("title") or code), callback_data=f"rep:{actor_id}:violation:{code}")])
-    rows.append([InlineKeyboardButton(text="Назад", callback_data=f"rep:{actor_id}:back:target")])
+    rows.append([InlineKeyboardButton(text="⬅️ К действиям", callback_data=f"rep:{actor_id}:back:actions")])
+    if show_escalation:
+        rows.append([InlineKeyboardButton(text="📨 Заявка старшему админу", callback_data=f"rep:{actor_id}:escalate")])
     rows.append([InlineKeyboardButton(text="Отмена", callback_data=f"rep:{actor_id}:cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _manual_duration_keyboard(actor_id: int, action_key: str) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    rows.append([InlineKeyboardButton(text=f"Действие: {action_key}", callback_data=f"rep:{actor_id}:noop")])
+    for title, minutes in _MANUAL_DURATION_PRESETS:
+        rows.append([InlineKeyboardButton(text=title, callback_data=f"rep:{actor_id}:mdur:{action_key}:{minutes}")])
+    rows.append([InlineKeyboardButton(text="Свой срок", callback_data=f"rep:{actor_id}:mdur_custom:{action_key}")])
+    rows.append([InlineKeyboardButton(text="Назад", callback_data=f"rep:{actor_id}:back:violation")])
+    rows.append([InlineKeyboardButton(text="Отмена", callback_data=f"rep:{actor_id}:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _parse_duration_minutes(raw: str) -> int:
+    text = str(raw or "").strip().lower().replace(" ", "")
+    if text.endswith("m") and text[:-1].isdigit():
+        return int(text[:-1])
+    if text.endswith("h") and text[:-1].isdigit():
+        return int(text[:-1]) * 60
+    if text.endswith("d") and text[:-1].isdigit():
+        return int(text[:-1]) * 24 * 60
+    if text.isdigit():
+        return int(text)
+    return 0
 
 
 def _preview_keyboard(actor_id: int) -> InlineKeyboardMarkup:
@@ -150,6 +190,15 @@ def _violation_prompt_text(target_label: str) -> str:
     return render_rep_violation_prompt_text(target_label=target_label, compact=True)
 
 
+def _actions_menu_text(target_label: str, hidden: int) -> str:
+    suffix = f"\n\n🔒 Скрыто нарушений по полномочиям: {hidden}" if hidden > 0 else ""
+    return (
+        _violation_prompt_text(target_label)
+        + "\n\nВыберите 1 из 4 ручных действий или нажмите 5-ю кнопку «Нарушения из правил»."
+        + suffix
+    )
+
+
 @router.message(Command("rep"))
 async def rep_command(message: Message) -> None:
     if not message.from_user:
@@ -201,8 +250,20 @@ async def rep_command(message: Message) -> None:
         if resolved and not resolved.get("error"):
             pending.step = "await_violation"
             pending.payload["target"] = dict(resolved)
+            availability = ModerationService.list_available_violation_types(
+                provider="telegram",
+                actor={"provider": "telegram", "provider_user_id": str(message.from_user.id), "label": str(message.from_user.id)},
+                target=resolved,
+                chat_id=message.chat.id,
+            )
+            pending.payload["available_violations"] = list(availability.get("available") or [])
+            pending.payload["unavailable_count"] = len(list(availability.get("unavailable") or []))
             pending.created_at = time.time()
-            await message.answer(_violation_prompt_text(str(resolved.get("label") or "неизвестный пользователь")), reply_markup=_violations_keyboard(message.from_user.id))
+            hidden = int(pending.payload.get("unavailable_count") or 0)
+            await message.answer(
+                _actions_menu_text(str(resolved.get("label") or "неизвестный пользователь"), hidden),
+                reply_markup=_violations_keyboard(message.from_user.id),
+            )
             return
 
     await message.answer(_start_text())
@@ -229,6 +290,9 @@ async def rep_callback(callback: CallbackQuery) -> None:
         _PENDING_REP.pop(callback.from_user.id, None)
         await callback.answer(render_rep_expired_text(), show_alert=True)
         return
+    if action == "noop":
+        await callback.answer()
+        return
     if action == "back":
         destination = parts[3] if len(parts) > 3 else "target"
         if destination == "target":
@@ -238,14 +302,67 @@ async def rep_callback(callback: CallbackQuery) -> None:
             pending.payload.pop("preview", None)
             pending.payload.pop("violation_code", None)
             await callback.message.edit_text(_target_prompt_text(), reply_markup=_target_keyboard(callback.from_user.id))
+        elif destination == "violation":
+            target = pending.payload.get("target") or {}
+            pending.step = "await_violation"
+            pending.created_at = time.time()
+            pending.payload.pop("preview", None)
+            pending.payload.pop("violation_code", None)
+            await callback.message.edit_text(
+                _violation_prompt_text(str(target.get("label") or "неизвестный пользователь")),
+                reply_markup=_rules_keyboard(
+                    callback.from_user.id,
+                    pending.payload.get("available_violations"),
+                    show_escalation=int(pending.payload.get("unavailable_count") or 0) > 0,
+                ),
+            )
         else:
             target = pending.payload.get("target") or {}
             pending.step = "await_violation"
             pending.created_at = time.time()
             pending.payload.pop("preview", None)
             pending.payload.pop("violation_code", None)
-            await callback.message.edit_text(_violation_prompt_text(str(target.get("label") or "неизвестный пользователь")), reply_markup=_violations_keyboard(callback.from_user.id))
+            hidden = int(pending.payload.get("unavailable_count") or 0)
+            await callback.message.edit_text(
+                _actions_menu_text(str(target.get("label") or "неизвестный пользователь"), hidden),
+                reply_markup=_violations_keyboard(callback.from_user.id),
+            )
         _PENDING_REP[callback.from_user.id] = pending
+        await callback.answer()
+        return
+    if action == "escalate":
+        target = pending.payload.get("target") or {}
+        unavailable_count = int(pending.payload.get("unavailable_count") or 0)
+        moderator_label = f"@{callback.from_user.username}" if callback.from_user.username else str(callback.from_user.id)
+        text = (
+            "📨 Заявка на недоступное наказание\n"
+            f"Модератор: {moderator_label}"
+            f"\nЦель: {target.get('label') or target.get('provider_user_id') or 'неизвестно'}"
+            f"\nСкрытых нарушений по полномочиям: {unavailable_count}\n"
+            "Нужен старший администратор для подтверждения."
+        )
+        try:
+            await callback.message.answer(text)
+            await callback.answer("✅ Заявка отправлена в чат.")
+        except Exception:
+            logger.exception(
+                "telegram rep escalation request failed actor=%s target=%s chat_id=%s",
+                callback.from_user.id,
+                target.get("provider_user_id"),
+                callback.message.chat.id,
+            )
+            await callback.answer("❌ Не удалось отправить заявку. Подробности в консоли.", show_alert=True)
+        return
+    if action == "rules_menu":
+        target = pending.payload.get("target") or {}
+        await callback.message.edit_text(
+            _violation_prompt_text(str(target.get("label") or "неизвестный пользователь")),
+            reply_markup=_rules_keyboard(
+                callback.from_user.id,
+                pending.payload.get("available_violations"),
+                show_escalation=int(pending.payload.get("unavailable_count") or 0) > 0,
+            ),
+        )
         await callback.answer()
         return
     if action == "violation":
@@ -319,6 +436,53 @@ async def rep_callback(callback: CallbackQuery) -> None:
             error_code=None,
         )
         await callback.message.edit_text(render_rep_preview_text(ui_payload, compact=True), reply_markup=_preview_keyboard(callback.from_user.id))
+        await callback.answer()
+        return
+    if action == "manual":
+        action_key = parts[3] if len(parts) > 3 else ""
+        if action_key not in {"mute", "warn", "ban", "kick"}:
+            await callback.answer("Неизвестный тип ручного наказания.", show_alert=True)
+            return
+        pending.step = "await_manual_duration"
+        pending.payload["manual_action"] = action_key
+        pending.created_at = time.time()
+        _PENDING_REP[callback.from_user.id] = pending
+        await callback.message.edit_text(
+            "⏱️ Выберите быстрый срок или укажите свой.\n"
+            "После этого бот попросит причину (обязательно).",
+            reply_markup=_manual_duration_keyboard(callback.from_user.id, action_key),
+        )
+        await callback.answer()
+        return
+    if action == "mdur":
+        action_key = parts[3] if len(parts) > 3 else ""
+        minutes = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 0
+        if minutes <= 0:
+            await callback.answer("Некорректный срок.", show_alert=True)
+            return
+        pending.step = "await_manual_reason"
+        pending.payload["manual_action"] = action_key
+        pending.payload["manual_duration_minutes"] = minutes
+        pending.created_at = time.time()
+        _PENDING_REP[callback.from_user.id] = pending
+        await callback.message.edit_text(
+            f"📝 Укажите причину для `{action_key}` на {minutes} мин.\n"
+            "Напишите одним сообщением. Без причины наказание не будет применено.",
+            reply_markup=_cancel_keyboard(callback.from_user.id),
+        )
+        await callback.answer()
+        return
+    if action == "mdur_custom":
+        action_key = parts[3] if len(parts) > 3 else ""
+        pending.step = "await_manual_duration_custom"
+        pending.payload["manual_action"] = action_key
+        pending.created_at = time.time()
+        _PENDING_REP[callback.from_user.id] = pending
+        await callback.message.edit_text(
+            "⌨️ Введите срок вручную (например: 30m, 2h, 1d).\n"
+            "После этого бот попросит причину.",
+            reply_markup=_cancel_keyboard(callback.from_user.id),
+        )
         await callback.answer()
         return
     if action == "confirm":
@@ -463,6 +627,56 @@ async def rep_pending_handler(message: Message) -> None:
         await message.answer(f"❌ {render_rep_expired_text()}")
         return
     if pending.step != "await_target":
+        if pending.step == "await_manual_duration_custom":
+            minutes = _parse_duration_minutes(str(message.text or ""))
+            if minutes <= 0:
+                await message.answer("❌ Неверный срок. Пример: 30m, 2h, 1d.")
+                return
+            pending.step = "await_manual_reason"
+            pending.payload["manual_duration_minutes"] = minutes
+            pending.created_at = time.time()
+            _PENDING_REP[message.from_user.id] = pending
+            await message.answer(
+                f"📝 Укажите причину для `{pending.payload.get('manual_action')}` на {minutes} мин.\n"
+                "Без причины наказание не применяется.",
+                reply_markup=_cancel_keyboard(message.from_user.id),
+            )
+            return
+        if pending.step == "await_manual_reason":
+            reason_text = str(message.text or "").strip()
+            action_key = str(pending.payload.get("manual_action") or "").strip()
+            minutes = int(pending.payload.get("manual_duration_minutes") or 0)
+            target = pending.payload.get("target")
+            if not reason_text or not action_key or minutes <= 0 or not target:
+                await message.answer("❌ Не удалось собрать данные (цель/срок/причина). Запустите /rep заново.")
+                return
+            result = ModerationService.commit_manual_action(
+                "telegram",
+                {"provider": "telegram", "provider_user_id": str(message.from_user.id), "label": f"@{message.from_user.username}" if message.from_user.username else str(message.from_user.id)},
+                target,
+                action_key,
+                duration_minutes=minutes,
+                reason_text=reason_text,
+                context={"chat_id": message.chat.id, "source_platform": "telegram"},
+            )
+            if not result.get("ok"):
+                logger.warning(
+                    "telegram rep manual apply failed actor=%s target=%s action=%s error_code=%s",
+                    message.from_user.id,
+                    (target or {}).get("provider_user_id"),
+                    action_key,
+                    result.get("error_code"),
+                )
+                await message.answer(f"❌ {result.get('message') or _friendly_rep_error_text()}")
+                return
+            _PENDING_REP.pop(message.from_user.id, None)
+            await message.answer(
+                "✅ Ручное наказание применено.\n"
+                f"Действие: {action_key}\n"
+                f"Срок: {minutes} мин\n"
+                f"Причина: {reason_text}"
+            )
+            return
         return
     if message.reply_to_message and message.reply_to_message.from_user:
         persist_telegram_identity_from_user(message.reply_to_message.from_user)
@@ -492,7 +706,18 @@ async def rep_pending_handler(message: Message) -> None:
         return
     pending.step = "await_violation"
     pending.created_at = time.time()
-    pending.payload = {"chat_id": message.chat.id, "target": dict(resolved)}
+    availability = ModerationService.list_available_violation_types(
+        provider="telegram",
+        actor={"provider": "telegram", "provider_user_id": str(message.from_user.id), "label": str(message.from_user.id)},
+        target=resolved,
+        chat_id=message.chat.id,
+    )
+    pending.payload = {
+        "chat_id": message.chat.id,
+        "target": dict(resolved),
+        "available_violations": list(availability.get("available") or []),
+        "unavailable_count": len(list(availability.get("unavailable") or [])),
+    }
     _PENDING_REP[message.from_user.id] = pending
     _log_rep(
         "info",
@@ -508,4 +733,8 @@ async def rep_pending_handler(message: Message) -> None:
         case_id=None,
         error_code=None,
     )
-    await message.answer(_violation_prompt_text(str(resolved.get("label") or "неизвестный пользователь")), reply_markup=_violations_keyboard(message.from_user.id))
+    hidden = int(pending.payload.get("unavailable_count") or 0)
+    await message.answer(
+        _actions_menu_text(str(resolved.get("label") or "неизвестный пользователь"), hidden),
+        reply_markup=_violations_keyboard(message.from_user.id),
+    )

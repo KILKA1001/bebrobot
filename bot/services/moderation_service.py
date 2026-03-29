@@ -609,6 +609,117 @@ class ModerationService:
         return rows
 
     @staticmethod
+    def list_available_violation_types(
+        *,
+        provider: str,
+        actor: Any,
+        target: Any,
+        chat_id: Any = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        available: list[dict[str, Any]] = []
+        unavailable: list[dict[str, Any]] = []
+        for violation in ModerationService.list_active_violation_types():
+            code = str(violation.get("code") or "").strip()
+            if not code:
+                continue
+            preview = ModerationService.prepare_moderation_payload(
+                provider,
+                actor,
+                target,
+                code,
+                {"chat_id": chat_id, "source_platform": provider, "reason_text": ""},
+            )
+            if preview.get("ok"):
+                available.append(dict(violation))
+                continue
+            unavailable.append(
+                {
+                    **dict(violation),
+                    "error_code": str(preview.get("error_code") or "preview_failed"),
+                    "message": str(preview.get("message") or ""),
+                }
+            )
+        return {"available": available, "unavailable": unavailable}
+
+    @staticmethod
+    def rollback_latest_case(
+        provider: str,
+        actor: Any,
+        target: Any,
+        *,
+        chat_id: Any = None,
+    ) -> dict[str, Any]:
+        actor_subject = ModerationService._resolve_subject(provider, actor, role="actor")
+        target_subject = ModerationService._resolve_subject(provider, target, role="target")
+        if not actor_subject.get("account_id") or not target_subject.get("account_id"):
+            return {"ok": False, "error_code": "identity_unresolved", "message": "Не удалось определить аккаунты для отката."}
+        if actor_subject.get("account_id") == target_subject.get("account_id"):
+            return {"ok": False, "error_code": "self_target_denied", "message": "Нельзя откатывать свои наказания через /modstatus."}
+
+        recent = ModerationService.list_recent_cases(str(target_subject["account_id"]), limit=10)
+        applied_case = next(
+            (
+                item for item in list(recent.get("items") or [])
+                if str((item.get("case") or {}).get("status") or "").strip().lower() == ModerationService.STATUS_APPLIED
+            ),
+            None,
+        )
+        if not applied_case:
+            return {"ok": False, "error_code": "case_not_found", "message": "Нет активных кейсов для отката."}
+        case_row = dict(applied_case.get("case") or {})
+        actions = list(applied_case.get("actions") or [])
+        case_actor_account_id = str(case_row.get("actor_account_id") or "").strip()
+        if case_actor_account_id and case_actor_account_id != str(actor_subject.get("account_id")):
+            decision = AuthorityService.can_manage_target(
+                actor_subject["provider"],
+                actor_subject["provider_user_id"],
+                target_subject["provider"],
+                target_subject["provider_user_id"],
+            )
+            if not decision:
+                return {"ok": False, "error_code": "rollback_not_allowed", "message": "Можно снять только своё наказание или наказание нижестоящего."}
+
+        op_key = str(case_row.get("op_key") or case_row.get("moderation_op_key") or "").strip()
+        if not op_key:
+            op_key = ModerationService._build_op_key({"chat_id": chat_id}, actor_subject, target_subject, str(case_row.get("violation_code") or "rollback"))
+        mute_row = next((row for row in actions if str(row.get("action_type") or "").strip().lower() == ModerationService.ACTION_MUTE), None)
+        ban_row = next((row for row in actions if str(row.get("action_type") or "").strip().lower() == ModerationService.ACTION_BAN), None)
+        fine_action = next((row for row in actions if str(row.get("action_type") or "").strip().lower() == ModerationService.ACTION_FINE_POINTS), None)
+        fine_points = float((fine_action or {}).get("value_numeric") or 0)
+        rollback_status, _, dirty = ModerationService._rollback_case(
+            provider=provider,
+            chat_id=chat_id,
+            actor_subject=actor_subject,
+            target_subject=target_subject,
+            violation_code=str(case_row.get("violation_code") or ""),
+            selected_actions=[str(row.get("action_type") or "").strip().lower() for row in actions if str(row.get("action_type") or "").strip()],
+            selected_rule_id=case_row.get("rule_id"),
+            case_row=case_row,
+            op_key=op_key,
+            warn_state_before=ModerationService._load_warn_state(str(target_subject["account_id"])),
+            warn_changed=False,
+            mute_row=mute_row,
+            ban_row=ban_row,
+            fine_points=fine_points,
+            fine_applied=False,
+            bank_income_applied=False,
+            completed_steps=["manual_rollback"],
+        )
+        return {
+            "ok": not bool(dirty),
+            "error_code": None if not dirty else "rollback_incomplete",
+            "message": "Наказание снято." if not dirty else "Откат выполнен частично, нужна ручная проверка.",
+            "case_id": case_row.get("id"),
+            "case": case_row,
+            "target": target_subject,
+            "rollback_status": rollback_status,
+            "had_ban_or_kick": bool(
+                ban_row
+                or any(str(row.get("action_type") or "").strip().lower() == ModerationService.ACTION_KICK for row in actions)
+            ),
+        }
+
+    @staticmethod
     def _load_violation_type(violation_code: str) -> Optional[dict]:
         normalized_code = str(violation_code or "").strip().lower()
         violation_type = ModerationService._select_single(
@@ -2375,3 +2486,181 @@ class ModerationService:
             },
         )
         return result if result.get("ok") else None
+
+    @staticmethod
+    def commit_manual_action(
+        provider: str,
+        actor: Any,
+        target: Any,
+        action_type: str,
+        *,
+        duration_minutes: int,
+        reason_text: str,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        context = dict(context or {})
+        normalized_action = str(action_type or "").strip().lower()
+        reason = str(reason_text or "").strip()
+        duration = ModerationService._safe_int(duration_minutes, 0)
+        if normalized_action not in {ModerationService.ACTION_MUTE, ModerationService.ACTION_WARN, ModerationService.ACTION_BAN, ModerationService.ACTION_KICK}:
+            return {"ok": False, "error_code": "unsupported_action", "message": "Неподдерживаемый тип ручного наказания."}
+        if not reason:
+            return {"ok": False, "error_code": "reason_required", "message": "Укажите причину. Без причины наказание не применяется."}
+        if duration <= 0:
+            return {"ok": False, "error_code": "duration_required", "message": "Укажите срок наказания в минутах (например 60m, 1h, 1d)."}
+
+        actor_subject = ModerationService._resolve_subject(provider, actor, role="actor")
+        target_subject = ModerationService._resolve_subject(provider, target, role="target")
+        if not actor_subject.get("account_id") or not target_subject.get("account_id"):
+            return {"ok": False, "error_code": "identity_unresolved", "message": "Не удалось определить аккаунт модератора или нарушителя."}
+        if actor_subject.get("account_id") == target_subject.get("account_id"):
+            return {"ok": False, "error_code": "self_target_denied", "message": "Нельзя наказать самого себя."}
+
+        authority = AuthorityService.can_apply_moderation_action(
+            actor_subject["provider"],
+            actor_subject["provider_user_id"],
+            target_subject["provider"],
+            target_subject["provider_user_id"],
+            ModerationService.ACTION_MUTE if normalized_action == ModerationService.ACTION_KICK else normalized_action,
+        )
+        if not authority.allowed:
+            return {"ok": False, "error_code": authority.deny_reason or "authority_denied", "message": authority.message}
+
+        now = datetime.now(timezone.utc)
+        created_at = now.isoformat()
+        op_key = ModerationService._build_op_key(
+            {"chat_id": context.get("chat_id"), "op_key": context.get("moderation_op_key")},
+            actor_subject,
+            target_subject,
+            f"manual_{normalized_action}",
+        )
+        manual_violation_code = f"manual_{normalized_action}"
+        violation_type = ModerationService._load_violation_type(manual_violation_code)
+        if not violation_type:
+            fallback_types = ModerationService.list_active_violation_types()
+            violation_type = dict(fallback_types[0]) if fallback_types else None
+            logger.warning(
+                "manual moderation violation fallback action=%s actor_account_id=%s target_account_id=%s selected_violation_id=%s selected_violation_code=%s",
+                normalized_action,
+                actor_subject.get("account_id"),
+                target_subject.get("account_id"),
+                (violation_type or {}).get("id"),
+                (violation_type or {}).get("code"),
+            )
+        if not violation_type or violation_type.get("id") is None:
+            logger.error(
+                "manual moderation violation type unresolved action=%s actor_account_id=%s target_account_id=%s",
+                normalized_action,
+                actor_subject.get("account_id"),
+                target_subject.get("account_id"),
+            )
+            return {
+                "ok": False,
+                "error_code": "manual_violation_type_missing",
+                "message": "Не найден тип нарушения для ручного наказания. Сообщите администратору: нужна настройка moderation_violation_types.",
+            }
+        case_row = ModerationService._insert_row(
+            "moderation_cases",
+            {
+                "account_id": target_subject["account_id"],
+                "actor_account_id": actor_subject["account_id"],
+                "violation_type_id": violation_type.get("id"),
+                "penalty_rule_id": None,
+                "escalation_step": 1,
+                "status": ModerationService.STATUS_PENDING,
+                "source_platform": str(context.get("source_platform") or provider),
+                "source_chat_id": str(context.get("chat_id") or context.get("source_chat_id") or "") or None,
+                "reason_text": f"[{manual_violation_code}] {reason}",
+                "op_key": op_key,
+                "created_at": created_at,
+            },
+        )
+        if not case_row:
+            return {"ok": False, "error_code": "case_create_failed", "message": "Не удалось создать кейс ручного наказания."}
+
+        ends_at = (now + timedelta(minutes=duration)).isoformat()
+        action_row = ModerationService._create_action(
+            case_id=case_row["id"],
+            action_type=normalized_action,
+            op_key=op_key,
+            value_numeric=duration,
+            value_text=reason,
+            starts_at=created_at,
+            ends_at=ends_at,
+            created_at=created_at,
+        )
+        if not action_row:
+            ModerationService._update_rows("moderation_cases", {"id": case_row["id"]}, {"status": ModerationService.STATUS_FAILED, "updated_at": datetime.now(timezone.utc).isoformat()})
+            return {"ok": False, "error_code": "action_create_failed", "message": "Не удалось сохранить действие. Проверьте логи."}
+
+        if normalized_action == ModerationService.ACTION_MUTE:
+            ModerationService._insert_row(
+                "moderation_mutes",
+                {
+                    "account_id": target_subject["account_id"],
+                    "case_id": case_row["id"],
+                    "reason_text": reason,
+                    "starts_at": created_at,
+                    "ends_at": ends_at,
+                    "is_active": True,
+                    "op_key": op_key,
+                    "created_at": created_at,
+                },
+            )
+        elif normalized_action == ModerationService.ACTION_BAN:
+            ModerationService._insert_row(
+                "moderation_bans",
+                {
+                    "account_id": target_subject["account_id"],
+                    "case_id": case_row["id"],
+                    "reason_text": reason,
+                    "starts_at": created_at,
+                    "ends_at": ends_at,
+                    "is_active": True,
+                    "op_key": op_key,
+                    "created_at": created_at,
+                },
+            )
+        elif normalized_action == ModerationService.ACTION_WARN:
+            before_state = ModerationService._load_warn_state(str(target_subject["account_id"]))
+            before_count = ModerationService._current_warn_count(before_state)
+            ModerationService._save_warn_state(
+                account_id=str(target_subject["account_id"]),
+                violation_type_id=None,
+                warn_count_after=before_count + 1,
+                case_id=case_row["id"],
+                updated_at=created_at,
+                has_prior_warns=True,
+                has_prior_mutes=ModerationService._is_truthy(before_state.get("has_prior_mutes")),
+            )
+
+        ModerationService._update_rows(
+            "moderation_cases",
+            {"id": case_row["id"]},
+            {
+                "status": ModerationService.STATUS_APPLIED,
+                "applied_actions": normalized_action,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "mute_until": ends_at if normalized_action == ModerationService.ACTION_MUTE else None,
+                "ban_applied": normalized_action == ModerationService.ACTION_BAN,
+                "ban_until": ends_at if normalized_action == ModerationService.ACTION_BAN else None,
+            },
+        )
+        return {
+            "ok": True,
+            "message": "Ручное наказание применено.",
+            "case_id": case_row.get("id"),
+            "target": target_subject,
+            "actor": actor_subject,
+            "selected_actions": [normalized_action],
+            "ui_payload": {
+                "case_id": case_row.get("id"),
+                "selected_actions": [normalized_action],
+                "target_account_id": target_subject.get("account_id"),
+                "target_provider_user_id": target_subject.get("provider_user_id"),
+                "violation_title": f"Ручное наказание: {normalized_action}",
+                "selected_action_summary": f"{normalized_action} на {ModerationService._format_duration(duration)}",
+                "moderator_result_text": f"Применено: {normalized_action} на {ModerationService._format_duration(duration)}\nПричина: {reason}",
+                "violator_result_text": f"К вам применено наказание: {normalized_action} на {ModerationService._format_duration(duration)}.\nПричина: {reason}",
+            },
+        }
