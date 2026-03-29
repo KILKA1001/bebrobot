@@ -13,6 +13,7 @@ from bot.systems.shop_logic import (
     find_shop_item,
     get_shop_catalog_items,
     get_shop_page_slice,
+    purchase_shop_item,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,28 @@ def _build_shop_keyboard(items, page: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def _build_item_card_keyboard(*, shop_item_id: str, page: int, price_points: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Купить", callback_data=f"shop:buy:{shop_item_id}:{page}:{int(price_points)}"),
+                InlineKeyboardButton(text="Назад в магазин", callback_data=f"shop:back:{page}"),
+            ]
+        ]
+    )
+
+
+def _build_confirm_keyboard(*, shop_item_id: str, page: int, price_points: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Подтвердить покупку", callback_data=f"shop:confirm:{shop_item_id}:{page}:{int(price_points)}"),
+                InlineKeyboardButton(text="Отмена", callback_data=f"shop:item:{shop_item_id}:{page}"),
+            ]
+        ]
+    )
+
+
 def _shop_text(account_id: str | None, page: int, total_pages: int) -> str:
     payload = build_shop_render_payload(account_id)
     return f"{payload.telegram_text}\n\nСтраница: <b>{page + 1}/{total_pages}</b>"
@@ -68,8 +91,16 @@ def _item_card_text(item, account_id: str | None) -> str:
         f"Баланс: <b>{payload.points} баллов</b>\n\n"
         f"<b>{item.role_name}</b>\n"
         f"Категория: <b>{item.category}</b>\n"
+        f"Цена: <b>{item.price_points} баллов</b>\n"
         f"Описание: {description}\n"
         f"Как получить: {acquire_hint}"
+    )
+
+
+def _item_confirm_text(item, account_id: str | None) -> str:
+    return (
+        f"{_item_card_text(item, account_id)}\n\n"
+        f"⚠️ Подтвердите покупку роли «<b>{item.role_name}</b>» за <b>{item.price_points} баллов</b>."
     )
 
 
@@ -170,7 +201,70 @@ async def shop_callback(callback: CallbackQuery) -> None:
             await callback.message.edit_text(
                 _item_card_text(item, profile_check.account_id),
                 parse_mode="HTML",
-                reply_markup=_build_shop_keyboard(items, page),
+                reply_markup=_build_item_card_keyboard(shop_item_id=shop_item_id, page=page, price_points=item.price_points),
+            )
+            await callback.answer()
+            return
+
+        if len(parts) >= 5 and parts[1] == "buy":
+            shop_item_id = parts[2]
+            page = int(parts[3])
+            item = find_shop_item(items, shop_item_id)
+            if not item:
+                await callback.answer("Товар не найден, обновите страницу.", show_alert=True)
+                return
+            await callback.message.edit_text(
+                _item_confirm_text(item, profile_check.account_id),
+                parse_mode="HTML",
+                reply_markup=_build_confirm_keyboard(shop_item_id=shop_item_id, page=page, price_points=item.price_points),
+            )
+            await callback.answer()
+            return
+
+        if len(parts) >= 5 and parts[1] == "confirm":
+            shop_item_id = parts[2]
+            page = int(parts[3])
+            expected_price_points = int(parts[4])
+            result = purchase_shop_item(
+                account_id=str(profile_check.account_id or ""),
+                shop_item_id=shop_item_id,
+                actor_provider="telegram",
+                actor_user_id=callback.from_user.id,
+                expected_price_points=expected_price_points,
+            )
+            if not result.ok:
+                logger.warning(
+                    "shop_purchase_reject provider=telegram actor_user_id=%s account_id=%s shop_item_id=%s reason=%s",
+                    callback.from_user.id,
+                    profile_check.account_id,
+                    shop_item_id,
+                    result.reason,
+                )
+                await callback.answer(result.message, show_alert=True)
+                item = find_shop_item(items, shop_item_id)
+                if item:
+                    await callback.message.edit_text(
+                        _item_card_text(item, profile_check.account_id),
+                        parse_mode="HTML",
+                        reply_markup=_build_item_card_keyboard(shop_item_id=shop_item_id, page=page, price_points=item.price_points),
+                    )
+                return
+            page_data = get_shop_page_slice(items, 0, page_size=SHOP_PAGE_SIZE)
+            await callback.message.edit_text(
+                f"{_shop_text(profile_check.account_id, page_data.page, page_data.total_pages)}\n\n{result.message}",
+                parse_mode="HTML",
+                reply_markup=_build_shop_keyboard(items, page_data.page),
+            )
+            await callback.answer("Покупка завершена")
+            return
+
+        if len(parts) >= 3 and parts[1] == "back":
+            target_page = int(parts[2])
+            page_data = get_shop_page_slice(items, target_page, page_size=SHOP_PAGE_SIZE)
+            await callback.message.edit_text(
+                _shop_text(profile_check.account_id, page_data.page, page_data.total_pages),
+                parse_mode="HTML",
+                reply_markup=_build_shop_keyboard(items, page_data.page),
             )
             await callback.answer()
             return

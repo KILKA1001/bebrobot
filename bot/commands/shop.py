@@ -10,6 +10,7 @@ from bot.systems.shop_logic import (
     find_shop_item,
     get_shop_catalog_items,
     get_shop_page_slice,
+    purchase_shop_item,
 )
 from bot.utils import send_temp
 
@@ -29,7 +30,18 @@ class ShopView(discord.ui.View):
         self.account_id = account_id
         self.page = max(int(page), 0)
         self.total_pages = 1
-        self._render_grid()
+        self.mode = "list"
+        self.selected_item_id: str | None = None
+        self._render()
+
+    def _render(self) -> None:
+        if self.mode == "list":
+            self._render_grid()
+            return
+        if self.mode == "card":
+            self._render_card()
+            return
+        self._render_confirm()
 
     def _render_grid(self) -> None:
         self.clear_items()
@@ -74,6 +86,87 @@ class ShopView(discord.ui.View):
         self.add_item(next_btn)
         self.add_item(refresh)
 
+    def _render_card(self) -> None:
+        self.clear_items()
+        item = self._selected_item()
+        if not item:
+            self.mode = "list"
+            self._render_grid()
+            return
+
+        buy_btn = discord.ui.Button(label="Купить", style=discord.ButtonStyle.success)
+        back_btn = discord.ui.Button(label="Назад в магазин", style=discord.ButtonStyle.secondary)
+
+        async def buy_cb(interaction: discord.Interaction):
+            self.mode = "confirm"
+            self._render()
+            await interaction.response.edit_message(embed=self._item_confirm_embed(item), view=self)
+
+        async def back_cb(interaction: discord.Interaction):
+            self.mode = "list"
+            self._render()
+            await interaction.response.edit_message(embed=self._list_embed(), view=self)
+
+        buy_btn.callback = buy_cb
+        back_btn.callback = back_cb
+        self.add_item(buy_btn)
+        self.add_item(back_btn)
+
+    def _render_confirm(self) -> None:
+        self.clear_items()
+        item = self._selected_item()
+        if not item:
+            self.mode = "list"
+            self._render_grid()
+            return
+
+        confirm_btn = discord.ui.Button(label="Подтвердить покупку", style=discord.ButtonStyle.danger)
+        cancel_btn = discord.ui.Button(label="Отмена", style=discord.ButtonStyle.secondary)
+
+        async def confirm_cb(interaction: discord.Interaction):
+            result = purchase_shop_item(
+                account_id=str(self.account_id or ""),
+                shop_item_id=item.shop_item_id,
+                actor_provider="discord",
+                actor_user_id=self.author_id,
+                expected_price_points=item.price_points,
+            )
+            if not result.ok:
+                logger.warning(
+                    "shop_purchase_reject provider=discord actor_user_id=%s account_id=%s shop_item_id=%s reason=%s",
+                    self.author_id,
+                    self.account_id,
+                    item.shop_item_id,
+                    result.reason,
+                )
+                self.mode = "card"
+                self._render()
+                await interaction.response.edit_message(embed=self._item_embed(item), view=self)
+                await interaction.followup.send(result.message, ephemeral=True)
+                return
+
+            self.page = 0
+            self.mode = "list"
+            self.selected_item_id = None
+            self._render()
+            embed = self._list_embed()
+            embed.description = f"{embed.description}\n\n{result.message}"
+            await interaction.response.edit_message(embed=embed, view=self)
+
+        async def cancel_cb(interaction: discord.Interaction):
+            self.mode = "card"
+            self._render()
+            await interaction.response.edit_message(embed=self._item_embed(item), view=self)
+
+        confirm_btn.callback = confirm_cb
+        cancel_btn.callback = cancel_cb
+        self.add_item(confirm_btn)
+        self.add_item(cancel_btn)
+
+    def _selected_item(self):
+        items = get_shop_catalog_items(log_context="shop:discord:selected")
+        return find_shop_item(items, self.selected_item_id or "")
+
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         actor_id = getattr(getattr(interaction, "user", None), "id", None)
         if actor_id != self.author_id:
@@ -97,9 +190,15 @@ class ShopView(discord.ui.View):
         embed.description = (
             f"Баланс: **{payload.points} баллов**\n"
             f"Категория: **{item.category}**\n"
+            f"Цена: **{item.price_points} баллов**\n"
             f"Описание: {description}\n"
             f"Как получить: {acquire_hint}"
         )
+        return embed
+
+    def _item_confirm_embed(self, item) -> discord.Embed:
+        embed = self._item_embed(item)
+        embed.description = f"{embed.description}\n\n⚠️ Подтвердите покупку этой роли."
         return embed
 
     async def _switch_page(self, interaction: discord.Interaction, *, requested_page: int, action: str) -> None:
@@ -108,7 +207,8 @@ class ShopView(discord.ui.View):
             items = get_shop_catalog_items(log_context="shop:discord:page_switch")
             page_data = get_shop_page_slice(items, requested_page, page_size=SHOP_PAGE_SIZE)
             self.page = page_data.page
-            self._render_grid()
+            self.mode = "list"
+            self._render()
             logger.info(
                 "shop_page_switch provider=discord actor_user_id=%s account_id=%s from_page=%s to_page=%s total_pages=%s action=%s",
                 self.author_id,
@@ -142,7 +242,9 @@ class ShopView(discord.ui.View):
                 await interaction.response.send_message("Товар не найден. Нажмите «Обновить».", ephemeral=True)
                 return
             self.page = max(int(page), 0)
-            self._render_grid()
+            self.mode = "card"
+            self.selected_item_id = shop_item_id
+            self._render()
             logger.info(
                 "shop_item_click provider=discord actor_user_id=%s account_id=%s shop_item_id=%s page=%s",
                 self.author_id,

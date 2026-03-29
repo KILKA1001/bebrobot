@@ -1,7 +1,7 @@
 import logging
 from dataclasses import dataclass
 
-from bot.services import AccountsService, RoleManagementService
+from bot.services import AccountsService, PointsService, RoleManagementService
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,7 @@ class ShopItem:
     category_position: int
     description: str
     acquire_hint: str
+    price_points: int
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,15 @@ class ShopPageSlice:
     items: list[ShopItem]
     page: int
     total_pages: int
+
+
+@dataclass(frozen=True)
+class ShopPurchaseResult:
+    ok: bool
+    message: str
+    reason: str | None = None
+    spent_points: int = 0
+    role_name: str | None = None
 
 
 def build_shop_profile_required_text(register_command: str) -> str:
@@ -124,6 +134,7 @@ def get_shop_catalog_items(*, log_context: str = "shop") -> list[ShopItem]:
                     category_position=category_position,
                     description=str(role.get("description") or "").strip(),
                     acquire_hint=str(role.get("acquire_hint") or "").strip(),
+                    price_points=max(int(role.get("points_required") or 0), 0),
                 )
             )
 
@@ -140,9 +151,192 @@ def get_shop_catalog_items(*, log_context: str = "shop") -> list[ShopItem]:
                 category_position=item.category_position,
                 description=item.description,
                 acquire_hint=item.acquire_hint,
+                price_points=item.price_points,
             )
         )
     return indexed_ids
+
+
+def _parse_points(value: object) -> float:
+    raw = str(value or "0").strip().replace(" ", "").replace(",", ".")
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        logger.error("shop_points_parse_error value=%s", value)
+        return 0.0
+
+
+def purchase_shop_item(
+    *,
+    account_id: str,
+    shop_item_id: str,
+    actor_provider: str,
+    actor_user_id: str | int,
+    expected_price_points: int | None = None,
+) -> ShopPurchaseResult:
+    account_key = str(account_id or "").strip()
+    item_key = str(shop_item_id or "").strip()
+    provider = str(actor_provider or "unknown").strip().lower() or "unknown"
+    actor_id = str(actor_user_id or "").strip() or "unknown"
+
+    logger.info(
+        "shop_purchase_attempt provider=%s actor_user_id=%s account_id=%s shop_item_id=%s expected_price=%s",
+        provider,
+        actor_id,
+        account_key,
+        item_key,
+        expected_price_points,
+    )
+
+    if not account_key or not item_key:
+        logger.error(
+            "shop_purchase_reject provider=%s actor_user_id=%s account_id=%s shop_item_id=%s reason=invalid_identity",
+            provider,
+            actor_id,
+            account_key,
+            item_key,
+        )
+        return ShopPurchaseResult(ok=False, message="❌ Не удалось определить профиль или товар.", reason="invalid_identity")
+
+    try:
+        current_items = get_shop_catalog_items(log_context=f"shop:purchase:{provider}")
+        item = find_shop_item(current_items, item_key)
+        if not item:
+            logger.warning(
+                "shop_purchase_reject provider=%s actor_user_id=%s account_id=%s shop_item_id=%s reason=item_unavailable",
+                provider,
+                actor_id,
+                account_key,
+                item_key,
+            )
+            return ShopPurchaseResult(ok=False, message="❌ Товар недоступен или отключён.", reason="item_unavailable")
+
+        if expected_price_points is not None and int(expected_price_points) != int(item.price_points):
+            logger.warning(
+                "shop_purchase_reject provider=%s actor_user_id=%s account_id=%s shop_item_id=%s reason=price_changed expected_price=%s actual_price=%s",
+                provider,
+                actor_id,
+                account_key,
+                item_key,
+                expected_price_points,
+                item.price_points,
+            )
+            return ShopPurchaseResult(ok=False, message="❌ Цена изменилась, обновите магазин.", reason="price_changed")
+
+        owned_roles = {str(role.get("name") or "").strip().lower() for role in RoleManagementService.get_user_roles_by_account(account_key)}
+        if item.role_name.lower() in owned_roles:
+            logger.info(
+                "shop_purchase_reject provider=%s actor_user_id=%s account_id=%s shop_item_id=%s reason=already_owned role_name=%s",
+                provider,
+                actor_id,
+                account_key,
+                item_key,
+                item.role_name,
+            )
+            return ShopPurchaseResult(ok=False, message="ℹ️ Эта роль уже есть у вас.", reason="already_owned", role_name=item.role_name)
+
+        profile = AccountsService.get_profile_by_account(account_key) or {}
+        current_points = _parse_points(profile.get("points"))
+        if current_points < float(item.price_points):
+            logger.info(
+                "shop_purchase_reject provider=%s actor_user_id=%s account_id=%s shop_item_id=%s reason=insufficient_points current_points=%s required_points=%s",
+                provider,
+                actor_id,
+                account_key,
+                item_key,
+                current_points,
+                item.price_points,
+            )
+            return ShopPurchaseResult(
+                ok=False,
+                message=f"❌ Недостаточно баллов: нужно {item.price_points}, у вас {int(current_points)}.",
+                reason="insufficient_points",
+                role_name=item.role_name,
+            )
+
+        charged = True
+        if item.price_points > 0:
+            charged = PointsService.remove_points_by_account(
+                account_key,
+                float(item.price_points),
+                f"Покупка роли в магазине: {item.role_name}",
+                account_key,
+            )
+        if not charged:
+            logger.error(
+                "shop_purchase_reject provider=%s actor_user_id=%s account_id=%s shop_item_id=%s reason=debit_failed required_points=%s",
+                provider,
+                actor_id,
+                account_key,
+                item_key,
+                item.price_points,
+            )
+            return ShopPurchaseResult(ok=False, message="❌ Не удалось списать баллы, попробуйте позже.", reason="debit_failed")
+
+        grant_result = RoleManagementService.assign_user_role_by_account(
+            account_key,
+            item.role_name,
+            category=item.category,
+            actor_account_id=account_key,
+            actor_provider=provider,
+            actor_user_id=actor_id,
+            target_provider=provider,
+            target_user_id=actor_id,
+            source=f"shop_purchase:{provider}",
+        )
+        if not bool(grant_result.get("ok")):
+            logger.error(
+                "shop_role_grant_error provider=%s actor_user_id=%s account_id=%s shop_item_id=%s role_name=%s grant_reason=%s",
+                provider,
+                actor_id,
+                account_key,
+                item_key,
+                item.role_name,
+                grant_result.get("reason"),
+            )
+            if item.price_points > 0:
+                rollback_ok = PointsService.add_points_by_account(
+                    account_key,
+                    float(item.price_points),
+                    f"Откат списания за роль {item.role_name}: не удалось выдать роль",
+                    account_key,
+                )
+                logger.info(
+                    "shop_purchase_refund provider=%s actor_user_id=%s account_id=%s shop_item_id=%s amount=%s rollback_ok=%s",
+                    provider,
+                    actor_id,
+                    account_key,
+                    item_key,
+                    item.price_points,
+                    rollback_ok,
+                )
+            return ShopPurchaseResult(ok=False, message="❌ Ошибка выдачи роли. Списание отменено.", reason="grant_failed")
+
+        logger.info(
+            "shop_purchase_success provider=%s actor_user_id=%s account_id=%s shop_item_id=%s role_name=%s spent_points=%s",
+            provider,
+            actor_id,
+            account_key,
+            item_key,
+            item.role_name,
+            item.price_points,
+        )
+        return ShopPurchaseResult(
+            ok=True,
+            message=f"✅ Роль «{item.role_name}» успешно куплена за {item.price_points} баллов.",
+            spent_points=item.price_points,
+            role_name=item.role_name,
+        )
+    except Exception as error:  # noqa: BLE001
+        logger.exception(
+            "shop_purchase_reject provider=%s actor_user_id=%s account_id=%s shop_item_id=%s reason=unexpected_error error=%s",
+            provider,
+            actor_id,
+            account_key,
+            item_key,
+            error,
+        )
+        return ShopPurchaseResult(ok=False, message="❌ Ошибка покупки, попробуйте позже.", reason="unexpected_error")
 
 
 def get_shop_page_slice(items: list[ShopItem], requested_page: int, *, page_size: int = SHOP_PAGE_SIZE) -> ShopPageSlice:
