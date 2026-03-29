@@ -9,9 +9,12 @@ from bot.telegram_bot.identity import persist_telegram_identity_from_user
 from bot.services.shop_service import (
     SHOP_PAGE_SIZE,
     SHOP_TEXT_ACQUIRE_HINT_PLACEHOLDER,
+    SHOP_TEXT_CARD_HINT,
+    SHOP_TEXT_CATEGORIES_HINT,
     SHOP_TEXT_CONFIRM_PURCHASE,
     SHOP_TEXT_ITEM_NOT_FOUND,
     SHOP_TEXT_ITEM_PLACEHOLDER,
+    SHOP_TEXT_LIST_HINT,
     SHOP_TEXT_PROTECTED_FAILURE,
     build_shop_render_payload,
     check_shop_profile_access,
@@ -84,7 +87,12 @@ def _build_confirm_keyboard(*, shop_item_id: str, page: int, price_points: int) 
 
 
 def _shop_text(account_id: str | None, page: int, total_pages: int) -> str:
-    return f"🛒 <b>Магазин — Роли</b>\nВыберите роль из списка.\n\nСтраница: <b>{page + 1}/{total_pages}</b>"
+    return (
+        "🛒 <b>Магазин — Роли</b>\n"
+        "Выберите роль из списка.\n"
+        f"{SHOP_TEXT_LIST_HINT}\n\n"
+        f"Страница: <b>{page + 1}/{total_pages}</b>"
+    )
 
 
 def _shop_categories_text(account_id: str | None) -> str:
@@ -92,7 +100,7 @@ def _shop_categories_text(account_id: str | None) -> str:
     return (
         "🛒 <b>Магазин</b>\n"
         f"Баланс: <b>{payload.points} баллов</b>\n"
-        "Сначала выберите категорию."
+        f"{SHOP_TEXT_CATEGORIES_HINT}"
     )
 
 
@@ -123,7 +131,8 @@ def _item_card_text(item, account_id: str | None) -> str:
         f"Категория: <b>{item.category}</b>\n"
         f"{price_line}\n"
         f"Описание: {description}\n"
-        f"Как получить: {acquire_hint}"
+        f"Как получить: {acquire_hint}\n"
+        f"{SHOP_TEXT_CARD_HINT}"
     )
 
 
@@ -163,7 +172,15 @@ async def shop_command(message: Message) -> None:
     )
 
     if message.chat.type == "private":
-        await message.answer(text, parse_mode="HTML", reply_markup=reply_markup)
+        try:
+            await message.answer(text, parse_mode="HTML", reply_markup=reply_markup)
+        except Exception as error:  # noqa: BLE001
+            logger.exception(
+                "shop_category_screen_render_error provider=telegram actor_user_id=%s source=dm_open error=%s",
+                message.from_user.id,
+                error,
+            )
+            await message.answer(SHOP_TEXT_PROTECTED_FAILURE, parse_mode="HTML")
         return
 
     await message.answer(SHOP_OPEN_PROMPT_TEXT)
@@ -212,11 +229,20 @@ async def shop_callback(callback: CallbackQuery) -> None:
             )
             items = get_shop_catalog_items(log_context="shop:telegram:category_roles")
             page_data = get_shop_page_slice(items, 0, page_size=SHOP_PAGE_SIZE)
-            await callback.message.edit_text(
-                _shop_text(profile_check.account_id, page_data.page, page_data.total_pages),
-                parse_mode="HTML",
-                reply_markup=_build_shop_keyboard(items, page_data.page),
-            )
+            try:
+                await callback.message.edit_text(
+                    _shop_text(profile_check.account_id, page_data.page, page_data.total_pages),
+                    parse_mode="HTML",
+                    reply_markup=_build_shop_keyboard(items, page_data.page),
+                )
+            except Exception as error:  # noqa: BLE001
+                logger.exception(
+                    "shop_list_screen_render_error provider=telegram actor_user_id=%s action=category_select error=%s",
+                    callback.from_user.id,
+                    error,
+                )
+                await callback.answer(SHOP_TEXT_PROTECTED_FAILURE, show_alert=True)
+                return
             await callback.answer()
             return
 
@@ -226,11 +252,20 @@ async def shop_callback(callback: CallbackQuery) -> None:
                 callback.from_user.id,
                 profile_check.account_id,
             )
-            await callback.message.edit_text(
-                _shop_categories_text(profile_check.account_id),
-                parse_mode="HTML",
-                reply_markup=_build_categories_keyboard(),
-            )
+            try:
+                await callback.message.edit_text(
+                    _shop_categories_text(profile_check.account_id),
+                    parse_mode="HTML",
+                    reply_markup=_build_categories_keyboard(),
+                )
+            except Exception as error:  # noqa: BLE001
+                logger.exception(
+                    "shop_category_screen_render_error provider=telegram actor_user_id=%s source=manual error=%s",
+                    callback.from_user.id,
+                    error,
+                )
+                await callback.answer(SHOP_TEXT_PROTECTED_FAILURE, show_alert=True)
+                return
             await callback.answer()
             return
 
@@ -249,11 +284,21 @@ async def shop_callback(callback: CallbackQuery) -> None:
                 shop_item_id,
                 page + 1,
             )
-            await callback.message.edit_text(
-                _item_card_text(item, profile_check.account_id),
-                parse_mode="HTML",
-                reply_markup=_build_item_card_keyboard(shop_item_id=shop_item_id, page=page, price_points=item.price_points),
-            )
+            try:
+                await callback.message.edit_text(
+                    _item_card_text(item, profile_check.account_id),
+                    parse_mode="HTML",
+                    reply_markup=_build_item_card_keyboard(shop_item_id=shop_item_id, page=page, price_points=item.price_points),
+                )
+            except Exception as error:  # noqa: BLE001
+                logger.exception(
+                    "shop_card_screen_render_error provider=telegram actor_user_id=%s shop_item_id=%s error=%s",
+                    callback.from_user.id,
+                    shop_item_id,
+                    error,
+                )
+                await callback.answer(SHOP_TEXT_PROTECTED_FAILURE, show_alert=True)
+                return
             await callback.answer()
             return
 
@@ -264,11 +309,21 @@ async def shop_callback(callback: CallbackQuery) -> None:
             if not item:
                 await callback.answer(SHOP_TEXT_ITEM_NOT_FOUND, show_alert=True)
                 return
-            await callback.message.edit_text(
-                _item_confirm_text(item, profile_check.account_id),
-                parse_mode="HTML",
-                reply_markup=_build_confirm_keyboard(shop_item_id=shop_item_id, page=page, price_points=item.price_points),
-            )
+            try:
+                await callback.message.edit_text(
+                    _item_confirm_text(item, profile_check.account_id),
+                    parse_mode="HTML",
+                    reply_markup=_build_confirm_keyboard(shop_item_id=shop_item_id, page=page, price_points=item.price_points),
+                )
+            except Exception as error:  # noqa: BLE001
+                logger.exception(
+                    "shop_confirm_screen_render_error provider=telegram actor_user_id=%s shop_item_id=%s error=%s",
+                    callback.from_user.id,
+                    shop_item_id,
+                    error,
+                )
+                await callback.answer(SHOP_TEXT_PROTECTED_FAILURE, show_alert=True)
+                return
             await callback.answer()
             return
 
@@ -294,18 +349,35 @@ async def shop_callback(callback: CallbackQuery) -> None:
                 await callback.answer(result.message, show_alert=True)
                 item = find_shop_item(items, shop_item_id)
                 if item:
-                    await callback.message.edit_text(
-                        _item_card_text(item, profile_check.account_id),
-                        parse_mode="HTML",
-                        reply_markup=_build_item_card_keyboard(shop_item_id=shop_item_id, page=page, price_points=item.price_points),
-                    )
+                    try:
+                        await callback.message.edit_text(
+                            _item_card_text(item, profile_check.account_id),
+                            parse_mode="HTML",
+                            reply_markup=_build_item_card_keyboard(shop_item_id=shop_item_id, page=page, price_points=item.price_points),
+                        )
+                    except Exception as error:  # noqa: BLE001
+                        logger.exception(
+                            "shop_card_screen_render_error provider=telegram actor_user_id=%s action=purchase_reject shop_item_id=%s error=%s",
+                            callback.from_user.id,
+                            shop_item_id,
+                            error,
+                        )
                 return
             page_data = get_shop_page_slice(items, 0, page_size=SHOP_PAGE_SIZE)
-            await callback.message.edit_text(
-                f"{_shop_categories_text(profile_check.account_id)}\n\n{result.message}",
-                parse_mode="HTML",
-                reply_markup=_build_categories_keyboard(),
-            )
+            try:
+                await callback.message.edit_text(
+                    f"{_shop_categories_text(profile_check.account_id)}\n\n{result.message}",
+                    parse_mode="HTML",
+                    reply_markup=_build_categories_keyboard(),
+                )
+            except Exception as error:  # noqa: BLE001
+                logger.exception(
+                    "shop_category_screen_render_error provider=telegram actor_user_id=%s source=purchase_success error=%s",
+                    callback.from_user.id,
+                    error,
+                )
+                await callback.answer(SHOP_TEXT_PROTECTED_FAILURE, show_alert=True)
+                return
             logger.info(
                 "shop_back_to_categories provider=telegram actor_user_id=%s account_id=%s source=purchase_success",
                 callback.from_user.id,
@@ -317,11 +389,20 @@ async def shop_callback(callback: CallbackQuery) -> None:
         if len(parts) >= 3 and parts[1] == "back":
             target_page = int(parts[2])
             page_data = get_shop_page_slice(items, target_page, page_size=SHOP_PAGE_SIZE)
-            await callback.message.edit_text(
-                _shop_text(profile_check.account_id, page_data.page, page_data.total_pages),
-                parse_mode="HTML",
-                reply_markup=_build_shop_keyboard(items, page_data.page),
-            )
+            try:
+                await callback.message.edit_text(
+                    _shop_text(profile_check.account_id, page_data.page, page_data.total_pages),
+                    parse_mode="HTML",
+                    reply_markup=_build_shop_keyboard(items, page_data.page),
+                )
+            except Exception as error:  # noqa: BLE001
+                logger.exception(
+                    "shop_list_screen_render_error provider=telegram actor_user_id=%s action=back_from_card error=%s",
+                    callback.from_user.id,
+                    error,
+                )
+                await callback.answer(SHOP_TEXT_PROTECTED_FAILURE, show_alert=True)
+                return
             await callback.answer()
             return
 
@@ -337,11 +418,20 @@ async def shop_callback(callback: CallbackQuery) -> None:
                 page_data.page + 1,
                 page_data.total_pages,
             )
-            await callback.message.edit_text(
-                _shop_text(profile_check.account_id, page_data.page, page_data.total_pages),
-                parse_mode="HTML",
-                reply_markup=_build_shop_keyboard(items, page_data.page),
-            )
+            try:
+                await callback.message.edit_text(
+                    _shop_text(profile_check.account_id, page_data.page, page_data.total_pages),
+                    parse_mode="HTML",
+                    reply_markup=_build_shop_keyboard(items, page_data.page),
+                )
+            except Exception as error:  # noqa: BLE001
+                logger.exception(
+                    "shop_list_screen_render_error provider=telegram actor_user_id=%s action=page_switch error=%s",
+                    callback.from_user.id,
+                    error,
+                )
+                await callback.answer(SHOP_TEXT_PROTECTED_FAILURE, show_alert=True)
+                return
             await callback.answer()
             return
 
@@ -356,15 +446,24 @@ async def shop_callback(callback: CallbackQuery) -> None:
                 page_data.page + 1,
                 page_data.total_pages,
             )
-            await callback.message.edit_text(
-                _shop_text(profile_check.account_id, page_data.page, page_data.total_pages),
-                parse_mode="HTML",
-                reply_markup=_build_shop_keyboard(items, page_data.page),
-            )
+            try:
+                await callback.message.edit_text(
+                    _shop_text(profile_check.account_id, page_data.page, page_data.total_pages),
+                    parse_mode="HTML",
+                    reply_markup=_build_shop_keyboard(items, page_data.page),
+                )
+            except Exception as error:  # noqa: BLE001
+                logger.exception(
+                    "shop_list_screen_render_error provider=telegram actor_user_id=%s action=refresh error=%s",
+                    callback.from_user.id,
+                    error,
+                )
+                await callback.answer(SHOP_TEXT_PROTECTED_FAILURE, show_alert=True)
+                return
             await callback.answer("Обновлено")
             return
     except Exception as error:  # noqa: BLE001
-        logger.exception("shop_category_render_error provider=telegram actor_user_id=%s data=%s error=%s", callback.from_user.id, data, error)
+        logger.exception("shop_error_screen_render_error provider=telegram actor_user_id=%s data=%s error=%s", callback.from_user.id, data, error)
         await callback.answer(SHOP_TEXT_PROTECTED_FAILURE, show_alert=True)
         return
 
