@@ -1093,7 +1093,7 @@ class ModerationService:
     @staticmethod
     def _warn_progress_text(*, warn_count: int, warn_limit: int | None, suffix: str) -> str:
         if warn_limit is None:
-            return f"{warn_count} ({suffix}: бан не настроен в таблице эскалации)"
+            return f"{warn_count} ({suffix}: лимит эскалации в правилах не задан)"
         return f"{warn_count}/{warn_limit}"
 
     @staticmethod
@@ -1156,7 +1156,10 @@ class ModerationService:
             f"Предупреждений теперь: {warn_after_text}",
             next_step_text,
         ]
-        history_hint = "Историю кейсов, активные наказания, историю нарушений и списания в банк по кейсу смотри в журнале moderation cases и профиле пользователя."
+        history_hint = (
+            "Подробности по кейсу (история, активные наказания, предупреждения и списания в банк) "
+            "смотри в moderation cases и профиле пользователя."
+        )
         return {
             "provider": provider,
             "target_label": target_subject.get("label"),
@@ -2115,9 +2118,9 @@ class ModerationService:
         ui_payload["moderator_result_text"] = "\n".join(ui_payload["moderator_result_lines"])
 
         violator_lines = [
-            f"Нарушение: {ui_payload.get('violation_title')}",
-            f"Применено наказание: {ui_payload.get('selected_action_summary')}",
-            f"Предупреждений теперь: {ui_payload.get('warn_count_after_text') or warn_count_after}",
+            f"Причина: {ui_payload.get('violation_title')}",
+            f"Что применено сейчас: {ui_payload.get('selected_action_summary')}",
+            f"Текущие предупреждения: {ui_payload.get('warn_count_after_text') or warn_count_after}",
         ]
         if ModerationService.ACTION_MUTE in selected_actions and mute_minutes > 0:
             violator_lines.append(f"Мут закончится: {datetime.fromisoformat(mute_until).strftime('%d.%m.%Y %H:%M UTC') if mute_until else (now + timedelta(minutes=mute_minutes)).strftime('%d.%m.%Y %H:%M UTC')}")
@@ -2125,10 +2128,14 @@ class ModerationService:
             violator_lines.append(f"Бан закончится: {datetime.fromisoformat(ban_until).strftime('%d.%m.%Y %H:%M UTC')}")
         if ModerationService.ACTION_BAN in selected_actions and permanent_ban:
             violator_lines.append("Бан является бессрочным.")
-        violator_lines.append("Наказание выбирается автоматически по типу нарушения и числу предупреждений.")
+        violator_lines.append(
+            "Почему так: наказание выбирается автоматически по типу нарушения и числу предупреждений, чтобы правила были одинаковыми для всех."
+        )
         if next_step_text:
             violator_lines.append(next_step_text)
-        violator_lines.append("Чтобы избежать следующего усиления, не повторяйте это нарушение и при необходимости запросите у модератора историю кейсов, активные наказания, историю нарушений и текущий счётчик предупреждений.")
+        violator_lines.append(
+            "Как избежать усиления: не повторяйте это нарушение; если нужна расшифровка, запросите у модератора историю кейсов и активных наказаний."
+        )
         ui_payload["violator_result_lines"] = violator_lines
         ui_payload["violator_result_text"] = "\n".join(violator_lines)
         moderator_message = f"Кейс #{moderation_case.get('id')} успешно применён."

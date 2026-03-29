@@ -147,7 +147,10 @@ def render_rep_session_status_text(*, current_step: int, total_steps: int = 5, s
 
 
 def _render_history_hint(ui_payload: dict[str, Any]) -> str:
-    return str(ui_payload.get("history_hint") or "Историю кейсов, активные наказания, предупреждения и списания в банк смотри через журнал модерации и профиль пользователя.").strip()
+    return str(
+        ui_payload.get("history_hint")
+        or "Подробности по кейсу (история, активные наказания, предупреждения и списания в банк) смотри в moderation cases и профиле пользователя."
+    ).strip()
 
 
 def _render_footer_hint(ui_payload: dict[str, Any]) -> str:
