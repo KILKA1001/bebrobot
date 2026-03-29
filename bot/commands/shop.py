@@ -3,7 +3,7 @@ import logging
 import discord
 
 from bot.commands.base import bot
-from bot.systems.shop_logic import (
+from bot.services.shop_service import (
     SHOP_PAGE_SIZE,
     SHOP_TEXT_ACQUIRE_HINT_PLACEHOLDER,
     SHOP_TEXT_CONFIRM_PURCHASE,

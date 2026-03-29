@@ -6,7 +6,7 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.telegram_bot.identity import persist_telegram_identity_from_user
-from bot.systems.shop_logic import (
+from bot.services.shop_service import (
     SHOP_PAGE_SIZE,
     SHOP_TEXT_ACQUIRE_HINT_PLACEHOLDER,
     SHOP_TEXT_CONFIRM_PURCHASE,

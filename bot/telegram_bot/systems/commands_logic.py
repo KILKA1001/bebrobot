@@ -8,7 +8,7 @@ from bot.legacy_identity_logging import (
 from bot.services import AccountsService, AuthorityService, RoleManagementService
 from bot.services.profile_titles import normalize_protected_profile_title
 from bot.services.role_management_service import USER_ACQUIRE_HINT_PLACEHOLDER
-from bot.systems.shop_logic import build_shop_prompt_text
+from bot.services.shop_service import build_shop_prompt_text
 from bot.systems.roles_catalog_shared import (
     ROLES_CATALOG_FOOTER_TEXT,
     ROLES_CATALOG_TITLE,

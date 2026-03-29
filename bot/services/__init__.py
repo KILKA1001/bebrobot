@@ -9,4 +9,6 @@ from .guiy_publish_destinations_service import GuiyPublishDestination, GuiyPubli
 from .moderation_service import ModerationService
 from .moderation_notifications import ModerationNotificationsService
 
-__all__ = ["AccountsService", "PointsService", "FinesService", "TicketsService", "AuthorityService", "ExternalRolesSyncService", "RoleManagementService", "GuiyPublishDestination", "GuiyPublishDestinationsService", "ModerationService", "ModerationNotificationsService"]
+__all__ = ["AccountsService", "PointsService", "FinesService", "TicketsService", "AuthorityService", "ExternalRolesSyncService", "RoleManagementService", "GuiyPublishDestination", "GuiyPublishDestinationsService", "ModerationService", "ModerationNotificationsService", "shop_service"]
+
+from . import shop_service
