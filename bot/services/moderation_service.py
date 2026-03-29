@@ -279,7 +279,29 @@ class ModerationService:
             for key, value in filters.items():
                 query = query.eq(key, value)
             response = query.execute()
-            return [dict(row) for row in (response.data or [])]
+            rows = [dict(row) for row in (response.data or [])]
+            if rows:
+                return rows
+
+            # Some PostgREST/Supabase configs return an empty payload for successful UPDATE.
+            # Verify by reading rows back, so rollback/finalization logic does not mark false failures.
+            verified_rows = ModerationService._select_many(table, **filters)
+            if verified_rows:
+                logger.warning(
+                    "moderation update returned empty payload, verified by follow-up select table=%s filters=%s payload_keys=%s",
+                    table,
+                    filters,
+                    sorted(payload.keys()),
+                )
+                return verified_rows
+
+            logger.warning(
+                "moderation update returned empty payload and verify read found no rows table=%s filters=%s payload_keys=%s",
+                table,
+                filters,
+                sorted(payload.keys()),
+            )
+            return []
         except Exception as exc:
             logger.exception(
                 "moderation update failed table=%s filters=%s payload=%s error=%s",
