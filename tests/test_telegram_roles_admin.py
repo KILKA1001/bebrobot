@@ -419,7 +419,10 @@ class TelegramRolesAdminTargetResolutionTests(unittest.TestCase):
             patch("bot.telegram_bot.commands.roles_admin.RoleManagementService.record_role_change_audit") as audit_mock,
         ):
             with patch.dict("sys.modules", {"bot.commands.base": types.SimpleNamespace(bot=fake_bot)}):
-                self.assertIsNone(asyncio.run(_sync_linked_discord_role(target, "Moderator", revoke=False, source="telegram_button")))
+                self.assertEqual(
+                    {"synced": False, "reason": "discord_target_not_found"},
+                    asyncio.run(_sync_linked_discord_role(target, "Moderator", revoke=False, source="telegram_button")),
+                )
 
         audit_mock.assert_called()
 
