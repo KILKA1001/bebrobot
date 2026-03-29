@@ -350,6 +350,11 @@ async def _resolve_reply_message(ctx: commands.Context) -> discord.Message | Non
 async def modstatus(ctx: commands.Context, *, target: str | None = None) -> None:
     chat_id = ctx.channel.id if ctx.channel else (ctx.guild.id if ctx.guild else None)
     viewer_id = str(ctx.author.id)
+    logger.info(
+        "ux_screen_open event=ux_screen_open screen=modstatus provider=discord actor_user_id=%s chat_id=%s",
+        viewer_id,
+        chat_id,
+    )
     viewer_account_id = AccountsService.resolve_account_id("discord", viewer_id)
     if not viewer_account_id:
         logger.warning(
@@ -360,7 +365,12 @@ async def modstatus(ctx: commands.Context, *, target: str | None = None) -> None
             None,
             None,
         )
-        await send_temp(ctx, "❌ Сначала привяжите общий аккаунт, затем повторите `/modstatus`.")
+        await send_temp(
+            ctx,
+            "❌ Общий профиль пока не найден.\n"
+            "Что делать сейчас: откройте /register_account или /link в личном чате с ботом.\n"
+            "Что будет дальше: после привязки откроется экран /modstatus.",
+        )
         return
 
     target_subject: dict[str, Any] | None = None

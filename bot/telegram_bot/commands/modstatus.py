@@ -128,6 +128,11 @@ async def modstatus_command(message: Message) -> None:
     persist_telegram_identity_from_user(message.from_user)
     chat_id = message.chat.id
     viewer_id = str(message.from_user.id)
+    logger.info(
+        "ux_screen_open event=ux_screen_open screen=modstatus provider=telegram actor_user_id=%s chat_id=%s",
+        viewer_id,
+        chat_id,
+    )
     viewer_account_id = AccountsService.resolve_account_id("telegram", viewer_id)
     if not viewer_account_id:
         logger.warning(
@@ -138,7 +143,11 @@ async def modstatus_command(message: Message) -> None:
             None,
             None,
         )
-        await message.answer("❌ Сначала привяжите общий аккаунт, затем повторите /modstatus.")
+        await message.answer(
+            "❌ Общий профиль пока не найден.\n"
+            "Что делать сейчас: откройте /register или /link в личном чате с ботом.\n"
+            "Что будет дальше: после привязки откроется экран /modstatus."
+        )
         return
 
     target_subject: dict[str, Any] | None = None

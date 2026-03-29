@@ -40,7 +40,12 @@ async def add_ticket(
         await send_temp(ctx, embed=embed, delete_after=None)
     except Exception:
         logger.exception("add_ticket command failed author_id=%s target_id=%s ticket_type=%s", ctx.author.id, member.id, ticket_type)
-        await send_temp(ctx, "❌ Ошибка при выдаче билета.")
+        await send_temp(
+            ctx,
+            "❌ Не удалось выдать билет.\n"
+            "Что делать сейчас: проверьте тип билета и повторите команду.\n"
+            "Что будет дальше: билет появится у пользователя после успешного выполнения.",
+        )
 
 
 @bot.hybrid_command(
@@ -78,4 +83,9 @@ async def remove_ticket(
         await send_temp(ctx, embed=embed)
     except Exception:
         logger.exception("remove_ticket command failed author_id=%s target_id=%s ticket_type=%s", ctx.author.id, member.id, ticket_type)
-        await send_temp(ctx, "❌ Ошибка при списании билета.")
+        await send_temp(
+            ctx,
+            "❌ Не удалось списать билет.\n"
+            "Что делать сейчас: проверьте тип билета и повторите команду.\n"
+            "Что будет дальше: после успеха баланс билетов обновится.",
+        )

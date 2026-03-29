@@ -1086,7 +1086,12 @@ async def _ensure_roles_admin(ctx: commands.Context) -> bool:
             error_code="forbidden_role_manage",
             error_message="insufficient permissions for rolesadmin",
         )
-        await send_temp(ctx, "❌ Недостаточно полномочий для управления ролями.")
+        await send_temp(
+            ctx,
+            "❌ Недостаточно прав для управления ролями.\n"
+            "Что делать сейчас: обратитесь к старшему администратору.\n"
+            "Что будет дальше: после выдачи прав откроется панель /rolesadmin.",
+        )
         return False
     return True
 
@@ -1113,13 +1118,23 @@ async def _ensure_shop_superadmin(ctx: commands.Context, *, source: str) -> bool
             ctx.author.id,
             source,
         )
-        await send_temp(ctx, "Недостаточно прав")
+        await send_temp(
+            ctx,
+            "❌ Недостаточно прав для настройки магазина.\n"
+            "Что делать сейчас: используйте аккаунт суперадмина.\n"
+            "Что будет дальше: после входа суперадмина станут доступны shop-команды.",
+        )
         return False
     return True
 
 
 @bot.hybrid_group(name="rolesadmin", description="Управление ролями и категориями", with_app_command=True)
 async def rolesadmin(ctx: commands.Context):
+    logger.info(
+        "ux_screen_open event=ux_screen_open screen=roles_admin provider=discord actor_user_id=%s guild_id=%s",
+        ctx.author.id,
+        ctx.guild.id if ctx.guild else None,
+    )
     if ctx.invoked_subcommand is None:
         visibility = _resolve_rolesadmin_visibility(ctx)
         _log_rolesadmin_navigation(
