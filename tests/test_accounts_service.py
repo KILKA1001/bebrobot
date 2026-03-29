@@ -753,6 +753,17 @@ class AccountsServiceTests(unittest.TestCase):
         self.assertEqual(profile["titles"], ["Глава клуба", "Главный вице"])
         self.assertEqual(profile["titles_text"], "Глава клуба, Главный вице")
 
+    def test_get_account_titles_returns_chat_member_for_empty_titles(self):
+        AccountsService.register_identity("discord", "111")
+        account_id = AccountsService.resolve_account_id("discord", "111")
+        self.assertIsNotNone(account_id)
+
+        ok = AccountsService.save_account_titles(account_id, [], source="discord")
+        self.assertTrue(ok)
+
+        titles = AccountsService.get_account_titles(account_id)
+        self.assertEqual(titles, ["участник чата"])
+
     def test_resolve_account_id_uses_ttl_cache_for_repeat_lookup(self):
         AccountsService.register_identity("discord", "111")
         self.fake_db.operations.clear()

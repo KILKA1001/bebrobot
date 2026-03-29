@@ -37,6 +37,7 @@ class AccountsService:
     _title_roles_cache: dict[int, str] | None = None
     MAX_VISIBLE_PROFILE_ROLES = 3
     ACCOUNT_ID_CACHE_TTL_SEC = int(os.getenv("ACCOUNT_ID_CACHE_TTL_SEC", "300"))
+    FALLBACK_CHAT_MEMBER_TITLE = "участник чата"
 
     @staticmethod
     def _account_id_cache_key(provider: str, provider_user_id: str) -> tuple[str, str]:
@@ -2126,7 +2127,7 @@ class AccountsService:
 
         cached = AccountsService._account_titles_cache.get(str(account_id))
         if cached is not None:
-            return list(cached)
+            return AccountsService._ensure_default_chat_member_title(list(cached), account_id=str(account_id))
 
         if not db.supabase:
             return []
@@ -2150,12 +2151,24 @@ class AccountsService:
                 titles = [item.strip() for item in value.split(",") if item.strip()]
             else:
                 titles = []
-
-            AccountsService._account_titles_cache[str(account_id)] = list(titles)
-            return titles
+            normalized_titles = AccountsService._ensure_default_chat_member_title(titles, account_id=str(account_id))
+            AccountsService._account_titles_cache[str(account_id)] = list(normalized_titles)
+            return normalized_titles
         except Exception as e:
             logger.warning("get_account_titles failed for %s: %s", account_id, e)
             return []
+
+    @staticmethod
+    def _ensure_default_chat_member_title(titles: list[str], *, account_id: str) -> list[str]:
+        normalized = [str(item).strip() for item in (titles or []) if str(item).strip()]
+        if normalized:
+            return normalized
+        logger.info(
+            "get_account_titles fallback applied account_id=%s fallback_title=%s",
+            account_id,
+            AccountsService.FALLBACK_CHAT_MEMBER_TITLE,
+        )
+        return [AccountsService.FALLBACK_CHAT_MEMBER_TITLE]
 
     @staticmethod
     def save_account_titles(account_id: str, titles: list[str], source: str = "discord") -> bool:
