@@ -20,6 +20,21 @@ _OPEN_LEGACY_FINES_CALLBACK = "modstatus:open_legacy_fines"
 _ROLLBACK_CALLBACK = "modstatus:rollback"
 _ROLLBACK_SELECT_CALLBACK = "modstatus:rollback_select"
 
+
+def _snapshot_has_payable_manual_fines(snapshot: dict[str, Any]) -> bool:
+    for fine in list(snapshot.get("active_fines") or []):
+        kind = str(fine.get("kind") or "").strip().lower()
+        if kind == "legacy_fine":
+            return True
+        if kind != "case_fine":
+            continue
+        payment_mode = str(
+            fine.get("payment_mode") or ModerationService.FINE_PAYMENT_MODE_MANUAL
+        ).strip().lower()
+        if payment_mode != ModerationService.FINE_PAYMENT_MODE_INSTANT:
+            return True
+    return False
+
 _TELEGRAM_UNMUTE_PERMISSIONS = ChatPermissions(
     can_send_messages=True,
     can_send_audios=True,
@@ -203,25 +218,20 @@ async def modstatus_command(message: Message) -> None:
             await message.answer(f"❌ {snapshot.get('message') or 'Не удалось загрузить модерационный статус.'}")
             return
 
-        reply_markup = None
-        if snapshot.get("target_is_self") and list(snapshot.get("active_fines") or []):
-            reply_markup = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="💳 Оплатить legacy-штраф", callback_data=_OPEN_LEGACY_FINES_CALLBACK)]
-                ]
-            )
-        elif (
+        can_open_payment = bool(snapshot.get("target_is_self")) and _snapshot_has_payable_manual_fines(snapshot)
+        can_rollback = (
             target_subject
             and str((target_subject or {}).get("provider_user_id") or "").strip()
             and str((target_subject or {}).get("provider_user_id")).strip().lower() not in {"none", "null"}
             and AuthorityService.has_command_permission("telegram", viewer_id, "moderation_mute")
-        ):
+        )
+        reply_rows: list[list[InlineKeyboardButton]] = []
+        if can_open_payment:
+            reply_rows.append([InlineKeyboardButton(text="💳 Оплатить штраф", callback_data=_OPEN_LEGACY_FINES_CALLBACK)])
+        if can_rollback:
             callback = f"{_ROLLBACK_SELECT_CALLBACK}:{str(target_subject.get('provider_user_id')).strip()}"
-            reply_markup = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="🧹 Выбрать наказание для снятия", callback_data=callback)],
-                ]
-            )
+            reply_rows.append([InlineKeyboardButton(text="🧹 Убрать наказание", callback_data=callback)])
+        reply_markup = InlineKeyboardMarkup(inline_keyboard=reply_rows) if reply_rows else None
         await message.answer(
             ModerationService.render_user_moderation_snapshot(snapshot, payment_hint=_PAYMENT_HINT),
             reply_markup=reply_markup,
@@ -243,6 +253,42 @@ async def modstatus_open_legacy_fines(callback: CallbackQuery) -> None:
     if not callback.from_user or not callback.message:
         return
     try:
+        actor_id = str(callback.from_user.id)
+        actor_account_id = AccountsService.resolve_account_id("telegram", actor_id)
+        if not actor_account_id:
+            logger.warning(
+                "telegram modstatus payment callback denied reason=%s actor_id=%s chat_id=%s",
+                "account_unresolved",
+                callback.from_user.id,
+                callback.message.chat.id,
+            )
+            await callback.answer("❌ Сначала привяжите общий аккаунт.", show_alert=True)
+            return
+        snapshot = ModerationService.get_user_moderation_snapshot(
+            str(actor_account_id),
+            str(actor_account_id),
+            "telegram",
+            callback.message.chat.id,
+            {
+                "viewer_id": actor_id,
+                "target_id": actor_id,
+                "selected_via_reply": False,
+                "explicit_target": False,
+                "allow_lookup_others": False,
+                "is_private": callback.message.chat.type == "private",
+            },
+        )
+        if (not snapshot.get("ok")) or (not snapshot.get("target_is_self")) or (not _snapshot_has_payable_manual_fines(snapshot)):
+            logger.warning(
+                "telegram modstatus payment callback denied reason=%s actor_id=%s chat_id=%s snapshot_ok=%s target_is_self=%s",
+                "snapshot_not_payable",
+                callback.from_user.id,
+                callback.message.chat.id,
+                snapshot.get("ok"),
+                snapshot.get("target_is_self"),
+            )
+            await callback.answer("❌ Нет доступных штрафов для ручной оплаты.", show_alert=True)
+            return
         await send_legacy_fines_panel(message=callback.message, telegram_user_id=int(callback.from_user.id))
         await callback.answer()
     except Exception:
@@ -273,7 +319,41 @@ async def modstatus_rollback_case(callback: CallbackQuery) -> None:
         await callback.answer("❌ Не удалось определить цель для отката.", show_alert=True)
         return
     if not AuthorityService.has_command_permission("telegram", str(callback.from_user.id), "moderation_mute"):
+        logger.warning(
+            "telegram modstatus rollback denied reason=%s actor_id=%s target_id=%s chat_id=%s",
+            "no_permission",
+            callback.from_user.id,
+            target_user_id,
+            callback.message.chat.id,
+        )
         await callback.answer("❌ Недостаточно прав для отката наказания.", show_alert=True)
+        return
+    target_account_id = AccountsService.resolve_account_id("telegram", target_user_id)
+    if not target_account_id:
+        logger.warning(
+            "telegram modstatus rollback denied reason=%s actor_id=%s target_id=%s chat_id=%s",
+            "target_account_unresolved",
+            callback.from_user.id,
+            target_user_id,
+            callback.message.chat.id,
+        )
+        await callback.answer("❌ Цель не привязана к общему аккаунту.", show_alert=True)
+        return
+    valid_case_ids = {
+        str((item.get("case") or {}).get("id") or "").strip()
+        for item in list(ModerationService.list_recent_cases(str(target_account_id), limit=10).get("items") or [])
+        if str((item.get("case") or {}).get("status") or "").strip().lower() == ModerationService.STATUS_APPLIED
+    }
+    if case_id and case_id not in valid_case_ids:
+        logger.warning(
+            "telegram modstatus rollback denied reason=%s actor_id=%s target_id=%s case_id=%s chat_id=%s",
+            "invalid_case_selection",
+            callback.from_user.id,
+            target_user_id,
+            case_id,
+            callback.message.chat.id,
+        )
+        await callback.answer("❌ Выбранный кейс недоступен для отката.", show_alert=True)
         return
     try:
         result = ModerationService.rollback_latest_case(
@@ -326,6 +406,16 @@ async def modstatus_rollback_select_case(callback: CallbackQuery) -> None:
     target_user_id = raw_data[len(prefix):].strip() if raw_data.startswith(prefix) else ""
     if not target_user_id or target_user_id.lower() in {"none", "null"}:
         await callback.answer("❌ Не удалось определить цель для отката.", show_alert=True)
+        return
+    if not AuthorityService.has_command_permission("telegram", str(callback.from_user.id), "moderation_mute"):
+        logger.warning(
+            "telegram modstatus rollback select denied reason=%s actor_id=%s target_id=%s chat_id=%s",
+            "no_permission",
+            callback.from_user.id,
+            target_user_id,
+            callback.message.chat.id,
+        )
+        await callback.answer("❌ Недостаточно прав для отката наказания.", show_alert=True)
         return
     target_account_id = AccountsService.resolve_account_id("telegram", target_user_id)
     if not target_account_id:
