@@ -372,7 +372,7 @@ class ModerationNotificationsService:
 
             try:
                 db.supabase.table("moderation_mutes").update(
-                    {"is_active": False, "updated_at": ModerationNotificationsService._now_iso()}
+                    {"is_active": False}
                 ).eq("id", mute_id).eq("is_active", True).execute()
             except Exception:
                 logger.exception(
