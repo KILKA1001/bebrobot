@@ -57,6 +57,7 @@ def _build_shop_keyboard(items, page: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="Обновить", callback_data=f"shop:refresh:{page_data.page}"),
         ]
     )
+    rows.append([InlineKeyboardButton(text="К категориям", callback_data="shop:categories")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -83,8 +84,26 @@ def _build_confirm_keyboard(*, shop_item_id: str, page: int, price_points: int) 
 
 
 def _shop_text(account_id: str | None, page: int, total_pages: int) -> str:
+    return f"🛒 <b>Магазин — Роли</b>\nВыберите роль из списка.\n\nСтраница: <b>{page + 1}/{total_pages}</b>"
+
+
+def _shop_categories_text(account_id: str | None) -> str:
     payload = build_shop_render_payload(account_id)
-    return f"{payload.telegram_text}\n\nСтраница: <b>{page + 1}/{total_pages}</b>"
+    return (
+        "🛒 <b>Магазин</b>\n"
+        f"Баланс: <b>{payload.points} баллов</b>\n"
+        "Сначала выберите категорию."
+    )
+
+
+def _build_categories_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Роли", callback_data="shop:category:roles"),
+            ]
+        ]
+    )
 
 
 def _item_card_text(item, account_id: str | None) -> str:
@@ -135,21 +154,16 @@ async def shop_command(message: Message) -> None:
         await message.answer(profile_check.user_message or "Сначала создайте профиль и повторите команду /shop.", parse_mode="HTML")
         return
 
-    items = get_shop_catalog_items(log_context="shop:telegram")
-    page_data = get_shop_page_slice(items, 0, page_size=SHOP_PAGE_SIZE)
-    reply_markup = _build_shop_keyboard(items, 0)
-    text = _shop_text(profile_check.account_id, page_data.page, page_data.total_pages)
+    text = _shop_categories_text(profile_check.account_id)
+    reply_markup = _build_categories_keyboard()
+    logger.info(
+        "shop_category_screen_open provider=telegram actor_user_id=%s account_id=%s",
+        message.from_user.id,
+        profile_check.account_id,
+    )
 
     if message.chat.type == "private":
         await message.answer(text, parse_mode="HTML", reply_markup=reply_markup)
-        logger.info(
-            "shop_page_open provider=telegram actor_user_id=%s account_id=%s page=%s total_pages=%s page_size=%s",
-            message.from_user.id,
-            profile_check.account_id,
-            page_data.page + 1,
-            page_data.total_pages,
-            SHOP_PAGE_SIZE,
-        )
         return
 
     await message.answer(SHOP_OPEN_PROMPT_TEXT)
@@ -160,14 +174,6 @@ async def shop_command(message: Message) -> None:
             text=text,
             parse_mode="HTML",
             reply_markup=reply_markup,
-        )
-        logger.info(
-            "shop_page_open provider=telegram actor_user_id=%s account_id=%s page=%s total_pages=%s page_size=%s",
-            message.from_user.id,
-            profile_check.account_id,
-            page_data.page + 1,
-            page_data.total_pages,
-            SHOP_PAGE_SIZE,
         )
     except (TelegramForbiddenError, TelegramBadRequest) as error:
         logger.exception("shop_dm_transfer_error provider=telegram actor_user_id=%s dm_sent=false error=%s", message.from_user.id, error)
@@ -191,6 +197,40 @@ async def shop_callback(callback: CallbackQuery) -> None:
 
     try:
         if len(parts) >= 2 and parts[1] == "noop":
+            await callback.answer()
+            return
+
+        if len(parts) >= 3 and parts[1] == "category":
+            category = parts[2]
+            if category != "roles":
+                await callback.answer("Эта категория пока недоступна.", show_alert=True)
+                return
+            logger.info(
+                "shop_category_selected provider=telegram actor_user_id=%s account_id=%s category=roles",
+                callback.from_user.id,
+                profile_check.account_id,
+            )
+            items = get_shop_catalog_items(log_context="shop:telegram:category_roles")
+            page_data = get_shop_page_slice(items, 0, page_size=SHOP_PAGE_SIZE)
+            await callback.message.edit_text(
+                _shop_text(profile_check.account_id, page_data.page, page_data.total_pages),
+                parse_mode="HTML",
+                reply_markup=_build_shop_keyboard(items, page_data.page),
+            )
+            await callback.answer()
+            return
+
+        if len(parts) >= 2 and parts[1] == "categories":
+            logger.info(
+                "shop_back_to_categories provider=telegram actor_user_id=%s account_id=%s source=manual",
+                callback.from_user.id,
+                profile_check.account_id,
+            )
+            await callback.message.edit_text(
+                _shop_categories_text(profile_check.account_id),
+                parse_mode="HTML",
+                reply_markup=_build_categories_keyboard(),
+            )
             await callback.answer()
             return
 
@@ -262,9 +302,14 @@ async def shop_callback(callback: CallbackQuery) -> None:
                 return
             page_data = get_shop_page_slice(items, 0, page_size=SHOP_PAGE_SIZE)
             await callback.message.edit_text(
-                f"{_shop_text(profile_check.account_id, page_data.page, page_data.total_pages)}\n\n{result.message}",
+                f"{_shop_categories_text(profile_check.account_id)}\n\n{result.message}",
                 parse_mode="HTML",
-                reply_markup=_build_shop_keyboard(items, page_data.page),
+                reply_markup=_build_categories_keyboard(),
+            )
+            logger.info(
+                "shop_back_to_categories provider=telegram actor_user_id=%s account_id=%s source=purchase_success",
+                callback.from_user.id,
+                profile_check.account_id,
             )
             await callback.answer("Покупка завершена")
             return
@@ -319,7 +364,7 @@ async def shop_callback(callback: CallbackQuery) -> None:
             await callback.answer("Обновлено")
             return
     except Exception as error:  # noqa: BLE001
-        logger.exception("shop_pagination_error provider=telegram actor_user_id=%s data=%s error=%s", callback.from_user.id, data, error)
+        logger.exception("shop_category_render_error provider=telegram actor_user_id=%s data=%s error=%s", callback.from_user.id, data, error)
         await callback.answer(SHOP_TEXT_PROTECTED_FAILURE, show_alert=True)
         return
 

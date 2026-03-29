@@ -35,11 +35,14 @@ class ShopView(discord.ui.View):
         self.account_id = account_id
         self.page = max(int(page), 0)
         self.total_pages = 1
-        self.mode = "list"
+        self.mode = "categories"
         self.selected_item_id: str | None = None
         self._render()
 
     def _render(self) -> None:
+        if self.mode == "categories":
+            self._render_categories()
+            return
         if self.mode == "list":
             self._render_grid()
             return
@@ -47,6 +50,24 @@ class ShopView(discord.ui.View):
             self._render_card()
             return
         self._render_confirm()
+
+    def _render_categories(self) -> None:
+        self.clear_items()
+        roles_btn = discord.ui.Button(label="Роли", style=discord.ButtonStyle.primary)
+
+        async def roles_cb(interaction: discord.Interaction):
+            logger.info(
+                "shop_category_selected provider=discord actor_user_id=%s account_id=%s category=roles",
+                self.author_id,
+                self.account_id,
+            )
+            self.mode = "list"
+            self.page = 0
+            self._render()
+            await interaction.response.edit_message(embed=self._list_embed(), view=self)
+
+        roles_btn.callback = roles_cb
+        self.add_item(roles_btn)
 
     def _render_grid(self) -> None:
         self.clear_items()
@@ -73,6 +94,7 @@ class ShopView(discord.ui.View):
             disabled=self.page >= self.total_pages - 1,
         )
         refresh = discord.ui.Button(label="Обновить", style=discord.ButtonStyle.success, row=2)
+        back_to_categories = discord.ui.Button(label="К категориям", style=discord.ButtonStyle.secondary, row=3)
 
         async def back_cb(interaction: discord.Interaction):
             await self._switch_page(interaction, requested_page=self.page - 1, action="back")
@@ -83,13 +105,26 @@ class ShopView(discord.ui.View):
         async def refresh_cb(interaction: discord.Interaction):
             await self._switch_page(interaction, requested_page=self.page, action="refresh")
 
+        async def categories_cb(interaction: discord.Interaction):
+            logger.info(
+                "shop_back_to_categories provider=discord actor_user_id=%s account_id=%s source=grid",
+                self.author_id,
+                self.account_id,
+            )
+            self.mode = "categories"
+            self.selected_item_id = None
+            self._render()
+            await interaction.response.edit_message(embed=self._category_embed(), view=self)
+
         back.callback = back_cb
         next_btn.callback = next_cb
         refresh.callback = refresh_cb
+        back_to_categories.callback = categories_cb
         self.add_item(back)
         self.add_item(page_info)
         self.add_item(next_btn)
         self.add_item(refresh)
+        self.add_item(back_to_categories)
 
     def _render_card(self) -> None:
         self.clear_items()
@@ -151,10 +186,15 @@ class ShopView(discord.ui.View):
                 return
 
             self.page = 0
-            self.mode = "list"
+            self.mode = "categories"
             self.selected_item_id = None
             self._render()
-            embed = self._list_embed()
+            logger.info(
+                "shop_back_to_categories provider=discord actor_user_id=%s account_id=%s source=purchase_success",
+                self.author_id,
+                self.account_id,
+            )
+            embed = self._category_embed()
             embed.description = f"{embed.description}\n\n{result.message}"
             await interaction.response.edit_message(embed=embed, view=self)
 
@@ -182,8 +222,19 @@ class ShopView(discord.ui.View):
     def _list_embed(self) -> discord.Embed:
         payload = build_shop_render_payload(self.account_id)
         return discord.Embed(
+            title=f"{payload.title} — Роли",
+            description=f"Выберите роль из списка.\n\nСтраница: **{self.page + 1}/{self.total_pages}**",
+            color=discord.Color.blurple(),
+        )
+
+    def _category_embed(self) -> discord.Embed:
+        payload = build_shop_render_payload(self.account_id)
+        return discord.Embed(
             title=payload.title,
-            description=f"{payload.discord_description}\n\nСтраница: **{self.page + 1}/{self.total_pages}**",
+            description=(
+                f"Баланс: **{payload.points} баллов**\n"
+                "Сначала выберите категорию."
+            ),
             color=discord.Color.blurple(),
         )
 
@@ -229,7 +280,7 @@ class ShopView(discord.ui.View):
             await interaction.response.edit_message(embed=self._list_embed(), view=self)
         except Exception as error:  # noqa: BLE001
             logger.exception(
-                "shop_pagination_error provider=discord actor_user_id=%s requested_page=%s action=%s error=%s",
+                "shop_category_render_error provider=discord actor_user_id=%s requested_page=%s action=%s error=%s",
                 self.author_id,
                 requested_page,
                 action,
@@ -263,7 +314,7 @@ class ShopView(discord.ui.View):
             await interaction.response.edit_message(embed=self._item_embed(item), view=self)
         except Exception as error:  # noqa: BLE001
             logger.exception(
-                "shop_pagination_error provider=discord actor_user_id=%s shop_item_id=%s error=%s",
+                "shop_category_render_error provider=discord actor_user_id=%s shop_item_id=%s error=%s",
                 self.author_id,
                 shop_item_id,
                 error,
@@ -289,7 +340,12 @@ async def shop(ctx):
         return
 
     dm_view = ShopView(author_id=actor_id or 0, account_id=profile_check.account_id, page=0)
-    dm_embed = dm_view._list_embed()
+    dm_embed = dm_view._category_embed()
+    logger.info(
+        "shop_category_screen_open provider=discord actor_user_id=%s account_id=%s",
+        actor_id,
+        profile_check.account_id,
+    )
     logger.info(
         "shop_page_open provider=discord actor_user_id=%s account_id=%s page=1 total_pages=%s page_size=%s",
         actor_id,
