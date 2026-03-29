@@ -9,11 +9,108 @@ from discord.ext import commands
 from bot.commands.base import bot
 from bot.commands.fines import send_legacy_fines_for_discord_destination
 from bot.commands.roles_admin import _resolve_discord_target
-from bot.services import AccountsService, AuthorityService, ModerationService
+from bot.services import AccountsService, AuthorityService, ModerationNotificationsService, ModerationService
 from bot.utils import send_temp
 
 logger = logging.getLogger(__name__)
 _PAYMENT_HINT = ModerationService.MODSTATUS_PAYMENT_HINT
+
+
+async def _rollback_discord_runtime_sanctions(
+    *,
+    interaction: discord.Interaction,
+    target_subject: dict[str, Any],
+    rollback_result: dict[str, Any],
+) -> None:
+    guild = interaction.guild
+    if guild is None:
+        logger.error(
+            "modstatus rollback runtime skipped provider=%s reason=%s actor_id=%s target_id=%s case_id=%s",
+            "discord",
+            "guild_missing",
+            interaction.user.id,
+            target_subject.get("provider_user_id"),
+            rollback_result.get("case_id"),
+        )
+        return
+
+    target_user_id = int(str(target_subject.get("provider_user_id") or "0") or 0)
+    if not target_user_id:
+        logger.error(
+            "modstatus rollback runtime skipped provider=%s reason=%s actor_id=%s target_id=%s case_id=%s",
+            "discord",
+            "target_not_found",
+            interaction.user.id,
+            target_subject.get("provider_user_id"),
+            rollback_result.get("case_id"),
+        )
+        return
+
+    if rollback_result.get("had_mute"):
+        try:
+            member = guild.get_member(target_user_id) or await guild.fetch_member(target_user_id)
+        except Exception:
+            logger.exception(
+                "modstatus rollback runtime fetch_member failed provider=%s actor_id=%s target_id=%s guild_id=%s case_id=%s",
+                "discord",
+                interaction.user.id,
+                target_user_id,
+                guild.id,
+                rollback_result.get("case_id"),
+            )
+            member = None
+        if member is not None:
+            try:
+                await member.edit(timeout=None, reason=f"/modstatus rollback by {interaction.user.id}")
+                logger.info(
+                    "modstatus rollback runtime mute removed provider=%s actor_id=%s target_id=%s guild_id=%s case_id=%s",
+                    "discord",
+                    interaction.user.id,
+                    target_user_id,
+                    guild.id,
+                    rollback_result.get("case_id"),
+                )
+            except Exception:
+                logger.exception(
+                    "modstatus rollback runtime unmute failed provider=%s actor_id=%s target_id=%s guild_id=%s case_id=%s",
+                    "discord",
+                    interaction.user.id,
+                    target_user_id,
+                    guild.id,
+                    rollback_result.get("case_id"),
+                )
+
+    if rollback_result.get("had_ban_or_kick"):
+        try:
+            banned = await guild.fetch_ban(discord.Object(id=target_user_id))
+            await guild.unban(banned.user, reason=f"/modstatus rollback by {interaction.user.id}")
+            logger.info(
+                "modstatus rollback runtime unban success provider=%s actor_id=%s target_id=%s guild_id=%s case_id=%s",
+                "discord",
+                interaction.user.id,
+                target_user_id,
+                guild.id,
+                rollback_result.get("case_id"),
+            )
+        except discord.NotFound:
+            logger.info(
+                "modstatus rollback runtime unban skipped provider=%s actor_id=%s target_id=%s guild_id=%s case_id=%s reason=%s",
+                "discord",
+                interaction.user.id,
+                target_user_id,
+                guild.id,
+                rollback_result.get("case_id"),
+                "user_not_banned",
+            )
+        except Exception:
+            logger.exception(
+                "modstatus rollback runtime unban failed provider=%s actor_id=%s target_id=%s guild_id=%s case_id=%s",
+                "discord",
+                interaction.user.id,
+                target_user_id,
+                guild.id,
+                rollback_result.get("case_id"),
+            )
 
 
 class _ModstatusFineView(discord.ui.View):
@@ -71,6 +168,11 @@ class _ModstatusManagePunishmentView(discord.ui.View):
         if not result.get("ok"):
             await interaction.followup.send(f"❌ {result.get('message') or 'Не удалось снять наказание.'}", ephemeral=True)
             return
+        await _rollback_discord_runtime_sanctions(
+            interaction=interaction,
+            target_subject=self.target_subject,
+            rollback_result=result,
+        )
         await interaction.followup.send(f"✅ {result.get('message') or 'Наказание снято.'}", ephemeral=True)
         if result.get("had_ban_or_kick"):
             link = (interaction.guild and interaction.guild.vanity_url) or ""
