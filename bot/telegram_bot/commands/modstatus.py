@@ -174,7 +174,9 @@ async def modstatus_rollback_case(callback: CallbackQuery) -> None:
     if not callback.from_user or not callback.message:
         return
     try:
-        target_user_id = str(str(callback.data or "").split(":", maxsplit=1)[1]).strip()
+        raw_data = str(callback.data or "").strip()
+        prefix = f"{_ROLLBACK_CALLBACK}:"
+        target_user_id = raw_data[len(prefix):].strip() if raw_data.startswith(prefix) else ""
     except Exception:
         await callback.answer("❌ Некорректные данные кнопки.", show_alert=True)
         return
