@@ -651,12 +651,23 @@ class ModerationService:
     ) -> dict[str, Any]:
         actor_subject = ModerationService._resolve_subject(provider, actor, role="actor")
         target_subject = ModerationService._resolve_subject(provider, target, role="target")
-        if not actor_subject.get("account_id") or not target_subject.get("account_id"):
+        actor_account_id = str(actor_subject.get("account_id") or "").strip()
+        target_account_id = str(target_subject.get("account_id") or "").strip()
+        invalid_markers = {"", "none", "null", "nan"}
+        if actor_account_id.lower() in invalid_markers or target_account_id.lower() in invalid_markers:
+            logger.warning(
+                "rollback latest case identity unresolved provider=%s actor_provider_user_id=%s target_provider_user_id=%s actor_account_id=%s target_account_id=%s",
+                provider,
+                actor_subject.get("provider_user_id"),
+                target_subject.get("provider_user_id"),
+                actor_account_id,
+                target_account_id,
+            )
             return {"ok": False, "error_code": "identity_unresolved", "message": "Не удалось определить аккаунты для отката."}
-        if actor_subject.get("account_id") == target_subject.get("account_id"):
+        if actor_account_id == target_account_id:
             return {"ok": False, "error_code": "self_target_denied", "message": "Нельзя откатывать свои наказания через /modstatus."}
 
-        recent = ModerationService.list_recent_cases(str(target_subject["account_id"]), limit=10)
+        recent = ModerationService.list_recent_cases(target_account_id, limit=10)
         applied_case = next(
             (
                 item for item in list(recent.get("items") or [])
@@ -669,7 +680,7 @@ class ModerationService:
         case_row = dict(applied_case.get("case") or {})
         actions = list(applied_case.get("actions") or [])
         case_actor_account_id = str(case_row.get("actor_account_id") or "").strip()
-        if case_actor_account_id and case_actor_account_id != str(actor_subject.get("account_id")):
+        if case_actor_account_id and case_actor_account_id != actor_account_id:
             decision = AuthorityService.can_manage_target(
                 actor_subject["provider"],
                 actor_subject["provider_user_id"],

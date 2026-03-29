@@ -124,8 +124,13 @@ async def modstatus_command(message: Message) -> None:
                     [InlineKeyboardButton(text="💳 Оплатить legacy-штраф", callback_data=_OPEN_LEGACY_FINES_CALLBACK)]
                 ]
             )
-        elif target_subject and AuthorityService.has_command_permission("telegram", viewer_id, "moderation_mute"):
-            callback = f"{_ROLLBACK_CALLBACK}:{target_subject.get('provider_user_id')}"
+        elif (
+            target_subject
+            and str((target_subject or {}).get("provider_user_id") or "").strip()
+            and str((target_subject or {}).get("provider_user_id")).strip().lower() not in {"none", "null"}
+            and AuthorityService.has_command_permission("telegram", viewer_id, "moderation_mute")
+        ):
+            callback = f"{_ROLLBACK_CALLBACK}:{str(target_subject.get('provider_user_id')).strip()}"
             reply_markup = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [InlineKeyboardButton(text="🧹 Убрать наказание", callback_data=callback)],
@@ -173,7 +178,7 @@ async def modstatus_rollback_case(callback: CallbackQuery) -> None:
     except Exception:
         await callback.answer("❌ Некорректные данные кнопки.", show_alert=True)
         return
-    if not target_user_id:
+    if not target_user_id or target_user_id.lower() in {"none", "null"}:
         await callback.answer("❌ Не удалось определить цель для отката.", show_alert=True)
         return
     if not AuthorityService.has_command_permission("telegram", str(callback.from_user.id), "moderation_mute"):
