@@ -5,6 +5,12 @@ import discord
 from bot.commands.base import bot
 from bot.systems.shop_logic import (
     SHOP_PAGE_SIZE,
+    SHOP_TEXT_ACQUIRE_HINT_PLACEHOLDER,
+    SHOP_TEXT_CONFIRM_PURCHASE,
+    SHOP_TEXT_ITEM_NOT_FOUND,
+    SHOP_TEXT_ITEM_OPEN_ERROR,
+    SHOP_TEXT_ITEM_PLACEHOLDER,
+    SHOP_TEXT_PAGINATION_ERROR,
     build_shop_render_payload,
     check_shop_profile_access,
     find_shop_item,
@@ -19,7 +25,7 @@ logger = logging.getLogger(__name__)
 SHOP_OPEN_PROMPT_TEXT = "Откройте магазин в личных сообщениях, я уже отправил вам инструкцию."
 DM_FALLBACK_TEXT = (
     "❌ Не удалось отправить инструкцию в личные сообщения.\n"
-    "Откройте ЛС с ботом: нажмите на профиль бота → Message, включите личные сообщения для сервера и снова выполните /shop."
+    "Откройте чат с ботом, включите личные сообщения для сервера и снова выполните /shop."
 )
 
 
@@ -184,8 +190,8 @@ class ShopView(discord.ui.View):
 
     def _item_embed(self, item) -> discord.Embed:
         payload = build_shop_render_payload(self.account_id)
-        description = item.description or "Описание пока не добавлено."
-        acquire_hint = item.acquire_hint or "Способ получения пока не указан."
+        description = item.description or SHOP_TEXT_ITEM_PLACEHOLDER
+        acquire_hint = item.acquire_hint or SHOP_TEXT_ACQUIRE_HINT_PLACEHOLDER
         price_line = f"Цена: **{item.price_points} баллов**"
         if item.is_sale_active and item.sale_price_points is not None:
             price_line = f"Цена: **{item.price_points} баллов** (акция)\nБазовая цена: ~~{item.base_price_points} баллов~~"
@@ -201,7 +207,7 @@ class ShopView(discord.ui.View):
 
     def _item_confirm_embed(self, item) -> discord.Embed:
         embed = self._item_embed(item)
-        embed.description = f"{embed.description}\n\n⚠️ Подтвердите покупку этой роли."
+        embed.description = f"{embed.description}\n\n{SHOP_TEXT_CONFIRM_PURCHASE}"
         return embed
 
     async def _switch_page(self, interaction: discord.Interaction, *, requested_page: int, action: str) -> None:
@@ -230,7 +236,7 @@ class ShopView(discord.ui.View):
                 action,
                 error,
             )
-            await interaction.response.send_message("Ошибка пагинации, нажмите «Обновить».", ephemeral=True)
+            await interaction.response.send_message(SHOP_TEXT_PAGINATION_ERROR, ephemeral=True)
 
     async def _on_item_click(self, interaction: discord.Interaction, *, shop_item_id: str, page: int) -> None:
         try:
@@ -242,7 +248,7 @@ class ShopView(discord.ui.View):
                     self.author_id,
                     shop_item_id,
                 )
-                await interaction.response.send_message("Товар не найден. Нажмите «Обновить».", ephemeral=True)
+                await interaction.response.send_message(SHOP_TEXT_ITEM_NOT_FOUND, ephemeral=True)
                 return
             self.page = max(int(page), 0)
             self.mode = "card"
@@ -263,7 +269,7 @@ class ShopView(discord.ui.View):
                 shop_item_id,
                 error,
             )
-            await interaction.response.send_message("Ошибка открытия товара.", ephemeral=True)
+            await interaction.response.send_message(SHOP_TEXT_ITEM_OPEN_ERROR, ephemeral=True)
 
 
 @bot.hybrid_command(name="shop", description="Открыть магазин (в личных сообщениях)")

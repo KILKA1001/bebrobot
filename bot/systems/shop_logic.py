@@ -14,14 +14,40 @@ SHOP_PROFILE_REQUIRED_TEXT = (
 )
 SHOP_RENDER_TITLE = "Магазин"
 SHOP_RENDER_CATEGORY = "Роли"
-SHOP_RENDER_INSTRUCTION = "Выберите товар ниже: короткая кнопка открывает карточку товара с описанием."
+SHOP_RENDER_INSTRUCTION = (
+    "Выберите роль кнопкой ниже и откройте карточку с описанием.\n"
+    "Проверьте цену и нажмите «Купить», если готовы."
+)
 SHOP_RENDER_ERROR_TEXT = (
     "🛒 <b>Магазин</b>\n"
     "Категория: <b>Роли</b>\n"
     "Баланс: <b>0 баллов</b>\n"
-    "Выберите товар ниже: короткая кнопка открывает карточку товара с описанием."
+    "Выберите роль кнопкой ниже и откройте карточку с описанием.\n"
+    "Проверьте цену и нажмите «Купить», если готовы."
 )
 SHOP_PAGE_SIZE = 8
+SHOP_TEXT_ITEM_PLACEHOLDER = "Описание скоро добавим."
+SHOP_TEXT_ACQUIRE_HINT_PLACEHOLDER = "Подсказка по получению скоро появится."
+SHOP_TEXT_CONFIRM_PURCHASE = "⚠️ Проверьте роль и нажмите «Подтвердить покупку»."
+SHOP_TEXT_ITEM_UNAVAILABLE = "❌ Этот товар сейчас недоступен."
+SHOP_TEXT_ROLE_NOT_SELLABLE = "❌ Этот товар сейчас недоступен."
+SHOP_TEXT_PRICE_CHANGED = "❌ Цена обновилась. Откройте магазин ещё раз."
+SHOP_TEXT_ALREADY_OWNED = "ℹ️ Эта роль уже есть у вас."
+SHOP_TEXT_INSUFFICIENT_POINTS = "❌ Не хватает баллов: нужно {required}, у вас {current}."
+SHOP_TEXT_DEBIT_FAILED = "❌ Не получилось завершить покупку. Попробуйте чуть позже."
+SHOP_TEXT_GRANT_FAILED = "❌ Покупка не завершена. Баллы возвращены."
+SHOP_TEXT_UNEXPECTED_ERROR = "❌ Не получилось завершить покупку. Попробуйте чуть позже."
+SHOP_TEXT_PURCHASE_SUCCESS = "✅ Готово! Роль «{role}» куплена за {points} баллов."
+SHOP_TEXT_PAGINATION_ERROR = "Не удалось обновить экран. Нажмите «Обновить»."
+SHOP_TEXT_ITEM_OPEN_ERROR = "Не удалось открыть карточку товара. Нажмите «Обновить»."
+SHOP_TEXT_ITEM_NOT_FOUND = "Этот товар не найден. Нажмите «Обновить»."
+
+SHOP_UX_CHECKLIST: tuple[str, ...] = (
+    "Главный экран: пользователь видит следующий шаг — выбрать роль кнопкой.",
+    "Карточка роли: пользователь видит цену, описание и кнопку «Купить».",
+    "Подтверждение: пользователь понимает, что покупка произойдёт после подтверждения.",
+    "Ошибки: каждое сообщение объясняет причину и что делать дальше.",
+)
 
 
 @dataclass(frozen=True)
@@ -221,7 +247,7 @@ def purchase_shop_item(
                 account_key,
                 item_key,
             )
-            return ShopPurchaseResult(ok=False, message="❌ Товар недоступен или отключён.", reason="item_unavailable")
+            return ShopPurchaseResult(ok=False, message=SHOP_TEXT_ITEM_UNAVAILABLE, reason="item_unavailable")
 
         role_state = RoleManagementService.get_role(item.role_name) or {}
         if not bool(role_state.get("is_sellable")):
@@ -233,7 +259,7 @@ def purchase_shop_item(
                 item_key,
                 item.role_name,
             )
-            return ShopPurchaseResult(ok=False, message="❌ Эта роль не продаётся в магазине.", reason="role_not_sellable")
+            return ShopPurchaseResult(ok=False, message=SHOP_TEXT_ROLE_NOT_SELLABLE, reason="role_not_sellable")
 
         if expected_price_points is not None and int(expected_price_points) != int(item.price_points):
             logger.warning(
@@ -245,7 +271,7 @@ def purchase_shop_item(
                 expected_price_points,
                 item.price_points,
             )
-            return ShopPurchaseResult(ok=False, message="❌ Цена изменилась, обновите магазин.", reason="price_changed")
+            return ShopPurchaseResult(ok=False, message=SHOP_TEXT_PRICE_CHANGED, reason="price_changed")
 
         owned_roles = {str(role.get("name") or "").strip().lower() for role in RoleManagementService.get_user_roles_by_account(account_key)}
         if item.role_name.lower() in owned_roles:
@@ -273,7 +299,7 @@ def purchase_shop_item(
             )
             return ShopPurchaseResult(
                 ok=False,
-                message=f"❌ Недостаточно баллов: нужно {item.price_points}, у вас {int(current_points)}.",
+                message=SHOP_TEXT_INSUFFICIENT_POINTS.format(required=item.price_points, current=int(current_points)),
                 reason="insufficient_points",
                 role_name=item.role_name,
             )
@@ -295,7 +321,7 @@ def purchase_shop_item(
                 item_key,
                 item.price_points,
             )
-            return ShopPurchaseResult(ok=False, message="❌ Не удалось списать баллы, попробуйте позже.", reason="debit_failed")
+            return ShopPurchaseResult(ok=False, message=SHOP_TEXT_DEBIT_FAILED, reason="debit_failed")
 
         grant_result = RoleManagementService.assign_user_role_by_account(
             account_key,
@@ -334,7 +360,7 @@ def purchase_shop_item(
                     item.price_points,
                     rollback_ok,
                 )
-            return ShopPurchaseResult(ok=False, message="❌ Ошибка выдачи роли. Списание отменено.", reason="grant_failed")
+            return ShopPurchaseResult(ok=False, message=SHOP_TEXT_GRANT_FAILED, reason="grant_failed")
 
         logger.info(
             "shop_purchase_success provider=%s actor_user_id=%s account_id=%s shop_item_id=%s role_name=%s spent_points=%s",
@@ -347,7 +373,7 @@ def purchase_shop_item(
         )
         return ShopPurchaseResult(
             ok=True,
-            message=f"✅ Роль «{item.role_name}» успешно куплена за {item.price_points} баллов.",
+            message=SHOP_TEXT_PURCHASE_SUCCESS.format(role=item.role_name, points=item.price_points),
             spent_points=item.price_points,
             role_name=item.role_name,
         )
@@ -360,7 +386,7 @@ def purchase_shop_item(
             item_key,
             error,
         )
-        return ShopPurchaseResult(ok=False, message="❌ Ошибка покупки, попробуйте позже.", reason="unexpected_error")
+        return ShopPurchaseResult(ok=False, message=SHOP_TEXT_UNEXPECTED_ERROR, reason="unexpected_error")
 
 
 def get_shop_page_slice(items: list[ShopItem], requested_page: int, *, page_size: int = SHOP_PAGE_SIZE) -> ShopPageSlice:
