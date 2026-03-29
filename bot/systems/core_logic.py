@@ -768,7 +768,7 @@ def get_help_embed(category: str, visibility: HelpVisibilityContext | None = Non
         extra_lines = ["", "**Дополнительно доступно по вашему званию:**", "`/modstatus` — показать свои активные наказания, предупреждения, последние кейсы и legacy-штрафы; чужой профиль в сервере открывается только через reply, а в личке — только модератору по явному lookup."]
         if _help_can_create_fines(visibility) or _help_can_use_rep(visibility):
             if _help_can_use_rep(visibility):
-                extra_lines.append("`/rep` — основная точка входа в модерацию: выбрать нарушителя через reply/mention, выбрать нарушение кнопками, увидеть preview, активное наказание и итоговый авторасчёт по типу нарушения из БД и числу предупреждений; себя выбрать нельзя, а для равного/старшего звания кейс будет отклонён.")
+                extra_lines.append("`/rep` — модерация по шагам: выбрать нарушителя через reply/mention, выбрать нарушение кнопками и проверить preview с активным наказанием и итогом; себя и равное/старшее звание выбрать нельзя.")
             lines.extend(extra_lines)
         embed.title = "📉 Штрафы и модерация"
         embed.description = "\n".join(lines)
@@ -807,7 +807,7 @@ def get_help_embed(category: str, visibility: HelpVisibilityContext | None = Non
             "Legacy-штрафы оплачиваются внутри `/modstatus`, а их статус и остаток видны прямо в тексте экрана.",
         ]
         if _help_can_use_rep(visibility):
-            description.append("`/rep` — основная точка входа: reply/mention для цели, кнопки нарушения, preview до применения, авторасчёт наказания по типу нарушения из БД и числу предупреждений, активное наказание, следующий шаг эскалации и итоговый кейс без ручного выбора наказания; себя и равное/старшее звание наказать нельзя.")
+            description.append("`/rep` — модерация по шагам: выбери цель через reply/mention, выбери нарушение кнопками, проверь preview до применения (активные наказания и следующий шаг эскалации); итоговый кейс формируется без ручного выбора наказания, а себя и равное/старшее звание наказать нельзя.")
         description.append("Историю кейсов, активные наказания, предупреждения, снятия и отмен ищите в moderation cases и в `/modstatus`, а не в рейтинге должников.")
         embed.description = "\n".join(description)
     elif category == "admin_bank":
