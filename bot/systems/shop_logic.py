@@ -14,13 +14,14 @@ SHOP_PROFILE_REQUIRED_TEXT = (
 )
 SHOP_RENDER_TITLE = "Магазин"
 SHOP_RENDER_CATEGORY = "Роли"
-SHOP_RENDER_INSTRUCTION = "Нажмите на товар, чтобы посмотреть описание и купить."
+SHOP_RENDER_INSTRUCTION = "Выберите товар ниже: короткая кнопка открывает карточку товара с описанием."
 SHOP_RENDER_ERROR_TEXT = (
     "🛒 <b>Магазин</b>\n"
     "Категория: <b>Роли</b>\n"
     "Баланс: <b>0 баллов</b>\n"
-    "Нажмите на товар, чтобы посмотреть описание и купить."
+    "Выберите товар ниже: короткая кнопка открывает карточку товара с описанием."
 )
+SHOP_PAGE_SIZE = 8
 
 
 @dataclass(frozen=True)
@@ -56,9 +57,111 @@ class ShopRenderPayload:
         )
 
 
+@dataclass(frozen=True)
+class ShopItem:
+    shop_item_id: str
+    role_name: str
+    short_name: str
+    category: str
+    position: int
+    category_position: int
+    description: str
+    acquire_hint: str
+
+
+@dataclass(frozen=True)
+class ShopPageSlice:
+    items: list[ShopItem]
+    page: int
+    total_pages: int
+
+
 def build_shop_profile_required_text(register_command: str) -> str:
     command = str(register_command or "/register").strip() or "/register"
     return SHOP_PROFILE_REQUIRED_TEXT.format(register_command=command)
+
+
+def _short_role_name(value: str, *, limit: int = 24) -> str:
+    name = str(value or "").strip() or "Без названия"
+    return name if len(name) <= limit else f"{name[: limit - 1]}…"
+
+
+def _normalize_shop_page(requested_page: int, total_items: int, *, page_size: int = SHOP_PAGE_SIZE) -> int:
+    max_page = max((int(total_items) - 1) // max(int(page_size), 1), 0)
+    return min(max(int(requested_page), 0), max_page)
+
+
+def get_shop_catalog_items(*, log_context: str = "shop") -> list[ShopItem]:
+    grouped = RoleManagementService.list_public_roles_catalog(log_context=f"{log_context}:catalog")
+    items: list[ShopItem] = []
+    for category in grouped:
+        category_name = str(category.get("category") or "Без категории").strip() or "Без категории"
+        category_position = int(category.get("position") or 0)
+        category_roles = list(category.get("roles") or [])
+        ordered_roles = sorted(category_roles, key=lambda role: (int(role.get("position") or 0), str(role.get("name") or "").lower()))
+        for role in ordered_roles:
+            role_name = str(role.get("name") or "").strip()
+            if not role_name:
+                logger.error("shop_position_inconsistency reason=missing_role_name category=%s log_context=%s", category_name, log_context)
+                continue
+            role_position = int(role.get("position") or 0)
+            if role_position < 0:
+                logger.error(
+                    "shop_position_inconsistency reason=negative_role_position category=%s role_name=%s position=%s log_context=%s",
+                    category_name,
+                    role_name,
+                    role_position,
+                    log_context,
+                )
+            shop_item_id = f"{category_name}:{role_name}".lower()
+            items.append(
+                ShopItem(
+                    shop_item_id=shop_item_id,
+                    role_name=role_name,
+                    short_name=_short_role_name(role_name),
+                    category=category_name,
+                    position=role_position,
+                    category_position=category_position,
+                    description=str(role.get("description") or "").strip(),
+                    acquire_hint=str(role.get("acquire_hint") or "").strip(),
+                )
+            )
+
+    items.sort(key=lambda item: (item.category_position, item.position, item.role_name.lower()))
+    indexed_ids: list[ShopItem] = []
+    for index, item in enumerate(items):
+        indexed_ids.append(
+            ShopItem(
+                shop_item_id=f"shop_{index + 1}",
+                role_name=item.role_name,
+                short_name=item.short_name,
+                category=item.category,
+                position=item.position,
+                category_position=item.category_position,
+                description=item.description,
+                acquire_hint=item.acquire_hint,
+            )
+        )
+    return indexed_ids
+
+
+def get_shop_page_slice(items: list[ShopItem], requested_page: int, *, page_size: int = SHOP_PAGE_SIZE) -> ShopPageSlice:
+    safe_page = _normalize_shop_page(requested_page, len(items), page_size=page_size)
+    safe_page_size = max(int(page_size), 1)
+    total_pages = max((len(items) - 1) // safe_page_size + 1, 1)
+    start = safe_page * safe_page_size
+    return ShopPageSlice(items=items[start : start + safe_page_size], page=safe_page, total_pages=total_pages)
+
+
+def find_shop_item(items: list[ShopItem], shop_item_id: str) -> ShopItem | None:
+    target = str(shop_item_id or "").strip()
+    if not target:
+        return None
+    for item in items:
+        if item.shop_item_id == target:
+            return item
+    logger.error("shop_pagination_error reason=item_not_found shop_item_id=%s items_count=%s", target, len(items))
+    return None
 
 
 def build_shop_render_payload(account_id: str | None) -> ShopRenderPayload:
@@ -67,7 +170,7 @@ def build_shop_render_payload(account_id: str | None) -> ShopRenderPayload:
         if account_id:
             profile = AccountsService.get_profile_by_account(str(account_id)) or {}
             points = str(profile.get("points") or "0").strip() or "0"
-        catalog = RoleManagementService.list_public_roles_catalog(log_context="shop:/shop")
+        catalog = get_shop_catalog_items(log_context="shop:/shop")
         if not catalog:
             logger.warning("shop_empty_catalog provider=shared account_id=%s category=%s", account_id, SHOP_RENDER_CATEGORY)
         return ShopRenderPayload(
