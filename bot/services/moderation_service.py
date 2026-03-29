@@ -2539,15 +2539,15 @@ class ModerationService:
             {
                 "account_id": target_subject["account_id"],
                 "actor_account_id": actor_subject["account_id"],
-                "violation_code": f"manual_{normalized_action}",
-                "rule_id": None,
+                "violation_type_id": None,
+                "penalty_rule_id": None,
+                "escalation_step": None,
                 "status": ModerationService.STATUS_PENDING,
                 "source_platform": str(context.get("source_platform") or provider),
                 "source_chat_id": str(context.get("chat_id") or context.get("source_chat_id") or "") or None,
-                "reason_text": reason,
+                "reason_text": f"[manual_{normalized_action}] {reason}",
                 "op_key": op_key,
                 "created_at": created_at,
-                "updated_at": created_at,
             },
         )
         if not case_row:
