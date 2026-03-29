@@ -48,6 +48,7 @@ _TICKETS_HELP_LINE = "/tickets [reply|id] — меню управления би
 _ROLES_ADMIN_HELP_LINE = (
     "/roles_admin / /rolesadmin — панель управления ролями: каталог, категории и выдача ролей пользователям"
 )
+_TITLE_HELP_LINE = "/title @username (или reply) — единая кнопочная команда для повышения/понижения звания; сначала выбирается режим, затем конкретное звание"
 _REP_HELP_LINE = "/rep — модерация по шагам: выбери цель через reply/@username, выбери нарушение кнопками, проверь preview (предупреждения, активное наказание, следующий шаг); наказание вручную вводить не нужно; себя и старшее/равное звание выбрать нельзя"
 _MODSTATUS_HELP_LINE = "/modstatus — показать свои активные наказания, последние кейсы и legacy-штрафы; чужой профиль в группе открывается только через reply, в личке — только по явному lookup-правилу для модераторов"
 
@@ -73,6 +74,8 @@ def _build_helpy_text(*, actor_level: int = 0, actor_titles: tuple[str, ...] = t
         privileged_lines.append(_TICKETS_HELP_LINE)
     if actor_level >= 80:
         privileged_lines.append(_ROLES_ADMIN_HELP_LINE)
+    if {"глава клуба", "главный вице"} & {normalize_protected_profile_title(title) for title in actor_titles if str(title).strip()}:
+        privileged_lines.append(_TITLE_HELP_LINE)
     privileged_lines.append(_MODSTATUS_HELP_LINE)
     if can_use_rep:
         privileged_lines.append(_REP_HELP_LINE)

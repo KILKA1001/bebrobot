@@ -10,6 +10,7 @@ from . import roles_admin  # noqa: F401
 from . import guiy_owner  # noqa: F401
 from . import rep as rep_module  # noqa: F401
 from . import modstatus as modstatus_module  # noqa: F401
+from . import title as title_module  # noqa: F401
 
 # Import specific commands for explicit access if needed
 from .tournament import (
@@ -21,6 +22,7 @@ from .maps import mapinfo
 from .linking import link_telegram, link, profile, profile_edit, register_account
 from .rep import rep
 from .modstatus import modstatus
+from .title import title
 
 __all__ = [
     "bot",
@@ -36,4 +38,5 @@ __all__ = [
     "register_account",
     "rep",
     "modstatus",
+    "title",
 ]
