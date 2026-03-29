@@ -53,6 +53,7 @@ class ModerationService:
     CITY_HIERARCHY_DEMOTION_CHAIN = ("вице города", "ветеран города", "участник клубов")
     MODERATION_HIERARCHY_DEMOTION_CHAIN = ("оператор", "админ", "младший админ", "участник чата")
     _SUPER_ADMIN_TITLES = {"глава клуба", "главный вице"}
+    _MISSING_TABLE_ERROR_CODES = {"PGRST205", "42P01"}
 
     @staticmethod
     def _resolve_account_id(provider: str, provider_user_id: str | int, *, role: str) -> Optional[str]:
@@ -98,6 +99,15 @@ class ModerationService:
             rows = response.data or []
             return dict(rows[0]) if rows else None
         except Exception as exc:
+            if ModerationService._is_missing_table_error(exc):
+                logger.error(
+                    "moderation select failed missing table=%s filters=%s error=%s. "
+                    "Create table in DB or refresh schema cache.",
+                    table,
+                    filters,
+                    exc,
+                )
+                return None
             logger.exception("moderation select failed table=%s filters=%s error=%s", table, filters, exc)
             return None
 
@@ -117,8 +127,34 @@ class ModerationService:
             response = query.execute()
             return [dict(row) for row in (response.data or [])]
         except Exception as exc:
+            if ModerationService._is_missing_table_error(exc):
+                logger.error(
+                    "moderation select many failed missing table=%s filters=%s error=%s. "
+                    "Create table in DB or refresh schema cache.",
+                    table,
+                    filters,
+                    exc,
+                )
+                return []
             logger.exception("moderation select many failed table=%s filters=%s error=%s", table, filters, exc)
             return []
+
+    @staticmethod
+    def _is_missing_table_error(exc: Exception) -> bool:
+        code = getattr(exc, "code", None)
+        if code and str(code).upper() in ModerationService._MISSING_TABLE_ERROR_CODES:
+            return True
+        error_payload = getattr(exc, "args", ())
+        if not error_payload:
+            return False
+        first_payload = error_payload[0]
+        if isinstance(first_payload, dict):
+            payload_code = str(first_payload.get("code") or "").upper()
+            if payload_code in ModerationService._MISSING_TABLE_ERROR_CODES:
+                return True
+            message = str(first_payload.get("message") or "").lower()
+            return "could not find the table" in message
+        return "could not find the table" in str(exc).lower()
 
     @staticmethod
     def _insert_row(table: str, payload: dict[str, Any]) -> Optional[dict]:
