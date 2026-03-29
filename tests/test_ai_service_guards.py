@@ -161,6 +161,26 @@ class GuiyAIGuardsTests(unittest.TestCase):
 
         self.assertFalse(_is_bot_mentioned(message, bot_id=123, bot_username="GuiyBot"))
 
+    def test_is_bot_mentioned_by_username_in_caption_entities(self):
+        message = SimpleNamespace(
+            text=None,
+            entities=None,
+            caption="@GuiyBot смотри сюда",
+            caption_entities=[SimpleNamespace(type="mention", offset=0, length=8)],
+        )
+
+        self.assertTrue(_is_bot_mentioned(message, bot_id=123, bot_username="GuiyBot"))
+
+    def test_is_bot_mentioned_by_text_mention_in_caption_entities(self):
+        message = SimpleNamespace(
+            text=None,
+            entities=None,
+            caption="Привет",
+            caption_entities=[SimpleNamespace(type="text_mention", user=SimpleNamespace(id=123))],
+        )
+
+        self.assertTrue(_is_bot_mentioned(message, bot_id=123, bot_username="GuiyBot"))
+
     def test_calculate_typing_delay_has_minimum_for_empty_text(self):
         self.assertEqual(calculate_typing_delay_seconds(""), 1.2)
 
