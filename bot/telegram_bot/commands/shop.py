@@ -203,9 +203,15 @@ def _shop_admin_roles() -> list[str]:
             if not bool(role.get("is_sellable")):
                 blocked_non_sellable += 1
                 continue
-            role_name = str(role.get("role") or "").strip()
+            role_name = str(role.get("name") or role.get("role") or "").strip()
             if role_name:
                 roles.append(role_name)
+            else:
+                logger.error(
+                    "shop_admin_roles_skip_empty_name provider=telegram category=%s role_payload=%s",
+                    str(category.get("category") or "").strip() or None,
+                    role,
+                )
     if not roles:
         logger.error(
             "shop_admin_roles_empty_after_sellable_filter provider=telegram grouped_categories=%s total_roles=%s blocked_non_sellable=%s",
