@@ -8,9 +8,8 @@ from bot.systems.shop_logic import (
     SHOP_TEXT_ACQUIRE_HINT_PLACEHOLDER,
     SHOP_TEXT_CONFIRM_PURCHASE,
     SHOP_TEXT_ITEM_NOT_FOUND,
-    SHOP_TEXT_ITEM_OPEN_ERROR,
     SHOP_TEXT_ITEM_PLACEHOLDER,
-    SHOP_TEXT_PAGINATION_ERROR,
+    SHOP_TEXT_PROTECTED_FAILURE,
     build_shop_render_payload,
     check_shop_profile_access,
     find_shop_item,
@@ -236,7 +235,7 @@ class ShopView(discord.ui.View):
                 action,
                 error,
             )
-            await interaction.response.send_message(SHOP_TEXT_PAGINATION_ERROR, ephemeral=True)
+            await interaction.response.send_message(SHOP_TEXT_PROTECTED_FAILURE, ephemeral=True)
 
     async def _on_item_click(self, interaction: discord.Interaction, *, shop_item_id: str, page: int) -> None:
         try:
@@ -269,7 +268,7 @@ class ShopView(discord.ui.View):
                 shop_item_id,
                 error,
             )
-            await interaction.response.send_message(SHOP_TEXT_ITEM_OPEN_ERROR, ephemeral=True)
+            await interaction.response.send_message(SHOP_TEXT_PROTECTED_FAILURE, ephemeral=True)
 
 
 @bot.hybrid_command(name="shop", description="Открыть магазин (в личных сообщениях)")
@@ -277,7 +276,7 @@ async def shop(ctx):
     source = "dm" if getattr(ctx, "guild", None) is None else "group"
     actor_id = getattr(getattr(ctx, "author", None), "id", None)
     logger.info(
-        "shop flow step=received provider=discord source=%s actor_user_id=%s guild_id=%s channel_id=%s",
+        "shop_flow_received provider=discord source=%s actor_user_id=%s guild_id=%s channel_id=%s",
         source,
         actor_id,
         getattr(getattr(ctx, "guild", None), "id", None),
@@ -307,5 +306,5 @@ async def shop(ctx):
     try:
         await ctx.author.send(embed=dm_embed, view=dm_view)
     except Exception as error:  # noqa: BLE001
-        logger.warning("shop flow step=dm_attempt provider=discord actor_user_id=%s dm_sent=false error=%s", actor_id, error)
+        logger.exception("shop_dm_transfer_error provider=discord actor_user_id=%s dm_sent=false error=%s", actor_id, error)
         await send_temp(ctx, DM_FALLBACK_TEXT, delete_after=None)

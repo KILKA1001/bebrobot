@@ -1267,7 +1267,7 @@ class RoleManagementService:
                 before=before,
                 after=after,
             )
-            logger.info("shop_item_upsert role_name=%s actor_user_id=%s source=%s", role_key, actor_user_id, source)
+            logger.info("shop_admin_showcase_change action=shop_item_upsert role_name=%s actor_user_id=%s actor_provider=%s source=%s", role_key, actor_user_id, actor_provider, source)
             return True
         except Exception:
             logger.exception("upsert_shop_role_item failed role_name=%s", role_key)
@@ -1312,7 +1312,13 @@ class RoleManagementService:
                 before=before,
                 after=after,
             )
-            logger.info("shop_item_deactivate role_name=%s actor_user_id=%s source=%s", role_key, actor_user_id, source)
+            logger.info(
+                "shop_admin_showcase_change action=shop_item_deactivate role_name=%s actor_user_id=%s actor_provider=%s source=%s",
+                role_key,
+                actor_user_id,
+                actor_provider,
+                source,
+            )
             return True
         except Exception:
             logger.exception("deactivate_shop_role_item failed role_name=%s", role_key)
