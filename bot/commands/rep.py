@@ -85,6 +85,11 @@ class DiscordRepFlowState:
     status_text: str = ""
     target_hint: str = "Reply на сообщение — самый быстрый способ. Иначе используйте панель ниже; для prefix-команды подойдут reply, mention, username или display_name."
     is_applying: bool = False
+    hidden_violations_count: int = 0
+    manual_action: str | None = None
+    manual_duration_minutes: int | None = None
+    manual_reason_text: str = ""
+    show_rules_menu: bool = False
 
 
 class _RepTargetSelect(discord.ui.UserSelect):
@@ -153,6 +158,9 @@ class _RepViolationSelect(discord.ui.Select):
             return
         view.state.violation_code = code
         view.state.preview = preview
+        view.state.manual_action = None
+        view.state.manual_duration_minutes = None
+        view.state.manual_reason_text = ""
         view.state.status_text = "Шаг 3 готов: проверьте предпросмотр наказания, затем подтвердите или вернитесь назад."
         view.log_event("info", message="rep preview built")
         view.rebuild()
@@ -175,6 +183,14 @@ class _RepBackButton(discord.ui.Button):
             view.state.preview = None
             view.state.violation_code = None
             view.state.status_text = "Возврат к шагу 2: пользователь сохранён, можно выбрать другой тип нарушения."
+        elif view.state.manual_action:
+            view.state.manual_action = None
+            view.state.manual_duration_minutes = None
+            view.state.manual_reason_text = ""
+            view.state.status_text = "Ручное наказание сброшено. Выберите другой тип действия."
+        elif view.state.show_rules_menu:
+            view.state.show_rules_menu = False
+            view.state.status_text = "Возврат к основным 5 кнопкам действий."
         elif view.state.target:
             view.state.target = None
             view.state.status_text = "Возврат к шагу 1: выберите другого пользователя."
@@ -195,25 +211,36 @@ class _RepConfirmButton(discord.ui.Button):
         if view.state.is_applying or view.state.result:
             await interaction.response.send_message(render_rep_duplicate_submit_text(), ephemeral=True)
             return
-        if not view.state.target or not view.state.violation_code:
-            await interaction.response.send_message("Сначала выберите нарушителя и нарушение.", ephemeral=True)
+        if not view.state.target or (not view.state.violation_code and not view.state.manual_action):
+            await interaction.response.send_message("Сначала выберите нарушителя и тип наказания.", ephemeral=True)
             return
         view.state.is_applying = True
         try:
-            preview_payload = view.state.preview or {}
-            preview_ui_payload = preview_payload.get("ui_payload") or {}
-            result = ModerationService.commit_case(
-                "discord",
-                _actor_subject(interaction.user),
-                view.state.target,
-                view.state.violation_code,
-                {
-                    "chat_id": view.state.chat_id,
-                    "source_platform": "discord",
-                    "reason_text": "",
-                    "moderation_op_key": preview_payload.get("moderation_op_key") or preview_ui_payload.get("moderation_op_key"),
-                },
-            )
+            if view.state.manual_action:
+                result = ModerationService.commit_manual_action(
+                    "discord",
+                    _actor_subject(interaction.user),
+                    view.state.target,
+                    view.state.manual_action,
+                    duration_minutes=int(view.state.manual_duration_minutes or 0),
+                    reason_text=view.state.manual_reason_text,
+                    context={"chat_id": view.state.chat_id, "source_platform": "discord"},
+                )
+            else:
+                preview_payload = view.state.preview or {}
+                preview_ui_payload = preview_payload.get("ui_payload") or {}
+                result = ModerationService.commit_case(
+                    "discord",
+                    _actor_subject(interaction.user),
+                    view.state.target,
+                    view.state.violation_code,
+                    {
+                        "chat_id": view.state.chat_id,
+                        "source_platform": "discord",
+                        "reason_text": "",
+                        "moderation_op_key": preview_payload.get("moderation_op_key") or preview_ui_payload.get("moderation_op_key"),
+                    },
+                )
             if not result.get("ok"):
                 view.log_event(
                     "warning",
@@ -254,11 +281,202 @@ class _RepCancelButton(discord.ui.Button):
         await interaction.response.edit_message(embed=embed, view=view)
 
 
+class _RepManualActionModal(discord.ui.Modal, title="Ручное наказание"):
+    def __init__(self, action_key: str) -> None:
+        super().__init__(timeout=180)
+        self.action_key = action_key
+        self.duration = discord.ui.TextInput(label="Срок (пример: 30m, 2h, 1d)", required=True, max_length=32)
+        self.reason = discord.ui.TextInput(label="Причина", required=True, style=discord.TextStyle.paragraph, max_length=300)
+        self.add_item(self.duration)
+        self.add_item(self.reason)
+
+    @staticmethod
+    def _parse_duration(raw: str) -> int:
+        text = str(raw or "").strip().lower().replace(" ", "")
+        if text.endswith("m") and text[:-1].isdigit():
+            return int(text[:-1])
+        if text.endswith("h") and text[:-1].isdigit():
+            return int(text[:-1]) * 60
+        if text.endswith("d") and text[:-1].isdigit():
+            return int(text[:-1]) * 24 * 60
+        if text.isdigit():
+            return int(text)
+        return 0
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        view = self.parent
+        if not isinstance(view, DiscordRepFlowView):
+            await interaction.response.send_message("❌ Ошибка состояния. Откройте /rep заново.", ephemeral=True)
+            return
+        minutes = self._parse_duration(str(self.duration.value))
+        reason_text = str(self.reason.value or "").strip()
+        if minutes <= 0 or not reason_text:
+            await interaction.response.send_message("❌ Укажите корректный срок и причину.", ephemeral=True)
+            return
+        view.state.manual_action = self.action_key
+        view.state.manual_duration_minutes = minutes
+        view.state.manual_reason_text = reason_text
+        view.state.preview = None
+        view.state.violation_code = None
+        view.state.status_text = (
+            f"Подготовлено ручное наказание: {self.action_key} на {minutes} мин. "
+            "Проверьте данные и подтвердите."
+        )
+        view.rebuild()
+        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+
+
+class _RepManualActionButton(discord.ui.Button):
+    def __init__(self, *, action_key: str, title: str, disabled: bool) -> None:
+        super().__init__(label=title, style=discord.ButtonStyle.secondary, row=3, disabled=disabled)
+        self.action_key = action_key
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, DiscordRepFlowView):
+            await interaction.response.send_message("❌ Ошибка /rep. Откройте команду заново.", ephemeral=True)
+            return
+        if not view.state.target:
+            await interaction.response.send_message("Сначала выберите нарушителя.", ephemeral=True)
+            return
+        view.state.manual_action = self.action_key
+        view.state.manual_duration_minutes = None
+        view.state.manual_reason_text = ""
+        view.state.preview = None
+        view.state.violation_code = None
+        view.state.show_rules_menu = False
+        view.state.status_text = (
+            f"Выбрано действие `{self.action_key}`. "
+            "Выберите быстрый срок кнопками ниже или нажмите «Свой срок + причина»."
+        )
+        view.rebuild()
+        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+
+
+class _RepManualPresetDurationButton(discord.ui.Button):
+    def __init__(self, *, title: str, minutes: int, disabled: bool) -> None:
+        super().__init__(label=title, style=discord.ButtonStyle.secondary, row=4, disabled=disabled)
+        self.minutes = minutes
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, DiscordRepFlowView):
+            await interaction.response.send_message("❌ Ошибка /rep. Откройте команду заново.", ephemeral=True)
+            return
+        if not view.state.manual_action:
+            await interaction.response.send_message("Сначала выберите действие (Мут/Пред/Бан/Кик).", ephemeral=True)
+            return
+        view.state.manual_duration_minutes = self.minutes
+        modal = _RepManualReasonModal()
+        modal.parent = view
+        await interaction.response.send_modal(modal)
+
+
+class _RepManualCustomDurationButton(discord.ui.Button):
+    def __init__(self, *, disabled: bool) -> None:
+        super().__init__(label="Свой срок + причина", style=discord.ButtonStyle.primary, row=4, disabled=disabled)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, DiscordRepFlowView):
+            await interaction.response.send_message("❌ Ошибка /rep. Откройте команду заново.", ephemeral=True)
+            return
+        if not view.state.manual_action:
+            await interaction.response.send_message("Сначала выберите действие (Мут/Пред/Бан/Кик).", ephemeral=True)
+            return
+        modal = _RepManualActionModal(view.state.manual_action)
+        modal.parent = view
+        await interaction.response.send_modal(modal)
+
+
+class _RepManualReasonModal(discord.ui.Modal, title="Причина наказания"):
+    def __init__(self) -> None:
+        super().__init__(timeout=180)
+        self.reason = discord.ui.TextInput(label="Причина", required=True, style=discord.TextStyle.paragraph, max_length=300)
+        self.add_item(self.reason)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        view = self.parent
+        if not isinstance(view, DiscordRepFlowView):
+            await interaction.response.send_message("❌ Ошибка состояния. Откройте /rep заново.", ephemeral=True)
+            return
+        reason_text = str(self.reason.value or "").strip()
+        if not reason_text:
+            await interaction.response.send_message("❌ Причина обязательна.", ephemeral=True)
+            return
+        if not view.state.manual_duration_minutes or view.state.manual_duration_minutes <= 0:
+            await interaction.response.send_message("❌ Сначала выберите срок наказания.", ephemeral=True)
+            return
+        view.state.manual_reason_text = reason_text
+        view.state.status_text = (
+            f"Подготовлено ручное наказание: {view.state.manual_action} "
+            f"на {view.state.manual_duration_minutes} мин. Проверьте и подтвердите."
+        )
+        view.rebuild()
+        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+
+
+class _RepEscalationRequestButton(discord.ui.Button):
+    def __init__(self, *, disabled: bool) -> None:
+        super().__init__(label="📨 Заявка старшему админу", style=discord.ButtonStyle.secondary, row=4, disabled=disabled)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, DiscordRepFlowView):
+            await interaction.response.send_message("❌ Ошибка /rep. Откройте команду заново.", ephemeral=True)
+            return
+        if not view.state.target:
+            await interaction.response.send_message("Сначала выберите нарушителя.", ephemeral=True)
+            return
+        text = (
+            f"📨 Заявка на недоступное наказание\n"
+            f"Модератор: {interaction.user.mention}\n"
+            f"Цель: {_target_label(view.state.target)}\n"
+            f"Скрытых нарушений по полномочиям: {view.state.hidden_violations_count}\n"
+            "Нужна проверка и подтверждение старшим администратором."
+        )
+        try:
+            if interaction.channel:
+                await interaction.channel.send(text)
+            await interaction.response.send_message("✅ Заявка отправлена в чат для старших администраторов.", ephemeral=True)
+        except Exception:
+            logger.exception(
+                "rep escalation request failed provider=%s chat_id=%s actor=%s target=%s",
+                "discord",
+                view.state.chat_id,
+                interaction.user.id,
+                (view.state.target or {}).get("provider_user_id"),
+            )
+            await interaction.response.send_message("❌ Не удалось отправить заявку. Подробности в консоли.", ephemeral=True)
+
+
+class _RepRulesMenuButton(discord.ui.Button):
+    def __init__(self, *, disabled: bool) -> None:
+        super().__init__(label="📚 Нарушения из правил", style=discord.ButtonStyle.primary, row=3, disabled=disabled)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, DiscordRepFlowView):
+            await interaction.response.send_message("❌ Ошибка /rep. Откройте команду заново.", ephemeral=True)
+            return
+        if not view.state.target:
+            await interaction.response.send_message("Сначала выберите нарушителя.", ephemeral=True)
+            return
+        view.state.show_rules_menu = True
+        view.state.manual_action = None
+        view.state.manual_duration_minutes = None
+        view.state.manual_reason_text = ""
+        view.state.status_text = "Открыт список нарушений из правил. Выберите нарушение из выпадающего списка."
+        view.rebuild()
+        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+
+
 class DiscordRepFlowView(discord.ui.View):
     def __init__(self, *, actor_id: int, guild_id: int | None, chat_id: int | None):
         super().__init__(timeout=300)
         self.state = DiscordRepFlowState(actor_id=actor_id, guild_id=guild_id, chat_id=chat_id)
         self._violations = ModerationService.list_active_violation_types()
+        self._unavailable_violations: list[dict[str, Any]] = []
         self.message: discord.Message | None = None
         self.rebuild()
 
@@ -295,7 +513,23 @@ class DiscordRepFlowView(discord.ui.View):
         self.state.target = dict(target)
         self.state.violation_code = None
         self.state.preview = None
+        self.state.show_rules_menu = False
         self.state.status_text = status_text
+        try:
+            availability = ModerationService.list_available_violation_types(
+                provider="discord",
+                actor={"provider": "discord", "provider_user_id": str(self.state.actor_id), "label": str(self.state.actor_id)},
+                target=self.state.target,
+                chat_id=self.state.chat_id,
+            )
+            self._violations = list(availability.get("available") or [])
+            self._unavailable_violations = list(availability.get("unavailable") or [])
+            self.state.hidden_violations_count = len(self._unavailable_violations)
+        except Exception:
+            logger.exception("rep violation availability failed provider=%s actor=%s target=%s", "discord", self.state.actor_id, (self.state.target or {}).get("provider_user_id"))
+            self._violations = ModerationService.list_active_violation_types()
+            self._unavailable_violations = []
+            self.state.hidden_violations_count = 0
         if target_hint:
             self.state.target_hint = target_hint
         self.rebuild()
@@ -328,10 +562,24 @@ class DiscordRepFlowView(discord.ui.View):
     def rebuild(self) -> None:
         self.clear_items()
         self.add_item(_RepTargetSelect())
-        self.add_item(_RepViolationSelect(self._violations, disabled=self.state.target is None))
+        self.add_item(_RepViolationSelect(self._violations, disabled=(self.state.target is None or not self.state.show_rules_menu)))
         self.add_item(_RepBackButton(disabled=not (self.state.target or self.state.preview)))
-        self.add_item(_RepConfirmButton(disabled=self.state.preview is None))
+        can_confirm_manual = bool(self.state.manual_action and self.state.manual_duration_minutes and self.state.manual_reason_text)
+        self.add_item(_RepConfirmButton(disabled=not (self.state.preview is not None or can_confirm_manual)))
         self.add_item(_RepCancelButton())
+        actor_id = str(self.state.actor_id)
+        self.add_item(_RepManualActionButton(action_key="mute", title="Мут", disabled=not AuthorityService.has_command_permission("discord", actor_id, "moderation_mute")))
+        self.add_item(_RepManualActionButton(action_key="warn", title="Пред", disabled=not AuthorityService.has_command_permission("discord", actor_id, "moderation_warn")))
+        self.add_item(_RepManualActionButton(action_key="ban", title="Бан", disabled=not AuthorityService.has_command_permission("discord", actor_id, "moderation_ban")))
+        self.add_item(_RepManualActionButton(action_key="kick", title="Кик", disabled=not AuthorityService.has_command_permission("discord", actor_id, "moderation_mute")))
+        self.add_item(_RepRulesMenuButton(disabled=self.state.target is None))
+        manual_selected = self.state.manual_action is not None
+        self.add_item(_RepManualPresetDurationButton(title="15м", minutes=15, disabled=not manual_selected))
+        self.add_item(_RepManualPresetDurationButton(title="1ч", minutes=60, disabled=not manual_selected))
+        self.add_item(_RepManualPresetDurationButton(title="12ч", minutes=720, disabled=not manual_selected))
+        self.add_item(_RepManualPresetDurationButton(title="1д", minutes=1440, disabled=not manual_selected))
+        self.add_item(_RepManualCustomDurationButton(disabled=not manual_selected))
+        self.add_item(_RepEscalationRequestButton(disabled=not (self.state.target and self.state.hidden_violations_count > 0)))
 
     def disable_all_items(self) -> None:
         for child in self.children:
@@ -369,6 +617,16 @@ class DiscordRepFlowView(discord.ui.View):
                 inline=False,
             )
             return embed
+        if self.state.manual_action:
+            embed = discord.Embed(title="🧾 Предпросмотр ручного наказания", color=discord.Color.orange())
+            embed.description = (
+                f"👤 Цель: {_target_label(self.state.target)}\n"
+                f"⚙️ Действие: {self.state.manual_action}\n"
+                f"⏱️ Срок: {self.state.manual_duration_minutes} мин\n"
+                f"📝 Причина: {self.state.manual_reason_text}\n\n"
+                "Проверьте данные и нажмите «Подтвердить»."
+            )
+            return embed
         embed = discord.Embed(title="🛡️ /rep", color=discord.Color.blurple())
         embed.description = render_rep_start_text(target_selection_hint=self.state.target_hint)
         embed.add_field(name="Текущая цель", value=_target_label(self.state.target), inline=False)
@@ -391,6 +649,17 @@ class DiscordRepFlowView(discord.ui.View):
         )
         if self.state.target:
             embed.add_field(name="Шаг 2", value=render_rep_violation_prompt_text(target_label=_target_label(self.state.target)), inline=False)
+            embed.add_field(
+                name="Порядок кнопок",
+                value="Сначала выберите 1 из 4 ручных действий (Мут/Пред/Бан/Кик) или 5-ю кнопку «Нарушения из правил».",
+                inline=False,
+            )
+            if self.state.hidden_violations_count > 0:
+                embed.add_field(
+                    name="Доступ по полномочиям",
+                    value=f"Скрыто нарушений: {self.state.hidden_violations_count}. Если нужно эскалировать недоступное нарушение — обратитесь к старшему администратору.",
+                    inline=False,
+                )
         if self.state.status_text:
             embed.add_field(name="Короткий статус", value=self.state.status_text, inline=False)
         return embed
