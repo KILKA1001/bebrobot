@@ -25,13 +25,20 @@ class PendingTitleFlow:
     target_user_id: str
     target_label: str
     mode: str
+    target_titles: tuple[str, ...]
     created_at: float
 
 
 _PENDING: dict[int, PendingTitleFlow] = {}
 
 
-def _build_title_keyboard(actor_id: int, *, mode: str) -> InlineKeyboardMarkup:
+def _build_title_keyboard(
+    actor_id: int,
+    *,
+    mode: str,
+    target_titles: tuple[str, ...] = tuple(),
+) -> InlineKeyboardMarkup:
+    selected_titles = {str(item or "").strip().casefold() for item in target_titles if str(item or "").strip()}
     rows: list[list[InlineKeyboardButton]] = [
         [
             InlineKeyboardButton(text="⬆️ Повысить", callback_data=f"title:{actor_id}:mode:promote"),
@@ -39,7 +46,8 @@ def _build_title_keyboard(actor_id: int, *, mode: str) -> InlineKeyboardMarkup:
         ]
     ]
     for key, label in TitleManagementService.managed_titles():
-        rows.append([InlineKeyboardButton(text=label[:64], callback_data=f"title:{actor_id}:apply:{key}")])
+        marker = "✅ " if key.casefold() in selected_titles else ""
+        rows.append([InlineKeyboardButton(text=f"{marker}{label}"[:64], callback_data=f"title:{actor_id}:apply:{key}")])
     rows.append([InlineKeyboardButton(text="🔄 Обновить", callback_data=f"title:{actor_id}:refresh")])
     suffix = "повышение" if mode == "promote" else "понижение"
     rows.append([InlineKeyboardButton(text=f"Текущий режим: {suffix}", callback_data=f"title:{actor_id}:noop")])
@@ -96,6 +104,10 @@ async def title_command(message: Message) -> None:
         target_user_id=str(target.get("provider_user_id") or ""),
         target_label=str(target.get("label") or target.get("provider_user_id") or "пользователь"),
         mode="promote",
+        target_titles=TitleManagementService.get_target_titles(
+            str(target.get("provider") or "telegram"),
+            str(target.get("provider_user_id") or ""),
+        ),
         created_at=time.monotonic(),
     )
     _PENDING[actor_id] = flow
@@ -104,8 +116,9 @@ async def title_command(message: Message) -> None:
         "🛠️ Управление званием\n"
         "1) Выбери режим: повышение или понижение.\n"
         "2) Нажми на звание из списка.\n"
+        "✅ возле звания = у пользователя оно уже есть.\n"
         "Команда /title объединяет оба сценария в одном интерфейсе.",
-        reply_markup=_build_title_keyboard(actor_id, mode=flow.mode),
+        reply_markup=_build_title_keyboard(actor_id, mode=flow.mode, target_titles=flow.target_titles),
     )
 
 
@@ -140,14 +153,16 @@ async def title_callbacks(callback: CallbackQuery) -> None:
     if action in {"mode", "refresh"}:
         if action == "mode" and value in {"promote", "demote"}:
             flow.mode = value
-            _PENDING[actor_id] = flow
+        flow.target_titles = TitleManagementService.get_target_titles(flow.target_provider, flow.target_user_id)
+        _PENDING[actor_id] = flow
         mode_label = "повышение" if flow.mode == "promote" else "понижение"
         await callback.message.edit_text(
             "🛠️ Управление званием\n"
             f"Пользователь: {flow.target_label}\n"
             f"Режим: {mode_label}\n"
-            "Выбери звание кнопкой ниже.",
-            reply_markup=_build_title_keyboard(actor_id, mode=flow.mode),
+            "Выбери звание кнопкой ниже.\n"
+            "✅ возле звания = у пользователя оно уже есть.",
+            reply_markup=_build_title_keyboard(actor_id, mode=flow.mode, target_titles=flow.target_titles),
         )
         await callback.answer("✅ Режим обновлён.")
         return
@@ -179,12 +194,14 @@ async def title_callbacks(callback: CallbackQuery) -> None:
         return
 
     mode_label = "повышение" if flow.mode == "promote" else "понижение"
+    flow.target_titles = tuple(result.titles)
+    _PENDING[actor_id] = flow
     await callback.message.edit_text(
         f"{result.message}\n"
         f"Пользователь: {flow.target_label}\n"
         f"Режим: {mode_label}\n"
         f"Текущие звания: {', '.join(result.titles) if result.titles else 'нет'}\n\n"
         "Можно продолжить в этой же панели: выбери другой режим или другое звание.",
-        reply_markup=_build_title_keyboard(actor_id, mode=flow.mode),
+        reply_markup=_build_title_keyboard(actor_id, mode=flow.mode, target_titles=flow.target_titles),
     )
     await callback.answer("✅ Готово" if result.ok else "⚠️ Операция не применена", show_alert=not result.ok)
