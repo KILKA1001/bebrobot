@@ -8,6 +8,7 @@ from bot.legacy_identity_logging import (
 from bot.services import AccountsService, AuthorityService, RoleManagementService
 from bot.services.profile_titles import normalize_protected_profile_title
 from bot.services.role_management_service import USER_ACQUIRE_HINT_PLACEHOLDER
+from bot.systems.shop_logic import build_shop_prompt_text
 from bot.systems.roles_catalog_shared import (
     ROLES_CATALOG_FOOTER_TEXT,
     ROLES_CATALOG_TITLE,
@@ -187,11 +188,7 @@ def process_register_command(telegram_user_id: int | None) -> str:
 
 
 def process_shop_command() -> str:
-    return (
-        "🛒 <b>Магазин</b>\n"
-        "Нажмите кнопку <b>«Открыть магазин»</b> ниже.\n"
-        "Если кнопка не открывается, используйте подсказку из сообщения и повторите команду /shop."
-    )
+    return build_shop_prompt_text()
 
 
 def process_profile_command(
