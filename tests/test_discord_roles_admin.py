@@ -124,7 +124,7 @@ class DiscordRolesAdminTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Роли", labels)
         self.assertIn("Пользователи", labels)
 
-    def test_rolesadmin_help_view_shows_shop_settings_for_superadmins(self):
+    def test_rolesadmin_help_view_hides_shop_settings_for_superadmins(self):
         visibility = roles_admin.RolesAdminVisibilityContext(
             actor_level=100,
             actor_titles=("Глава клуба",),
@@ -137,7 +137,7 @@ class DiscordRolesAdminTests(unittest.IsolatedAsyncioTestCase):
         view = roles_admin.RolesAdminHelpView(actor_id=111, visibility=visibility, guild_id=222)
         labels = [child.label for child in view.children]
 
-        self.assertIn("⚙️ Настройка магазина", labels)
+        self.assertNotIn("⚙️ Настройка магазина", labels)
 
     async def test_rolesadmin_list_runs_implicit_sync_before_listing(self):
         ctx = self._build_ctx()
