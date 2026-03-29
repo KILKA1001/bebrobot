@@ -1679,7 +1679,11 @@ async def _ensure_roles_admin(message: Message) -> bool:
             error_code="forbidden_role_manage",
             error_message="insufficient permissions for roles_admin",
         )
-        await message.answer("❌ Недостаточно полномочий для управления ролями.")
+        await message.answer(
+            "❌ Недостаточно прав для управления ролями.\n"
+            "Что делать сейчас: обратитесь к старшему администратору.\n"
+            "Что будет дальше: после выдачи прав откроется панель /roles_admin."
+        )
         return False
     return True
 
@@ -1696,6 +1700,11 @@ def _can_manage_shop_settings(provider: str, provider_user_id: str) -> bool:
 async def roles_admin_command(message: Message) -> None:
     try:
         persist_telegram_identity_from_user(message.from_user)
+        logger.info(
+            "ux_screen_open event=ux_screen_open screen=roles_admin provider=telegram actor_user_id=%s chat_id=%s",
+            message.from_user.id if message.from_user else None,
+            message.chat.id if message.chat else None,
+        )
         if message.reply_to_message:
             persist_telegram_identity_from_user(message.reply_to_message.from_user)
         if not await _ensure_roles_admin(message):

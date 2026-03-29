@@ -102,6 +102,11 @@ class _TitleSelect(discord.ui.Select):
 
 @bot.hybrid_command(name="title", description="Повысить или понизить звание пользователя (только суперадмины)")
 async def title(ctx: commands.Context, *, target: str | None = None) -> None:
+    logger.info(
+        "ux_screen_open event=ux_screen_open screen=title_admin provider=discord actor_user_id=%s guild_id=%s",
+        ctx.author.id,
+        ctx.guild.id if ctx.guild else None,
+    )
     if not target:
         await send_temp(
             ctx,
@@ -111,7 +116,12 @@ async def title(ctx: commands.Context, *, target: str | None = None) -> None:
         return
 
     if not TitleManagementService.is_super_admin("discord", str(ctx.author.id)):
-        await send_temp(ctx, "❌ Повышать или понижать звания могут только суперадмины.")
+        await send_temp(
+            ctx,
+            "❌ Команда доступна только суперадминам.\n"
+            "Что делать сейчас: попросите суперадмина выполнить изменение.\n"
+            "Что будет дальше: после выдачи прав вы сможете управлять званиями через /title.",
+        )
         return
 
     resolved = await _resolve_discord_target(ctx, target, operation="title")

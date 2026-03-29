@@ -64,8 +64,17 @@ async def title_command(message: Message) -> None:
         return
     persist_telegram_identity_from_user(message.from_user)
     actor_id = int(message.from_user.id)
+    logger.info(
+        "ux_screen_open event=ux_screen_open screen=title_admin provider=telegram actor_user_id=%s chat_id=%s",
+        actor_id,
+        message.chat.id,
+    )
     if not TitleManagementService.is_super_admin("telegram", str(actor_id)):
-        await message.answer("❌ Повышать или понижать звания могут только суперадмины.")
+        await message.answer(
+            "❌ Команда доступна только суперадминам.\n"
+            "Что делать сейчас: попросите суперадмина выполнить изменение.\n"
+            "Что будет дальше: после выдачи прав вы сможете управлять званиями через /title."
+        )
         return
 
     command_text = str(message.text or "").strip()

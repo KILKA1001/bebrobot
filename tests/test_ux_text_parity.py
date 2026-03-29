@@ -54,3 +54,19 @@ def test_engagement_foreign_actor_prompt_is_safe_and_actionable() -> None:
     assert "Чушка" not in telegram_source
     assert "Чушка" not in discord_source
     assert "панель открыта для другого администратора" in telegram_source
+
+
+def test_admin_commands_have_ux_screen_open_logging_parity() -> None:
+    discord_roles_admin = (REPO_ROOT / "bot" / "commands" / "roles_admin.py").read_text()
+    telegram_roles_admin = (REPO_ROOT / "bot" / "telegram_bot" / "commands" / "roles_admin.py").read_text()
+    discord_title = (REPO_ROOT / "bot" / "commands" / "title.py").read_text()
+    telegram_title = (REPO_ROOT / "bot" / "telegram_bot" / "commands" / "title.py").read_text()
+    discord_tournament = (REPO_ROOT / "bot" / "commands" / "tournament.py").read_text()
+
+    assert "screen=roles_admin" in discord_roles_admin
+    assert "screen=roles_admin" in telegram_roles_admin
+    assert "screen=title_admin" in discord_title
+    assert "screen=title_admin" in telegram_title
+    assert "screen=tournament_create" in discord_tournament
+    assert "screen=tournament_admin" in discord_tournament
+    assert "screen=tournament_manage" in discord_tournament
