@@ -1,3 +1,5 @@
+from pathlib import Path
+import re
 from unittest.mock import patch
 
 from bot.systems import shop_logic
@@ -60,3 +62,49 @@ def test_find_shop_item_logs_when_missing():
 
     assert found is None
     error_mock.assert_called_once()
+
+
+def test_shop_main_instruction_has_two_clear_lines():
+    instruction_lines = [line.strip() for line in shop_logic.SHOP_RENDER_INSTRUCTION.splitlines() if line.strip()]
+
+    assert len(instruction_lines) == 2
+    assert "Выберите роль" in instruction_lines[0]
+    assert "Проверьте цену" in instruction_lines[1]
+
+
+def test_shop_texts_avoid_technical_wording_for_users():
+    repo_root = Path(__file__).resolve().parents[1]
+    telegram_shop_source = (repo_root / "bot" / "telegram_bot" / "commands" / "shop.py").read_text()
+    discord_shop_source = (repo_root / "bot" / "commands" / "shop.py").read_text()
+
+    def _extract_constant(source: str, name: str) -> str:
+        match = re.search(rf"{name}\s*=\s*\((.*?)\)\n\n", source, flags=re.S)
+        if match:
+            return match.group(1)
+        single_line_match = re.search(rf'{name}\s*=\s*"([^"]+)"', source)
+        return single_line_match.group(1) if single_line_match else ""
+
+    user_texts = [
+        shop_logic.SHOP_RENDER_INSTRUCTION,
+        shop_logic.SHOP_TEXT_CONFIRM_PURCHASE,
+        shop_logic.SHOP_TEXT_ITEM_UNAVAILABLE,
+        shop_logic.SHOP_TEXT_INSUFFICIENT_POINTS,
+        shop_logic.SHOP_TEXT_PAGINATION_ERROR,
+        shop_logic.SHOP_TEXT_ITEM_OPEN_ERROR,
+        _extract_constant(telegram_shop_source, "SHOP_OPEN_PROMPT_TEXT"),
+        _extract_constant(telegram_shop_source, "DM_FALLBACK_TEXT"),
+        _extract_constant(discord_shop_source, "SHOP_OPEN_PROMPT_TEXT"),
+        _extract_constant(discord_shop_source, "DM_FALLBACK_TEXT"),
+    ]
+    forbidden_words = ("pagination", "callback", "provider=", "stacktrace", "exception", "traceback")
+
+    for text in user_texts:
+        lowered = text.lower()
+        for forbidden_word in forbidden_words:
+            assert forbidden_word not in lowered
+
+
+def test_shop_ux_checklist_contains_next_step_for_each_screen():
+    assert len(shop_logic.SHOP_UX_CHECKLIST) == 4
+    assert "следующий шаг" in shop_logic.SHOP_UX_CHECKLIST[0].lower()
+    assert "кнопку «купить»" in shop_logic.SHOP_UX_CHECKLIST[1].lower()

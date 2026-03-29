@@ -8,6 +8,11 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from bot.telegram_bot.identity import persist_telegram_identity_from_user
 from bot.systems.shop_logic import (
     SHOP_PAGE_SIZE,
+    SHOP_TEXT_ACQUIRE_HINT_PLACEHOLDER,
+    SHOP_TEXT_CONFIRM_PURCHASE,
+    SHOP_TEXT_ITEM_NOT_FOUND,
+    SHOP_TEXT_ITEM_PLACEHOLDER,
+    SHOP_TEXT_PAGINATION_ERROR,
     build_shop_render_payload,
     check_shop_profile_access,
     find_shop_item,
@@ -22,7 +27,7 @@ router = Router()
 SHOP_OPEN_PROMPT_TEXT = "Откройте магазин в личных сообщениях, я уже отправил вам инструкцию."
 DM_FALLBACK_TEXT = (
     "❌ Не удалось отправить инструкцию в личные сообщения.\n"
-    "Откройте ЛС с ботом: нажмите на профиль бота → <b>Start</b> / <b>Начать</b>, затем снова отправьте <code>/shop</code>."
+    "Откройте чат с ботом и нажмите <b>Start</b> / <b>Начать</b>, затем снова отправьте <code>/shop</code>."
 )
 
 
@@ -84,8 +89,8 @@ def _shop_text(account_id: str | None, page: int, total_pages: int) -> str:
 
 def _item_card_text(item, account_id: str | None) -> str:
     payload = build_shop_render_payload(account_id)
-    description = item.description or "Описание пока не добавлено."
-    acquire_hint = item.acquire_hint or "Способ получения пока не указан."
+    description = item.description or SHOP_TEXT_ITEM_PLACEHOLDER
+    acquire_hint = item.acquire_hint or SHOP_TEXT_ACQUIRE_HINT_PLACEHOLDER
     price_line = f"Цена: <b>{item.price_points} баллов</b>"
     if item.is_sale_active and item.sale_price_points is not None:
         price_line = (
@@ -106,7 +111,7 @@ def _item_card_text(item, account_id: str | None) -> str:
 def _item_confirm_text(item, account_id: str | None) -> str:
     return (
         f"{_item_card_text(item, account_id)}\n\n"
-        f"⚠️ Подтвердите покупку роли «<b>{item.role_name}</b>» за <b>{item.price_points} баллов</b>."
+        f"{SHOP_TEXT_CONFIRM_PURCHASE}"
     )
 
 
@@ -195,7 +200,7 @@ async def shop_callback(callback: CallbackQuery) -> None:
             item = find_shop_item(items, shop_item_id)
             if not item:
                 logger.error("shop_pagination_error provider=telegram reason=item_not_found actor_user_id=%s shop_item_id=%s", callback.from_user.id, shop_item_id)
-                await callback.answer("Товар не найден, обновите страницу.", show_alert=True)
+                await callback.answer(SHOP_TEXT_ITEM_NOT_FOUND, show_alert=True)
                 return
             logger.info(
                 "shop_item_click provider=telegram actor_user_id=%s account_id=%s shop_item_id=%s page=%s",
@@ -217,7 +222,7 @@ async def shop_callback(callback: CallbackQuery) -> None:
             page = int(parts[3])
             item = find_shop_item(items, shop_item_id)
             if not item:
-                await callback.answer("Товар не найден, обновите страницу.", show_alert=True)
+                await callback.answer(SHOP_TEXT_ITEM_NOT_FOUND, show_alert=True)
                 return
             await callback.message.edit_text(
                 _item_confirm_text(item, profile_check.account_id),
@@ -315,7 +320,7 @@ async def shop_callback(callback: CallbackQuery) -> None:
             return
     except Exception as error:  # noqa: BLE001
         logger.exception("shop_pagination_error provider=telegram actor_user_id=%s data=%s error=%s", callback.from_user.id, data, error)
-        await callback.answer("Ошибка пагинации, попробуйте обновить страницу.", show_alert=True)
+        await callback.answer(SHOP_TEXT_PAGINATION_ERROR, show_alert=True)
         return
 
     logger.error("shop_pagination_error provider=telegram reason=unknown_callback data=%s", data)
