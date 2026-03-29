@@ -336,65 +336,6 @@ class PaymentMenuView(SafeView):
         await safe_defer(interaction, ephemeral=True)
         await process_payment(interaction, self.fine, 0.25)
 
-    @discord.ui.button(label="✏️ Своя сумма", style=discord.ButtonStyle.secondary)
-    async def pay_custom(self, interaction: discord.Interaction, button: Button):
-        await safe_response_send(interaction, "✏️ Введите сумму в чат (30 сек)", ephemeral=True)
-
-        def check(m):
-            return m.author.id == interaction.user.id and m.channel == interaction.channel
-
-        try:
-            msg = await interaction.client.wait_for("message", timeout=30.0, check=check)
-            amount = float(msg.content.strip().replace(",", "."))
-            remaining = self.fine["amount"] - self.fine.get("paid_amount", 0)
-
-            if amount <= 0 or amount > remaining:
-                await safe_followup_send(interaction, f"❌ От 0 до {remaining:.2f} баллов", ephemeral=True)
-                return
-
-            await safe_followup_send(interaction, PROCESSING_TEXT, ephemeral=True)
-            caller_account_id = await asyncio.to_thread(
-                _resolve_payment_account_id,
-                interaction.user.id,
-                handler="PaymentMenuView.pay_custom",
-            )
-            if not caller_account_id:
-                logger.error("custom payment: unresolved account_id discord_user_id=%s", interaction.user.id)
-                await safe_followup_send(interaction, "❌ Не удалось определить ваш аккаунт.", ephemeral=True)
-                return
-            if await asyncio.to_thread(_load_points_by_account, caller_account_id) < amount:
-                await safe_followup_send(interaction, "❌ Недостаточно баллов", ephemeral=True)
-                return
-
-            payment_started_at = time.perf_counter()
-            success = await asyncio.to_thread(
-                db.record_payment_by_account,
-                caller_account_id,
-                self.fine["id"],
-                amount,
-                caller_account_id,
-            )
-            _log_db_duration(
-                table="fine_payments",
-                operation="record_payment_by_account",
-                started_at=payment_started_at,
-                account_id=caller_account_id,
-                interaction_user_id=interaction.user.id,
-                fine_id=self.fine["id"],
-            )
-            if success:
-                updated = await asyncio.to_thread(db.get_fine_by_id, self.fine["id"])
-                if updated:
-                    self.fine.update(updated)
-                await safe_followup_send(interaction, f"✅ Оплачено {amount:.2f} баллов", ephemeral=True)
-            else:
-                await safe_followup_send(interaction, "❌ Ошибка при оплате", ephemeral=True)
-
-        except asyncio.TimeoutError:
-            await safe_followup_send(interaction, "⌛ Время истекло", ephemeral=True)
-        except ValueError:
-            await safe_followup_send(interaction, "❌ Неверное число", ephemeral=True)
-
 
 def get_fine_leaders():
     user_totals = defaultdict(float)
