@@ -11,6 +11,7 @@ from . import guiy_owner  # noqa: F401
 from . import rep as rep_module  # noqa: F401
 from . import modstatus as modstatus_module  # noqa: F401
 from . import title as title_module  # noqa: F401
+from . import shop as shop_module  # noqa: F401
 
 # Import specific commands for explicit access if needed
 from .tournament import (
@@ -23,6 +24,7 @@ from .linking import link_telegram, link, profile, profile_edit, register_accoun
 from .rep import rep
 from .modstatus import modstatus
 from .title import title
+from .shop import shop
 
 __all__ = [
     "bot",
@@ -39,4 +41,5 @@ __all__ = [
     "rep",
     "modstatus",
     "title",
+    "shop",
 ]

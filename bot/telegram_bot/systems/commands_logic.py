@@ -41,6 +41,7 @@ _PUBLIC_HELP_COMMANDS: tuple[str, ...] = (
     "/balance [reply|id] — посмотреть баланс: свой или выбранного пользователя (через reply/id).",
     "/modstatus — единый статус по модерации: активные наказания, предупреждения, последние кейсы и штрафы к оплате.",
     "/myfines — открыть список своих штрафов и перейти к оплате прямо из интерфейса.",
+    "/shop — открыть магазин с кнопкой «Открыть магазин» (лучше запускать в личных сообщениях).",
     "/helpy — показать это меню со списком доступных вам команд и короткими пояснениями.",
 )
 
@@ -183,6 +184,14 @@ def process_register_command(telegram_user_id: int | None) -> str:
     success, payload = register_telegram_account(telegram_user_id)
     prefix = "✅" if success else "❌"
     return f"{prefix} {payload}"
+
+
+def process_shop_command() -> str:
+    return (
+        "🛒 <b>Магазин</b>\n"
+        "Нажмите кнопку <b>«Открыть магазин»</b> ниже.\n"
+        "Если кнопка не открывается, используйте подсказку из сообщения и повторите команду /shop."
+    )
 
 
 def process_profile_command(
