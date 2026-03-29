@@ -223,6 +223,19 @@ class AuthorityService:
     def has_command_permission(provider: str, provider_user_id: str, command_key: str) -> bool:
         actor = AuthorityService.resolve_authority(provider, provider_user_id)
         actor_titles = AuthorityService._normalized_titles(actor.titles)
+        is_operator_only = "оператор" in actor_titles and not bool(actor_titles & SUPER_ADMIN_ROLE_KEYS)
+
+        if is_operator_only and command_key not in MODERATION_PERMISSION_TITLES:
+            logger.info(
+                "authority operator restriction provider=%s user_id=%s command_key=%s actor_level=%s actor_titles=%s allowed=%s",
+                provider,
+                provider_user_id,
+                command_key,
+                actor.level,
+                sorted(actor_titles),
+                False,
+            )
+            return False
 
         if command_key in MODERATION_PERMISSION_TITLES:
             allowed_titles = MODERATION_PERMISSION_TITLES[command_key]
@@ -350,8 +363,20 @@ class AuthorityService:
     @staticmethod
     def can_manage_role(actor_provider: str, actor_user_id: str, target_role: str) -> bool:
         actor = AuthorityService.resolve_authority(actor_provider, actor_user_id)
+        actor_titles = AuthorityService._normalized_titles(actor.titles)
         role_key = normalize_protected_profile_title(target_role)
         target_level = ROLE_LEVELS.get(role_key, 0)
+        is_operator_only = "оператор" in actor_titles and not bool(actor_titles & SUPER_ADMIN_ROLE_KEYS)
+
+        if is_operator_only:
+            logger.info(
+                "authority role-manage denied: operator has moderation-only scope actor=%s:%s actor_level=%s target_role=%s",
+                actor_provider,
+                actor_user_id,
+                actor.level,
+                target_role,
+            )
+            return False
 
         if role_key in SUPER_ADMIN_ROLE_KEYS and actor.level < SUPER_ADMIN_LEVEL:
             logger.info(

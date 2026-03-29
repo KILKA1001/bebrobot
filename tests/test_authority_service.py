@@ -55,6 +55,27 @@ class AuthorityServiceTests(unittest.TestCase):
 
     @patch("bot.services.authority_service.AccountsService.get_account_titles")
     @patch("bot.services.authority_service.AccountsService.resolve_account_id")
+    def test_operator_is_limited_to_moderation_permissions(self, mock_resolve, mock_titles):
+        mock_resolve.return_value = "acc-operator-scope"
+        mock_titles.return_value = ["Оператор"]
+
+        self.assertTrue(AuthorityService.has_command_permission("discord", "201", "moderation_mute"))
+        self.assertTrue(AuthorityService.has_command_permission("discord", "201", "moderation_warn"))
+        self.assertTrue(AuthorityService.has_command_permission("discord", "201", "moderation_ban"))
+        self.assertFalse(AuthorityService.has_command_permission("discord", "201", "points_manage"))
+        self.assertFalse(AuthorityService.has_command_permission("discord", "201", "bank_manage"))
+        self.assertFalse(AuthorityService.has_command_permission("discord", "201", "tickets_manage"))
+
+    @patch("bot.services.authority_service.AccountsService.get_account_titles")
+    @patch("bot.services.authority_service.AccountsService.resolve_account_id")
+    def test_operator_cannot_manage_roles_via_authority_service(self, mock_resolve, mock_titles):
+        mock_resolve.return_value = "acc-operator-role"
+        mock_titles.return_value = ["Оператор"]
+
+        self.assertFalse(AuthorityService.can_manage_role("discord", "202", "админ"))
+
+    @patch("bot.services.authority_service.AccountsService.get_account_titles")
+    @patch("bot.services.authority_service.AccountsService.resolve_account_id")
     def test_hierarchy_allows_peer_roles_for_head_club_and_main_vice(self, mock_resolve, mock_titles):
         def _resolve(_provider, user_id):
             return f"acc-{user_id}"
