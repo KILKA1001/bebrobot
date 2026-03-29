@@ -53,6 +53,8 @@ class ModerationService:
     CITY_HIERARCHY_DEMOTION_CHAIN = ("вице города", "ветеран города", "участник клубов")
     MODERATION_HIERARCHY_DEMOTION_CHAIN = ("оператор", "админ", "младший админ", "участник чата")
     _SUPER_ADMIN_TITLES = {"глава клуба", "главный вице"}
+    _MISSING_TABLE_ERROR_CODES = {"PGRST205", "42P01"}
+    _missing_tables: set[str] = set()
 
     @staticmethod
     def _resolve_account_id(provider: str, provider_user_id: str | int, *, role: str) -> Optional[str]:
@@ -98,6 +100,16 @@ class ModerationService:
             rows = response.data or []
             return dict(rows[0]) if rows else None
         except Exception as exc:
+            if ModerationService._is_missing_table_error(exc):
+                ModerationService._mark_table_missing(table)
+                logger.error(
+                    "moderation select failed missing table=%s filters=%s error=%s. "
+                    "Create table in DB or refresh schema cache.",
+                    table,
+                    filters,
+                    exc,
+                )
+                return None
             logger.exception("moderation select failed table=%s filters=%s error=%s", table, filters, exc)
             return None
 
@@ -117,13 +129,59 @@ class ModerationService:
             response = query.execute()
             return [dict(row) for row in (response.data or [])]
         except Exception as exc:
+            if ModerationService._is_missing_table_error(exc):
+                ModerationService._mark_table_missing(table)
+                logger.error(
+                    "moderation select many failed missing table=%s filters=%s error=%s. "
+                    "Create table in DB or refresh schema cache.",
+                    table,
+                    filters,
+                    exc,
+                )
+                return []
             logger.exception("moderation select many failed table=%s filters=%s error=%s", table, filters, exc)
             return []
+
+    @staticmethod
+    def _is_missing_table_error(exc: Exception) -> bool:
+        code = getattr(exc, "code", None)
+        if code and str(code).upper() in ModerationService._MISSING_TABLE_ERROR_CODES:
+            return True
+        error_payload = getattr(exc, "args", ())
+        if not error_payload:
+            return False
+        first_payload = error_payload[0]
+        if isinstance(first_payload, dict):
+            payload_code = str(first_payload.get("code") or "").upper()
+            if payload_code in ModerationService._MISSING_TABLE_ERROR_CODES:
+                return True
+            message = str(first_payload.get("message") or "").lower()
+            return "could not find the table" in message
+        return "could not find the table" in str(exc).lower()
+
+    @classmethod
+    def _mark_table_missing(cls, table: str) -> None:
+        normalized_table = str(table or "").strip()
+        if normalized_table:
+            cls._missing_tables.add(normalized_table)
+
+    @classmethod
+    def _is_table_missing(cls, table: str) -> bool:
+        normalized_table = str(table or "").strip()
+        if not normalized_table:
+            return False
+        if normalized_table in cls._missing_tables:
+            return True
+        return hasattr(db, "tables") and normalized_table not in getattr(db, "tables", {})
 
     @staticmethod
     def _insert_row(table: str, payload: dict[str, Any]) -> Optional[dict]:
         if not db.supabase:
             logger.error("moderation insert skipped: supabase is not initialized table=%s", table)
+            return None
+        if hasattr(db, "tables") and table not in getattr(db, "tables", {}):
+            ModerationService._mark_table_missing(table)
+            logger.warning("moderation insert skipped missing fake table=%s payload=%s", table, payload)
             return None
 
         try:
@@ -134,6 +192,16 @@ class ModerationService:
                 return None
             return dict(rows[0])
         except Exception as exc:
+            if ModerationService._is_missing_table_error(exc):
+                ModerationService._mark_table_missing(table)
+                logger.error(
+                    "moderation insert failed missing table=%s payload=%s error=%s. "
+                    "Create table in DB or refresh schema cache.",
+                    table,
+                    payload,
+                    exc,
+                )
+                return None
             logger.exception("moderation insert failed table=%s payload=%s error=%s", table, payload, exc)
             return None
 
@@ -1305,6 +1373,25 @@ class ModerationService:
         }
         case_fine_row = ModerationService._insert_row("moderation_case_fines", payload)
         if not case_fine_row:
+            if ModerationService._is_table_missing("moderation_case_fines"):
+                logger.warning(
+                    "⚠️ moderation case fine table missing: fallback to legacy fine only case_id=%s legacy_fine_id=%s",
+                    case_id,
+                    legacy_fine.get("id"),
+                )
+                return {
+                    "id": None,
+                    "account_id": account_id,
+                    "status": "pending",
+                    "amount_total": amount_total,
+                    "amount_paid": 0.0,
+                    "due_date": due_at_dt.isoformat(),
+                    "source_case_id": case_id,
+                    "payment_mode": ModerationService.FINE_PAYMENT_MODE_MANUAL,
+                    "legacy_fine_id": legacy_fine.get("id"),
+                    "created_at": created_at_iso,
+                    "updated_at": created_at_iso,
+                }
             logger.error(
                 "❌ moderation case fine debt create failed: moderation_case_fines insert failed case_id=%s legacy_fine_id=%s",
                 case_id,

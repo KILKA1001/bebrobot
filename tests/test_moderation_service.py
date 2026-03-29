@@ -348,6 +348,28 @@ class ModerationServiceTests(unittest.TestCase):
         self.assertIn("payment_mode=manual", self.fake_db.tables["moderation_actions"][-1]["value_text"])
         self.assertIn("ждёт оплаты", result["ui_payload"]["moderator_result_text"])
 
+    def test_apply_violation_manual_fine_falls_back_to_legacy_fine_when_case_fine_table_missing(self):
+        self.mock_resolve.side_effect = ["acc-actor", "acc-target"]
+        self.fake_db.tables["moderation_penalty_rules"][0]["fine_payment_mode"] = "manual"
+        self.fake_db.tables.pop("moderation_case_fines")
+
+        result = ModerationService.apply_violation(
+            provider="discord",
+            actor="111",
+            target="222",
+            violation_code="spam",
+            reason_text="Manual payment without case_fines table",
+            source_platform="discord",
+            source_chat_id="987",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(self.fake_db.tables["bank"][0]["total"], 0.0)
+        self.assertEqual(len(self.fake_db.tables["fines"]), 1)
+        self.assertEqual(self.fake_db.tables["moderation_actions"][-1]["action_type"], "fine_points")
+        self.assertIn("payment_mode=manual", self.fake_db.tables["moderation_actions"][-1]["value_text"])
+        self.assertIn("ждёт оплаты", result["ui_payload"]["moderator_result_text"])
+
     def test_apply_violation_does_not_auto_ban_without_active_ban_rule(self):
         self.mock_resolve.side_effect = ["acc-actor", "acc-target"]
         self.fake_db.tables["moderation_penalty_rules"] = [
