@@ -128,7 +128,7 @@ async def _guard_callback_actor(callback: CallbackQuery, owner_id: str | None) -
             callback.from_user.id,
             owner_id,
         )
-        await callback.answer("Чушка, не суй свой пятак в чужой пердак")
+        await callback.answer("Эта панель открыта для другого администратора. Запустите свою команду заново.", show_alert=True)
         return False
     return True
 
@@ -243,7 +243,11 @@ async def balance_command(message: Message) -> None:
             logger=logger,
         )
         if not profile:
-            await message.answer("❌ Профиль не найден. Сначала выполните /register")
+            await message.answer(
+                "❌ Профиль не найден.\n"
+                "Что делать сейчас: откройте личный чат с ботом и выполните /register.\n"
+                "Что будет дальше: после регистрации команды баллов и билетов станут доступны."
+            )
             return
 
         points, tickets_normal, tickets_gold = await run_blocking_io(
@@ -290,7 +294,11 @@ async def points_menu_command(message: Message) -> None:
             logger=logger,
         )
         if not _can_manage_points(authority.level):
-            await message.answer("Недоступно по вашему званию.")
+            await message.answer(
+                "❌ Команда пока недоступна для вашего звания.\n"
+                "Что делать сейчас: обратитесь к старшему администратору.\n"
+                "Что будет дальше: после выдачи прав сможете управлять баллами."
+            )
             return
 
         if str(target_id) == actor_id:
@@ -362,7 +370,11 @@ async def tickets_menu_command(message: Message) -> None:
             logger=logger,
         )
         if not _can_manage_tickets(authority.titles, authority.level):
-            await message.answer("Недоступно по вашему званию.")
+            await message.answer(
+                "❌ Команда пока недоступна для вашего звания.\n"
+                "Что делать сейчас: обратитесь к старшему администратору.\n"
+                "Что будет дальше: после выдачи прав сможете управлять билетами."
+            )
             return
 
         if str(target_id) == actor_id:
@@ -440,7 +452,7 @@ async def points_callback(callback: CallbackQuery) -> None:
         )
         if not _can_manage_points(authority.level):
             logger.warning("points callback denied by authority actor_id=%s action=%s", actor_id, action)
-            await callback.answer("Недоступно по вашему званию.", show_alert=True)
+            await callback.answer("Команда недоступна по вашему званию. Обратитесь к старшему администратору.", show_alert=True)
             return
 
         if target_id == actor_id:
@@ -525,7 +537,7 @@ async def tickets_callback(callback: CallbackQuery) -> None:
         )
         if not _can_manage_tickets(authority.titles, authority.level):
             logger.warning("tickets callback denied by authority actor_id=%s action=%s", actor_id, action)
-            await callback.answer("Недоступно по вашему званию.", show_alert=True)
+            await callback.answer("Команда недоступна по вашему званию. Обратитесь к старшему администратору.", show_alert=True)
             return
 
         if target_id == actor_id:

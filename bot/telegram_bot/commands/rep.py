@@ -268,6 +268,11 @@ async def rep_command(message: Message) -> None:
     if not message.from_user:
         return
     persist_telegram_identity_from_user(message.from_user)
+    logger.info(
+        "ux_screen_open event=ux_screen_open screen=rep_start provider=telegram actor_user_id=%s chat_id=%s",
+        message.from_user.id,
+        message.chat.id,
+    )
     if not AuthorityService.has_command_permission("telegram", str(message.from_user.id), "moderation_mute"):
         _log_rep(
             "warning",
@@ -284,6 +289,10 @@ async def rep_command(message: Message) -> None:
             error_code="authority_denied",
         )
         await message.answer(f"❌ {render_rep_authority_deny_text('Команда /rep доступна только ролям модерации. Если доступ должен быть, проверьте authority и попробуйте ещё раз.')}")
+        logger.error(
+            "ux_fallback_shown event=ux_fallback_shown screen=rep_start provider=telegram actor_user_id=%s reason=authority_denied",
+            message.from_user.id,
+        )
         return
     pending = PendingRepState(step="await_target", created_at=time.time(), payload={"chat_id": message.chat.id})
     _PENDING_REP[message.from_user.id] = pending

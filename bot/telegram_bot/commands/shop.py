@@ -87,6 +87,10 @@ def _build_confirm_keyboard(*, shop_item_id: str, page: int, price_points: int) 
 
 
 def _shop_text(account_id: str | None, page: int, total_pages: int) -> str:
+    logger.info(
+        "ux_action_hint_shown event=ux_action_hint_shown screen=shop_list provider=telegram account_id=%s",
+        account_id,
+    )
     return (
         "🛒 <b>Магазин — Роли</b>\n"
         "Выберите роль из списка.\n"
@@ -97,6 +101,14 @@ def _shop_text(account_id: str | None, page: int, total_pages: int) -> str:
 
 def _shop_categories_text(account_id: str | None) -> str:
     payload = build_shop_render_payload(account_id)
+    logger.info(
+        "ux_screen_open event=ux_screen_open screen=shop_categories provider=telegram account_id=%s",
+        account_id,
+    )
+    logger.info(
+        "ux_action_hint_shown event=ux_action_hint_shown screen=shop_categories provider=telegram account_id=%s",
+        account_id,
+    )
     return (
         "🛒 <b>Магазин</b>\n"
         f"Баланс: <b>{payload.points} баллов</b>\n"
@@ -194,6 +206,10 @@ async def shop_command(message: Message) -> None:
         )
     except (TelegramForbiddenError, TelegramBadRequest) as error:
         logger.exception("shop_dm_transfer_error provider=telegram actor_user_id=%s dm_sent=false error=%s", message.from_user.id, error)
+        logger.error(
+            "ux_fallback_shown event=ux_fallback_shown screen=shop_dm_transfer provider=telegram actor_user_id=%s",
+            message.from_user.id,
+        )
         await message.answer(DM_FALLBACK_TEXT, parse_mode="HTML")
 
 
@@ -238,6 +254,11 @@ async def shop_callback(callback: CallbackQuery) -> None:
             except Exception as error:  # noqa: BLE001
                 logger.exception(
                     "shop_list_screen_render_error provider=telegram actor_user_id=%s action=category_select error=%s",
+                    callback.from_user.id,
+                    error,
+                )
+                logger.exception(
+                    "ux_render_error event=ux_render_error screen=shop_list provider=telegram actor_user_id=%s error=%s",
                     callback.from_user.id,
                     error,
                 )

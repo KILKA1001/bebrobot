@@ -9,6 +9,7 @@ from bot.services import AccountsService, AuthorityService, RoleManagementServic
 from bot.services.profile_titles import normalize_protected_profile_title
 from bot.services.role_management_service import USER_ACQUIRE_HINT_PLACEHOLDER
 from bot.services.shop_service import build_shop_prompt_text
+from bot.services.ux_texts import compose_three_block_message
 from bot.systems.roles_catalog_shared import (
     ROLES_CATALOG_FOOTER_TEXT,
     ROLES_CATALOG_TITLE,
@@ -178,13 +179,29 @@ def process_register_command(telegram_user_id: int | None) -> str:
             action="extract_platform_user_id",
             continue_execution=False,
         )
-        return "Не удалось определить пользователя Telegram."
+        return compose_three_block_message(
+            what="Не получилось определить ваш Telegram-профиль.",
+            now="Закройте и откройте чат с ботом, затем повторите /register.",
+            next_step="Бот создаст общий профиль и откроет остальные команды.",
+            emoji="❌",
+        )
 
     from bot.systems.linking_logic import register_telegram_account
 
     success, payload = register_telegram_account(telegram_user_id)
-    prefix = "✅" if success else "❌"
-    return f"{prefix} {payload}"
+    if success:
+        return compose_three_block_message(
+            what="Профиль создан.",
+            now="Откройте /profile, чтобы проверить данные.",
+            next_step="Станут доступны магазин, роли и модерационные экраны.",
+            emoji="✅",
+        )
+    return compose_three_block_message(
+        what="Профиль пока не создан.",
+        now="Повторите /register через минуту.",
+        next_step=f"Если ошибка повторяется, передайте администратору текст: {payload}",
+        emoji="❌",
+    )
 
 
 def process_shop_command() -> str:
@@ -223,11 +240,21 @@ def process_profile_command(
             provider="telegram",
             provider_user_id=lookup_user_id,
         )
-        return "❌ Профиль не найден. Сначала выполните /register"
+        return compose_three_block_message(
+            what="Профиль ещё не создан.",
+            now="Отправьте /register в личном чате с ботом.",
+            next_step="После регистрации команда /profile откроет ваш профиль.",
+            emoji="❌",
+        )
 
     data = AccountsService.get_profile_by_account(account_id, display_name=lookup_display_name)
     if not data:
-        return "❌ Профиль не найден. Сначала выполните /register"
+        return compose_three_block_message(
+            what="Профиль ещё не создан.",
+            now="Отправьте /register в личном чате с ботом.",
+            next_step="После регистрации команда /profile откроет ваш профиль.",
+            emoji="❌",
+        )
 
     title_name = escape(data["custom_nick"])
     target_platform_name = (lookup_display_name or "").strip()
@@ -277,7 +304,12 @@ def process_link_command(
     is_private_chat: bool = True,
 ) -> str:
     if not is_private_chat:
-        return "❌ Команда привязки доступна только в личных сообщениях с ботом."
+        return compose_three_block_message(
+            what="Привязка работает только в личном чате.",
+            now="Откройте личные сообщения с ботом и повторите команду.",
+            next_step="Бот примет код и свяжет аккаунты Telegram и Discord.",
+            emoji="❌",
+        )
 
     text = (message_text or "").strip()
     parts = text.split(maxsplit=1)

@@ -773,6 +773,10 @@ async def _prefill_target_from_context(ctx: commands.Context, raw_target: str | 
 
 @bot.hybrid_command(name="rep", description="Интерактивная единая команда модерации")
 async def rep(ctx: commands.Context, *, target: str | None = None):
+    logger.info(
+        "ux_screen_open event=ux_screen_open screen=rep_start provider=discord actor_user_id=%s",
+        ctx.author.id,
+    )
     if not AuthorityService.has_command_permission("discord", str(ctx.author.id), "moderation_mute"):
         logger.warning(
             "rep authority deny provider=%s chat_id=%s actor=%s actor_account_id=%s target=%s target_account_id=%s violation_code=%s selected_actions=%s case_id=%s error_code=%s",
@@ -788,6 +792,10 @@ async def rep(ctx: commands.Context, *, target: str | None = None):
             "authority_denied",
         )
         await send_temp(ctx, f"❌ {render_rep_authority_deny_text('Команда /rep доступна только ролям модерации. Если доступ должен быть — проверьте authority и попробуйте ещё раз.')}")
+        logger.error(
+            "ux_fallback_shown event=ux_fallback_shown screen=rep_start provider=discord actor_user_id=%s reason=authority_denied",
+            ctx.author.id,
+        )
         return
     view = DiscordRepFlowView(
         actor_id=ctx.author.id,
