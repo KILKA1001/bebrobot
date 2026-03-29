@@ -120,8 +120,23 @@ class DiscordRolesAdminTests(unittest.IsolatedAsyncioTestCase):
         labels = [child.label for child in view.children]
 
         self.assertNotIn("Категории", labels)
+        self.assertNotIn("⚙️ Настройка магазина", labels)
         self.assertIn("Роли", labels)
         self.assertIn("Пользователи", labels)
+
+    def test_rolesadmin_help_view_shows_shop_settings_for_category_managers(self):
+        visibility = roles_admin.RolesAdminVisibilityContext(
+            actor_level=100,
+            actor_titles=("Глава клуба",),
+            can_manage_categories=True,
+            can_manage_roles=True,
+            hidden_sections=(),
+        )
+
+        view = roles_admin.RolesAdminHelpView(actor_id=111, visibility=visibility, guild_id=222)
+        labels = [child.label for child in view.children]
+
+        self.assertIn("⚙️ Настройка магазина", labels)
 
     async def test_rolesadmin_list_runs_implicit_sync_before_listing(self):
         ctx = self._build_ctx()
@@ -502,4 +517,3 @@ class DiscordRolesAdminTests(unittest.IsolatedAsyncioTestCase):
             await roles_admin.rolesadmin_role_create(ctx, "General", "New", "Описание", "Через турнир", None, None)
 
         self.assertIn("Это уже звание, а не каталожная роль", send_mock.await_args_list[-1].args[1])
-
