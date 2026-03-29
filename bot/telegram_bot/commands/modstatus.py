@@ -6,9 +6,9 @@ from typing import Any
 from aiogram import Router
 from aiogram import F
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from bot.services import AccountsService, AuthorityService, ModerationService
+from bot.services import AccountsService, AuthorityService, ModerationNotificationsService, ModerationService
 from bot.telegram_bot.commands.fines import send_legacy_fines_panel
 from bot.telegram_bot.commands.roles_admin import _resolve_telegram_target
 from bot.telegram_bot.identity import persist_telegram_identity_from_user
@@ -19,6 +19,91 @@ _PAYMENT_HINT = ModerationService.MODSTATUS_PAYMENT_HINT
 _OPEN_LEGACY_FINES_CALLBACK = "modstatus:open_legacy_fines"
 _ROLLBACK_CALLBACK = "modstatus:rollback"
 _ROLLBACK_SELECT_CALLBACK = "modstatus:rollback_select"
+
+_TELEGRAM_UNMUTE_PERMISSIONS = ChatPermissions(
+    can_send_messages=True,
+    can_send_audios=True,
+    can_send_documents=True,
+    can_send_photos=True,
+    can_send_videos=True,
+    can_send_video_notes=True,
+    can_send_voice_notes=True,
+    can_send_polls=True,
+    can_send_other_messages=True,
+    can_add_web_page_previews=True,
+    can_change_info=False,
+    can_invite_users=True,
+    can_pin_messages=False,
+    can_manage_topics=False,
+)
+
+
+async def _rollback_telegram_runtime_sanctions(
+    *,
+    callback: CallbackQuery,
+    target_user_id: str,
+    rollback_result: dict[str, Any],
+) -> None:
+    chat_id = callback.message.chat.id if callback.message else None
+    actor_id = callback.from_user.id if callback.from_user else None
+    normalized_target_user_id = int(str(target_user_id or "0") or 0)
+    if not chat_id or not normalized_target_user_id:
+        logger.error(
+            "telegram modstatus rollback runtime skipped reason=%s actor_id=%s target_id=%s chat_id=%s case_id=%s",
+            "invalid_target_or_chat",
+            actor_id,
+            target_user_id,
+            chat_id,
+            rollback_result.get("case_id"),
+        )
+        return
+
+    if rollback_result.get("had_mute"):
+        try:
+            await callback.bot.restrict_chat_member(
+                chat_id=chat_id,
+                user_id=normalized_target_user_id,
+                permissions=_TELEGRAM_UNMUTE_PERMISSIONS,
+                use_independent_chat_permissions=False,
+            )
+            logger.info(
+                "telegram modstatus rollback runtime mute removed actor_id=%s target_id=%s chat_id=%s case_id=%s",
+                actor_id,
+                normalized_target_user_id,
+                chat_id,
+                rollback_result.get("case_id"),
+            )
+        except Exception:
+            logger.exception(
+                "telegram modstatus rollback runtime unmute failed actor_id=%s target_id=%s chat_id=%s case_id=%s",
+                actor_id,
+                normalized_target_user_id,
+                chat_id,
+                rollback_result.get("case_id"),
+            )
+
+    if rollback_result.get("had_ban_or_kick"):
+        try:
+            await callback.bot.unban_chat_member(
+                chat_id=chat_id,
+                user_id=normalized_target_user_id,
+                only_if_banned=True,
+            )
+            logger.info(
+                "telegram modstatus rollback runtime unban success actor_id=%s target_id=%s chat_id=%s case_id=%s",
+                actor_id,
+                normalized_target_user_id,
+                chat_id,
+                rollback_result.get("case_id"),
+            )
+        except Exception:
+            logger.exception(
+                "telegram modstatus rollback runtime unban failed actor_id=%s target_id=%s chat_id=%s case_id=%s",
+                actor_id,
+                normalized_target_user_id,
+                chat_id,
+                rollback_result.get("case_id"),
+            )
 
 
 @router.message(Command("modstatus"))
@@ -205,6 +290,11 @@ async def modstatus_rollback_case(callback: CallbackQuery) -> None:
     if not result.get("ok"):
         await callback.answer(str(result.get("message") or "Не удалось снять наказание."), show_alert=True)
         return
+    await _rollback_telegram_runtime_sanctions(
+        callback=callback,
+        target_user_id=target_user_id,
+        rollback_result=result,
+    )
     await callback.answer("✅ Наказание снято.", show_alert=True)
     if result.get("had_ban_or_kick"):
         text = (

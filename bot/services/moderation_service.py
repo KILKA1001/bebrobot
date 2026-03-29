@@ -812,6 +812,7 @@ class ModerationService:
             "case": case_row,
             "target": target_subject,
             "rollback_status": rollback_status,
+            "had_mute": bool(mute_row),
             "had_ban_or_kick": bool(
                 ban_row
                 or any(str(row.get("action_type") or "").strip().lower() == ModerationService.ACTION_KICK for row in actions)
