@@ -187,16 +187,40 @@ def _admin_actions_keyboard() -> InlineKeyboardMarkup:
 
 
 def _shop_admin_roles() -> list[str]:
-    grouped = RoleManagementService.list_public_roles_catalog(
+    # Для админ-настройки магазина показываем все продаваемые роли,
+    # даже если роль скрыта из публичного каталога /roles.
+    # Иначе возникает ложная ситуация "нет ролей с признаком продаваемости",
+    # когда is_sellable=true в БД, но show_in_roles_catalog=false.
+    grouped = RoleManagementService.list_roles_grouped(
         log_context="shop:telegram:admin_roles",
-        only_sellable=True,
     ) or []
     roles: list[str] = []
+    total_roles = 0
+    blocked_non_sellable = 0
     for category in grouped:
         for role in list(category.get("roles") or []):
+            total_roles += 1
+            if not bool(role.get("is_sellable")):
+                blocked_non_sellable += 1
+                continue
             role_name = str(role.get("role") or "").strip()
             if role_name:
                 roles.append(role_name)
+    if not roles:
+        logger.error(
+            "shop_admin_roles_empty_after_sellable_filter provider=telegram grouped_categories=%s total_roles=%s blocked_non_sellable=%s",
+            len(grouped),
+            total_roles,
+            blocked_non_sellable,
+        )
+    else:
+        logger.info(
+            "shop_admin_roles_loaded provider=telegram grouped_categories=%s total_roles=%s sellable_roles=%s blocked_non_sellable=%s",
+            len(grouped),
+            total_roles,
+            len(roles),
+            blocked_non_sellable,
+        )
     return roles
 
 
