@@ -142,7 +142,7 @@ def _target_keyboard(actor_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def _violations_keyboard(actor_id: int) -> InlineKeyboardMarkup:
+def _violations_keyboard(actor_id: int, violations: list[dict[str, Any]] | None = None, *, show_escalation: bool = False) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     rows.append([InlineKeyboardButton(text="🔧 Мут", callback_data=f"rep:{actor_id}:manual:mute")])
     rows.append([InlineKeyboardButton(text="🔧 Пред", callback_data=f"rep:{actor_id}:manual:warn")])
