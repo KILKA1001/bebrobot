@@ -58,13 +58,13 @@ async def send_legacy_fines_panel(*, message: Message, telegram_user_id: int) ->
     fines = FinesService.get_user_fines_by_account(str(account_id), active_only=True)
     if not fines:
         await message.answer(
-            "✅ У вас нет активных legacy-штрафов.\n"
+            "✅ У вас нет активных штрафов.\n"
             "Для просмотра активных наказаний и кейсов используйте /modstatus."
         )
         return
 
     await message.answer(
-        "💳 Панель оплаты legacy-штрафов из /modstatus.\n"
+        "💳 Панель оплаты штрафов из /modstatus.\n"
         "Выберите кнопку оплаты под нужным штрафом.\n"
         "Если штраф уже списан автоматически в кейсе /rep, повторно платить не нужно."
     )

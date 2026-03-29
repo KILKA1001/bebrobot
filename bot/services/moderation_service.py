@@ -439,6 +439,7 @@ class ModerationService:
     def list_active_penalties(account_id: str) -> list[dict[str, Any]]:
         now = datetime.now(timezone.utc)
         penalties: list[dict[str, Any]] = []
+        linked_case_fine_ids_by_legacy_id: dict[int, str] = {}
 
         warn_state = ModerationService._load_warn_state(account_id)
         for warn_action in ModerationService._active_warn_actions(account_id):
@@ -489,26 +490,42 @@ class ModerationService:
         except Exception:
             logger.exception("moderation snapshot fines lookup failed account_id=%s", account_id)
             fines = []
+        legacy_penalties_by_fine_id: dict[int, dict[str, Any]] = {}
         for fine in fines:
             amount = ModerationService._safe_float(fine.get("amount"), 0.0)
             paid_amount = ModerationService._safe_float(fine.get("paid_amount"), 0.0)
             remaining = round(max(0.0, amount - paid_amount), 2)
             if remaining <= 0 or ModerationService._is_truthy(fine.get("is_paid")) or ModerationService._is_truthy(fine.get("is_canceled")):
                 continue
-            penalties.append(
-                {
-                    "kind": "legacy_fine",
-                    "fine_id": fine.get("id"),
-                    "case_id": None,
-                    "value": remaining,
-                    "amount": amount,
-                    "paid_amount": paid_amount,
-                    "reason": str(fine.get("reason") or "Legacy-штраф"),
-                    "starts_at": fine.get("created_at"),
-                    "ends_at": fine.get("due_date"),
-                    "status": "overdue" if ModerationService._is_truthy(fine.get("is_overdue")) else "unpaid",
-                    "type": fine.get("type"),
-                }
+            fine_id = ModerationService._safe_int(fine.get("id"), 0)
+            penalty = {
+                "kind": "legacy_fine",
+                "fine_id": fine.get("id"),
+                "case_id": None,
+                "value": remaining,
+                "amount": amount,
+                "paid_amount": paid_amount,
+                "reason": str(fine.get("reason") or "Штраф"),
+                "starts_at": fine.get("created_at"),
+                "ends_at": fine.get("due_date"),
+                "status": "overdue" if ModerationService._is_truthy(fine.get("is_overdue")) else "unpaid",
+                "type": fine.get("type"),
+                "payment_mode": ModerationService.FINE_PAYMENT_MODE_LEGACY,
+                "payment_source": "legacy",
+                "dedupe_result": "keep",
+            }
+            penalties.append(penalty)
+            if fine_id > 0:
+                legacy_penalties_by_fine_id[fine_id] = penalty
+            logger.info(
+                "moderation fines render account_id=%s case_id=%s fine_id=%s payment_mode=%s remaining=%s source=%s dedupe_result=%s",
+                account_id,
+                None,
+                fine.get("id"),
+                ModerationService.FINE_PAYMENT_MODE_LEGACY,
+                remaining,
+                "legacy",
+                "keep",
             )
 
         for case_fine in ModerationService._select_many("moderation_case_fines", account_id=account_id):
@@ -516,8 +533,10 @@ class ModerationService:
             amount_total = ModerationService._safe_float(case_fine.get("amount_total"), 0.0)
             amount_paid = ModerationService._safe_float(case_fine.get("amount_paid"), 0.0)
             legacy_fine_id = case_fine.get("legacy_fine_id")
-            if legacy_fine_id and hasattr(db, "get_fine_by_id"):
-                linked_fine = db.get_fine_by_id(int(legacy_fine_id))
+            linked_fine: dict[str, Any] | None = None
+            linked_legacy_fine_id = ModerationService._safe_int(legacy_fine_id, 0)
+            if linked_legacy_fine_id > 0 and hasattr(db, "get_fine_by_id"):
+                linked_fine = db.get_fine_by_id(int(linked_legacy_fine_id))
                 if linked_fine:
                     amount_total = ModerationService._safe_float(linked_fine.get("amount"), amount_total)
                     amount_paid = ModerationService._safe_float(linked_fine.get("paid_amount"), amount_paid)
@@ -527,8 +546,45 @@ class ModerationService:
                 status=str(case_fine.get("status") or ""),
             )
             if payment_mode != ModerationService.FINE_PAYMENT_MODE_INSTANT and fine_status == "paid":
+                logger.info(
+                    "moderation fines render account_id=%s case_id=%s fine_id=%s payment_mode=%s remaining=%s source=%s dedupe_result=%s",
+                    account_id,
+                    case_fine.get("source_case_id"),
+                    case_fine.get("id"),
+                    payment_mode,
+                    round(max(0.0, amount_total - amount_paid), 2),
+                    "case",
+                    "skip_paid",
+                )
                 continue
             if fine_status == "canceled":
+                logger.info(
+                    "moderation fines render account_id=%s case_id=%s fine_id=%s payment_mode=%s remaining=%s source=%s dedupe_result=%s",
+                    account_id,
+                    case_fine.get("source_case_id"),
+                    case_fine.get("id"),
+                    payment_mode,
+                    round(max(0.0, amount_total - amount_paid), 2),
+                    "case",
+                    "skip_canceled",
+                )
+                continue
+            if linked_legacy_fine_id > 0 and linked_legacy_fine_id in legacy_penalties_by_fine_id:
+                linked_case_fine_ids_by_legacy_id[linked_legacy_fine_id] = str(case_fine.get("id") or "")
+                linked_penalty = legacy_penalties_by_fine_id[linked_legacy_fine_id]
+                linked_penalty["case_id"] = case_fine.get("source_case_id")
+                linked_penalty["case_fine_id"] = case_fine.get("id")
+                linked_penalty["dedupe_result"] = "merged_from_case_link"
+                logger.info(
+                    "moderation fines render account_id=%s case_id=%s fine_id=%s payment_mode=%s remaining=%s source=%s dedupe_result=%s",
+                    account_id,
+                    case_fine.get("source_case_id"),
+                    case_fine.get("id"),
+                    payment_mode,
+                    round(max(0.0, amount_total - amount_paid), 2),
+                    "case",
+                    "skip_duplicate_linked_legacy",
+                )
                 continue
             penalties.append(
                 {
@@ -544,10 +600,30 @@ class ModerationService:
                     "status": fine_status,
                     "payment_mode": payment_mode,
                     "legacy_fine_id": legacy_fine_id,
+                    "payment_source": "case",
+                    "dedupe_result": "keep",
                 }
+            )
+            logger.info(
+                "moderation fines render account_id=%s case_id=%s fine_id=%s payment_mode=%s remaining=%s source=%s dedupe_result=%s",
+                account_id,
+                case_fine.get("source_case_id"),
+                case_fine.get("id"),
+                payment_mode,
+                round(max(0.0, amount_total - amount_paid), 2),
+                "case",
+                "keep",
             )
 
         penalties.sort(key=lambda item: ModerationService._parse_dt(item.get("starts_at")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        if linked_case_fine_ids_by_legacy_id:
+            logger.info(
+                "moderation fines dedupe summary account_id=%s linked_legacy_count=%s linked_legacy_ids=%s linked_case_fine_ids=%s",
+                account_id,
+                len(linked_case_fine_ids_by_legacy_id),
+                sorted(linked_case_fine_ids_by_legacy_id.keys()),
+                sorted(linked_case_fine_ids_by_legacy_id.values()),
+            )
         return penalties
 
     @staticmethod
@@ -692,7 +768,7 @@ class ModerationService:
                     lines.append(
                         f"• Денежный штраф #{item.get('fine_id')} — осталось {ModerationService._format_points_value(item.get('value') or 0)} баллов, срок {due_text}, статус: {status}."
                     )
-                    lines.append("  ↳ Это legacy-штраф переходного периода: оплата вручную кнопкой в /modstatus.")
+                    lines.append("  ↳ Для оплаты используйте кнопку «Оплатить штраф» в /modstatus.")
                 elif kind == "case_fine":
                     due = ModerationService._parse_dt(item.get("ends_at"))
                     due_text = due.strftime('%d.%m.%Y') if due else "дата не указана"
@@ -704,7 +780,7 @@ class ModerationService:
                     if payment_mode == ModerationService.FINE_PAYMENT_MODE_INSTANT:
                         lines.append("  ↳ Этот штраф уже удержан автоматически.")
                     else:
-                        lines.append("  ↳ Этот штраф нужно оплатить вручную.")
+                        lines.append("  ↳ Для оплаты используйте кнопку «Оплатить штраф» в /modstatus.")
 
         lines.extend([
             "",

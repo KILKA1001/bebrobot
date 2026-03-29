@@ -212,7 +212,7 @@ class _OpenPaymentButton(discord.ui.Button):
             await interaction.followup.send("❌ Не удалось открыть список штрафов. Подробности в консоли.", ephemeral=True)
             return
         if not sent:
-            await interaction.followup.send("✅ У вас нет активных штрафов legacy-формата.", ephemeral=True)
+            await interaction.followup.send("✅ У вас нет активных штрафов для оплаты.", ephemeral=True)
 
 class _RollbackPunishmentButton(discord.ui.Button):
     def __init__(self) -> None:
