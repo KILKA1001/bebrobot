@@ -186,11 +186,14 @@ class ShopView(discord.ui.View):
         payload = build_shop_render_payload(self.account_id)
         description = item.description or "Описание пока не добавлено."
         acquire_hint = item.acquire_hint or "Способ получения пока не указан."
+        price_line = f"Цена: **{item.price_points} баллов**"
+        if item.is_sale_active and item.sale_price_points is not None:
+            price_line = f"Цена: **{item.price_points} баллов** (акция)\nБазовая цена: ~~{item.base_price_points} баллов~~"
         embed = discord.Embed(title=item.role_name, color=discord.Color.blurple())
         embed.description = (
             f"Баланс: **{payload.points} баллов**\n"
             f"Категория: **{item.category}**\n"
-            f"Цена: **{item.price_points} баллов**\n"
+            f"{price_line}\n"
             f"Описание: {description}\n"
             f"Как получить: {acquire_hint}"
         )

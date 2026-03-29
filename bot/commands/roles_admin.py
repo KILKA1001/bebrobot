@@ -1407,6 +1407,95 @@ async def rolesadmin_role_edit_sellable(ctx: commands.Context, name: str, is_sel
         await send_temp(ctx, "❌ Не удалось обновить признак продажи роли (смотри логи).")
 
 
+@rolesadmin.command(name="shop_add", description="Добавить роль на витрину магазина")
+async def rolesadmin_shop_add(ctx: commands.Context, role_name: str, base_price_points: int, display_position: int | None = None):
+    if not await _ensure_roles_admin(ctx):
+        return
+    ok = RoleManagementService.upsert_shop_role_item(
+        role_name,
+        base_price_points=base_price_points,
+        display_position=display_position,
+        is_active=True,
+        actor_provider="discord",
+        actor_user_id=str(ctx.author.id),
+        source="discord_command",
+    )
+    await send_temp(ctx, "✅ Роль добавлена на витрину магазина." if ok else "❌ Не удалось добавить роль на витрину (смотри логи).")
+
+
+@rolesadmin.command(name="shop_remove", description="Убрать роль с витрины магазина")
+async def rolesadmin_shop_remove(ctx: commands.Context, role_name: str):
+    if not await _ensure_roles_admin(ctx):
+        return
+    ok = RoleManagementService.deactivate_shop_role_item(
+        role_name,
+        actor_provider="discord",
+        actor_user_id=str(ctx.author.id),
+        source="discord_command",
+    )
+    await send_temp(ctx, "✅ Роль убрана с витрины." if ok else "❌ Не удалось убрать роль с витрины (смотри логи).")
+
+
+@rolesadmin.command(name="shop_price", description="Изменить базовую цену роли на витрине")
+async def rolesadmin_shop_price(ctx: commands.Context, role_name: str, base_price_points: int):
+    if not await _ensure_roles_admin(ctx):
+        return
+    ok = RoleManagementService.upsert_shop_role_item(
+        role_name,
+        base_price_points=base_price_points,
+        is_active=True,
+        actor_provider="discord",
+        actor_user_id=str(ctx.author.id),
+        source="discord_command",
+    )
+    await send_temp(ctx, "✅ Базовая цена обновлена." if ok else "❌ Не удалось обновить цену (смотри логи).")
+
+
+@rolesadmin.command(name="shop_position", description="Изменить позицию роли на витрине")
+async def rolesadmin_shop_position(ctx: commands.Context, role_name: str, display_position: int):
+    if not await _ensure_roles_admin(ctx):
+        return
+    current_shop = RoleManagementService.get_shop_role_item(role_name) or {}
+    base_price = int(current_shop.get("base_price_points") or 0)
+    ok = RoleManagementService.upsert_shop_role_item(
+        role_name,
+        base_price_points=base_price,
+        display_position=display_position,
+        is_active=True,
+        actor_provider="discord",
+        actor_user_id=str(ctx.author.id),
+        source="discord_command",
+    )
+    await send_temp(ctx, "✅ Позиция на витрине обновлена." if ok else "❌ Не удалось обновить позицию (смотри логи).")
+
+
+@rolesadmin.command(name="shop_sale", description="Включить/выключить акцию по времени")
+async def rolesadmin_shop_sale(
+    ctx: commands.Context,
+    role_name: str,
+    sale_price_points: int | None = None,
+    sale_starts_at: str | None = None,
+    sale_ends_at: str | None = None,
+):
+    if not await _ensure_roles_admin(ctx):
+        return
+    current_shop = RoleManagementService.get_shop_role_item(role_name) or {}
+    base_price = int(current_shop.get("base_price_points") or 0)
+    disable_sale = sale_price_points is None or sale_starts_at is None or sale_ends_at is None
+    ok = RoleManagementService.upsert_shop_role_item(
+        role_name,
+        base_price_points=base_price,
+        is_active=True,
+        sale_price_points=None if disable_sale else sale_price_points,
+        sale_starts_at=None if disable_sale else sale_starts_at,
+        sale_ends_at=None if disable_sale else sale_ends_at,
+        actor_provider="discord",
+        actor_user_id=str(ctx.author.id),
+        source="discord_command",
+    )
+    await send_temp(ctx, "✅ Акция выключена." if disable_sale and ok else "✅ Акция сохранена." if ok else "❌ Не удалось обновить акцию (смотри логи).")
+
+
 @rolesadmin.command(name="role_delete", description="Удалить роль из каталога")
 async def rolesadmin_role_delete(ctx: commands.Context, name: str):
     if not await _ensure_roles_admin(ctx):

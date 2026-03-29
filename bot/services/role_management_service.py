@@ -1080,6 +1080,245 @@ class RoleManagementService:
         return flattened
 
     @staticmethod
+    def _parse_iso_datetime(value: str | None) -> datetime | None:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except ValueError:
+            logger.error("shop_item_datetime_parse_failed value=%s", raw)
+            return None
+
+    @staticmethod
+    def compute_effective_shop_price(row: dict[str, Any], *, now: datetime | None = None) -> tuple[int, bool]:
+        current = now or datetime.now(timezone.utc)
+        base_price = max(int(row.get("base_price_points") or 0), 0)
+        sale_price = row.get("sale_price_points")
+        if sale_price is None:
+            return base_price, False
+        sale_price = max(int(sale_price or 0), 0)
+        starts_at = RoleManagementService._parse_iso_datetime(row.get("sale_starts_at"))
+        ends_at = RoleManagementService._parse_iso_datetime(row.get("sale_ends_at"))
+        sale_active = bool(sale_price >= 0 and starts_at and ends_at and starts_at <= current <= ends_at)
+        return (sale_price if sale_active else base_price), sale_active
+
+    @staticmethod
+    def list_active_shop_role_items(*, category_code: str = "roles") -> list[dict[str, Any]]:
+        if not db.supabase:
+            return []
+        category_key = str(category_code or "roles").strip().lower() or "roles"
+        try:
+            items_resp = (
+                db.supabase.table("shop_items")
+                .select(
+                    "id,category_code,role_name,is_active,base_price_points,display_position,sale_price_points,sale_starts_at,sale_ends_at,updated_by,updated_at"
+                )
+                .eq("category_code", category_key)
+                .eq("is_active", True)
+                .order("display_position", desc=False)
+                .order("id", desc=False)
+                .execute()
+            )
+            rows = list(items_resp.data or [])
+            normalized: list[dict[str, Any]] = []
+            for row in rows:
+                role_name = str(row.get("role_name") or "").strip()
+                if not role_name:
+                    logger.error("shop_items_invalid_row reason=missing_role_name row_id=%s", row.get("id"))
+                    continue
+                effective_price, sale_active = RoleManagementService.compute_effective_shop_price(row)
+                normalized.append(
+                    {
+                        **row,
+                        "role_name": role_name,
+                        "category_code": category_key,
+                        "effective_price_points": effective_price,
+                        "is_sale_active": sale_active,
+                    }
+                )
+            return normalized
+        except Exception:
+            logger.exception("list_active_shop_role_items failed category_code=%s", category_key)
+            return []
+
+    @staticmethod
+    def get_shop_role_item(role_name: str, *, category_code: str = "roles") -> dict[str, Any] | None:
+        if not db.supabase:
+            return None
+        role_key = str(role_name or "").strip()
+        if not role_key:
+            return None
+        try:
+            resp = (
+                db.supabase.table("shop_items")
+                .select("*")
+                .eq("category_code", str(category_code or "roles").strip().lower() or "roles")
+                .eq("role_name", role_key)
+                .limit(1)
+                .execute()
+            )
+            return (resp.data or [None])[0]
+        except Exception:
+            logger.exception("get_shop_role_item failed role_name=%s", role_key)
+            return None
+
+    @staticmethod
+    def _normalize_shop_positions(
+        *,
+        category_code: str,
+        actor_provider: str | None,
+        actor_user_id: str | None,
+        actor_account_id: str | None,
+        source: str,
+    ) -> None:
+        if not db.supabase:
+            return
+        try:
+            rows_resp = (
+                db.supabase.table("shop_items")
+                .select("id,display_position,role_name")
+                .eq("category_code", category_code)
+                .eq("is_active", True)
+                .order("display_position", desc=False)
+                .order("id", desc=False)
+                .execute()
+            )
+            rows = list(rows_resp.data or [])
+            for idx, row in enumerate(rows):
+                current = int(row.get("display_position") or 0)
+                if current == idx:
+                    continue
+                db.supabase.table("shop_items").update({"display_position": idx}).eq("id", row["id"]).execute()
+                RoleManagementService.record_role_change_audit(
+                    action="shop_item_position_normalized",
+                    role_name=str(row.get("role_name") or "").strip() or None,
+                    source=source,
+                    actor_provider=actor_provider,
+                    actor_user_id=actor_user_id,
+                    actor_account_id=actor_account_id,
+                    before={"display_position": current, "id": row["id"]},
+                    after={"display_position": idx, "id": row["id"]},
+                )
+        except Exception:
+            logger.exception("normalize_shop_positions failed category_code=%s", category_code)
+
+    @staticmethod
+    def upsert_shop_role_item(
+        role_name: str,
+        *,
+        base_price_points: int,
+        display_position: int | None = None,
+        is_active: bool = True,
+        sale_price_points: int | None = None,
+        sale_starts_at: str | None = None,
+        sale_ends_at: str | None = None,
+        actor_provider: str | None = None,
+        actor_user_id: str | None = None,
+        actor_account_id: str | None = None,
+        source: str = "unknown",
+    ) -> bool:
+        if not db.supabase:
+            return False
+        role_key = str(role_name or "").strip()
+        if not role_key:
+            return False
+        role = RoleManagementService.get_role(role_key) or {}
+        if not role or not RoleManagementService._sellable_visibility(role.get(ROLE_SELLABLE_COLUMN)):
+            logger.error("upsert_shop_role_item denied reason=role_not_sellable role_name=%s", role_key)
+            return False
+        try:
+            existing_resp = db.supabase.table("shop_items").select("*").eq("category_code", "roles").eq("role_name", role_key).limit(1).execute()
+            existing = (existing_resp.data or [None])[0]
+            before = dict(existing or {})
+            target_position = int(display_position) if display_position is not None else int((before or {}).get("display_position") or 0)
+            payload = {
+                "category_code": "roles",
+                "role_name": role_key,
+                "is_active": bool(is_active),
+                "base_price_points": max(int(base_price_points), 0),
+                "display_position": max(int(target_position), 0),
+                "sale_price_points": None if sale_price_points is None else max(int(sale_price_points), 0),
+                "sale_starts_at": sale_starts_at,
+                "sale_ends_at": sale_ends_at,
+                "updated_by": str(actor_user_id or "").strip() or None,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            db.supabase.table("shop_items").upsert(payload, on_conflict="category_code,role_name").execute()
+            RoleManagementService._normalize_shop_positions(
+                category_code="roles",
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id,
+                actor_account_id=actor_account_id,
+                source=source,
+            )
+            after_resp = db.supabase.table("shop_items").select("*").eq("category_code", "roles").eq("role_name", role_key).limit(1).execute()
+            after = (after_resp.data or [None])[0]
+            RoleManagementService.record_role_change_audit(
+                action="shop_item_upsert",
+                role_name=role_key,
+                source=source,
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id,
+                actor_account_id=actor_account_id,
+                before=before,
+                after=after,
+            )
+            logger.info("shop_item_upsert role_name=%s actor_user_id=%s source=%s", role_key, actor_user_id, source)
+            return True
+        except Exception:
+            logger.exception("upsert_shop_role_item failed role_name=%s", role_key)
+            return False
+
+    @staticmethod
+    def deactivate_shop_role_item(
+        role_name: str,
+        *,
+        actor_provider: str | None = None,
+        actor_user_id: str | None = None,
+        actor_account_id: str | None = None,
+        source: str = "unknown",
+    ) -> bool:
+        if not db.supabase:
+            return False
+        role_key = str(role_name or "").strip()
+        if not role_key:
+            return False
+        try:
+            before_resp = db.supabase.table("shop_items").select("*").eq("category_code", "roles").eq("role_name", role_key).limit(1).execute()
+            before = (before_resp.data or [None])[0]
+            db.supabase.table("shop_items").update(
+                {"is_active": False, "updated_by": str(actor_user_id or "").strip() or None, "updated_at": datetime.now(timezone.utc).isoformat()}
+            ).eq("category_code", "roles").eq("role_name", role_key).execute()
+            RoleManagementService._normalize_shop_positions(
+                category_code="roles",
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id,
+                actor_account_id=actor_account_id,
+                source=source,
+            )
+            after_resp = db.supabase.table("shop_items").select("*").eq("category_code", "roles").eq("role_name", role_key).limit(1).execute()
+            after = (after_resp.data or [None])[0]
+            RoleManagementService.record_role_change_audit(
+                action="shop_item_deactivate",
+                role_name=role_key,
+                source=source,
+                actor_provider=actor_provider,
+                actor_user_id=actor_user_id,
+                actor_account_id=actor_account_id,
+                before=before,
+                after=after,
+            )
+            logger.info("shop_item_deactivate role_name=%s actor_user_id=%s source=%s", role_key, actor_user_id, source)
+            return True
+        except Exception:
+            logger.exception("deactivate_shop_role_item failed role_name=%s", role_key)
+            return False
+
+    @staticmethod
     def create_category(name: str, position: int = 0) -> bool:
         category = RoleManagementService._normalized_category(name)
         if not db.supabase:

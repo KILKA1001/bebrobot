@@ -68,6 +68,9 @@ class ShopItem:
     description: str
     acquire_hint: str
     price_points: int
+    base_price_points: int
+    sale_price_points: int | None
+    is_sale_active: bool
 
 
 @dataclass(frozen=True)
@@ -102,41 +105,47 @@ def _normalize_shop_page(requested_page: int, total_items: int, *, page_size: in
 
 
 def get_shop_catalog_items(*, log_context: str = "shop") -> list[ShopItem]:
-    grouped = RoleManagementService.list_public_roles_catalog(log_context=f"{log_context}:catalog", only_sellable=True)
     items: list[ShopItem] = []
+    shop_rows = RoleManagementService.list_active_shop_role_items(category_code="roles")
+    if not shop_rows:
+        logger.warning("shop_catalog_empty log_context=%s", log_context)
+        return []
+    grouped = RoleManagementService.list_public_roles_catalog(log_context=f"{log_context}:catalog", only_sellable=False)
+    role_lookup: dict[str, dict] = {}
+    category_pos: dict[str, int] = {}
     for category in grouped:
         category_name = str(category.get("category") or "Без категории").strip() or "Без категории"
-        category_position = int(category.get("position") or 0)
-        category_roles = list(category.get("roles") or [])
-        ordered_roles = sorted(category_roles, key=lambda role: (int(role.get("position") or 0), str(role.get("name") or "").lower()))
-        for role in ordered_roles:
+        category_pos[category_name] = int(category.get("position") or 0)
+        for role in list(category.get("roles") or []):
             role_name = str(role.get("name") or "").strip()
-            if not role_name:
-                logger.error("shop_position_inconsistency reason=missing_role_name category=%s log_context=%s", category_name, log_context)
-                continue
-            role_position = int(role.get("position") or 0)
-            if role_position < 0:
-                logger.error(
-                    "shop_position_inconsistency reason=negative_role_position category=%s role_name=%s position=%s log_context=%s",
-                    category_name,
-                    role_name,
-                    role_position,
-                    log_context,
-                )
-            shop_item_id = f"{category_name}:{role_name}".lower()
-            items.append(
-                ShopItem(
-                    shop_item_id=shop_item_id,
-                    role_name=role_name,
-                    short_name=_short_role_name(role_name),
-                    category=category_name,
-                    position=role_position,
-                    category_position=category_position,
-                    description=str(role.get("description") or "").strip(),
-                    acquire_hint=str(role.get("acquire_hint") or "").strip(),
-                    price_points=max(int(role.get("points_required") or 0), 0),
-                )
+            if role_name:
+                role_lookup[role_name.lower()] = {"role": role, "category": category_name}
+
+    for row in shop_rows:
+        role_name = str(row.get("role_name") or "").strip()
+        role_meta = role_lookup.get(role_name.lower())
+        if not role_meta:
+            logger.error("shop_item_skipped reason=missing_role_catalog role_name=%s log_context=%s", role_name, log_context)
+            continue
+        role = role_meta["role"]
+        category_name = str(role_meta["category"])
+        effective_price = max(int(row.get("effective_price_points") or 0), 0)
+        items.append(
+            ShopItem(
+                shop_item_id=f"{category_name}:{role_name}".lower(),
+                role_name=role_name,
+                short_name=_short_role_name(role_name),
+                category=category_name,
+                position=int(row.get("display_position") or 0),
+                category_position=category_pos.get(category_name, 0),
+                description=str(role.get("description") or "").strip(),
+                acquire_hint=str(role.get("acquire_hint") or "").strip(),
+                price_points=effective_price,
+                base_price_points=max(int(row.get("base_price_points") or 0), 0),
+                sale_price_points=None if row.get("sale_price_points") is None else max(int(row.get("sale_price_points") or 0), 0),
+                is_sale_active=bool(row.get("is_sale_active")),
             )
+        )
 
     items.sort(key=lambda item: (item.category_position, item.position, item.role_name.lower()))
     indexed_ids: list[ShopItem] = []
@@ -152,6 +161,9 @@ def get_shop_catalog_items(*, log_context: str = "shop") -> list[ShopItem]:
                 description=item.description,
                 acquire_hint=item.acquire_hint,
                 price_points=item.price_points,
+                base_price_points=item.base_price_points,
+                sale_price_points=item.sale_price_points,
+                is_sale_active=item.is_sale_active,
             )
         )
     return indexed_ids

@@ -1826,6 +1826,102 @@ async def roles_admin_command(message: Message) -> None:
             await message.answer("✅ Признак продажи роли обновлён." if ok else "❌ Не удалось обновить признак продажи роли (смотри логи).")
             return
 
+        if subcommand == "shop_add":
+            raw_payload = text.split(None, 2)[2] if len(parts) >= 3 else ""
+            pipe_args = _parse_pipe_args(raw_payload)
+            if len(pipe_args) < 2:
+                await message.answer("❌ Формат: /roles_admin shop_add <Название роли> | <base_price_points> | [display_position]")
+                return
+            role_name = pipe_args[0]
+            if not pipe_args[1].lstrip("-").isdigit():
+                await message.answer("❌ base_price_points должен быть числом.")
+                return
+            position = int(pipe_args[2]) if len(pipe_args) > 2 and pipe_args[2].lstrip("-").isdigit() else None
+            ok = RoleManagementService.upsert_shop_role_item(
+                role_name,
+                base_price_points=int(pipe_args[1]),
+                display_position=position,
+                is_active=True,
+                actor_provider="telegram",
+                actor_user_id=str(message.from_user.id) if message.from_user else None,
+                source="telegram_command",
+            )
+            await message.answer("✅ Роль добавлена на витрину магазина." if ok else "❌ Не удалось добавить роль на витрину (смотри логи).")
+            return
+
+        if subcommand == "shop_remove" and len(args) >= 1:
+            ok = RoleManagementService.deactivate_shop_role_item(
+                " ".join(args),
+                actor_provider="telegram",
+                actor_user_id=str(message.from_user.id) if message.from_user else None,
+                source="telegram_command",
+            )
+            await message.answer("✅ Роль убрана с витрины." if ok else "❌ Не удалось убрать роль с витрины (смотри логи).")
+            return
+
+        if subcommand == "shop_price":
+            raw_payload = text.split(None, 2)[2] if len(parts) >= 3 else ""
+            pipe_args = _parse_pipe_args(raw_payload)
+            if len(pipe_args) < 2 or not pipe_args[1].lstrip("-").isdigit():
+                await message.answer("❌ Формат: /roles_admin shop_price <Название роли> | <base_price_points>")
+                return
+            ok = RoleManagementService.upsert_shop_role_item(
+                pipe_args[0],
+                base_price_points=int(pipe_args[1]),
+                is_active=True,
+                actor_provider="telegram",
+                actor_user_id=str(message.from_user.id) if message.from_user else None,
+                source="telegram_command",
+            )
+            await message.answer("✅ Базовая цена обновлена." if ok else "❌ Не удалось обновить цену (смотри логи).")
+            return
+
+        if subcommand == "shop_position":
+            raw_payload = text.split(None, 2)[2] if len(parts) >= 3 else ""
+            pipe_args = _parse_pipe_args(raw_payload)
+            if len(pipe_args) < 2 or not pipe_args[1].lstrip("-").isdigit():
+                await message.answer("❌ Формат: /roles_admin shop_position <Название роли> | <display_position>")
+                return
+            current_shop = RoleManagementService.get_shop_role_item(pipe_args[0]) or {}
+            ok = RoleManagementService.upsert_shop_role_item(
+                pipe_args[0],
+                base_price_points=int(current_shop.get("base_price_points") or 0),
+                display_position=int(pipe_args[1]),
+                is_active=True,
+                actor_provider="telegram",
+                actor_user_id=str(message.from_user.id) if message.from_user else None,
+                source="telegram_command",
+            )
+            await message.answer("✅ Позиция на витрине обновлена." if ok else "❌ Не удалось обновить позицию (смотри логи).")
+            return
+
+        if subcommand == "shop_sale":
+            raw_payload = text.split(None, 2)[2] if len(parts) >= 3 else ""
+            pipe_args = _parse_pipe_args(raw_payload)
+            if len(pipe_args) < 1:
+                await message.answer("❌ Формат: /roles_admin shop_sale <Название роли> | [sale_price_points | sale_starts_at | sale_ends_at]")
+                return
+            role_name = pipe_args[0]
+            current_shop = RoleManagementService.get_shop_role_item(role_name) or {}
+            disable_sale = len(pipe_args) < 4
+            sale_price = int(pipe_args[1]) if not disable_sale and pipe_args[1].lstrip("-").isdigit() else None
+            if not disable_sale and sale_price is None:
+                await message.answer("❌ sale_price_points должен быть числом.")
+                return
+            ok = RoleManagementService.upsert_shop_role_item(
+                role_name,
+                base_price_points=int(current_shop.get("base_price_points") or 0),
+                is_active=True,
+                sale_price_points=None if disable_sale else sale_price,
+                sale_starts_at=None if disable_sale else pipe_args[2],
+                sale_ends_at=None if disable_sale else pipe_args[3],
+                actor_provider="telegram",
+                actor_user_id=str(message.from_user.id) if message.from_user else None,
+                source="telegram_command",
+            )
+            await message.answer("✅ Акция выключена." if disable_sale and ok else "✅ Акция сохранена." if ok else "❌ Не удалось обновить акцию (смотри логи).")
+            return
+
         if subcommand == "role_edit_description":
             raw_payload = text.split(None, 2)[2] if len(parts) >= 3 else ""
             pipe_args = _parse_pipe_args(raw_payload)
