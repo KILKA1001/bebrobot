@@ -755,17 +755,26 @@ async def rep_pending_handler(message: Message) -> None:
                 ui_payload=result.get("ui_payload") or {},
             )
             if not sanction_result.get("ok"):
+                logger.warning(
+                    "telegram rep manual sanction not applied actor=%s target=%s action=%s case_id=%s reason=%s",
+                    message.from_user.id,
+                    (target or {}).get("provider_user_id"),
+                    action_key,
+                    (result.get("ui_payload") or {}).get("case_id"),
+                    sanction_result.get("reason"),
+                )
                 await message.answer(
                     "⚠️ Наказание записано в кейс, но не применилось в чате.\n"
                     "Причина: пользователь администратор или у бота не хватает прав.\n"
-                    "Проверьте /modstatus и при необходимости снимите кейс."
+                    "Кейс автоматически откатывать не стал — проверьте /modstatus."
                 )
-            await message.answer(
-                "✅ Ручное наказание применено.\n"
-                f"Действие: {action_key}\n"
-                f"Срок: {minutes} мин\n"
-                f"Причина: {reason_text}"
-            )
+            else:
+                await message.answer(
+                    "✅ Ручное наказание применено.\n"
+                    f"Действие: {action_key}\n"
+                    f"Срок: {minutes} мин\n"
+                    f"Причина: {reason_text}"
+                )
             return
         return
     if message.reply_to_message and message.reply_to_message.from_user:
