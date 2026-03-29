@@ -335,9 +335,114 @@ class _RepManualActionButton(discord.ui.Button):
         if not view.state.target:
             await interaction.response.send_message("Сначала выберите нарушителя.", ephemeral=True)
             return
-        modal = _RepManualActionModal(self.action_key)
+        view.state.manual_action = self.action_key
+        view.state.manual_duration_minutes = None
+        view.state.manual_reason_text = ""
+        view.state.preview = None
+        view.state.violation_code = None
+        view.state.status_text = (
+            f"Выбрано действие `{self.action_key}`. "
+            "Выберите быстрый срок кнопками ниже или нажмите «Свой срок + причина»."
+        )
+        view.rebuild()
+        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+
+
+class _RepManualPresetDurationButton(discord.ui.Button):
+    def __init__(self, *, title: str, minutes: int, disabled: bool) -> None:
+        super().__init__(label=title, style=discord.ButtonStyle.secondary, row=4, disabled=disabled)
+        self.minutes = minutes
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, DiscordRepFlowView):
+            await interaction.response.send_message("❌ Ошибка /rep. Откройте команду заново.", ephemeral=True)
+            return
+        if not view.state.manual_action:
+            await interaction.response.send_message("Сначала выберите действие (Мут/Пред/Бан/Кик).", ephemeral=True)
+            return
+        view.state.manual_duration_minutes = self.minutes
+        modal = _RepManualReasonModal()
         modal.parent = view
         await interaction.response.send_modal(modal)
+
+
+class _RepManualCustomDurationButton(discord.ui.Button):
+    def __init__(self, *, disabled: bool) -> None:
+        super().__init__(label="Свой срок + причина", style=discord.ButtonStyle.primary, row=4, disabled=disabled)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, DiscordRepFlowView):
+            await interaction.response.send_message("❌ Ошибка /rep. Откройте команду заново.", ephemeral=True)
+            return
+        if not view.state.manual_action:
+            await interaction.response.send_message("Сначала выберите действие (Мут/Пред/Бан/Кик).", ephemeral=True)
+            return
+        modal = _RepManualActionModal(view.state.manual_action)
+        modal.parent = view
+        await interaction.response.send_modal(modal)
+
+
+class _RepManualReasonModal(discord.ui.Modal, title="Причина наказания"):
+    def __init__(self) -> None:
+        super().__init__(timeout=180)
+        self.reason = discord.ui.TextInput(label="Причина", required=True, style=discord.TextStyle.paragraph, max_length=300)
+        self.add_item(self.reason)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        view = self.parent
+        if not isinstance(view, DiscordRepFlowView):
+            await interaction.response.send_message("❌ Ошибка состояния. Откройте /rep заново.", ephemeral=True)
+            return
+        reason_text = str(self.reason.value or "").strip()
+        if not reason_text:
+            await interaction.response.send_message("❌ Причина обязательна.", ephemeral=True)
+            return
+        if not view.state.manual_duration_minutes or view.state.manual_duration_minutes <= 0:
+            await interaction.response.send_message("❌ Сначала выберите срок наказания.", ephemeral=True)
+            return
+        view.state.manual_reason_text = reason_text
+        view.state.status_text = (
+            f"Подготовлено ручное наказание: {view.state.manual_action} "
+            f"на {view.state.manual_duration_minutes} мин. Проверьте и подтвердите."
+        )
+        view.rebuild()
+        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+
+
+class _RepEscalationRequestButton(discord.ui.Button):
+    def __init__(self, *, disabled: bool) -> None:
+        super().__init__(label="📨 Заявка старшему админу", style=discord.ButtonStyle.secondary, row=4, disabled=disabled)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, DiscordRepFlowView):
+            await interaction.response.send_message("❌ Ошибка /rep. Откройте команду заново.", ephemeral=True)
+            return
+        if not view.state.target:
+            await interaction.response.send_message("Сначала выберите нарушителя.", ephemeral=True)
+            return
+        text = (
+            f"📨 Заявка на недоступное наказание\n"
+            f"Модератор: {interaction.user.mention}\n"
+            f"Цель: {_target_label(view.state.target)}\n"
+            f"Скрытых нарушений по полномочиям: {view.state.hidden_violations_count}\n"
+            "Нужна проверка и подтверждение старшим администратором."
+        )
+        try:
+            if interaction.channel:
+                await interaction.channel.send(text)
+            await interaction.response.send_message("✅ Заявка отправлена в чат для старших администраторов.", ephemeral=True)
+        except Exception:
+            logger.exception(
+                "rep escalation request failed provider=%s chat_id=%s actor=%s target=%s",
+                "discord",
+                view.state.chat_id,
+                interaction.user.id,
+                (view.state.target or {}).get("provider_user_id"),
+            )
+            await interaction.response.send_message("❌ Не удалось отправить заявку. Подробности в консоли.", ephemeral=True)
 
 
 class DiscordRepFlowView(discord.ui.View):
@@ -440,6 +545,13 @@ class DiscordRepFlowView(discord.ui.View):
         self.add_item(_RepManualActionButton(action_key="warn", title="Пред", disabled=not AuthorityService.has_command_permission("discord", actor_id, "moderation_warn")))
         self.add_item(_RepManualActionButton(action_key="ban", title="Бан", disabled=not AuthorityService.has_command_permission("discord", actor_id, "moderation_ban")))
         self.add_item(_RepManualActionButton(action_key="kick", title="Кик", disabled=not AuthorityService.has_command_permission("discord", actor_id, "moderation_mute")))
+        manual_selected = self.state.manual_action is not None
+        self.add_item(_RepManualPresetDurationButton(title="15м", minutes=15, disabled=not manual_selected))
+        self.add_item(_RepManualPresetDurationButton(title="1ч", minutes=60, disabled=not manual_selected))
+        self.add_item(_RepManualPresetDurationButton(title="12ч", minutes=720, disabled=not manual_selected))
+        self.add_item(_RepManualPresetDurationButton(title="1д", minutes=1440, disabled=not manual_selected))
+        self.add_item(_RepManualCustomDurationButton(disabled=not manual_selected))
+        self.add_item(_RepEscalationRequestButton(disabled=not (self.state.target and self.state.hidden_violations_count > 0)))
 
     def disable_all_items(self) -> None:
         for child in self.children:

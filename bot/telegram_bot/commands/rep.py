@@ -78,7 +78,7 @@ def _target_keyboard(actor_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def _violations_keyboard(actor_id: int, violations: list[dict[str, Any]] | None = None) -> InlineKeyboardMarkup:
+def _violations_keyboard(actor_id: int, violations: list[dict[str, Any]] | None = None, *, show_escalation: bool = False) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     rows.append([InlineKeyboardButton(text="🔧 Мут", callback_data=f"rep:{actor_id}:manual:mute")])
     rows.append([InlineKeyboardButton(text="🔧 Пред", callback_data=f"rep:{actor_id}:manual:warn")])
@@ -92,6 +92,8 @@ def _violations_keyboard(actor_id: int, violations: list[dict[str, Any]] | None 
             continue
         rows.append([InlineKeyboardButton(text=str(violation.get("title") or code), callback_data=f"rep:{actor_id}:violation:{code}")])
     rows.append([InlineKeyboardButton(text="Назад", callback_data=f"rep:{actor_id}:back:target")])
+    if show_escalation:
+        rows.append([InlineKeyboardButton(text="📨 Заявка старшему админу", callback_data=f"rep:{actor_id}:escalate")])
     rows.append([InlineKeyboardButton(text="Отмена", callback_data=f"rep:{actor_id}:cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -245,7 +247,11 @@ async def rep_command(message: Message) -> None:
             suffix = f"\n\n🔒 Скрыто нарушений по полномочиям: {hidden}" if hidden > 0 else ""
             await message.answer(
                 _violation_prompt_text(str(resolved.get("label") or "неизвестный пользователь")) + suffix,
-                reply_markup=_violations_keyboard(message.from_user.id, pending.payload.get("available_violations")),
+                reply_markup=_violations_keyboard(
+                    message.from_user.id,
+                    pending.payload.get("available_violations"),
+                    show_escalation=hidden > 0,
+                ),
             )
             return
 
@@ -293,10 +299,37 @@ async def rep_callback(callback: CallbackQuery) -> None:
             pending.payload.pop("violation_code", None)
             await callback.message.edit_text(
                 _violation_prompt_text(str(target.get("label") or "неизвестный пользователь")),
-                reply_markup=_violations_keyboard(callback.from_user.id, pending.payload.get("available_violations")),
+                reply_markup=_violations_keyboard(
+                    callback.from_user.id,
+                    pending.payload.get("available_violations"),
+                    show_escalation=int(pending.payload.get("unavailable_count") or 0) > 0,
+                ),
             )
         _PENDING_REP[callback.from_user.id] = pending
         await callback.answer()
+        return
+    if action == "escalate":
+        target = pending.payload.get("target") or {}
+        unavailable_count = int(pending.payload.get("unavailable_count") or 0)
+        moderator_label = f"@{callback.from_user.username}" if callback.from_user.username else str(callback.from_user.id)
+        text = (
+            "📨 Заявка на недоступное наказание\n"
+            f"Модератор: {moderator_label}"
+            f"\nЦель: {target.get('label') or target.get('provider_user_id') or 'неизвестно'}"
+            f"\nСкрытых нарушений по полномочиям: {unavailable_count}\n"
+            "Нужен старший администратор для подтверждения."
+        )
+        try:
+            await callback.message.answer(text)
+            await callback.answer("✅ Заявка отправлена в чат.")
+        except Exception:
+            logger.exception(
+                "telegram rep escalation request failed actor=%s target=%s chat_id=%s",
+                callback.from_user.id,
+                target.get("provider_user_id"),
+                callback.message.chat.id,
+            )
+            await callback.answer("❌ Не удалось отправить заявку. Подробности в консоли.", show_alert=True)
         return
     if action == "violation":
         code = parts[3] if len(parts) > 3 else ""
@@ -670,5 +703,9 @@ async def rep_pending_handler(message: Message) -> None:
     suffix = f"\n\n🔒 Скрыто нарушений по полномочиям: {hidden}" if hidden > 0 else ""
     await message.answer(
         _violation_prompt_text(str(resolved.get("label") or "неизвестный пользователь")) + suffix,
-        reply_markup=_violations_keyboard(message.from_user.id, pending.payload.get("available_violations")),
+        reply_markup=_violations_keyboard(
+            message.from_user.id,
+            pending.payload.get("available_violations"),
+            show_escalation=hidden > 0,
+        ),
     )

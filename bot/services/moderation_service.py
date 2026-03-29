@@ -2501,7 +2501,7 @@ class ModerationService:
         context = dict(context or {})
         normalized_action = str(action_type or "").strip().lower()
         reason = str(reason_text or "").strip()
-        duration = max(1, ModerationService._safe_int(duration_minutes, 0))
+        duration = ModerationService._safe_int(duration_minutes, 0)
         if normalized_action not in {ModerationService.ACTION_MUTE, ModerationService.ACTION_WARN, ModerationService.ACTION_BAN, ModerationService.ACTION_KICK}:
             return {"ok": False, "error_code": "unsupported_action", "message": "Неподдерживаемый тип ручного наказания."}
         if not reason:
