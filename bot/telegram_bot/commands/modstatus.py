@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 router = Router()
 _PAYMENT_HINT = ModerationService.MODSTATUS_PAYMENT_HINT
 _OPEN_LEGACY_FINES_CALLBACK = "modstatus:open_legacy_fines"
+_ROLLBACK_CALLBACK = "modstatus:rollback"
 
 
 @router.message(Command("modstatus"))
@@ -123,6 +124,18 @@ async def modstatus_command(message: Message) -> None:
                     [InlineKeyboardButton(text="💳 Оплатить legacy-штраф", callback_data=_OPEN_LEGACY_FINES_CALLBACK)]
                 ]
             )
+        elif (
+            target_subject
+            and str((target_subject or {}).get("provider_user_id") or "").strip()
+            and str((target_subject or {}).get("provider_user_id")).strip().lower() not in {"none", "null"}
+            and AuthorityService.has_command_permission("telegram", viewer_id, "moderation_mute")
+        ):
+            callback = f"{_ROLLBACK_CALLBACK}:{str(target_subject.get('provider_user_id')).strip()}"
+            reply_markup = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="🧹 Убрать наказание", callback_data=callback)],
+                ]
+            )
         await message.answer(
             ModerationService.render_user_moderation_snapshot(snapshot, payment_hint=_PAYMENT_HINT),
             reply_markup=reply_markup,
@@ -154,3 +167,54 @@ async def modstatus_open_legacy_fines(callback: CallbackQuery) -> None:
             callback.from_user.id,
         )
         await callback.answer("❌ Не удалось открыть панель оплаты. Подробности в консоли.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith(f"{_ROLLBACK_CALLBACK}:"))
+async def modstatus_rollback_case(callback: CallbackQuery) -> None:
+    if not callback.from_user or not callback.message:
+        return
+    try:
+        target_user_id = str(str(callback.data or "").split(":", maxsplit=1)[1]).strip()
+    except Exception:
+        await callback.answer("❌ Некорректные данные кнопки.", show_alert=True)
+        return
+    if not target_user_id or target_user_id.lower() in {"none", "null"}:
+        await callback.answer("❌ Не удалось определить цель для отката.", show_alert=True)
+        return
+    if not AuthorityService.has_command_permission("telegram", str(callback.from_user.id), "moderation_mute"):
+        await callback.answer("❌ Недостаточно прав для отката наказания.", show_alert=True)
+        return
+    try:
+        result = ModerationService.rollback_latest_case(
+            "telegram",
+            {"provider": "telegram", "provider_user_id": str(callback.from_user.id), "label": f"@{callback.from_user.username}" if callback.from_user.username else str(callback.from_user.id)},
+            {"provider": "telegram", "provider_user_id": target_user_id, "label": target_user_id},
+            chat_id=callback.message.chat.id,
+        )
+    except Exception:
+        logger.exception("telegram modstatus rollback failed actor_id=%s target_id=%s", callback.from_user.id, target_user_id)
+        await callback.answer("❌ Не удалось снять наказание. Подробности в консоли.", show_alert=True)
+        return
+    if not result.get("ok"):
+        await callback.answer(str(result.get("message") or "Не удалось снять наказание."), show_alert=True)
+        return
+    await callback.answer("✅ Наказание снято.", show_alert=True)
+    if result.get("had_ban_or_kick"):
+        text = (
+            "ℹ️ Предыдущее наказание (бан/кик) снято как ошибочное. "
+            "Вы можете заново зайти в чат по ссылке-приглашению группы."
+        )
+        try:
+            await ModerationNotificationsService.dispatch_notification(
+                runtime_bot=callback.bot,
+                provider="telegram",
+                target_account_id=(result.get("target") or {}).get("account_id"),
+                event_type="punishment_revoked",
+                message_text=text,
+                case_id=result.get("case_id"),
+                source_chat_id=callback.message.chat.id,
+                requires_chat_delivery=False,
+                allow_dm_delivery=True,
+            )
+        except Exception:
+            logger.exception("telegram modstatus rollback notify failed case_id=%s", result.get("case_id"))
