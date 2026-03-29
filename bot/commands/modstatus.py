@@ -40,6 +40,94 @@ class _ModstatusFineView(discord.ui.View):
             await interaction.followup.send("✅ У вас нет активных legacy-штрафов.", ephemeral=True)
 
 
+class _ModstatusManagePunishmentView(discord.ui.View):
+    def __init__(self, *, actor_id: int, target_subject: dict[str, Any], chat_id: int | None, rollback_candidates: list[dict[str, Any]]):
+        super().__init__(timeout=180)
+        self.actor_id = actor_id
+        self.target_subject = dict(target_subject)
+        self.chat_id = chat_id
+        self.rollback_candidates = list(rollback_candidates or [])
+        self.selected_case_id: str | None = None
+        self.add_item(_RollbackCaseSelect(candidates=self.rollback_candidates))
+
+    @discord.ui.button(label="🧹 Убрать наказание", style=discord.ButtonStyle.danger)
+    async def rollback_case(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        if interaction.user.id != self.actor_id:
+            await interaction.response.send_message("❌ Эта кнопка открыта для другого пользователя.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            result = ModerationService.rollback_latest_case(
+                "discord",
+                {"provider": "discord", "provider_user_id": str(interaction.user.id), "label": interaction.user.mention},
+                self.target_subject,
+                chat_id=self.chat_id,
+                case_id=self.selected_case_id,
+            )
+        except Exception:
+            logger.exception("modstatus rollback failed provider=%s actor_id=%s target=%s", "discord", interaction.user.id, self.target_subject.get("provider_user_id"))
+            await interaction.followup.send("❌ Не удалось снять наказание. Подробности в консоли.", ephemeral=True)
+            return
+        if not result.get("ok"):
+            await interaction.followup.send(f"❌ {result.get('message') or 'Не удалось снять наказание.'}", ephemeral=True)
+            return
+        await interaction.followup.send(f"✅ {result.get('message') or 'Наказание снято.'}", ephemeral=True)
+        if result.get("had_ban_or_kick"):
+            link = (interaction.guild and interaction.guild.vanity_url) or ""
+            text = (
+                "ℹ️ Предыдущее наказание (бан/кик) было снято как ошибочное. "
+                + (f"Можно снова зайти в чат: {link}" if link else "Можно снова зайти в чат, запросите ссылку у администрации.")
+            )
+            try:
+                await ModerationNotificationsService.dispatch_notification(
+                    runtime_bot=interaction.client,
+                    provider="discord",
+                    target_account_id=(result.get("target") or {}).get("account_id"),
+                    event_type="punishment_revoked",
+                    message_text=text,
+                    case_id=result.get("case_id"),
+                    source_chat_id=self.chat_id,
+                    requires_chat_delivery=False,
+                    allow_dm_delivery=True,
+                )
+            except Exception:
+                logger.exception("modstatus rollback notify failed provider=%s case_id=%s", "discord", result.get("case_id"))
+
+
+class _RollbackCaseSelect(discord.ui.Select):
+    def __init__(self, *, candidates: list[dict[str, Any]]):
+        options: list[discord.SelectOption] = []
+        for item in candidates[:25]:
+            case_row = dict(item.get("case") or {})
+            case_id = str(case_row.get("id") or "").strip()
+            if not case_id:
+                continue
+            actions = ", ".join(str(row.get("action_type") or "") for row in list(item.get("actions") or [])[:3] if str(row.get("action_type") or "").strip()) or "без действий"
+            options.append(discord.SelectOption(label=f"Кейс #{case_id}", value=case_id, description=actions[:100]))
+        if not options:
+            options = [discord.SelectOption(label="Нет кейсов для отката", value="__none__")]
+        super().__init__(
+            placeholder="Выберите кейс для снятия наказания",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+            disabled=options[0].value == "__none__",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, _ModstatusManagePunishmentView):
+            await interaction.response.send_message("❌ Ошибка выбора кейса.", ephemeral=True)
+            return
+        selected = str(self.values[0] or "").strip()
+        if selected == "__none__":
+            await interaction.response.send_message("Нет кейсов для отката.", ephemeral=True)
+            return
+        view.selected_case_id = selected
+        await interaction.response.send_message(f"✅ Выбран кейс #{selected}. Теперь нажмите «Убрать наказание».", ephemeral=True)
+
+
 async def _resolve_reply_message(ctx: commands.Context) -> discord.Message | None:
     reference = getattr(getattr(ctx, "message", None), "reference", None)
     if not reference or not reference.message_id or not getattr(ctx, "channel", None):
@@ -139,6 +227,18 @@ async def modstatus(ctx: commands.Context, *, target: str | None = None) -> None
         view = None
         if snapshot.get("target_is_self") and list(snapshot.get("active_fines") or []):
             view = _ModstatusFineView(actor_id=ctx.author.id)
+        elif target_subject and AuthorityService.has_command_permission("discord", viewer_id, "moderation_mute"):
+            candidates = [
+                item
+                for item in list(ModerationService.list_recent_cases(target_account_id, limit=10).get("items") or [])
+                if str((item.get("case") or {}).get("status") or "").strip().lower() == ModerationService.STATUS_APPLIED
+            ]
+            view = _ModstatusManagePunishmentView(
+                actor_id=ctx.author.id,
+                target_subject=target_subject,
+                chat_id=chat_id,
+                rollback_candidates=candidates,
+            )
         await send_temp(
             ctx,
             ModerationService.render_user_moderation_snapshot(snapshot, payment_hint=_PAYMENT_HINT),
