@@ -261,3 +261,83 @@ def test_shop_catalog_shows_next_volunteer_role_when_previous_owned():
         items = shop_logic.get_shop_catalog_items(log_context="test", account_id="acc-1")
 
     assert [item.role_name for item in items] == ["Новый волонтер", "Хороший Помощник Бебр"]
+
+
+def test_shop_catalog_hides_lower_volunteer_roles_after_upgrade():
+    grouped = [
+        {
+            "category": "Роли за баллы",
+            "position": 1,
+            "roles": [
+                {"name": "Новый волонтер", "position": 0, "description": "", "acquire_hint": "", "discord_role_id": "1105906310131744868"},
+                {"name": "Хороший Помощник Бебр", "position": 1, "description": "", "acquire_hint": "", "discord_role_id": "1105906455233703989"},
+                {"name": "Мастер волонтер", "position": 2, "description": "", "acquire_hint": "", "discord_role_id": "1137775519589466203"},
+                {"name": "Легендарный среди волонтеров", "position": 3, "description": "", "acquire_hint": "", "discord_role_id": "1105906637824331788"},
+            ],
+        }
+    ]
+    shop_rows = [
+        {"role_name": "Новый волонтер", "display_position": 0, "effective_price_points": 5, "base_price_points": 5, "sale_price_points": None, "is_sale_active": False},
+        {"role_name": "Хороший Помощник Бебр", "display_position": 1, "effective_price_points": 10, "base_price_points": 10, "sale_price_points": None, "is_sale_active": False},
+        {"role_name": "Мастер волонтер", "display_position": 2, "effective_price_points": 20, "base_price_points": 20, "sale_price_points": None, "is_sale_active": False},
+        {"role_name": "Легендарный среди волонтеров", "display_position": 3, "effective_price_points": 30, "base_price_points": 30, "sale_price_points": None, "is_sale_active": False},
+    ]
+    with patch("bot.services.shop_service.RoleManagementService.list_public_roles_catalog", return_value=grouped), patch(
+        "bot.services.shop_service.RoleManagementService.list_active_shop_role_items", return_value=shop_rows
+    ), patch(
+        "bot.services.shop_service.RoleManagementService.get_user_roles_by_account",
+        return_value=[{"name": "Мастер волонтер"}],
+    ), patch(
+        "bot.services.shop_service.RoleManagementService.get_role",
+        side_effect=lambda role_name: {
+            "Новый волонтер": {"discord_role_id": "1105906310131744868"},
+            "Хороший Помощник Бебр": {"discord_role_id": "1105906455233703989"},
+            "Мастер волонтер": {"discord_role_id": "1137775519589466203"},
+            "Легендарный среди волонтеров": {"discord_role_id": "1105906637824331788"},
+        }.get(role_name, {}),
+    ):
+        items = shop_logic.get_shop_catalog_items(log_context="test", account_id="acc-1")
+
+    assert [item.role_name for item in items] == ["Мастер волонтер", "Легендарный среди волонтеров"]
+
+
+def test_purchase_shop_item_revoke_lower_volunteer_roles_on_upgrade():
+    item = shop_logic.ShopItem(
+        shop_item_id="shop_1",
+        role_name="Мастер волонтер",
+        short_name="Мастер волонтер",
+        category="Роли",
+        position=0,
+        category_position=0,
+        description="",
+        acquire_hint="",
+        price_points=10,
+        base_price_points=10,
+        sale_price_points=None,
+        is_sale_active=False,
+    )
+    with patch("bot.services.shop_service.get_shop_catalog_items", return_value=[item]), patch(
+        "bot.services.shop_service.RoleManagementService.get_role",
+        return_value={"is_sellable": True, "discord_role_id": "1137775519589466203"},
+    ), patch(
+        "bot.services.shop_service.RoleManagementService.get_user_roles_by_account",
+        return_value=[{"name": "Хороший Помощник Бебр"}],
+    ), patch(
+        "bot.services.shop_service.AccountsService.get_profile_by_account", return_value={"points": 200}
+    ), patch(
+        "bot.services.shop_service.PointsService.remove_points_by_account", return_value=True
+    ), patch(
+        "bot.services.shop_service.RoleManagementService.assign_user_role_by_account", return_value={"ok": True}
+    ), patch(
+        "bot.services.shop_service.RoleManagementService.revoke_user_role_by_account", return_value={"ok": True}
+    ) as revoke_mock:
+        result = shop_logic.purchase_shop_item(
+            account_id="acc-1",
+            shop_item_id="shop_1",
+            actor_provider="telegram",
+            actor_user_id="100",
+        )
+
+    assert result.ok is True
+    revoked_names = [call.args[1] for call in revoke_mock.call_args_list]
+    assert revoked_names == ["Новый волонтер", "Хороший Помощник Бебр"]

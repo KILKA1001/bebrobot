@@ -104,6 +104,12 @@ _VOLUNTEER_ROLE_NAMES_BY_DISCORD_ID: dict[int, str] = {
 _VOLUNTEER_ROLE_CHAIN_BY_DISCORD_ID: tuple[int, ...] = tuple(
     role_id for role_id, _ in sorted(ROLE_THRESHOLDS.items(), key=lambda item: item[1])
 )
+_VOLUNTEER_ROLE_RANK_BY_DISCORD_ID: dict[int, int] = {
+    role_id: index for index, role_id in enumerate(_VOLUNTEER_ROLE_CHAIN_BY_DISCORD_ID)
+}
+_VOLUNTEER_ROLE_CANONICAL_BY_LOWER: dict[str, str] = {
+    role_name.lower(): role_name for role_name in _VOLUNTEER_ROLE_NAMES_BY_DISCORD_ID.values()
+}
 
 
 @dataclass(frozen=True)
@@ -196,6 +202,8 @@ def _load_owned_role_names_for_account(account_id: str) -> set[str]:
 
 
 def _is_volunteer_chain_locked(*, role_name: str, role_meta: dict, owned_roles: set[str]) -> bool:
+    if role_name.lower() in owned_roles:
+        return False
     required_role_name, required_role_discord_id = _required_previous_volunteer_role(role_name, role_meta)
     if not required_role_name:
         return False
@@ -203,7 +211,8 @@ def _is_volunteer_chain_locked(*, role_name: str, role_meta: dict, owned_roles: 
         return False
     for owned_role_name in owned_roles:
         try:
-            owned_role_state = RoleManagementService.get_role(owned_role_name) or {}
+            owned_role_lookup_name = _VOLUNTEER_ROLE_CANONICAL_BY_LOWER.get(owned_role_name, owned_role_name)
+            owned_role_state = RoleManagementService.get_role(owned_role_lookup_name) or {}
             owned_discord_role_id = int(str(owned_role_state.get("discord_role_id") or "").strip())
             if required_role_discord_id is not None and owned_discord_role_id == required_role_discord_id:
                 return False
@@ -217,6 +226,34 @@ def _is_volunteer_chain_locked(*, role_name: str, role_meta: dict, owned_roles: 
                 error,
             )
     return True
+
+
+def _volunteer_role_rank(role_meta: dict) -> int | None:
+    try:
+        role_discord_id = int(str(role_meta.get("discord_role_id") or "").strip())
+    except (TypeError, ValueError):
+        return None
+    return _VOLUNTEER_ROLE_RANK_BY_DISCORD_ID.get(role_discord_id)
+
+
+def _highest_owned_volunteer_rank(owned_roles: set[str]) -> int | None:
+    highest_rank: int | None = None
+    for owned_role_name in owned_roles:
+        try:
+            owned_role_lookup_name = _VOLUNTEER_ROLE_CANONICAL_BY_LOWER.get(owned_role_name, owned_role_name)
+            owned_role_state = RoleManagementService.get_role(owned_role_lookup_name) or {}
+            owned_rank = _volunteer_role_rank(owned_role_state)
+            if owned_rank is None:
+                continue
+            if highest_rank is None or owned_rank > highest_rank:
+                highest_rank = owned_rank
+        except Exception as error:  # noqa: BLE001
+            logger.exception(
+                "shop_chain_rank_lookup_error owned_role=%s error=%s",
+                owned_role_name,
+                error,
+            )
+    return highest_rank
 
 
 def get_shop_catalog_items(*, log_context: str = "shop", account_id: str | None = None) -> list[ShopItem]:
@@ -240,8 +277,10 @@ def get_shop_catalog_items(*, log_context: str = "shop", account_id: str | None 
     account_key = str(account_id or "").strip()
     if account_key:
         owned_roles = _load_owned_role_names_for_account(account_key)
+    highest_owned_volunteer_rank = _highest_owned_volunteer_rank(owned_roles) if account_key else None
 
     hidden_locked_roles = 0
+    hidden_downgraded_roles = 0
     for row in shop_rows:
         role_name = str(row.get("role_name") or "").strip()
         role_meta = role_lookup.get(role_name.lower())
@@ -250,6 +289,23 @@ def get_shop_catalog_items(*, log_context: str = "shop", account_id: str | None 
             continue
         role = role_meta["role"]
         category_name = str(role_meta["category"])
+        role_rank = _volunteer_role_rank(role)
+        if (
+            account_key
+            and role_rank is not None
+            and highest_owned_volunteer_rank is not None
+            and role_rank < highest_owned_volunteer_rank
+        ):
+            hidden_downgraded_roles += 1
+            logger.info(
+                "shop_catalog_hidden_downgraded_role log_context=%s account_id=%s role_name=%s highest_owned_rank=%s role_rank=%s",
+                log_context,
+                account_key,
+                role_name,
+                highest_owned_volunteer_rank,
+                role_rank,
+            )
+            continue
         if account_key and _is_volunteer_chain_locked(role_name=role_name, role_meta=role, owned_roles=owned_roles):
             hidden_locked_roles += 1
             logger.info(
@@ -302,6 +358,14 @@ def get_shop_catalog_items(*, log_context: str = "shop", account_id: str | None 
             log_context,
             account_key or None,
             hidden_locked_roles,
+            len(indexed_ids),
+        )
+    if hidden_downgraded_roles:
+        logger.info(
+            "shop_catalog_upgrade_filter_applied log_context=%s account_id=%s hidden_downgraded_roles=%s visible_items=%s",
+            log_context,
+            account_key or None,
+            hidden_downgraded_roles,
             len(indexed_ids),
         )
     return indexed_ids
@@ -438,7 +502,8 @@ def purchase_shop_item(
             owned_discord_role_ids: set[int] = set()
             for owned_role_name in owned_roles:
                 try:
-                    owned_role_state = RoleManagementService.get_role(owned_role_name) or {}
+                    owned_role_lookup_name = _VOLUNTEER_ROLE_CANONICAL_BY_LOWER.get(owned_role_name, owned_role_name)
+                    owned_role_state = RoleManagementService.get_role(owned_role_lookup_name) or {}
                     owned_discord_role_id = int(str(owned_role_state.get("discord_role_id") or "").strip())
                     owned_discord_role_ids.add(owned_discord_role_id)
                 except (TypeError, ValueError):
@@ -559,6 +624,42 @@ def purchase_shop_item(
             item.price_points,
             item.is_sale_active,
         )
+        granted_role_rank = _volunteer_role_rank(role_state)
+        if granted_role_rank is not None and granted_role_rank > 0:
+            for lower_rank in range(granted_role_rank):
+                lower_role_id = _VOLUNTEER_ROLE_CHAIN_BY_DISCORD_ID[lower_rank]
+                lower_role_name = _VOLUNTEER_ROLE_NAMES_BY_DISCORD_ID.get(lower_role_id)
+                if not lower_role_name or lower_role_name.lower() == item.role_name.lower():
+                    continue
+                revoke_result = RoleManagementService.revoke_user_role_by_account(
+                    account_key,
+                    lower_role_name,
+                    actor_account_id=account_key,
+                    actor_provider=provider,
+                    actor_user_id=actor_id,
+                    target_provider=provider,
+                    target_user_id=actor_id,
+                    source=f"shop_purchase_upgrade:{provider}",
+                )
+                if bool(revoke_result.get("ok")):
+                    logger.info(
+                        "shop_purchase_upgrade_cleanup provider=%s actor_user_id=%s account_id=%s purchased_role=%s revoked_previous_role=%s",
+                        provider,
+                        actor_id,
+                        account_key,
+                        item.role_name,
+                        lower_role_name,
+                    )
+                else:
+                    logger.warning(
+                        "shop_purchase_upgrade_cleanup_failed provider=%s actor_user_id=%s account_id=%s purchased_role=%s revoke_role=%s revoke_reason=%s",
+                        provider,
+                        actor_id,
+                        account_key,
+                        item.role_name,
+                        lower_role_name,
+                        revoke_result.get("reason"),
+                    )
 
         logger.info(
             "shop_purchase_success provider=%s actor_user_id=%s account_id=%s shop_item_id=%s role_name=%s spent_points=%s",
