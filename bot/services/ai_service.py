@@ -32,7 +32,8 @@ DEFAULT_GROQ_MODELS = TEXT_GROQ_MODELS
 # Conservative fallback lists for free-tier usage.
 FREE_TIER_GROQ_MODELS = TEXT_GROQ_MODELS
 FREE_TIER_GROQ_MEDIA_MODELS = MEDIA_GROQ_MODELS
-DEFAULT_GROQ_VISION_MODEL = "llama-3.3-70b-versatile"
+# Must be a multimodal model that accepts image input on Groq Responses API.
+DEFAULT_GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 MAX_VISION_MEDIA_ITEMS = 3
 MAX_VISION_BYTES = 5 * 1024 * 1024
 AI_HTTP_TOTAL_TIMEOUT_SECONDS = float(os.getenv("AI_HTTP_TIMEOUT_TOTAL_SEC", "70"))
@@ -1059,7 +1060,17 @@ def _effective_user_text(user_text: str, media_inputs: list[dict[str, str]] | No
 
 
 def _resolve_vision_model() -> str:
-    return (os.getenv("GROQ_VISION_MODEL") or DEFAULT_GROQ_VISION_MODEL).strip() or DEFAULT_GROQ_VISION_MODEL
+    configured_model = (os.getenv("GROQ_VISION_MODEL") or "").strip()
+    resolved = configured_model or DEFAULT_GROQ_VISION_MODEL
+    normalized = resolved.lower()
+    if normalized in {model.lower() for model in TEXT_GROQ_MODELS}:
+        logger.warning(
+            "Groq vision model misconfigured with text-only model configured=%s fallback=%s",
+            resolved,
+            DEFAULT_GROQ_VISION_MODEL,
+        )
+        return DEFAULT_GROQ_VISION_MODEL
+    return resolved
 
 
 async def _generate_media_summary(
@@ -1464,11 +1475,37 @@ async def generate_guiy_reply(
             "Если вопрос опирается на вложение, честно и прямо скажи, что не смог нормально разобрать вложение и попроси описать его текстом или прислать более понятное изображение."
         )
 
+    memory_user_text = effective_user_text
+    if media_summary:
+        memory_user_text = (
+            f"{effective_user_text}\n"
+            f"Медиа-сводка: {media_summary}"
+        )
+        logger.info(
+            "guiy media summary persisted in dialog memory provider=%s conversation_id=%s user_id=%s summary_len=%s",
+            provider,
+            conversation_id,
+            user_id,
+            len(media_summary),
+        )
+    elif media_inputs:
+        memory_user_text = (
+            f"{effective_user_text}\n"
+            "Медиа-сводка: недоступна (vision-разбор не удался)."
+        )
+        logger.warning(
+            "guiy media summary unavailable for dialog memory provider=%s conversation_id=%s user_id=%s media_count=%s",
+            provider,
+            conversation_id,
+            user_id,
+            len(media_inputs),
+        )
+
     _register_dialog_memory_turn(
         provider=provider,
         conversation_id=conversation_id,
         speaker=AccountsService.get_best_public_name(provider, user_id) or "Пользователь",
-        text=effective_user_text,
+        text=memory_user_text,
     )
 
     try:

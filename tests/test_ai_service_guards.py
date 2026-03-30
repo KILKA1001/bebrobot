@@ -161,6 +161,26 @@ class GuiyAIGuardsTests(unittest.TestCase):
 
         self.assertFalse(_is_bot_mentioned(message, bot_id=123, bot_username="GuiyBot"))
 
+    def test_is_bot_mentioned_by_username_in_caption_entities(self):
+        message = SimpleNamespace(
+            text=None,
+            entities=None,
+            caption="@GuiyBot смотри сюда",
+            caption_entities=[SimpleNamespace(type="mention", offset=0, length=8)],
+        )
+
+        self.assertTrue(_is_bot_mentioned(message, bot_id=123, bot_username="GuiyBot"))
+
+    def test_is_bot_mentioned_by_text_mention_in_caption_entities(self):
+        message = SimpleNamespace(
+            text=None,
+            entities=None,
+            caption="Привет",
+            caption_entities=[SimpleNamespace(type="text_mention", user=SimpleNamespace(id=123))],
+        )
+
+        self.assertTrue(_is_bot_mentioned(message, bot_id=123, bot_username="GuiyBot"))
+
     def test_calculate_typing_delay_has_minimum_for_empty_text(self):
         self.assertEqual(calculate_typing_delay_seconds(""), 1.2)
 
@@ -474,8 +494,12 @@ class GuiyAIGuardsTests(unittest.TestCase):
         self.assertEqual(models, ("moonshotai/kimi-k2-instruct-0905", "qwen/qwen3-32b", "llama-3.3-70b-versatile"))
 
     @patch.dict("os.environ", {}, clear=True)
-    def test_resolve_vision_model_defaults_to_llama_3_3_for_media(self):
-        self.assertEqual(_resolve_vision_model(), "llama-3.3-70b-versatile")
+    def test_resolve_vision_model_defaults_to_multimodal_llama_4_scout(self):
+        self.assertEqual(_resolve_vision_model(), "meta-llama/llama-4-scout-17b-16e-instruct")
+
+    @patch.dict("os.environ", {"GROQ_VISION_MODEL": "llama-3.3-70b-versatile"}, clear=True)
+    def test_resolve_vision_model_rejects_text_only_model_config(self):
+        self.assertEqual(_resolve_vision_model(), "meta-llama/llama-4-scout-17b-16e-instruct")
 
 
     @patch.dict("os.environ", {}, clear=True)
@@ -498,6 +522,44 @@ class GuiyAIGuardsTests(unittest.TestCase):
         self.assertEqual(reply, "Слышь, без смены роли. Говори по делу.")
         self.assertNotRegex(reply.lower(), r"огур|эмоч|олег|азал|бебр")
         self.assertEqual(mock_generate.await_count, 2)
+
+    @patch.dict("os.environ", {"GROQ_API_KEY": "x"}, clear=True)
+    @patch("bot.services.ai_service.asyncio.sleep", new_callable=AsyncMock)
+    @patch("bot.services.ai_service.random.uniform", return_value=3.2)
+    @patch("bot.services.ai_service._generate_media_summary", new_callable=AsyncMock, return_value="На фото два человека и вывеска.")
+    @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=("Вижу, продолжаем.", "moonshotai/kimi-k2-instruct-0905"))
+    def test_generate_reply_persists_media_summary_in_dialog_memory(self, _mock_generate, _mock_media, _mock_uniform, _mock_sleep):
+        asyncio.run(
+            generate_guiy_reply(
+                "что на фото",
+                provider="telegram",
+                conversation_id="chat-media",
+                user_id="42",
+                media_inputs=[{"type": "image", "mime_type": "image/jpeg", "data_url": "data:image/jpeg;base64,QQ==", "source": "telegram:photo:1", "caption": ""}],
+            )
+        )
+        memory = ai_service._DIALOG_MEMORY.get("telegram:chat-media", [])
+        user_turn_texts = [str(entry.get("text", "")) for entry in memory if str(entry.get("speaker", "")) != "Гуй"]
+        self.assertTrue(any("Медиа-сводка: На фото два человека и вывеска." in text for text in user_turn_texts))
+
+    @patch.dict("os.environ", {"GROQ_API_KEY": "x"}, clear=True)
+    @patch("bot.services.ai_service.asyncio.sleep", new_callable=AsyncMock)
+    @patch("bot.services.ai_service.random.uniform", return_value=3.2)
+    @patch("bot.services.ai_service._generate_media_summary", new_callable=AsyncMock, return_value=None)
+    @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=("Не смог распознать, опиши.", "moonshotai/kimi-k2-instruct-0905"))
+    def test_generate_reply_persists_media_summary_unavailable_marker(self, _mock_generate, _mock_media, _mock_uniform, _mock_sleep):
+        asyncio.run(
+            generate_guiy_reply(
+                "что на фото",
+                provider="telegram",
+                conversation_id="chat-media-miss",
+                user_id="42",
+                media_inputs=[{"type": "image", "mime_type": "image/jpeg", "data_url": "data:image/jpeg;base64,QQ==", "source": "telegram:photo:2", "caption": ""}],
+            )
+        )
+        memory = ai_service._DIALOG_MEMORY.get("telegram:chat-media-miss", [])
+        user_turn_texts = [str(entry.get("text", "")) for entry in memory if str(entry.get("speaker", "")) != "Гуй"]
+        self.assertTrue(any("Медиа-сводка: недоступна" in text for text in user_turn_texts))
 
 
     def test_extract_retry_after_from_body(self):
