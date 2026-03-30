@@ -308,7 +308,7 @@ async def shop_callback(callback: CallbackQuery) -> None:
         await callback.answer("Сначала создайте профиль через /register.", show_alert=True)
         return
 
-    items = get_shop_catalog_items(log_context="shop:telegram:callback")
+    items = get_shop_catalog_items(log_context="shop:telegram:callback", account_id=profile_check.account_id)
     data = str(callback.data or "")
     parts = data.split(":")
 
@@ -506,7 +506,7 @@ async def shop_callback(callback: CallbackQuery) -> None:
                 callback.from_user.id,
                 profile_check.account_id,
             )
-            items = get_shop_catalog_items(log_context="shop:telegram:category_roles")
+            items = get_shop_catalog_items(log_context="shop:telegram:category_roles", account_id=profile_check.account_id)
             page_data = get_shop_page_slice(items, 0, page_size=SHOP_PAGE_SIZE)
             try:
                 await callback.message.edit_text(
