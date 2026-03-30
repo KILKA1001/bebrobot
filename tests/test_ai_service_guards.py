@@ -523,6 +523,44 @@ class GuiyAIGuardsTests(unittest.TestCase):
         self.assertNotRegex(reply.lower(), r"огур|эмоч|олег|азал|бебр")
         self.assertEqual(mock_generate.await_count, 2)
 
+    @patch.dict("os.environ", {"GROQ_API_KEY": "x"}, clear=True)
+    @patch("bot.services.ai_service.asyncio.sleep", new_callable=AsyncMock)
+    @patch("bot.services.ai_service.random.uniform", return_value=3.2)
+    @patch("bot.services.ai_service._generate_media_summary", new_callable=AsyncMock, return_value="На фото два человека и вывеска.")
+    @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=("Вижу, продолжаем.", "moonshotai/kimi-k2-instruct-0905"))
+    def test_generate_reply_persists_media_summary_in_dialog_memory(self, _mock_generate, _mock_media, _mock_uniform, _mock_sleep):
+        asyncio.run(
+            generate_guiy_reply(
+                "что на фото",
+                provider="telegram",
+                conversation_id="chat-media",
+                user_id="42",
+                media_inputs=[{"type": "image", "mime_type": "image/jpeg", "data_url": "data:image/jpeg;base64,QQ==", "source": "telegram:photo:1", "caption": ""}],
+            )
+        )
+        memory = ai_service._DIALOG_MEMORY.get("telegram:chat-media", [])
+        user_turn_texts = [str(entry.get("text", "")) for entry in memory if str(entry.get("speaker", "")) != "Гуй"]
+        self.assertTrue(any("Медиа-сводка: На фото два человека и вывеска." in text for text in user_turn_texts))
+
+    @patch.dict("os.environ", {"GROQ_API_KEY": "x"}, clear=True)
+    @patch("bot.services.ai_service.asyncio.sleep", new_callable=AsyncMock)
+    @patch("bot.services.ai_service.random.uniform", return_value=3.2)
+    @patch("bot.services.ai_service._generate_media_summary", new_callable=AsyncMock, return_value=None)
+    @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=("Не смог распознать, опиши.", "moonshotai/kimi-k2-instruct-0905"))
+    def test_generate_reply_persists_media_summary_unavailable_marker(self, _mock_generate, _mock_media, _mock_uniform, _mock_sleep):
+        asyncio.run(
+            generate_guiy_reply(
+                "что на фото",
+                provider="telegram",
+                conversation_id="chat-media-miss",
+                user_id="42",
+                media_inputs=[{"type": "image", "mime_type": "image/jpeg", "data_url": "data:image/jpeg;base64,QQ==", "source": "telegram:photo:2", "caption": ""}],
+            )
+        )
+        memory = ai_service._DIALOG_MEMORY.get("telegram:chat-media-miss", [])
+        user_turn_texts = [str(entry.get("text", "")) for entry in memory if str(entry.get("speaker", "")) != "Гуй"]
+        self.assertTrue(any("Медиа-сводка: недоступна" in text for text in user_turn_texts))
+
 
     def test_extract_retry_after_from_body(self):
         seconds = _extract_retry_after_seconds({}, "Please retry in 34.312858291s.")

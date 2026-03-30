@@ -1475,11 +1475,37 @@ async def generate_guiy_reply(
             "Если вопрос опирается на вложение, честно и прямо скажи, что не смог нормально разобрать вложение и попроси описать его текстом или прислать более понятное изображение."
         )
 
+    memory_user_text = effective_user_text
+    if media_summary:
+        memory_user_text = (
+            f"{effective_user_text}\n"
+            f"Медиа-сводка: {media_summary}"
+        )
+        logger.info(
+            "guiy media summary persisted in dialog memory provider=%s conversation_id=%s user_id=%s summary_len=%s",
+            provider,
+            conversation_id,
+            user_id,
+            len(media_summary),
+        )
+    elif media_inputs:
+        memory_user_text = (
+            f"{effective_user_text}\n"
+            "Медиа-сводка: недоступна (vision-разбор не удался)."
+        )
+        logger.warning(
+            "guiy media summary unavailable for dialog memory provider=%s conversation_id=%s user_id=%s media_count=%s",
+            provider,
+            conversation_id,
+            user_id,
+            len(media_inputs),
+        )
+
     _register_dialog_memory_turn(
         provider=provider,
         conversation_id=conversation_id,
         speaker=AccountsService.get_best_public_name(provider, user_id) or "Пользователь",
-        text=effective_user_text,
+        text=memory_user_text,
     )
 
     try:
