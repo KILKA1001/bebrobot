@@ -494,8 +494,12 @@ class GuiyAIGuardsTests(unittest.TestCase):
         self.assertEqual(models, ("moonshotai/kimi-k2-instruct-0905", "qwen/qwen3-32b", "llama-3.3-70b-versatile"))
 
     @patch.dict("os.environ", {}, clear=True)
-    def test_resolve_vision_model_defaults_to_llama_3_3_for_media(self):
-        self.assertEqual(_resolve_vision_model(), "llama-3.3-70b-versatile")
+    def test_resolve_vision_model_defaults_to_multimodal_llama_4_scout(self):
+        self.assertEqual(_resolve_vision_model(), "meta-llama/llama-4-scout-17b-16e-instruct")
+
+    @patch.dict("os.environ", {"GROQ_VISION_MODEL": "llama-3.3-70b-versatile"}, clear=True)
+    def test_resolve_vision_model_rejects_text_only_model_config(self):
+        self.assertEqual(_resolve_vision_model(), "meta-llama/llama-4-scout-17b-16e-instruct")
 
 
     @patch.dict("os.environ", {}, clear=True)
