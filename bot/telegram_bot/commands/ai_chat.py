@@ -260,45 +260,63 @@ async def handle_guiy_chat(message: Message) -> None:
 
     is_named = _is_name_trigger(text)
 
-    try:
-        bot_user = await message.bot.get_me()
-    except Exception:
-        logger.exception(
-            "telegram ai failed to fetch bot identity chat_id=%s user_id=%s",
-            message.chat.id,
-            sender_id,
-        )
-        return
+    is_reply_to_bot = False
+    is_bot_mention = False
 
-    is_reply_to_bot = bool(
-        message.reply_to_message
-        and message.reply_to_message.from_user
-        and message.reply_to_message.from_user.id == bot_user.id
-    )
-    is_bot_mention = _is_bot_mentioned(message, bot_user.id, bot_user.username)
+    if not is_named:
+        try:
+            bot_user = await message.bot.get_me()
+        except Exception:
+            logger.exception(
+                "telegram ai failed to fetch bot identity chat_id=%s user_id=%s text=%s",
+                message.chat.id,
+                sender_id,
+                text[:160],
+            )
+            return
+
+        is_reply_to_bot = bool(
+            message.reply_to_message
+            and message.reply_to_message.from_user
+            and message.reply_to_message.from_user.id == bot_user.id
+        )
+        is_bot_mention = _is_bot_mentioned(message, bot_user.id, bot_user.username)
+
+    is_private_chat = str(getattr(message.chat, "type", "") or "").strip() == "private"
 
     if not (is_named or is_reply_to_bot or is_bot_mention):
         logger.info(
             "telegram ai skipped because trigger not matched chat_id=%s user_id=%s is_named=%s "
-            "is_reply_to_bot=%s is_bot_mention=%s text=%s",
+            "is_reply_to_bot=%s is_bot_mention=%s is_private_chat=%s text=%s",
             message.chat.id,
             sender_id,
             is_named,
             is_reply_to_bot,
             is_bot_mention,
+            is_private_chat,
             text[:120],
         )
+        lowered_text = text.casefold()
+        if "гуй" in lowered_text or "guiy" in lowered_text:
+            logger.warning(
+                "telegram ai trigger candidate was present but strict matcher returned false "
+                "chat_id=%s user_id=%s text=%s",
+                message.chat.id,
+                sender_id,
+                text[:160],
+            )
         return
 
     try:
         logger.info(
             "telegram ai trigger matched chat_id=%s user_id=%s is_named=%s is_reply_to_bot=%s "
-            "is_bot_mention=%s text=%s",
+            "is_bot_mention=%s is_private_chat=%s text=%s",
             message.chat.id,
             sender_id,
             is_named,
             is_reply_to_bot,
             is_bot_mention,
+            is_private_chat,
             text[:160],
         )
         await _generate_and_send_reply(message, text, media_inputs=media_inputs)

@@ -181,6 +181,128 @@ class GuiyAIGuardsTests(unittest.TestCase):
 
         self.assertTrue(_is_bot_mentioned(message, bot_id=123, bot_username="GuiyBot"))
 
+    def test_handle_guiy_chat_skips_private_message_without_name_trigger(self):
+        from bot.telegram_bot.commands.ai_chat import handle_guiy_chat
+
+        message = SimpleNamespace(
+            text="привет",
+            caption=None,
+            entities=[],
+            caption_entities=[],
+            photo=None,
+            document=None,
+            chat=SimpleNamespace(id=77, type="private"),
+            from_user=SimpleNamespace(id=42),
+            reply_to_message=None,
+            bot=SimpleNamespace(get_me=AsyncMock(return_value=SimpleNamespace(id=999, username="GuiyBot"))),
+        )
+
+        with patch("bot.telegram_bot.commands.ai_chat.persist_telegram_identity_from_user"), patch(
+            "bot.telegram_bot.commands.ai_chat.has_pending_action",
+            return_value=False,
+        ), patch(
+            "bot.telegram_bot.commands.ai_chat.has_pending_profile_edit",
+            return_value=False,
+        ), patch(
+            "bot.telegram_bot.commands.ai_chat._generate_and_send_reply",
+            new=AsyncMock(),
+        ) as reply_mock:
+            asyncio.run(handle_guiy_chat(message))
+
+        reply_mock.assert_not_awaited()
+
+    def test_handle_guiy_chat_skips_group_message_without_trigger(self):
+        from bot.telegram_bot.commands.ai_chat import handle_guiy_chat
+
+        message = SimpleNamespace(
+            text="привет",
+            caption=None,
+            entities=[],
+            caption_entities=[],
+            photo=None,
+            document=None,
+            chat=SimpleNamespace(id=-100, type="supergroup"),
+            from_user=SimpleNamespace(id=42),
+            reply_to_message=None,
+            bot=SimpleNamespace(get_me=AsyncMock(return_value=SimpleNamespace(id=999, username="GuiyBot"))),
+        )
+
+        with patch("bot.telegram_bot.commands.ai_chat.persist_telegram_identity_from_user"), patch(
+            "bot.telegram_bot.commands.ai_chat.has_pending_action",
+            return_value=False,
+        ), patch(
+            "bot.telegram_bot.commands.ai_chat.has_pending_profile_edit",
+            return_value=False,
+        ), patch(
+            "bot.telegram_bot.commands.ai_chat._generate_and_send_reply",
+            new=AsyncMock(),
+        ) as reply_mock:
+            asyncio.run(handle_guiy_chat(message))
+
+        reply_mock.assert_not_awaited()
+
+    def test_handle_guiy_chat_replies_in_private_with_name_trigger(self):
+        from bot.telegram_bot.commands.ai_chat import handle_guiy_chat
+
+        message = SimpleNamespace(
+            text="Гуй, привет",
+            caption=None,
+            entities=[],
+            caption_entities=[],
+            photo=None,
+            document=None,
+            chat=SimpleNamespace(id=77, type="private"),
+            from_user=SimpleNamespace(id=42),
+            reply_to_message=None,
+            bot=SimpleNamespace(get_me=AsyncMock(return_value=SimpleNamespace(id=999, username="GuiyBot"))),
+        )
+
+        with patch("bot.telegram_bot.commands.ai_chat.persist_telegram_identity_from_user"), patch(
+            "bot.telegram_bot.commands.ai_chat.has_pending_action",
+            return_value=False,
+        ), patch(
+            "bot.telegram_bot.commands.ai_chat.has_pending_profile_edit",
+            return_value=False,
+        ), patch(
+            "bot.telegram_bot.commands.ai_chat._generate_and_send_reply",
+            new=AsyncMock(),
+        ) as reply_mock:
+            asyncio.run(handle_guiy_chat(message))
+
+        reply_mock.assert_awaited_once()
+
+    def test_handle_guiy_chat_name_trigger_does_not_require_get_me(self):
+        from bot.telegram_bot.commands.ai_chat import handle_guiy_chat
+
+        failing_get_me = AsyncMock(side_effect=RuntimeError("network failure"))
+        message = SimpleNamespace(
+            text="guiy, ответь",
+            caption=None,
+            entities=[],
+            caption_entities=[],
+            photo=None,
+            document=None,
+            chat=SimpleNamespace(id=-100, type="supergroup"),
+            from_user=SimpleNamespace(id=42),
+            reply_to_message=None,
+            bot=SimpleNamespace(get_me=failing_get_me),
+        )
+
+        with patch("bot.telegram_bot.commands.ai_chat.persist_telegram_identity_from_user"), patch(
+            "bot.telegram_bot.commands.ai_chat.has_pending_action",
+            return_value=False,
+        ), patch(
+            "bot.telegram_bot.commands.ai_chat.has_pending_profile_edit",
+            return_value=False,
+        ), patch(
+            "bot.telegram_bot.commands.ai_chat._generate_and_send_reply",
+            new=AsyncMock(),
+        ) as reply_mock:
+            asyncio.run(handle_guiy_chat(message))
+
+        failing_get_me.assert_not_awaited()
+        reply_mock.assert_awaited_once()
+
     def test_calculate_typing_delay_has_minimum_for_empty_text(self):
         self.assertEqual(calculate_typing_delay_seconds(""), 1.2)
 
