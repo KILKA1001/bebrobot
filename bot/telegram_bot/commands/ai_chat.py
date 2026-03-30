@@ -207,8 +207,12 @@ async def guiy_command(message: Message, command: CommandObject) -> None:
         logger.exception("telegram ai /guiy reply failed chat_id=%s user_id=%s", message.chat.id, sender_id)
 
 def _is_bot_mentioned(message: Message, bot_id: int | None, bot_username: str | None) -> bool:
-    entities = message.entities or []
-    text = message.text or ""
+    if message.text is not None:
+        entities = message.entities or []
+        text = message.text or ""
+    else:
+        entities = message.caption_entities or []
+        text = message.caption or ""
 
     normalized_username = (bot_username or "").lstrip("@").lower()
     for entity in entities:

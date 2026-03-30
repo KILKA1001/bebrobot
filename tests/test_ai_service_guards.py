@@ -161,6 +161,26 @@ class GuiyAIGuardsTests(unittest.TestCase):
 
         self.assertFalse(_is_bot_mentioned(message, bot_id=123, bot_username="GuiyBot"))
 
+    def test_is_bot_mentioned_by_username_in_caption_entities(self):
+        message = SimpleNamespace(
+            text=None,
+            entities=None,
+            caption="@GuiyBot смотри сюда",
+            caption_entities=[SimpleNamespace(type="mention", offset=0, length=8)],
+        )
+
+        self.assertTrue(_is_bot_mentioned(message, bot_id=123, bot_username="GuiyBot"))
+
+    def test_is_bot_mentioned_by_text_mention_in_caption_entities(self):
+        message = SimpleNamespace(
+            text=None,
+            entities=None,
+            caption="Привет",
+            caption_entities=[SimpleNamespace(type="text_mention", user=SimpleNamespace(id=123))],
+        )
+
+        self.assertTrue(_is_bot_mentioned(message, bot_id=123, bot_username="GuiyBot"))
+
     def test_calculate_typing_delay_has_minimum_for_empty_text(self):
         self.assertEqual(calculate_typing_delay_seconds(""), 1.2)
 
@@ -474,8 +494,12 @@ class GuiyAIGuardsTests(unittest.TestCase):
         self.assertEqual(models, ("moonshotai/kimi-k2-instruct-0905", "qwen/qwen3-32b", "llama-3.3-70b-versatile"))
 
     @patch.dict("os.environ", {}, clear=True)
-    def test_resolve_vision_model_defaults_to_llama_3_3_for_media(self):
-        self.assertEqual(_resolve_vision_model(), "llama-3.3-70b-versatile")
+    def test_resolve_vision_model_defaults_to_multimodal_llama_4_scout(self):
+        self.assertEqual(_resolve_vision_model(), "meta-llama/llama-4-scout-17b-16e-instruct")
+
+    @patch.dict("os.environ", {"GROQ_VISION_MODEL": "llama-3.3-70b-versatile"}, clear=True)
+    def test_resolve_vision_model_rejects_text_only_model_config(self):
+        self.assertEqual(_resolve_vision_model(), "meta-llama/llama-4-scout-17b-16e-instruct")
 
 
     @patch.dict("os.environ", {}, clear=True)
