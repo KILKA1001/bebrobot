@@ -9,7 +9,7 @@ from bot.data import db
 from bot.systems.roles_catalog_shared import prepare_public_roles_catalog_pages
 from bot.services.accounts_service import AccountsService
 from bot.services.authority_service import AuthorityService
-from bot.services.profile_titles import is_protected_profile_title
+from bot.services.profile_titles import PROTECTED_PROFILE_TITLES, is_protected_profile_title
 from bot.services.auth import RoleResolver
 from bot.utils.roles_and_activities import ROLE_THRESHOLDS
 
@@ -823,6 +823,21 @@ class RoleManagementService:
             account_id = str(row.get("account_id") or "").strip() or None
             if not role_id or not role_name:
                 continue
+            if is_protected_profile_title(role_name):
+                if RoleManagementService._upsert_profile_title_role_mapping(
+                    role_id=role_id,
+                    role_name=role_name,
+                    source="external_role_bindings",
+                    account_id=account_id,
+                ):
+                    logger.info(
+                        "discord role synced to profile_title_roles role_name=%s external_role_id=%s account_id=%s source=%s",
+                        role_name,
+                        role_id,
+                        account_id,
+                        "external_role_bindings",
+                    )
+                continue
             synced_ids.add(role_id)
             existing = existing_by_role_id.get(role_id)
             if RoleManagementService._upsert_discord_catalog_role(
@@ -841,11 +856,56 @@ class RoleManagementService:
                     "discord_role_id": role_id,
                     "category_name": (existing or {}).get("category_name") or _AUTO_DISCORD_CATEGORY,
                     "position": int((existing or {}).get("position") or 0),
+                    "is_privileged_discord_role": bool((existing or {}).get("is_privileged_discord_role")),
+                    ROLE_SELLABLE_COLUMN: RoleManagementService._sellable_visibility(
+                        (existing or {}).get(ROLE_SELLABLE_COLUMN)
+                    ),
                     ROLE_PUBLIC_VISIBILITY_COLUMN: RoleManagementService._public_catalog_visibility(
                         (existing or {}).get(ROLE_PUBLIC_VISIBILITY_COLUMN)
                     ),
                 }
         return upserted, synced_ids
+
+    @staticmethod
+    def _resolve_profile_title_name(role_name: str) -> str:
+        normalized_role_name = str(role_name or "").strip().lower()
+        for title in PROTECTED_PROFILE_TITLES:
+            canonical_title = str(title).strip()
+            if canonical_title.lower() == normalized_role_name:
+                return canonical_title
+        return str(role_name or "").strip()
+
+    @staticmethod
+    def _upsert_profile_title_role_mapping(
+        *,
+        role_id: str,
+        role_name: str,
+        source: str,
+        guild_id: str | None = None,
+        account_id: str | None = None,
+    ) -> bool:
+        if not db.supabase or not role_id or not role_name:
+            return False
+
+        try:
+            payload = {
+                "discord_role_id": int(role_id),
+                "title_name": RoleManagementService._resolve_profile_title_name(role_name),
+                "is_active": True,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            db.supabase.table("profile_title_roles").upsert(payload, on_conflict="discord_role_id").execute()
+            return True
+        except Exception:
+            logger.exception(
+                "profile_title_roles upsert from discord sync failed role_name=%s external_role_id=%s guild_id=%s account_id=%s source=%s",
+                role_name,
+                role_id,
+                guild_id,
+                account_id,
+                source,
+            )
+            return False
 
     @staticmethod
     def ensure_external_discord_roles_in_catalog(*, log_context: str | None = None) -> dict[str, int]:
@@ -855,7 +915,7 @@ class RoleManagementService:
         try:
             existing_managed_resp = (
                 db.supabase.table("roles")
-                .select("name,discord_role_id,category_name,position,show_in_roles_catalog")
+                .select("name,discord_role_id,category_name,position,is_privileged_discord_role,show_in_roles_catalog,is_sellable")
                 .eq("is_discord_managed", True)
                 .execute()
             )
@@ -2883,7 +2943,7 @@ class RoleManagementService:
             db.supabase.table("role_categories").upsert({"name": _AUTO_DISCORD_CATEGORY, "position": 9999}).execute()
             existing_managed_resp = (
                 db.supabase.table("roles")
-                .select("name,discord_role_id,category_name,position,show_in_roles_catalog")
+                .select("name,discord_role_id,category_name,position,is_privileged_discord_role,show_in_roles_catalog,is_sellable")
                 .eq("is_discord_managed", True)
                 .execute()
             )
@@ -2906,6 +2966,21 @@ class RoleManagementService:
                 role_name = str(role.get("name") or "").strip()
                 if not role_id or not role_name:
                     continue
+                if is_protected_profile_title(role_name):
+                    if RoleManagementService._upsert_profile_title_role_mapping(
+                        role_id=role_id,
+                        role_name=role_name,
+                        source="guild_roles",
+                        guild_id=str(role.get("guild_id") or "").strip() or None,
+                    ):
+                        logger.info(
+                            "discord role synced to profile_title_roles role_name=%s external_role_id=%s guild_id=%s source=%s",
+                            role_name,
+                            role_id,
+                            str(role.get("guild_id") or "").strip() or None,
+                            "guild_roles",
+                        )
+                    continue
                 active_ids.add(role_id)
 
                 existing = existing_by_role_id.get(role_id)
@@ -2925,6 +3000,10 @@ class RoleManagementService:
                         "discord_role_id": role_id,
                         "category_name": (existing or {}).get("category_name") or _AUTO_DISCORD_CATEGORY,
                         "position": int((existing or {}).get("position") or int(role.get("position") or 0)),
+                        "is_privileged_discord_role": bool((existing or {}).get("is_privileged_discord_role")),
+                        ROLE_SELLABLE_COLUMN: RoleManagementService._sellable_visibility(
+                            (existing or {}).get(ROLE_SELLABLE_COLUMN)
+                        ),
                         ROLE_PUBLIC_VISIBILITY_COLUMN: RoleManagementService._public_catalog_visibility(
                             (existing or {}).get(ROLE_PUBLIC_VISIBILITY_COLUMN)
                         ),
