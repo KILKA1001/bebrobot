@@ -55,6 +55,7 @@ _PUBLIC_HELP_COMMANDS: tuple[str, ...] = (
 
 _POINTS_HELP_LINE = "/points [reply|id] — меню управления баллами: выбрать пользователя и действие без ручного ввода сложных команд"
 _TICKETS_HELP_LINE = "/tickets [reply|id] — меню управления билетами: выдача и списание через пошаговый интерфейс"
+_BANK_HELP_LINE = "/bank — единый экран банка: в группе показывает баланс, в ЛС у суперадмина открывает настройки (добавить/списать/история)"
 _ROLES_ADMIN_HELP_LINE = (
     "/roles_admin / /rolesadmin — вход в панель ролей. Дальше используйте кнопки внутри экрана."
 )
@@ -74,6 +75,11 @@ def _can_manage_tickets(actor_titles: tuple[str, ...], actor_level: int) -> bool
     return actor_level >= 100
 
 
+def _is_super_admin(actor_titles: tuple[str, ...]) -> bool:
+    normalized = {normalize_protected_profile_title(title) for title in actor_titles if str(title).strip()}
+    return bool(normalized & {"глава клуба", "главный вице"})
+
+
 def _build_helpy_text(*, actor_level: int = 0, actor_titles: tuple[str, ...] = tuple(), can_use_rep: bool = False) -> str:
     lines = ["📚 Список команд:", *_PUBLIC_HELP_COMMANDS]
 
@@ -82,9 +88,11 @@ def _build_helpy_text(*, actor_level: int = 0, actor_titles: tuple[str, ...] = t
         privileged_lines.append(_POINTS_HELP_LINE)
     if _can_manage_tickets(actor_titles, actor_level):
         privileged_lines.append(_TICKETS_HELP_LINE)
+    if actor_level >= 100:
+        privileged_lines.append(_BANK_HELP_LINE)
     if actor_level >= 80:
         privileged_lines.append(_ROLES_ADMIN_HELP_LINE)
-    if {"глава клуба", "главный вице"} & {normalize_protected_profile_title(title) for title in actor_titles if str(title).strip()}:
+    if _is_super_admin(actor_titles):
         privileged_lines.append(_TITLE_HELP_LINE)
     privileged_lines.append(_MODSTATUS_HELP_LINE)
     if can_use_rep:

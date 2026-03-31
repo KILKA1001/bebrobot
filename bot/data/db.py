@@ -1152,6 +1152,80 @@ class Database:
             logger.error(f"Ошибка обновления банка: {str(e)}")
             return False
 
+    def add_to_bank_with_history(self, user_id: int, amount: float, reason: str) -> bool:
+        """Пополнить банк и записать операцию в историю.
+
+        Если запись в history не удалась, баланс банка откатывается до исходного значения.
+        """
+        try:
+            if not self.supabase:
+                logger.warning(
+                    "❌ add_to_bank_with_history: Supabase не инициализирован user_id=%s amount=%s",
+                    user_id,
+                    amount,
+                )
+                return False
+            if amount <= 0:
+                logger.warning(
+                    "❌ add_to_bank_with_history: invalid amount user_id=%s amount=%s reason=%s",
+                    user_id,
+                    amount,
+                    reason,
+                )
+                return False
+
+            rpc_used, rpc_success = self._apply_bank_delta_atomic_via_rpc(
+                user_id=user_id,
+                delta=amount,
+                reason=reason,
+                operation="credit",
+            )
+            if rpc_used:
+                return rpc_success
+
+            current = self.get_bank_balance()
+            new_total = current + amount
+            self.supabase.table("bank").upsert({
+                "id": 1,
+                "total": new_total,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }).execute()
+
+            if not self.log_bank_income(user_id, amount, reason):
+                logger.error(
+                    "❌ add_to_bank_with_history: history insert failed, rolling back bank total user_id=%s amount=%s reason=%s current=%s attempted_total=%s",
+                    user_id,
+                    amount,
+                    reason,
+                    current,
+                    new_total,
+                )
+                self.supabase.table("bank").upsert({
+                    "id": 1,
+                    "total": current,
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }).execute()
+                return False
+
+            logger.info(
+                "✅ add_to_bank_with_history: success (fallback path) user_id=%s amount=%s reason=%s previous_total=%s new_total=%s",
+                user_id,
+                amount,
+                reason,
+                current,
+                new_total,
+            )
+            return True
+        except Exception as e:
+            logger.error(
+                "❌ add_to_bank_with_history failed user_id=%s amount=%s reason=%s error=%s",
+                user_id,
+                amount,
+                reason,
+                e,
+            )
+            return False
+
     def record_payment(self, user_id: int, fine_id: int, amount: float, author_id: int) -> bool:
         """Совместимый wrapper оплаты штрафа по user_id."""
         log_legacy_identity_path_detected(
@@ -1436,6 +1510,19 @@ class Database:
         try:
             if not self.supabase:
                 return False
+            if amount <= 0:
+                logger.warning("❌ spend_from_bank invalid amount user_id=%s amount=%s reason=%s", user_id, amount, reason)
+                return False
+
+            rpc_used, rpc_success = self._apply_bank_delta_atomic_via_rpc(
+                user_id=user_id,
+                delta=-amount,
+                reason=reason,
+                operation="debit",
+            )
+            if rpc_used:
+                return rpc_success
+
             current = self.get_bank_balance()
             if current < amount:
                 return False
@@ -1452,13 +1539,118 @@ class Database:
                 "reason": reason,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             })
+            try:
+                self.supabase.table("bank_history").insert(history_payload).execute()
+            except Exception as history_error:
+                logger.error(
+                    "❌ spend_from_bank history insert failed, rolling back bank total user_id=%s amount=%s reason=%s current=%s attempted_total=%s error=%s",
+                    user_id,
+                    amount,
+                    reason,
+                    current,
+                    new_total,
+                    history_error,
+                )
+                self.supabase.table("bank").upsert({
+                    "id": 1,
+                    "total": current,
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }).execute()
+                return False
 
-            self.supabase.table("bank_history").insert(history_payload).execute()
-
+            logger.info(
+                "✅ spend_from_bank: success (fallback path) user_id=%s amount=%s reason=%s previous_total=%s new_total=%s",
+                user_id,
+                amount,
+                reason,
+                current,
+                new_total,
+            )
             return True
         except Exception as e:
             logger.error(f"Ошибка при трате из банка: {str(e)}")
             return False
+
+    @staticmethod
+    def _is_missing_rpc_function_error(error: Exception) -> bool:
+        message = str(error).lower()
+        return (
+            "function" in message and "does not exist" in message
+        ) or "could not find the function" in message
+
+    def _apply_bank_delta_atomic_via_rpc(self, *, user_id: int, delta: float, reason: str, operation: str) -> tuple[bool, bool]:
+        """Пытается выполнить атомарную банковую операцию через SQL RPC.
+
+        Возвращает:
+        - (True, True): RPC вызван и операция успешна;
+        - (True, False): RPC вызван, но завершился ошибкой/отказом;
+        - (False, False): RPC не использован (например, функция ещё не развернута), вызывающий код может fallback-иться.
+        """
+        rpc_method = getattr(self.supabase, "rpc", None)
+        if not callable(rpc_method):
+            logger.warning("bank rpc path unavailable: supabase.rpc missing operation=%s user_id=%s", operation, user_id)
+            return False, False
+
+        try:
+            result = rpc_method(
+                "apply_bank_operation",
+                {
+                    "p_user_id": int(user_id),
+                    "p_delta": float(delta),
+                    "p_reason": str(reason or "").strip(),
+                },
+            ).execute()
+            payload = result.data
+            applied = True
+            error_code = None
+            if isinstance(payload, list) and payload:
+                row = payload[0] if isinstance(payload[0], dict) else {}
+                applied = bool(row.get("applied", True))
+                error_code = row.get("error_code")
+            elif isinstance(payload, dict):
+                applied = bool(payload.get("applied", True))
+                error_code = payload.get("error_code")
+
+            if not applied:
+                logger.error(
+                    "❌ bank rpc operation rejected operation=%s user_id=%s delta=%s reason=%s error_code=%s payload=%s",
+                    operation,
+                    user_id,
+                    delta,
+                    reason,
+                    error_code,
+                    payload,
+                )
+                return True, False
+
+            logger.info(
+                "✅ bank rpc operation success operation=%s user_id=%s delta=%s reason=%s",
+                operation,
+                user_id,
+                delta,
+                reason,
+            )
+            return True, True
+        except Exception as error:
+            if self._is_missing_rpc_function_error(error):
+                logger.warning(
+                    "bank rpc function missing; fallback to legacy path operation=%s user_id=%s delta=%s reason=%s error=%s",
+                    operation,
+                    user_id,
+                    delta,
+                    reason,
+                    error,
+                )
+                return False, False
+            logger.error(
+                "❌ bank rpc operation failed operation=%s user_id=%s delta=%s reason=%s error=%s",
+                operation,
+                user_id,
+                delta,
+                reason,
+                error,
+            )
+            return True, False
 
     def log_bank_income_by_account(self, account_id: str, amount: float, reason: str) -> bool:
         try:
