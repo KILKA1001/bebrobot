@@ -796,10 +796,9 @@ def get_help_embed(category: str, visibility: HelpVisibilityContext | None = Non
     elif category == "admin_bank":
         embed.title = "🏦 Мод-команды: банк"
         embed.description = (
-            "`/bank` — баланс банка.\n"
-            "`/bankadd сумма причина` — добавить баллы в банк.\n"
-            "`/bankspend сумма причина` — потратить баллы из банка.\n"
-            "`/bankhistory` — история операций."
+            "`/bank` — открыть единый экран банка с текущим балансом.\n"
+            "Кнопка `⚙️ Настройка банка` показывается только суперадмину в ЛС с ботом и открывает действия `добавить`/`списать` (причина обязательна).\n"
+            "`/bankhistory` — история последних операций банка."
         )
     elif category == "admin_tournaments":
         embed.title = "🏟 Мод-команды: турниры"
