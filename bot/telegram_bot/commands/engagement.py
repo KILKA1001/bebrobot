@@ -79,10 +79,6 @@ def _can_manage_points(actor_level: int) -> bool:
     return actor_level >= 80
 
 
-def _can_manage_bank(actor_level: int) -> bool:
-    return actor_level >= 100
-
-
 def _is_super_admin_titles(actor_titles: tuple[str, ...]) -> bool:
     normalized = {normalize_protected_profile_title(title) for title in actor_titles if str(title).strip()}
     return bool(normalized & {"глава клуба", "главный вице"})
@@ -375,17 +371,17 @@ async def bank_command(message: Message) -> None:
         )
 
         if message.chat.type != "private":
-            if not _can_manage_bank(authority.level):
-                await message.answer(
-                    "❌ Команда банка пока недоступна для вашего звания.\n"
-                    "Что делать сейчас: обратитесь к старшему администратору.\n"
-                    "Что будет дальше: после повышения откроется просмотр банкового баланса."
-                )
-                return
+            logger.info(
+                "telegram bank command public-view mode actor_id=%s chat_id=%s authority_level=%s",
+                actor_id,
+                message.chat.id if message.chat else None,
+                authority.level,
+            )
             total = await run_blocking_io("telegram.bank.balance.guild", _load_bank_balance, logger=logger)
             await message.answer(
                 "🏦 <b>Банк клуба</b>\n"
                 f"Текущий баланс: <b>{total:.2f}</b>\n"
+                "Этот экран доступен всем участникам.\n"
                 "Настройки для суперадминов в лс",
                 parse_mode=ParseMode.HTML,
             )
