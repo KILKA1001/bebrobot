@@ -752,6 +752,9 @@ class ModerationService:
         lines = [
             f"🛡️ Модерационный статус: {snapshot.get('profile_name')}",
             "",
+            "Что это:",
+            "• Здесь показаны ваши текущие ограничения, штрафы и последние завершённые кейсы.",
+            "",
             "Что сейчас активно:",
         ]
 
@@ -788,6 +791,7 @@ class ModerationService:
                     if payment_mode == ModerationService.FINE_PAYMENT_MODE_INSTANT:
                         lines.append("  ↳ Этот штраф уже удержан автоматически.")
                     else:
+                        lines.append("  ↳ Этот штраф нужно оплатить вручную.")
                         lines.append("  ↳ Для оплаты используйте кнопку «Оплатить штраф» в /modstatus.")
 
         lines.extend([
@@ -806,20 +810,26 @@ class ModerationService:
             for action in item.get("actions") or []:
                 action_type = str(action.get("action_type") or "").strip().lower()
                 if action_type == ModerationService.ACTION_WARN:
-                    actions.append("warn")
+                    actions.append("предупреждение")
                 elif action_type == ModerationService.ACTION_MUTE:
-                    actions.append("mute")
+                    actions.append("мут")
                 elif action_type == ModerationService.ACTION_FINE_POINTS:
                     fine_value = ModerationService._format_points_value(action.get("value_numeric") or 0)
                     text_marker = str(action.get("value_text") or "")
                     if "payment_mode=manual" in text_marker:
-                        actions.append(f"fine {fine_value} (ждёт оплаты)")
+                        actions.append(f"штраф {fine_value} (ждёт оплаты)")
                     else:
-                        actions.append(f"fine {fine_value} (уже удержан автоматически)")
+                        actions.append(f"штраф {fine_value} (уже удержан автоматически)")
                 elif action_type:
                     actions.append(action_type)
             action_text = ", ".join(actions) if actions else str(case_row.get("applied_actions") or "без действий")
-            completed_lines.append(f"• Кейс #{case_row.get('id')} от {created_text}: {action_text}. Статус: {status}.")
+            status_label = {
+                ModerationService.STATUS_APPLIED: "применено",
+                ModerationService.STATUS_ROLLED_BACK: "снято",
+                ModerationService.STATUS_FAILED: "завершилось с ошибкой",
+                ModerationService.STATUS_DUPLICATE: "пропущено как повтор",
+            }.get(status, status or "неизвестно")
+            completed_lines.append(f"• Кейс #{case_row.get('id')} от {created_text}: {action_text}. Статус: {status_label}.")
         if completed_lines:
             lines.extend(completed_lines)
         else:
@@ -827,8 +837,12 @@ class ModerationService:
 
         lines.extend([
             "",
-            "Как оплатить штраф:",
+            "Что делать сейчас:",
             f"• {payment_hint}",
+            "",
+            "Что будет дальше:",
+            "• После оплаты штраф исчезнет из активных.",
+            "• Если ограничение закончилось или снято модератором, оно перейдёт в раздел завершённых кейсов.",
         ])
 
         next_cursor = snapshot.get("recent_cases_next_cursor")
