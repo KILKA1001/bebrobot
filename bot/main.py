@@ -73,6 +73,7 @@ from bot.utils.discord_http import (
     is_transient_rate_limit_error,
     log_discord_http_exception,
 )
+from bot.commands.roles_admin import log_rolesadmin_command_registration_snapshot
 
 
 # Константы
@@ -496,8 +497,10 @@ async def on_ready():
         should_sync = should_sync_commands()
         try:
             if should_sync:
+                log_rolesadmin_command_registration_snapshot(stage="before_tree_sync")
                 _log_startup_step(logging.INFO, "startup step begin", step="tree_sync", should_sync=should_sync)
                 await bot.tree.sync()
+                log_rolesadmin_command_registration_snapshot(stage="after_tree_sync")
                 mark_commands_synced()
                 _log_startup_step(logging.INFO, "startup step complete", step="tree_sync", should_sync=should_sync)
                 print("🔁 Slash-команды синхронизированы")
@@ -506,6 +509,7 @@ async def on_ready():
                 print("⏭️ Синхронизация slash-команд пропущена (слишком рано после прошлого запуска)")
             commands_synced = True
         except discord.HTTPException as exc:
+            log_rolesadmin_command_registration_snapshot(stage="tree_sync_http_exception")
             log_discord_http_exception(
                 "discord startup failed to sync slash commands",
                 exc,
@@ -514,6 +518,7 @@ async def on_ready():
                 **_startup_context(step="tree_sync", should_sync=should_sync),
             )
         except Exception:
+            log_rolesadmin_command_registration_snapshot(stage="tree_sync_exception")
             logging.exception("❌ Ошибка синхронизации slash-команд | %s", _startup_context(step="tree_sync", should_sync=should_sync))
     
     _restore_runtime_views_once()

@@ -987,7 +987,7 @@ class _DiscordUserRoleExitButton(discord.ui.Button):
         await interaction.response.edit_message(
             embed=discord.Embed(
                 title="Панель закрыта",
-                description="Чтобы открыть новый пакетный выбор ролей, вызовите `/rolesadmin user_grant` или `/rolesadmin user_revoke` без указания role_name.",
+                description="Чтобы открыть новый выбор ролей, снова запустите `/rolesadmin` и перейдите в раздел «Пользователи» через кнопки панели.",
                 color=discord.Color.dark_grey(),
             ),
             view=view,
@@ -1109,8 +1109,26 @@ async def rolesadmin(ctx: commands.Context):
         )
 
 
-@rolesadmin.command(name="list", description="Показать роли по категориям")
+async def _redirect_legacy_rolesadmin_subcommand(ctx: commands.Context, *, subcommand: str) -> bool:
+    logger.warning(
+        "rolesadmin legacy fallback invoked actor_id=%s guild_id=%s subcommand=%s source=%s",
+        ctx.author.id,
+        ctx.guild.id if ctx.guild else None,
+        subcommand,
+        "discord_hybrid",
+    )
+    await send_temp(
+        ctx,
+        "⚠️ Старые подкоманды отключены в пользовательском slash-меню.\n"
+        "Откройте `/rolesadmin`, дальше используйте кнопки панели.",
+    )
+    return True
+
+
+@rolesadmin.command(with_app_command=False, name="list", description="Показать роли по категориям")
 async def rolesadmin_list(ctx: commands.Context):
+    if await _redirect_legacy_rolesadmin_subcommand(ctx, subcommand="list"):
+        return
     if not await _ensure_roles_admin(ctx):
         return
 
@@ -1123,9 +1141,9 @@ async def rolesadmin_list(ctx: commands.Context):
     embed = discord.Embed(title="🧩 Роли по категориям", color=discord.Color.blurple())
     if not sync_ok:
         embed.description = (
-            "⚠️ Автосинхронизация Discord-каталога перед `/rolesadmin list` не удалась. "
+            "⚠️ Автосинхронизация Discord-каталога перед открытием списка не удалась. "
             "Ниже показан текущий локальный каталог, он может быть неактуален. "
-            "Попробуй ещё раз или запусти `/rolesadmin sync_discord_roles`."
+            "Откройте `/rolesadmin`, дальше используйте кнопки панели и повторите обновление."
         )
     for item in grouped:
         category = item["category"]
@@ -1140,8 +1158,10 @@ async def rolesadmin_list(ctx: commands.Context):
     await send_temp(ctx, embed=embed)
 
 
-@rolesadmin.command(name="category_create", description="Создать категорию ролей")
+@rolesadmin.command(with_app_command=False, name="category_create", description="Создать категорию ролей")
 async def rolesadmin_category_create(ctx: commands.Context, name: str, position: int = 0):
+    if await _redirect_legacy_rolesadmin_subcommand(ctx, subcommand="category_create"):
+        return
     if not await _ensure_roles_admin(ctx):
         return
     if not await _ensure_category_manager(ctx):
@@ -1152,8 +1172,10 @@ async def rolesadmin_category_create(ctx: commands.Context, name: str, position:
         await send_temp(ctx, "❌ Не удалось создать категорию (смотри логи).")
 
 
-@rolesadmin.command(name="category_delete", description="Удалить категорию ролей")
+@rolesadmin.command(with_app_command=False, name="category_delete", description="Удалить категорию ролей")
 async def rolesadmin_category_delete(ctx: commands.Context, name: str):
+    if await _redirect_legacy_rolesadmin_subcommand(ctx, subcommand="category_delete"):
+        return
     if not await _ensure_roles_admin(ctx):
         return
     if not await _ensure_category_manager(ctx):
@@ -1164,8 +1186,10 @@ async def rolesadmin_category_delete(ctx: commands.Context, name: str):
         await send_temp(ctx, "❌ Не удалось удалить категорию (смотри логи).")
 
 
-@rolesadmin.command(name="category_order", description="Изменить порядок категории")
+@rolesadmin.command(with_app_command=False, name="category_order", description="Изменить порядок категории")
 async def rolesadmin_category_order(ctx: commands.Context, name: str, position: int):
+    if await _redirect_legacy_rolesadmin_subcommand(ctx, subcommand="category_order"):
+        return
     if not await _ensure_roles_admin(ctx):
         return
     if not await _ensure_category_manager(ctx):
@@ -1176,7 +1200,7 @@ async def rolesadmin_category_order(ctx: commands.Context, name: str, position: 
         await send_temp(ctx, "❌ Не удалось обновить порядок категории (смотри логи).")
 
 
-@rolesadmin.command(name="role_create", description="Создать роль в каталоге")
+@rolesadmin.command(with_app_command=False, name="role_create", description="Создать роль в каталоге")
 @app_commands.describe(
     category="Сначала выберите категорию роли",
     name="Название новой роли",
@@ -1197,6 +1221,8 @@ async def rolesadmin_role_create(
     position: int | None = None,
     is_sellable: str | None = None,
 ):
+    if await _redirect_legacy_rolesadmin_subcommand(ctx, subcommand="role_create"):
+        return
     if not await _ensure_roles_admin(ctx):
         return
     _log_role_create_category_selection(
@@ -1264,8 +1290,10 @@ async def rolesadmin_role_create(
         await send_temp(ctx, f"❌ {create_result.get('message') or 'Не удалось создать роль (смотри логи).'}")
 
 
-@rolesadmin.command(name="role_edit_description", description="Обновить описание роли")
+@rolesadmin.command(with_app_command=False, name="role_edit_description", description="Обновить описание роли")
 async def rolesadmin_role_edit_description(ctx: commands.Context, name: str, description: str):
+    if await _redirect_legacy_rolesadmin_subcommand(ctx, subcommand="role_edit_description"):
+        return
     if not await _ensure_roles_admin(ctx):
         return
     if RoleManagementService.update_role_description(
@@ -1282,8 +1310,10 @@ async def rolesadmin_role_edit_description(ctx: commands.Context, name: str, des
         await send_temp(ctx, "❌ Не удалось обновить описание роли (смотри логи).")
 
 
-@rolesadmin.command(name="role_edit_acquire_hint", description="Обновить способ получения роли")
+@rolesadmin.command(with_app_command=False, name="role_edit_acquire_hint", description="Обновить способ получения роли")
 async def rolesadmin_role_edit_acquire_hint(ctx: commands.Context, name: str, acquire_hint: str):
+    if await _redirect_legacy_rolesadmin_subcommand(ctx, subcommand="role_edit_acquire_hint"):
+        return
     if not await _ensure_roles_admin(ctx):
         return
     if RoleManagementService.update_role_acquire_hint(
@@ -1300,8 +1330,10 @@ async def rolesadmin_role_edit_acquire_hint(ctx: commands.Context, name: str, ac
         await send_temp(ctx, "❌ Не удалось обновить способ получения роли (смотри логи).")
 
 
-@rolesadmin.command(name="role_edit_sellable", description="Включить/выключить продажу роли в магазине")
+@rolesadmin.command(with_app_command=False, name="role_edit_sellable", description="Включить/выключить продажу роли в магазине")
 async def rolesadmin_role_edit_sellable(ctx: commands.Context, name: str, is_sellable: str):
+    if await _redirect_legacy_rolesadmin_subcommand(ctx, subcommand="role_edit_sellable"):
+        return
     if not await _ensure_roles_admin(ctx):
         return
     parsed_sellable = _parse_sellable_choice(is_sellable)
@@ -1323,8 +1355,10 @@ async def rolesadmin_role_edit_sellable(ctx: commands.Context, name: str, is_sel
         await send_temp(ctx, "❌ Не удалось обновить признак продажи роли (смотри логи).")
 
 
-@rolesadmin.command(name="shop_add", description="Добавить роль на витрину магазина")
+@rolesadmin.command(with_app_command=False, name="shop_add", description="Добавить роль на витрину магазина")
 async def rolesadmin_shop_add(ctx: commands.Context, role_name: str, base_price_points: int, display_position: int | None = None):
+    if await _redirect_legacy_rolesadmin_subcommand(ctx, subcommand="shop_add"):
+        return
     if not await _ensure_roles_admin(ctx):
         return
     if not await _ensure_shop_superadmin(ctx, source="shop_add"):
@@ -1341,8 +1375,10 @@ async def rolesadmin_shop_add(ctx: commands.Context, role_name: str, base_price_
     await send_temp(ctx, "✅ Роль добавлена на витрину магазина." if ok else "❌ Не удалось добавить роль на витрину (смотри логи).")
 
 
-@rolesadmin.command(name="shop_remove", description="Убрать роль с витрины магазина")
+@rolesadmin.command(with_app_command=False, name="shop_remove", description="Убрать роль с витрины магазина")
 async def rolesadmin_shop_remove(ctx: commands.Context, role_name: str):
+    if await _redirect_legacy_rolesadmin_subcommand(ctx, subcommand="shop_remove"):
+        return
     if not await _ensure_roles_admin(ctx):
         return
     if not await _ensure_shop_superadmin(ctx, source="shop_remove"):
@@ -1356,8 +1392,10 @@ async def rolesadmin_shop_remove(ctx: commands.Context, role_name: str):
     await send_temp(ctx, "✅ Роль убрана с витрины." if ok else "❌ Не удалось убрать роль с витрины (смотри логи).")
 
 
-@rolesadmin.command(name="shop_price", description="Изменить базовую цену роли на витрине")
+@rolesadmin.command(with_app_command=False, name="shop_price", description="Изменить базовую цену роли на витрине")
 async def rolesadmin_shop_price(ctx: commands.Context, role_name: str, base_price_points: int):
+    if await _redirect_legacy_rolesadmin_subcommand(ctx, subcommand="shop_price"):
+        return
     if not await _ensure_roles_admin(ctx):
         return
     if not await _ensure_shop_superadmin(ctx, source="shop_price"):
@@ -1373,8 +1411,10 @@ async def rolesadmin_shop_price(ctx: commands.Context, role_name: str, base_pric
     await send_temp(ctx, "✅ Базовая цена обновлена." if ok else "❌ Не удалось обновить цену (смотри логи).")
 
 
-@rolesadmin.command(name="shop_position", description="Изменить позицию роли на витрине")
+@rolesadmin.command(with_app_command=False, name="shop_position", description="Изменить позицию роли на витрине")
 async def rolesadmin_shop_position(ctx: commands.Context, role_name: str, display_position: int):
+    if await _redirect_legacy_rolesadmin_subcommand(ctx, subcommand="shop_position"):
+        return
     if not await _ensure_roles_admin(ctx):
         return
     if not await _ensure_shop_superadmin(ctx, source="shop_position"):
@@ -1393,7 +1433,7 @@ async def rolesadmin_shop_position(ctx: commands.Context, role_name: str, displa
     await send_temp(ctx, "✅ Позиция на витрине обновлена." if ok else "❌ Не удалось обновить позицию (смотри логи).")
 
 
-@rolesadmin.command(name="shop_sale", description="Включить/выключить акцию по времени")
+@rolesadmin.command(with_app_command=False, name="shop_sale", description="Включить/выключить акцию по времени")
 async def rolesadmin_shop_sale(
     ctx: commands.Context,
     role_name: str,
@@ -1401,6 +1441,8 @@ async def rolesadmin_shop_sale(
     sale_starts_at: str | None = None,
     sale_ends_at: str | None = None,
 ):
+    if await _redirect_legacy_rolesadmin_subcommand(ctx, subcommand="shop_sale"):
+        return
     if not await _ensure_roles_admin(ctx):
         return
     if not await _ensure_shop_superadmin(ctx, source="shop_sale"):
@@ -1422,8 +1464,10 @@ async def rolesadmin_shop_sale(
     await send_temp(ctx, "✅ Акция выключена." if disable_sale and ok else "✅ Акция сохранена." if ok else "❌ Не удалось обновить акцию (смотри логи).")
 
 
-@rolesadmin.command(name="role_delete", description="Удалить роль из каталога")
+@rolesadmin.command(with_app_command=False, name="role_delete", description="Удалить роль из каталога")
 async def rolesadmin_role_delete(ctx: commands.Context, name: str):
+    if await _redirect_legacy_rolesadmin_subcommand(ctx, subcommand="role_delete"):
+        return
     if not await _ensure_roles_admin(ctx):
         return
     result = RoleManagementService.delete_role(
@@ -1440,8 +1484,10 @@ async def rolesadmin_role_delete(ctx: commands.Context, name: str):
         await send_temp(ctx, _delete_role_result_message(result))
 
 
-@rolesadmin.command(name="role_move", description="Переместить роль в другую категорию")
+@rolesadmin.command(with_app_command=False, name="role_move", description="Переместить роль в другую категорию")
 async def rolesadmin_role_move(ctx: commands.Context, role_name: str, category: str, position: int | None = None):
+    if await _redirect_legacy_rolesadmin_subcommand(ctx, subcommand="role_move"):
+        return
     if not await _ensure_roles_admin(ctx):
         return
     sync_ok = await _sync_ctx_discord_roles_catalog(ctx, operation="role_move")
@@ -1471,7 +1517,7 @@ async def rolesadmin_role_move(ctx: commands.Context, role_name: str, category: 
         )
         message = _canonical_role_missing_message()
         if not sync_ok:
-            message += " Автосинхронизация тоже не подтвердила каталог — попробуй ещё раз после `/rolesadmin sync_discord_roles`."
+            message += " Автосинхронизация тоже не подтвердила каталог — открой `/rolesadmin`, обнови каталог кнопками панели и попробуй ещё раз."
         await send_temp(ctx, message)
         return
     if RoleManagementService.move_role(
@@ -1496,8 +1542,10 @@ async def rolesadmin_role_move(ctx: commands.Context, role_name: str, category: 
         await send_temp(ctx, "❌ Не удалось переместить роль. Проверь синхронизацию каталога и логи.")
 
 
-@rolesadmin.command(name="role_order", description="Изменить порядок роли в категории")
+@rolesadmin.command(with_app_command=False, name="role_order", description="Изменить порядок роли в категории")
 async def rolesadmin_role_order(ctx: commands.Context, role_name: str, category: str, position: int):
+    if await _redirect_legacy_rolesadmin_subcommand(ctx, subcommand="role_order"):
+        return
     if not await _ensure_roles_admin(ctx):
         return
     sync_ok = await _sync_ctx_discord_roles_catalog(ctx, operation="role_order")
@@ -1527,7 +1575,7 @@ async def rolesadmin_role_order(ctx: commands.Context, role_name: str, category:
         )
         message = _canonical_role_missing_message()
         if not sync_ok:
-            message += " Автосинхронизация тоже не подтвердила каталог — попробуй ещё раз после `/rolesadmin sync_discord_roles`."
+            message += " Автосинхронизация тоже не подтвердила каталог — открой `/rolesadmin`, обнови каталог кнопками панели и попробуй ещё раз."
         await send_temp(ctx, message)
         return
     if RoleManagementService.move_role(
@@ -1552,8 +1600,10 @@ async def rolesadmin_role_order(ctx: commands.Context, role_name: str, category:
         await send_temp(ctx, "❌ Не удалось обновить порядок роли. Проверь синхронизацию каталога и логи.")
 
 
-@rolesadmin.command(name="user_roles", description="Посмотреть роли пользователя")
+@rolesadmin.command(with_app_command=False, name="user_roles", description="Посмотреть роли пользователя")
 async def rolesadmin_user_roles(ctx: commands.Context, target: str):
+    if await _redirect_legacy_rolesadmin_subcommand(ctx, subcommand="user_roles"):
+        return
     if not await _ensure_roles_admin(ctx):
         return
 
@@ -1576,8 +1626,10 @@ async def rolesadmin_user_roles(ctx: commands.Context, target: str):
     await send_temp(ctx, f"🧾 Роли {resolved['label']}:\n" + "\n".join(lines))
 
 
-@rolesadmin.command(name="user_grant", description="Выдать роль пользователю")
+@rolesadmin.command(with_app_command=False, name="user_grant", description="Выдать роль пользователю")
 async def rolesadmin_user_grant(ctx: commands.Context, target: str, role_name: str | None = None):
+    if await _redirect_legacy_rolesadmin_subcommand(ctx, subcommand="user_grant"):
+        return
     if not await _ensure_roles_admin(ctx):
         return
 
@@ -1665,8 +1717,10 @@ async def rolesadmin_user_grant(ctx: commands.Context, target: str, role_name: s
     await send_temp(ctx, f"✅ Роль **{role_name}** выдана пользователю {resolved['label']}.")
 
 
-@rolesadmin.command(name="user_revoke", description="Забрать роль у пользователя")
+@rolesadmin.command(with_app_command=False, name="user_revoke", description="Забрать роль у пользователя")
 async def rolesadmin_user_revoke(ctx: commands.Context, target: str, role_name: str | None = None):
+    if await _redirect_legacy_rolesadmin_subcommand(ctx, subcommand="user_revoke"):
+        return
     if not await _ensure_roles_admin(ctx):
         return
 
@@ -1754,8 +1808,10 @@ async def rolesadmin_user_revoke(ctx: commands.Context, target: str, role_name: 
     await send_temp(ctx, f"✅ Роль **{role_name}** снята у {resolved['label']}.")
 
 
-@rolesadmin.command(name="sync_external_roles", description="Синхронизировать snapshot внешних ролей")
+@rolesadmin.command(with_app_command=False, name="sync_external_roles", description="Синхронизировать snapshot внешних ролей")
 async def rolesadmin_sync_external_roles(ctx: commands.Context, target: str | None = None):
+    if await _redirect_legacy_rolesadmin_subcommand(ctx, subcommand="sync_external_roles"):
+        return
     if not await _ensure_roles_admin(ctx):
         return
 
@@ -1801,8 +1857,10 @@ async def rolesadmin_sync_external_roles(ctx: commands.Context, target: str | No
         await send_temp(ctx, "❌ Не удалось синхронизировать snapshot внешних ролей (смотри логи).")
 
 
-@rolesadmin.command(name="sync_discord_roles", description="Синхронизировать роли сервера Discord в каталог")
+@rolesadmin.command(with_app_command=False, name="sync_discord_roles", description="Синхронизировать роли сервера Discord в каталог")
 async def rolesadmin_sync_discord_roles(ctx: commands.Context):
+    if await _redirect_legacy_rolesadmin_subcommand(ctx, subcommand="sync_discord_roles"):
+        return
     if not await _ensure_roles_admin(ctx):
         return
     if not ctx.guild:
@@ -1825,11 +1883,25 @@ async def rolesadmin_sync_discord_roles(ctx: commands.Context):
         await send_temp(ctx, "❌ Не удалось синхронизировать роли Discord (смотри логи).")
 
 
-try:
-    _rolesadmin_app_group = getattr(rolesadmin, "app_command", None)
-    if _rolesadmin_app_group is not None:
-        for _sub in list(_rolesadmin_app_group.commands):
-            _rolesadmin_app_group.remove_command(_sub.name)
-        logger.info("rolesadmin app subcommands disabled for public flow source=discord_hybrid")
-except Exception:
-    logger.exception("rolesadmin failed to disable app subcommands")
+def log_rolesadmin_command_registration_snapshot(*, stage: str) -> None:
+    app_group = getattr(rolesadmin, "app_command", None)
+    app_subcommands = [str(command.name) for command in list(app_group.commands)] if app_group else []
+    prefix_subcommands = [str(command.name) for command in list(getattr(rolesadmin, "commands", []))]
+    logger.info(
+        "rolesadmin registration snapshot stage=%s app_entry=%s app_subcommands=%s prefix_subcommands=%s source=%s",
+        stage,
+        "rolesadmin" if app_group else "missing",
+        app_subcommands,
+        prefix_subcommands,
+        "discord_hybrid",
+    )
+    if app_subcommands:
+        logger.warning(
+            "rolesadmin app tree contains unexpected subcommands stage=%s app_subcommands=%s source=%s",
+            stage,
+            app_subcommands,
+            "discord_hybrid",
+        )
+
+
+log_rolesadmin_command_registration_snapshot(stage="module_import")
