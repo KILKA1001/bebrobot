@@ -341,3 +341,46 @@ def test_purchase_shop_item_revoke_lower_volunteer_roles_on_upgrade():
     assert result.ok is True
     revoked_names = [call.args[1] for call in revoke_mock.call_args_list]
     assert revoked_names == ["Новый волонтер", "Хороший Помощник Бебр"]
+
+
+def test_purchase_shop_item_sends_spent_points_to_bank_on_success():
+    item = shop_logic.ShopItem(
+        shop_item_id="shop_1",
+        role_name="Новый волонтер",
+        short_name="Новый волонтер",
+        category="Роли",
+        position=0,
+        category_position=0,
+        description="",
+        acquire_hint="",
+        price_points=15,
+        base_price_points=15,
+        sale_price_points=None,
+        is_sale_active=False,
+    )
+    with patch("bot.services.shop_service.get_shop_catalog_items", return_value=[item]), patch(
+        "bot.services.shop_service.RoleManagementService.get_role",
+        return_value={"is_sellable": True, "discord_role_id": "1105906310131744868"},
+    ), patch(
+        "bot.services.shop_service.RoleManagementService.get_user_roles_by_account", return_value=[]
+    ), patch(
+        "bot.services.shop_service.AccountsService.get_profile_by_account", return_value={"points": 200}
+    ), patch(
+        "bot.services.shop_service.PointsService.remove_points_by_account", return_value=True
+    ), patch(
+        "bot.services.shop_service.RoleManagementService.assign_user_role_by_account", return_value={"ok": True}
+    ), patch(
+        "bot.services.shop_service.db.add_to_bank", return_value=True
+    ) as add_bank_mock, patch(
+        "bot.services.shop_service.db.log_bank_income_by_account", return_value=True
+    ) as log_income_mock:
+        result = shop_logic.purchase_shop_item(
+            account_id="acc-1",
+            shop_item_id="shop_1",
+            actor_provider="telegram",
+            actor_user_id="100",
+        )
+
+    assert result.ok is True
+    add_bank_mock.assert_called_once_with(15.0)
+    log_income_mock.assert_called_once_with("acc-1", 15.0, "Покупка роли в магазине: Новый волонтер")
