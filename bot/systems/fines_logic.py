@@ -445,8 +445,8 @@ def calculate_penalty(fine: dict) -> float:
 
         return round(total_penalty, 2)
 
-    except Exception as e:
-        logger.exception("Ошибка расчёта пени")
+    except Exception:
+        logger.exception("Ошибка расчёта пени при вычислении штрафа fine_id=%s", fine.get("id"))
         return 0.0
 
 # 💳 Задолженность из штрафа
@@ -467,8 +467,8 @@ def create_debt_from_fine(fine: dict) -> dict:
             "last_attempt": None,
             "is_resolved": False
         }
-    except Exception as e:
-        logger.exception("Ошибка при создании задолженности")
+    except Exception:
+        logger.exception("Ошибка при создании задолженности из штрафа fine_id=%s", fine.get("id"))
         return {}
 
 # ⏰ Проверка просроченных

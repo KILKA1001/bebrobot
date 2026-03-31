@@ -8,7 +8,6 @@
 import logging
 from dataclasses import dataclass
 
-from bot.data import db
 from bot.services import AccountsService, PointsService, RoleManagementService
 from bot.services.ux_texts import compose_three_block_plain
 from bot.utils.roles_and_activities import ROLE_THRESHOLDS
