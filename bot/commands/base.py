@@ -838,8 +838,11 @@ async def bank_balance(ctx):
                 return
             show_settings = True
         else:
-            if not await _check_command_authority(ctx, "bank_manage"):
-                return
+            logger.info(
+                "bank command public-view mode actor_id=%s guild_id=%s",
+                ctx.author.id,
+                ctx.guild.id if ctx.guild else None,
+            )
             show_settings = False
 
         logger.info("bank command opened actor_id=%s guild_id=%s", ctx.author.id, ctx.guild.id if ctx.guild else None)
