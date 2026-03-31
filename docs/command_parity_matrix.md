@@ -35,7 +35,7 @@ This matrix reflects the current command parity between Discord and Telegram imp
 | Points | `/awardmonthtop` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Points | `/tophistory` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Points | `/ping` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
-| Points | `/bank` + кнопка `⚙️ Настройка банка` (`add/spend`) | — | missing | Discord использует единый экран банка: команда показывает баланс и открывает кнопочный сценарий пополнения/списания с обязательной причиной. В Telegram counterpart пока отсутствует. |
+| Points | `/bank` + кнопка `⚙️ Настройка банка` (`add/spend`) | — | missing | Discord использует единый экран банка: команда показывает баланс, а кнопочный сценарий пополнения/списания (с обязательной причиной) отображается только суперадмину в ЛС с ботом. В Telegram counterpart пока отсутствует. |
 | Points | `/bankhistory` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Points | `/balance` | `/balance [reply|id]` | partial | Read-only balance view is available in Telegram; Discord supports optional member argument via mention. |
 | Fines (legacy payment only) | `/modstatus` + кнопка оплаты | `/modstatus` + кнопка оплаты | full | Transitional payment UI for legacy fines открывается из `/modstatus` на обеих платформах. Внутри панели оплаты остаются кнопки долей (25/50/100%), а сам `/rep` остаётся точкой применения новых наказаний. |

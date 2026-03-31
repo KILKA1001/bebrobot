@@ -558,6 +558,14 @@ async def ping(ctx):
     await send_temp(ctx, "pong")
 
 
+def _is_dm_context(ctx: commands.Context) -> bool:
+    return ctx.guild is None
+
+
+def _is_super_admin_discord_user(user_id: int) -> bool:
+    return AuthorityService.is_super_admin("discord", str(user_id))
+
+
 def _build_bank_balance_embed(*, actor_id: int | None = None) -> discord.Embed:
     total = db.get_bank_balance()
     embed = discord.Embed(
@@ -573,29 +581,6 @@ def _build_bank_balance_embed(*, actor_id: int | None = None) -> discord.Embed:
     if actor_id is not None:
         embed.set_footer(text=f"Запросил: {actor_id}")
     return embed
-
-
-class BankActionModal(discord.ui.Modal):
-    def __init__(self, *, actor_id: int, operation: str):
-        title = "Пополнение банка" if operation == "add" else "Списание из банка"
-        super().__init__(title=title)
-        self.actor_id = actor_id
-        self.operation = operation
-        self.amount = discord.ui.TextInput(
-            label="Сумма",
-            placeholder="Например: 25.5",
-            required=True,
-            max_length=32,
-        )
-        self.reason = discord.ui.TextInput(
-            label="Причина",
-            placeholder="Коротко опишите причину операции",
-            required=True,
-            style=discord.TextStyle.paragraph,
-            max_length=400,
-        )
-        self.add_item(self.amount)
-        self.add_item(self.reason)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         try:
@@ -676,6 +661,122 @@ class BankSettingsView(discord.ui.View):
         super().__init__(timeout=300)
         self.owner_id = owner_id
 
+class BankActionModal(discord.ui.Modal):
+    def __init__(self, *, actor_id: int, operation: str):
+        title = "Пополнение банка" if operation == "add" else "Списание из банка"
+        super().__init__(title=title)
+        self.actor_id = actor_id
+        self.operation = operation
+        self.amount = discord.ui.TextInput(
+            label="Сумма",
+            placeholder="Например: 25.5",
+            required=True,
+            max_length=32,
+        )
+        self.reason = discord.ui.TextInput(
+            label="Причина",
+            placeholder="Коротко опишите причину операции",
+            required=True,
+            style=discord.TextStyle.paragraph,
+            max_length=400,
+        )
+        self.add_item(self.amount)
+        self.add_item(self.reason)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            if not _is_super_admin_discord_user(interaction.user.id):
+                logger.warning(
+                    "bank modal denied: super-admin required actor_id=%s operation=%s",
+                    interaction.user.id,
+                    self.operation,
+                )
+                await interaction.response.send_message(
+                    "❌ Настройка банка доступна только суперадмину в личных сообщениях.",
+                    ephemeral=True,
+                )
+                return
+            if interaction.guild is not None:
+                logger.warning(
+                    "bank modal denied: non-dm context actor_id=%s guild_id=%s operation=%s",
+                    interaction.user.id,
+                    interaction.guild.id,
+                    self.operation,
+                )
+                await interaction.response.send_message(
+                    "❌ Настройка банка доступна только в ЛС с ботом.",
+                    ephemeral=True,
+                )
+                return
+
+            amount = float(str(self.amount.value).replace(",", "."))
+            if amount <= 0:
+                await interaction.response.send_message("❌ Сумма должна быть больше 0.", ephemeral=True)
+                return
+
+            reason = str(self.reason.value).strip()
+            if not reason:
+                await interaction.response.send_message("❌ Причина обязательна.", ephemeral=True)
+                return
+
+            if self.operation == "add":
+                ok = db.add_to_bank_with_history(self.actor_id, amount, reason)
+                action_line = f"✅ В банк добавлено **{amount:.2f}** баллов.\nПричина: {reason}"
+            else:
+                ok = db.spend_from_bank(amount, self.actor_id, reason)
+                action_line = f"💸 Из банка списано **{amount:.2f}** баллов.\nПричина: {reason}"
+
+            if not ok:
+                logger.error(
+                    "bank modal operation failed actor_id=%s operation=%s amount=%s reason=%s",
+                    self.actor_id,
+                    self.operation,
+                    amount,
+                    reason,
+                )
+                await interaction.response.send_message(
+                    "❌ Операция не выполнена. Проверьте доступ, баланс и логи сервера.",
+                    ephemeral=True,
+                )
+                return
+
+            logger.info(
+                "bank modal operation success actor_id=%s operation=%s amount=%s reason=%s",
+                self.actor_id,
+                self.operation,
+                amount,
+                reason,
+            )
+            embed = _build_bank_balance_embed(actor_id=self.actor_id)
+            await interaction.response.send_message(action_line, embed=embed, ephemeral=True)
+        except ValueError:
+            logger.exception(
+                "bank modal amount parse failed actor_id=%s operation=%s amount_raw=%s",
+                self.actor_id,
+                self.operation,
+                self.amount.value,
+            )
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Некорректный формат суммы.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Некорректный формат суммы.", ephemeral=True)
+        except Exception:
+            logger.exception(
+                "bank modal submit failed actor_id=%s operation=%s",
+                self.actor_id,
+                self.operation,
+            )
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Ошибка выполнения банковой операции.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Ошибка выполнения банковой операции.", ephemeral=True)
+
+
+class BankSettingsView(discord.ui.View):
+    def __init__(self, *, owner_id: int):
+        super().__init__(timeout=300)
+        self.owner_id = owner_id
+
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
             logger.warning(
@@ -685,9 +786,20 @@ class BankSettingsView(discord.ui.View):
             )
             await interaction.response.send_message("❌ Эта панель открыта для другого администратора.", ephemeral=True)
             return False
-        if not AuthorityService.has_command_permission("discord", str(interaction.user.id), "bank_manage"):
-            logger.warning("bank settings permission denied actor_id=%s", interaction.user.id)
-            await interaction.response.send_message("❌ Недостаточно полномочий для управления банком.", ephemeral=True)
+        if interaction.guild is not None:
+            logger.warning(
+                "bank settings denied non-dm actor_id=%s guild_id=%s",
+                interaction.user.id,
+                interaction.guild.id,
+            )
+            await interaction.response.send_message("❌ Настройка банка доступна только в ЛС с ботом.", ephemeral=True)
+            return False
+        if not _is_super_admin_discord_user(interaction.user.id):
+            logger.warning("bank settings denied non-super-admin actor_id=%s", interaction.user.id)
+            await interaction.response.send_message(
+                "❌ Настройка банка доступна только суперадмину.",
+                ephemeral=True,
+            )
             return False
         return True
 
@@ -718,9 +830,17 @@ class BankRootView(discord.ui.View):
 
     @discord.ui.button(label="⚙️ Настройка банка", style=discord.ButtonStyle.secondary)
     async def open_settings(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        if not AuthorityService.has_command_permission("discord", str(interaction.user.id), "bank_manage"):
-            logger.warning("bank settings open denied actor_id=%s", interaction.user.id)
-            await interaction.response.send_message("❌ Недостаточно полномочий для настройки банка.", ephemeral=True)
+        if interaction.guild is not None:
+            logger.warning(
+                "bank settings button hidden path triggered in guild actor_id=%s guild_id=%s",
+                interaction.user.id,
+                interaction.guild.id,
+            )
+            await interaction.response.send_message("❌ Настройка банка доступна только в ЛС с ботом.", ephemeral=True)
+            return
+        if not _is_super_admin_discord_user(interaction.user.id):
+            logger.warning("bank settings open denied non-super-admin actor_id=%s", interaction.user.id)
+            await interaction.response.send_message("❌ Настройка банка доступна только суперадмину.", ephemeral=True)
             return
         await interaction.response.send_message(
             "Выберите действие с балансом банка. Для каждой операции причина обязательна.",
@@ -731,12 +851,34 @@ class BankRootView(discord.ui.View):
 
 @bot.hybrid_command(name="bank", description="Показать баланс клуба")
 async def bank_balance(ctx):
-    if not await _check_command_authority(ctx, "bank_manage"):
-        return
     try:
+        if _is_dm_context(ctx):
+            if not _is_super_admin_discord_user(ctx.author.id):
+                logger.warning("bank command denied in dm for non-super-admin actor_id=%s", ctx.author.id)
+                await send_temp(
+                    ctx,
+                    "❌ Экран настройки банка в ЛС доступен только суперадмину.\n"
+                    "Что делать сейчас: обратитесь к суперадмину.\n"
+                    "Что будет дальше: суперадмин сможет выполнить пополнение или списание через кнопку настройки.",
+                )
+                return
+            show_settings = True
+        else:
+            if not await _check_command_authority(ctx, "bank_manage"):
+                return
+            show_settings = False
+
         logger.info("bank command opened actor_id=%s guild_id=%s", ctx.author.id, ctx.guild.id if ctx.guild else None)
         embed = _build_bank_balance_embed(actor_id=ctx.author.id)
-        await send_temp(ctx, embed=embed, view=BankRootView(owner_id=ctx.author.id), delete_after=None)
+        view = BankRootView(owner_id=ctx.author.id) if show_settings else None
+        if not show_settings:
+            logger.info(
+                "bank command rendered without settings button actor_id=%s guild_id=%s reason=%s",
+                ctx.author.id,
+                ctx.guild.id if ctx.guild else None,
+                "non_dm_or_not_super_admin",
+            )
+        await send_temp(ctx, embed=embed, view=view, delete_after=None)
     except Exception:
         logger.exception("bank command failed actor_id=%s guild_id=%s", ctx.author.id, ctx.guild.id if ctx.guild else None)
         await send_temp(ctx, "❌ Не удалось открыть панель банка. Попробуйте ещё раз позже.")
