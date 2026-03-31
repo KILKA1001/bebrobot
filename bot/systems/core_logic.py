@@ -804,8 +804,7 @@ def get_help_embed(category: str, visibility: HelpVisibilityContext | None = Non
     elif category == "admin_tickets":
         embed.title = "🎟️ Мод-команды: билеты"
         embed.description = (
-            "`/addticket @пользователь тип [причина]` — выдать билет.\n"
-            "`/removeticket @пользователь тип [причина]` — списать билет."
+            "`/tickets [@пользователь]` — открыть единое меню управления билетами (выдача/списание через кнопки и форму причины)."
         )
     elif category == "admin_roles":
         embed.title = "🏅 Мод-команды: роли"
