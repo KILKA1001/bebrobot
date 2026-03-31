@@ -135,15 +135,15 @@ class DiscordUserRoleFlowState:
 
 def _delete_role_denied_message() -> str:
     return (
-        "❌ Эту внешнюю Discord-роль нельзя удалить из каталога. "
-        "Попробуй `role_move` или `role_order`, если нужно поменять её место в каталоге."
+        "❌ Эту роль нельзя удалить здесь. "
+        "Можно только поменять её место в списке."
     )
 
 
 def _delete_role_not_found_message() -> str:
     return (
-        "❌ Роль не найдена в каноническом каталоге `roles`. "
-        "Обнови список или дождись автосинхронизации Discord-ролей, затем повтори команду."
+        "❌ Роль не найдена в списке. "
+        "Обнови экран и попробуй ещё раз."
     )
 
 
@@ -152,28 +152,26 @@ def _delete_role_result_message(result: dict[str, Any]) -> str:
         return _delete_role_denied_message()
     if result.get("reason") == DELETE_ROLE_REASON_NOT_FOUND:
         return _delete_role_not_found_message()
-    return "❌ Не удалось удалить роль. Проверь синхронизацию каталога и логи, затем попробуй ещё раз."
+    return "❌ Не удалось удалить роль. Обнови экран и попробуй ещё раз."
 
 
 def _render_command_alias_note() -> str:
     return (
-        "Паритет названий: в Discord команда называется <code>/rolesadmin</code>, а в Telegram — <code>/roles_admin</code>. "
-        "В Telegram дополнительно поддерживается текстовый alias <code>/rolesadmin</code>, чтобы не было ложных ожиданий при переключении между платформами. "
-        "Команда <code>sync_discord_roles</code> сейчас запускается только из Discord.\n\n"
+        "Паритет названий: в Discord команда <code>/rolesadmin</code>, в Telegram — <code>/roles_admin</code> (alias <code>/rolesadmin</code>). "
+        "Дальше в обеих панелях используйте кнопки.\n\n"
     )
 
 
 def _render_role_source_note() -> str:
     return (
-        "Команды `list`, `role_move` и `role_order` сначала пытаются автоматически подтянуть актуальные Discord-роли "
-        "в канонический каталог `roles`. Внешние Discord-роли можно перемещать и сортировать, но нельзя удалять. "
-        "Если автосинхронизация не успела или упала, обнови список, при необходимости запусти "
-        "`/rolesadmin sync_discord_roles` и проверь логи."
+        "Список ролей иногда обновляется с задержкой. "
+        "Если роль не видна — нажми обновление и открой экран ещё раз. "
+        "Некоторые роли можно только двигать по списку, удаление для них недоступно."
     )
 
 
 def _canonical_role_missing_message() -> str:
-    return "❌ Роль не найдена в каталоге `roles`. Запусти `/rolesadmin sync_discord_roles`, затем попробуй ещё раз и проверь логи."
+    return "❌ Роль не найдена в списке. Обнови экран и попробуй ещё раз."
 
 
 def _render_user_lookup_hint() -> str:
@@ -661,56 +659,39 @@ def _rolesadmin_help_embed(
     visibility: RolesAdminVisibilityContext | None = None,
 ) -> discord.Embed:
     visibility = visibility or RolesAdminVisibilityContext(0, tuple(), False, False, tuple())
-    embed = discord.Embed(title="ℹ️ Что делает /rolesadmin", color=discord.Color.blurple())
+    embed = discord.Embed(title="ℹ️ Панель /rolesadmin", color=discord.Color.blurple())
     embed.description = (
-        "Управление каталогом ролей и ролями пользователей.\n"
+        "Это единый вход в управление ролями.\n"
         f"{_render_command_alias_note()}"
-        "Навигация разделена на Категории, Роли и Пользователи — как и в Telegram-панели.\n"
-        "Порядок старта везде одинаковый: сначала настрой каталог, а потом переходи к выдаче или снятию роли у пользователя.\n\n"
+        "Дальше работайте только кнопками: Категории, Роли, Пользователи.\n"
+        "Шаги: откройте раздел → нажмите нужное действие → проверьте результат.\n\n"
         f"{_render_hidden_sections_note(visibility.hidden_sections)}"
         f"{_render_role_source_note()}"
     )
     section_fields = {
         "start": (
             "С чего начать",
-            "Подход 1 — настрой каталог: создай категорию, затем роль и сразу заполни описание со способом получения.\n"
-            "Подход 2 — работай с пользователем: когда каталог готов, открывай выдачу или снятие роли."
+            "1) Нажмите «Категории», чтобы подготовить структуру.\n"
+            "2) Нажмите «Роли», чтобы добавить и настроить роли.\n"
+            "3) Нажмите «Пользователи», чтобы выдать или снять роль."
         ),
         "categories": (
             "Категории",
-            "С чего начать: сначала создай категорию, чтобы роли сразу попадали в понятный раздел каталога.\n"
-            "`/rolesadmin category_create <name> [position]` — создать/обновить категорию\n"
-            "`/rolesadmin category_order <name> <position>` — изменить порядок категории\n"
-            "`/rolesadmin category_delete <name>` — удалить категорию\n"
-            "Используй этот раздел, когда меняешь верхний уровень структуры каталога ролей."
+            "Здесь меняется структура каталога.\n"
+            "Что делать: открыть раздел и выбрать нужную кнопку.\n"
+            "Что нажать дальше: начните с кнопки создания категории."
         ),
         "roles": (
             "Роли",
-            "С чего начать: после категории создай роль, затем сразу заполни описание и способ получения.\n"
-            "`/rolesadmin list` — показать роли по категориям (с автосинхронизацией Discord-каталога)\n"
-            "`/rolesadmin role_create <category> <name> [description] [acquire_hint] [discord_role] [position] [is_sellable]` — создать роль\n"
-            "`/rolesadmin role_edit_description <name> <description>` — обновить описание роли\n"
-            "`/rolesadmin role_edit_acquire_hint <name> <acquire_hint>` — обновить способ получения роли\n"
-            "`/rolesadmin role_edit_sellable <name> <sellable|not_sellable>` — управлять продажей роли в магазине\n"
-            "`/rolesadmin role_move <role_name> <category> [position]` — переместить роль\n"
-            "`/rolesadmin role_order <role_name> <category> <position>` — изменить порядок роли\n"
-            "`/rolesadmin role_delete <name>` — удалить роль\n"
-            "Для `role_create` сначала выбери категорию: в slash-команде у поля category есть autocomplete, а дальше заполняй уже параметры роли.\n"
-            "Перед `role_create` / `role_move` / `role_order` бот показывает embed со списком ролей категории и рассчитанной позицией вставки.\n"
-            "Описание и способ получения помогают админам и пользователям быстрее понять роль прямо в карточке.\n"
-            "Если позицию не указывать в `role_create` или `role_move`, роль добавится последней.\n"
-            "Внешние Discord-роли удалять нельзя: их можно только перемещать и сортировать."
+            "Здесь создаются и редактируются роли.\n"
+            "Что делать: выбрать роль/категорию в экране и подтвердить кнопкой.\n"
+            "Что нажать дальше: после создания роли заполните «Описание» и «Как получить»."
         ),
         "users": (
             "Пользователи",
-            "С чего начать: когда категория и роль готовы, переходи к выдаче или снятию роли у пользователя.\n"
-            "`/rolesadmin user_roles <mention|username|display_name>` — посмотреть роли пользователя\n"
-            "`/rolesadmin user_grant <mention|username|display_name> [role_name]` — выдать роль или открыть пакетный flow\n"
-            "`/rolesadmin user_revoke <mention|username|display_name> [role_name]` — снять роль или открыть пакетный flow\n"
-            "Пакетный режим доступен на обеих платформах только в интерактивной панели; текстовый fallback в Telegram остаётся одно-ролевым, что явно показано в подсказках.\n"
-            "Если `role_name` не указывать, откроется embed/view flow: выбор категории, multi-select ролей, возврат к категориям и подтверждение пакета.\n"
-            "Порядок подсказок: Telegram ЛС — `@username`/`username`, Telegram группа — reply, Discord — mention/username/display_name, id только как резерв.\n"
-            "Если найдено несколько совпадений, бот покажет кандидатов с provider, username, display и matched_by."
+            "Здесь выдаются и снимаются роли у людей.\n"
+            "Что делать: выберите пользователя, затем роли, затем нажмите подтверждение.\n"
+            "Что нажать дальше: если сомневаетесь, сначала откройте просмотр ролей пользователя."
         ),
     }
     sections_to_render = [section] if section in section_fields else ["start", "categories", "roles", "users"]
@@ -776,7 +757,14 @@ class _RolesAdminSectionButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction) -> None:
         view = self.view
         if not isinstance(view, RolesAdminHelpView):
-            logger.error("rolesadmin help button view mismatch actor_id=%s section=%s", interaction.user.id, self.section)
+            logger.warning(
+                "rolesadmin navigation invalid_view actor_id=%s guild_id=%s action=%s callback_data=%s reason=%s",
+                interaction.user.id,
+                interaction.guild.id if interaction.guild else None,
+                "help_section_open",
+                self.custom_id,
+                "view_mismatch",
+            )
             await interaction.response.send_message("❌ Ошибка навигации rolesadmin (смотри логи).", ephemeral=True)
             return
         try:
@@ -792,10 +780,12 @@ class _RolesAdminSectionButton(discord.ui.Button):
             )
         except Exception:
             logger.exception(
-                "rolesadmin help button failed actor_id=%s section=%s guild_id=%s",
+                "rolesadmin help button failed actor_id=%s section=%s guild_id=%s action=%s callback_data=%s",
                 interaction.user.id,
                 self.section,
                 view.guild_id,
+                "help_section_open",
+                self.custom_id,
             )
             if interaction.response.is_done():
                 await interaction.followup.send("❌ Ошибка открытия раздела rolesadmin (смотри логи).", ephemeral=True)
@@ -1826,3 +1816,13 @@ async def rolesadmin_sync_discord_roles(ctx: commands.Context):
     except Exception:
         logger.exception("rolesadmin sync_discord_roles failed guild_id=%s actor_id=%s", ctx.guild.id if ctx.guild else None, ctx.author.id)
         await send_temp(ctx, "❌ Не удалось синхронизировать роли Discord (смотри логи).")
+
+
+try:
+    _rolesadmin_app_group = getattr(rolesadmin, "app_command", None)
+    if _rolesadmin_app_group is not None:
+        for _sub in list(_rolesadmin_app_group.commands):
+            _rolesadmin_app_group.remove_command(_sub.name)
+        logger.info("rolesadmin app subcommands disabled for public flow source=discord_hybrid")
+except Exception:
+    logger.exception("rolesadmin failed to disable app subcommands")
