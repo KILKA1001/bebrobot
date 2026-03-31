@@ -749,6 +749,52 @@ class RoleManagementServiceTests(unittest.TestCase):
         self.assertEqual(result["upserted"], 1)
         self.assertFalse(self.fake_db.tables["roles"][0]["show_in_roles_catalog"])
 
+    def test_sync_discord_guild_roles_preserves_sellable_and_privileged_flags(self):
+        self.fake_db.tables["roles"] = [
+            {
+                "name": "Discord Admin",
+                "category_name": "Discord сервер (auto)",
+                "position": 0,
+                "is_discord_managed": True,
+                "discord_role_id": "role-7",
+                "show_in_roles_catalog": True,
+                "is_sellable": True,
+                "is_privileged_discord_role": True,
+            }
+        ]
+
+        result = RoleManagementService.sync_discord_guild_roles([
+            {"id": "role-7", "name": "Discord Admin", "position": 3, "guild_id": "guild-1"}
+        ])
+
+        self.assertEqual(result["upserted"], 1)
+        self.assertTrue(self.fake_db.tables["roles"][0]["is_sellable"])
+        self.assertTrue(self.fake_db.tables["roles"][0]["is_privileged_discord_role"])
+
+    def test_sync_discord_guild_roles_routes_protected_titles_to_profile_title_roles(self):
+        self.fake_db.tables["roles"] = [
+            {
+                "name": "Глава клуба",
+                "category_name": "Discord сервер (auto)",
+                "position": 0,
+                "is_discord_managed": True,
+                "discord_role_id": "10",
+                "show_in_roles_catalog": True,
+            }
+        ]
+
+        result = RoleManagementService.sync_discord_guild_roles(
+            [{"id": "10", "name": "Глава клуба", "position": 1, "guild_id": "guild-1"}]
+        )
+
+        self.assertEqual(result["upserted"], 0)
+        self.assertEqual(result["removed"], 1)
+        self.assertEqual(self.fake_db.tables["roles"], [])
+        self.assertEqual(len(self.fake_db.tables["profile_title_roles"]), 1)
+        self.assertEqual(self.fake_db.tables["profile_title_roles"][0]["discord_role_id"], 10)
+        self.assertEqual(self.fake_db.tables["profile_title_roles"][0]["title_name"], "Глава клуба")
+        self.assertTrue(self.fake_db.tables["profile_title_roles"][0]["is_active"])
+
     def test_sync_discord_guild_roles_removes_dependencies_before_role_row(self):
         self.fake_db.tables["roles"] = [
             {
