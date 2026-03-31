@@ -1,3 +1,9 @@
+"""
+Назначение: модуль "test core logic account first" реализует продуктовый контур в зоне Discord/Telegram/общая логика (тесты).
+Ответственность: единая точка для сценариев и правил модуля без дублирования логики между платформами.
+Где используется: Discord/Telegram/общая логика (тесты).
+"""
+
 import asyncio
 import importlib.util
 import pathlib

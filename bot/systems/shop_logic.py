@@ -1,7 +1,7 @@
-"""Backward-compatible shim for shared shop business logic.
-
-Shop business rules live in ``bot.services.shop_service``.
-Platform command modules should import from the shared service layer.
+"""
+Назначение: модуль "shop logic" реализует продуктовый контур в зоне общая логика.
+Ответственность: единая точка для сценариев и правил модуля без дублирования логики между платформами.
+Где используется: общая логика.
 """
 
 from bot.services.shop_service import *  # noqa: F403

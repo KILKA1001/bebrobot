@@ -1,3 +1,9 @@
+"""
+Назначение: модуль "manage tournament view" реализует продуктовый контур в зоне общая логика.
+Ответственность: единая точка для сценариев и правил модуля без дублирования логики между платформами.
+Где используется: общая логика.
+"""
+
 import discord
 from discord import ui, ButtonStyle, Interaction
 from discord.ext import commands
