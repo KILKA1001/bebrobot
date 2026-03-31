@@ -657,7 +657,6 @@ def _build_home_keyboard(
             [InlineKeyboardButton(text="🪪 Роли", callback_data=f"roles_admin:{actor_id}:actions:roles")],
             [InlineKeyboardButton(text="👥 Пользователи", callback_data=f"roles_admin:{actor_id}:actions:users")],
             [InlineKeyboardButton(text="📋 Категории и роли", callback_data=f"roles_admin:{actor_id}:list:0")],
-            [InlineKeyboardButton(text="🆘 Не работают кнопки?", callback_data=f"roles_admin:{actor_id}:fallback")],
             [InlineKeyboardButton(text="ℹ️ Что делает каждая функция", callback_data=f"roles_admin:{actor_id}:help")],
             [InlineKeyboardButton(text="🔄 Обновить", callback_data=f"roles_admin:{actor_id}:home")],
         ]
@@ -1420,58 +1419,32 @@ def _render_home_text(*, hidden_sections: tuple[str, ...] = tuple()) -> str:
     return (
         "🛠 <b>Панель управления ролями</b>\n\n"
         f"{_render_hidden_sections_note(hidden_sections)}"
-        "Все обновления идут в <b>одном сообщении</b> через кнопки.\n"
-        "Главный экран разделён на <b>Категории</b>, <b>Роли</b> и <b>Пользователи</b>.\n\n"
-        "<b>С чего начать: 2 подхода</b>\n"
-        "<b>Подход 1 — настрой каталог:</b> создай категорию, затем роль и сразу заполни описание с полем «как получить».\n"
-        "<b>Подход 2 — работай с пользователем:</b> после настройки каталога выдай или сними роль у человека.\n\n"
-        "<b>Короткие примеры</b>\n"
-        "• Новая роль: Категории → создать категорию → Роли → создать роль.\n"
-        "• Изменить порядок: Роли → move/order → выбрать позицию.\n"
-        "• Работа с пользователем: Пользователи → найти человека → выдать/снять роль.\n\n"
-        "Если кнопки не срабатывают, открой <b>🆘 Не работают кнопки?</b> — там короткие резервные команды.\n"
-        "Подробности по каждому действию есть в <b>ℹ️ Что делает каждая функция</b>.\n"
-        "Как указывать пользователя: в ЛС — <code>@username</code> / <code>username</code>, в группе — reply, для Discord — <code>ds:username</code>. ID нужен только как резерв.\n\n"
-        f"{_role_catalog_note()}"
+        "Единый сценарий: <b>одна команда → кнопки → результат</b>.\n"
+        "1) Открой «Категории», если нужно подготовить структуру.\n"
+        "2) Открой «Роли», чтобы создать или изменить роль.\n"
+        "3) Открой «Пользователи», чтобы выдать или снять роль.\n\n"
+        "Если сообщение устарело, нажми «🔄 Обновить».\n"
+        "Подробности по шагам есть в «ℹ️ Что делает каждая функция»."
     )
 
 
 
 def _render_command_alias_note() -> str:
     return (
-        "<b>Паритет команд:</b> в Telegram основная команда — <code>/roles_admin</code>, но текстовый alias <code>/rolesadmin</code> тоже поддерживается для паритета с Discord. "
-        "Команда <code>sync_discord_roles</code> сейчас запускается только в Discord через <code>/rolesadmin sync_discord_roles</code>, поэтому в Telegram интерфейсе она упоминается как внешний шаг, а не как локальная кнопка.\n\n"
+        "<b>Паритет команд:</b> Telegram — <code>/roles_admin</code> (alias <code>/rolesadmin</code>), Discord — <code>/rolesadmin</code>. "
+        "На обеих платформах вход одинаковый: открой команду и работай кнопками.\n\n"
     )
 
 
 def _render_fallback_text() -> str:
     return (
         "🆘 <b>Не работают кнопки?</b>\n\n"
-        "Если Telegram-кнопки не срабатывают, отправляй команду одной строкой после <code>/roles_admin</code> или <code>/rolesadmin</code>. "
-        "Для длинного описания используй разделитель <code>|</code>.\n\n"
-        f"{_render_command_alias_note()}"
-        "<b>С чего начать: 2 подхода</b>\n"
-        "<b>Подход 1 — настрой каталог</b>\n"
-        "1. <code>/roles_admin category_create &lt;name&gt; [position]</code>\n"
-        "2. <code>/roles_admin role_create &lt;category&gt; | &lt;name&gt; | &lt;description&gt; | [&lt;как получить&gt;] | [discord_role_id] | [sellable|not_sellable] | [position]</code>\n"
-        "3. При необходимости: <code>/roles_admin role_edit_description ...</code> и <code>/roles_admin role_edit_acquire_hint ...</code>\n"
-        "<b>Подход 2 — работай с пользователем</b>\n"
-        "4. Для выдачи: <code>/roles_admin user_grant &lt;@username|ds:username&gt; &lt;role_name&gt;</code>\n"
-        "5. Для снятия: <code>/roles_admin user_revoke &lt;@username|ds:username&gt; &lt;role_name&gt;</code>\n\n"
-        "<b>Ещё команды</b>\n"
-        "<code>/roles_admin category_order &lt;name&gt; &lt;position&gt;</code>\n"
-        "<code>/roles_admin category_delete &lt;name&gt;</code>\n"
-        "<code>/roles_admin role_move &lt;name&gt; &lt;category&gt; [position]</code>\n"
-        "<code>/roles_admin role_order &lt;role_name&gt; &lt;category&gt; &lt;position&gt;</code>\n"
-        "<code>/roles_admin role_delete &lt;name&gt;</code>\n"
-        "<code>/roles_admin user_roles [reply|@username|username|tg:@username|ds:username|id]</code>\n\n"
-        "<b>Пошаговые примеры</b>\n"
-        "• Создать роль: сначала категория, потом роль, описание и способ получения.\n"
-        "• Переместить роль: укажи роль, категорию и позицию; без <code>position</code> роль будет добавлена последней.\n"
-        "• Найти пользователя: в ЛС — @username / username, в группе — reply, для Discord — mention / username / display_name или <code>ds:username</code>.\n"
-        "• Если найдено несколько совпадений, бот покажет кандидатов и попросит уточнение.\n"
-        "• Внешние Discord-роли не удаляются из каталога: их можно только перемещать и сортировать.\n\n"
-        f"{_role_catalog_note()}"
+        "Подкоманды отключены.\n"
+        "Открой /roles_admin и используй кнопки.\n\n"
+        "Если кнопка не отвечает:\n"
+        "• Нажми «🔄 Обновить».\n"
+        "• Отправь /roles_admin ещё раз.\n"
+        "• Если проблема осталась — передай администратору время и скрин этого экрана."
     )
 
 
@@ -1481,41 +1454,18 @@ def _render_fallback_text() -> str:
 def _render_help_text() -> str:
     return (
         "ℹ️ <b>Что делает /roles_admin</b>\n\n"
-        f"{_render_command_alias_note()}"
-        "<b>С чего начать: 2 подхода</b>\n"
-        "<b>Подход 1 — настрой каталог</b>\n"
-        "1. <code>category_create &lt;name&gt; [position]</code> — создай или обнови категорию (<b>только Глава клуба/Главный вице</b>).\n"
-        "2. <code>role_create &lt;category&gt; | &lt;name&gt; | &lt;description&gt; | [&lt;как получить&gt;] | [discord_role_id] | [sellable|not_sellable] | [position]</code> — создай роль внутри категории.\n"
-        "3. <code>role_edit_description</code> и <code>role_edit_acquire_hint</code> — дополни описание роли и способ получения, если нужно изменить их позже.\n"
-        "<b>Подход 2 — работай с пользователем</b>\n"
-        "4. <code>user_grant</code> / <code>user_revoke</code> — выдай или сними роль у пользователя.\n\n"
-        "<b>Категории</b>\n"
-        "• <code>category_create &lt;name&gt; [position]</code> — создать/обновить категорию.\n"
-        "• <code>category_order &lt;name&gt; &lt;position&gt;</code> — выставить порядок категории.\n"
-        "• <code>category_delete &lt;name&gt;</code> — удалить категорию (роли уйдут в 'Без категории').\n\n"
-        "<b>Роли</b>\n"
-        "• <code>role_create ...</code> — сначала категория, затем название роли, описание, способ получения и опциональные параметры.\n"
-        "• <code>role_edit_description &lt;name&gt; | &lt;description&gt;</code> — обновить описание роли.\n"
-        "• <code>role_edit_acquire_hint &lt;name&gt; | &lt;как получить&gt;</code> — обновить инструкцию, как получить роль.\n"
-        "• <code>role_move &lt;name&gt; &lt;category&gt; [position]</code> — переместить роль в другую категорию.\n"
-        "• <code>role_order &lt;role_name&gt; &lt;category&gt; &lt;position&gt;</code> — выставить очередь роли в категории.\n"
-        "• <code>role_delete &lt;name&gt;</code> — удалить роль из каталога; внешние Discord-роли можно только move/order.\n"
-        "• После выбора категории бот показывает подсказку по оставшимся полям; для move/order он ещё показывает текущий список ролей и выбор позиции.\n"
-        "• Если позицию не указывать в <code>role_create</code> или <code>role_move</code>, роль будет добавлена последней.\n"
-        "• Описание роли и блок «как получить» видны пользователям прямо в карточках и списках.\n\n"
-        "<b>Роли пользователей</b>\n"
-        "• <code>user_roles [reply|@username|username|tg:@username|ds:username|id]</code> — показать роли пользователя.\n"
-        "• <code>user_grant &lt;@username|ds:username&gt; &lt;role_name&gt;</code> — выдать роль в БД.\n"
-        "• <code>user_revoke &lt;@username|ds:username&gt; &lt;role_name&gt;</code> — снять роль в БД.\n"
-        "• Кнопочная панель выдачи/снятия ролей поддерживает пакетный выбор: можно заходить в разные категории, отмечать несколько ролей и подтверждать всё одной кнопкой.\n"
-        "• Порядок ввода одинаковый: Telegram ЛС — <code>@username</code> / <code>username</code>, Telegram группа — reply, Discord — mention / username / display_name.\n"
-        "• Если нужен Discord fallback, укажи <code>ds:username</code>; для Telegram можно явно написать <code>tg:@username</code>; ID оставь как резерв.\n"
-        "• Если найдено несколько совпадений, бот покажет кандидатов и попросит уточнение.\n\n"
+        "Это экран админа ролей.\n"
+        "Главное правило: используйте кнопки внутри панели.\n\n"
+        "<b>Порядок работы</b>\n"
+        "1) Категории → подготовить структуру.\n"
+        "2) Роли → создать или изменить роль.\n"
+        "3) Пользователи → выдать или снять роль.\n\n"
+        "Подкоманды в сообщении больше не используются.\n"
+        "Если что-то пошло не так, нажмите «🔄 Обновить» и снова откройте /roles_admin.\n\n"
         "<b>Кнопки в панели</b>\n"
         "• 'Категории и роли' — просмотр списка и переход по категориям.\n"
         "• Внутри категории доступны кнопки удаления категории/ролей.\n"
-        "• Все экраны обновляются в одном сообщении без спама.\n\n"
-        f"{_role_catalog_note()}"
+        "• Все экраны обновляются в одном сообщении без спама."
     )
 
 
@@ -1714,456 +1664,38 @@ async def roles_admin_command(message: Message) -> None:
 
         text = (message.text or "").strip()
         parts = text.split()
-        if len(parts) < 2:
-            if not message.from_user:
-                await message.answer("❌ Не удалось определить пользователя Telegram.")
-                return
-            visibility = _resolve_visibility_context("telegram", str(message.from_user.id))
-            _log_roles_admin_navigation(
-                actor_id=message.from_user.id,
-                actor_level=visibility.actor_level,
-                actor_titles=visibility.actor_titles,
-                hidden_sections=visibility.hidden_sections,
-                screen="home",
+        if len(parts) >= 2:
+            logger.warning(
+                "roles_admin deprecated_subcommand actor_id=%s chat_id=%s reason=%s message_text=%r",
+                message.from_user.id if message.from_user else None,
+                message.chat.id if message.chat else None,
+                "deprecated_subcommand",
+                message.text,
             )
-            await message.answer(
-                _render_home_text(hidden_sections=visibility.hidden_sections),
-                parse_mode="HTML",
-                reply_markup=_build_home_keyboard(
-                    message.from_user.id,
-                    can_manage_categories=visibility.can_manage_categories,
-                ),
-            )
+            await message.answer("Подкоманды отключены. Откройте /roles_admin и используйте кнопки.")
             return
 
-        subcommand = parts[1].lower()
-        args = parts[2:]
-        if subcommand == "list":
-            grouped = RoleManagementService.list_roles_grouped()
-            if not grouped:
-                await message.answer("📭 Список ролей пуст или БД недоступна.")
-                return
-            await message.answer(_render_list_text(grouped, 0), parse_mode="HTML")
+        if not message.from_user:
+            await message.answer("❌ Не удалось определить пользователя Telegram.")
             return
+        visibility = _resolve_visibility_context("telegram", str(message.from_user.id))
+        _log_roles_admin_navigation(
+            actor_id=message.from_user.id,
+            actor_level=visibility.actor_level,
+            actor_titles=visibility.actor_titles,
+            hidden_sections=visibility.hidden_sections,
+            screen="home",
+        )
+        await message.answer(
+            _render_home_text(hidden_sections=visibility.hidden_sections),
+            parse_mode="HTML",
+            reply_markup=_build_home_keyboard(
+                message.from_user.id,
+                can_manage_categories=visibility.can_manage_categories,
+            ),
+        )
+        return
 
-        if subcommand == "category_create" and len(args) >= 1:
-            if not message.from_user or not _can_manage_categories("telegram", str(message.from_user.id)):
-                await message.answer("❌ Категориями может управлять только Глава клуба или Главный вице.")
-                return
-            position = int(args[-1]) if len(args) > 1 and args[-1].isdigit() else 0
-            name = " ".join(args[:-1] if len(args) > 1 and args[-1].isdigit() else args)
-            ok = RoleManagementService.create_category(name, position)
-            await message.answer("✅ Категория сохранена." if ok else "❌ Не удалось создать категорию (смотри логи).")
-            return
-
-        if subcommand == "category_order" and len(args) >= 2:
-            if not message.from_user or not _can_manage_categories("telegram", str(message.from_user.id)):
-                await message.answer("❌ Категориями может управлять только Глава клуба или Главный вице.")
-                return
-            position_raw = args[-1]
-            name = " ".join(args[:-1]).strip()
-            if not position_raw.lstrip("-").isdigit() or not name:
-                await message.answer("❌ Формат: /roles_admin category_order <name> <position>")
-                return
-            ok = RoleManagementService.create_category(name, int(position_raw))
-            await message.answer("✅ Порядок категории обновлён." if ok else "❌ Не удалось обновить порядок категории (смотри логи).")
-            return
-
-        if subcommand == "category_delete" and len(args) >= 1:
-            if not message.from_user or not _can_manage_categories("telegram", str(message.from_user.id)):
-                await message.answer("❌ Категориями может управлять только Глава клуба или Главный вице.")
-                return
-            ok = RoleManagementService.delete_category(" ".join(args))
-            await message.answer("✅ Категория удалена." if ok else "❌ Не удалось удалить категорию (смотри логи).")
-            return
-
-        if subcommand == "role_create":
-            raw_payload = text.split(None, 2)[2] if len(parts) >= 3 else ""
-            pipe_args = _parse_pipe_args(raw_payload)
-            if len(pipe_args) < 2:
-                await message.answer(
-                    "❌ Формат: /roles_admin role_create <Категория> | <Название роли> | <Описание> | [Как получить] | [discord_role_id] | [sellable|not_sellable] | [position]"
-                )
-                return
-            parsed = _parse_role_create_metadata_args([pipe_args[1], pipe_args[0], *pipe_args[2:]])
-            _log_role_create_category_selection(
-                actor_id=message.from_user.id if message.from_user else None,
-                category=parsed["category"],
-                source="fallback_text_command",
-            )
-            create_result = RoleManagementService.create_role_result(
-                parsed["role_name"],
-                parsed["category"],
-                description=parsed["description"],
-                acquire_hint=parsed["acquire_hint"],
-                discord_role_id=parsed["discord_role_id"],
-                position=parsed["position"],
-                actor_id=str(message.from_user.id) if message.from_user else None,
-                actor_provider="telegram",
-                actor_user_id=str(message.from_user.id) if message.from_user else None,
-                operation="role_create",
-                source="telegram_command",
-            )
-            if create_result.get("ok") and parsed.get("is_sellable") is not None:
-                RoleManagementService.update_role_sellable(
-                    parsed["role_name"],
-                    bool(parsed.get("is_sellable")),
-                    actor_id=str(message.from_user.id) if message.from_user else None,
-                    actor_provider="telegram",
-                    actor_user_id=str(message.from_user.id) if message.from_user else None,
-                    operation="role_edit_sellable",
-                    source="telegram_command",
-                )
-            await message.answer("✅ Роль создана." if create_result.get("ok") else f"❌ {create_result.get('message') or 'Не удалось создать роль (смотри логи).'}")
-            return
-
-        if subcommand == "role_edit_sellable":
-            raw_payload = text.split(None, 2)[2] if len(parts) >= 3 else ""
-            pipe_args = _parse_pipe_args(raw_payload)
-            if len(pipe_args) < 2:
-                await message.answer("❌ Формат: /roles_admin role_edit_sellable <Название роли> | <sellable|not_sellable>")
-                return
-            parsed_sellable = _parse_sellable_choice(pipe_args[1])
-            if parsed_sellable is None:
-                await message.answer("❌ Используйте sellable или not_sellable.")
-                return
-            ok = RoleManagementService.update_role_sellable(
-                pipe_args[0],
-                parsed_sellable,
-                actor_id=str(message.from_user.id) if message.from_user else None,
-                actor_provider="telegram",
-                actor_user_id=str(message.from_user.id) if message.from_user else None,
-                operation="role_edit_sellable",
-                source="telegram_command",
-            )
-            await message.answer("✅ Признак продажи роли обновлён." if ok else "❌ Не удалось обновить признак продажи роли (смотри логи).")
-            return
-
-        if subcommand == "shop_add":
-            raw_payload = text.split(None, 2)[2] if len(parts) >= 3 else ""
-            pipe_args = _parse_pipe_args(raw_payload)
-            if len(pipe_args) < 2:
-                await message.answer("❌ Формат: /roles_admin shop_add <Название роли> | <base_price_points> | [display_position]")
-                return
-            role_name = pipe_args[0]
-            if not pipe_args[1].lstrip("-").isdigit():
-                await message.answer("❌ base_price_points должен быть числом.")
-                return
-            position = int(pipe_args[2]) if len(pipe_args) > 2 and pipe_args[2].lstrip("-").isdigit() else None
-            ok = RoleManagementService.upsert_shop_role_item(
-                role_name,
-                base_price_points=int(pipe_args[1]),
-                display_position=position,
-                is_active=True,
-                actor_provider="telegram",
-                actor_user_id=str(message.from_user.id) if message.from_user else None,
-                source="telegram_command",
-            )
-            await message.answer("✅ Роль добавлена на витрину магазина." if ok else "❌ Не удалось добавить роль на витрину (смотри логи).")
-            return
-
-        if subcommand == "shop_remove" and len(args) >= 1:
-            ok = RoleManagementService.deactivate_shop_role_item(
-                " ".join(args),
-                actor_provider="telegram",
-                actor_user_id=str(message.from_user.id) if message.from_user else None,
-                source="telegram_command",
-            )
-            await message.answer("✅ Роль убрана с витрины." if ok else "❌ Не удалось убрать роль с витрины (смотри логи).")
-            return
-
-        if subcommand == "shop_price":
-            raw_payload = text.split(None, 2)[2] if len(parts) >= 3 else ""
-            pipe_args = _parse_pipe_args(raw_payload)
-            if len(pipe_args) < 2 or not pipe_args[1].lstrip("-").isdigit():
-                await message.answer("❌ Формат: /roles_admin shop_price <Название роли> | <base_price_points>")
-                return
-            ok = RoleManagementService.upsert_shop_role_item(
-                pipe_args[0],
-                base_price_points=int(pipe_args[1]),
-                is_active=True,
-                actor_provider="telegram",
-                actor_user_id=str(message.from_user.id) if message.from_user else None,
-                source="telegram_command",
-            )
-            await message.answer("✅ Базовая цена обновлена." if ok else "❌ Не удалось обновить цену (смотри логи).")
-            return
-
-        if subcommand == "shop_position":
-            raw_payload = text.split(None, 2)[2] if len(parts) >= 3 else ""
-            pipe_args = _parse_pipe_args(raw_payload)
-            if len(pipe_args) < 2 or not pipe_args[1].lstrip("-").isdigit():
-                await message.answer("❌ Формат: /roles_admin shop_position <Название роли> | <display_position>")
-                return
-            current_shop = RoleManagementService.get_shop_role_item(pipe_args[0]) or {}
-            ok = RoleManagementService.upsert_shop_role_item(
-                pipe_args[0],
-                base_price_points=int(current_shop.get("base_price_points") or 0),
-                display_position=int(pipe_args[1]),
-                is_active=True,
-                actor_provider="telegram",
-                actor_user_id=str(message.from_user.id) if message.from_user else None,
-                source="telegram_command",
-            )
-            await message.answer("✅ Позиция на витрине обновлена." if ok else "❌ Не удалось обновить позицию (смотри логи).")
-            return
-
-        if subcommand == "shop_sale":
-            raw_payload = text.split(None, 2)[2] if len(parts) >= 3 else ""
-            pipe_args = _parse_pipe_args(raw_payload)
-            if len(pipe_args) < 1:
-                await message.answer("❌ Формат: /roles_admin shop_sale <Название роли> | [sale_price_points | sale_starts_at | sale_ends_at]")
-                return
-            role_name = pipe_args[0]
-            current_shop = RoleManagementService.get_shop_role_item(role_name) or {}
-            disable_sale = len(pipe_args) < 4
-            sale_price = int(pipe_args[1]) if not disable_sale and pipe_args[1].lstrip("-").isdigit() else None
-            if not disable_sale and sale_price is None:
-                await message.answer("❌ sale_price_points должен быть числом.")
-                return
-            ok = RoleManagementService.upsert_shop_role_item(
-                role_name,
-                base_price_points=int(current_shop.get("base_price_points") or 0),
-                is_active=True,
-                sale_price_points=None if disable_sale else sale_price,
-                sale_starts_at=None if disable_sale else pipe_args[2],
-                sale_ends_at=None if disable_sale else pipe_args[3],
-                actor_provider="telegram",
-                actor_user_id=str(message.from_user.id) if message.from_user else None,
-                source="telegram_command",
-            )
-            await message.answer("✅ Акция выключена." if disable_sale and ok else "✅ Акция сохранена." if ok else "❌ Не удалось обновить акцию (смотри логи).")
-            return
-
-        if subcommand == "role_edit_description":
-            raw_payload = text.split(None, 2)[2] if len(parts) >= 3 else ""
-            pipe_args = _parse_pipe_args(raw_payload)
-            if len(pipe_args) < 2:
-                await message.answer("❌ Формат: /roles_admin role_edit_description <Название роли> | <Описание>")
-                return
-            ok = RoleManagementService.update_role_description(
-                pipe_args[0],
-                pipe_args[1],
-                actor_id=str(message.from_user.id) if message.from_user else None,
-                actor_provider="telegram",
-                actor_user_id=str(message.from_user.id) if message.from_user else None,
-                operation="role_edit_description",
-                source="telegram_command",
-            )
-            await message.answer("✅ Описание роли обновлено." if ok else "❌ Не удалось обновить описание роли (смотри логи).")
-            return
-
-        if subcommand == "role_edit_acquire_hint":
-            raw_payload = text.split(None, 2)[2] if len(parts) >= 3 else ""
-            pipe_args = _parse_pipe_args(raw_payload)
-            if len(pipe_args) < 2:
-                await message.answer("❌ Формат: /roles_admin role_edit_acquire_hint <Название роли> | <Как получить>")
-                return
-            ok = RoleManagementService.update_role_acquire_hint(
-                pipe_args[0],
-                pipe_args[1],
-                actor_id=str(message.from_user.id) if message.from_user else None,
-                actor_provider="telegram",
-                actor_user_id=str(message.from_user.id) if message.from_user else None,
-                operation="role_edit_acquire_hint",
-                source="telegram_command",
-            )
-            await message.answer("✅ Способ получения роли обновлён." if ok else "❌ Не удалось обновить способ получения роли (смотри логи).")
-            return
-
-        if subcommand == "role_delete" and len(args) >= 1:
-            result = RoleManagementService.delete_role(
-                args[0],
-                actor_id=str(message.from_user.id) if message.from_user else None,
-                actor_provider="telegram",
-                actor_user_id=str(message.from_user.id) if message.from_user else None,
-                telegram_user_id=str(message.from_user.id) if message.from_user else None,
-                source="telegram_command",
-            )
-            await message.answer("✅ Роль удалена." if result["ok"] else _delete_role_result_message(result))
-            return
-
-        if subcommand == "role_move" and len(args) >= 2:
-            preview = RoleManagementService.get_category_role_positioning(
-                args[1],
-                requested_position=int(args[2]) if len(args) >= 3 and args[2].lstrip("-").isdigit() else None,
-                exclude_role_name=args[0],
-            )
-            available_roles = {item["role"] for item in RoleManagementService.list_roles_available_for_admin_reorder()}
-            if args[0] not in available_roles:
-                _log_role_position_error(
-                    actor_id=message.from_user.id if message.from_user else None,
-                    operation="role_move",
-                    role_name=args[0],
-                    category=args[1],
-                    requested_position=int(args[2]) if len(args) >= 3 and args[2].lstrip("-").isdigit() else None,
-                    computed_last_position=int(preview.get("computed_last_position", 0)),
-                    source="fallback_text_command",
-                    message="roles_admin role_move denied role missing from canonical catalog",
-                )
-                await message.answer(_canonical_role_missing_message())
-                return
-            position = int(args[2]) if len(args) >= 3 and args[2].lstrip("-").isdigit() else None
-            ok = RoleManagementService.move_role(
-                args[0],
-                args[1],
-                position,
-                actor_id=str(message.from_user.id) if message.from_user else None,
-                operation="role_move",
-            )
-            if not ok:
-                _log_role_position_error(
-                    actor_id=message.from_user.id if message.from_user else None,
-                    operation="role_move",
-                    role_name=args[0],
-                    category=args[1],
-                    requested_position=position,
-                    computed_last_position=int(preview.get("computed_last_position", 0)),
-                    source="fallback_text_command",
-                    message="roles_admin role_move failed",
-                )
-            await message.answer("✅ Роль перемещена." if ok else "❌ Не удалось переместить роль. Проверь синхронизацию каталога и логи.")
-            return
-
-        if subcommand == "role_order" and len(args) >= 3:
-            role_name = args[0]
-            category = args[1]
-            position_raw = args[2]
-            preview = RoleManagementService.get_category_role_positioning(
-                category,
-                requested_position=int(position_raw) if position_raw.lstrip("-").isdigit() else None,
-                exclude_role_name=role_name,
-            )
-            available_roles = {item["role"] for item in RoleManagementService.list_roles_available_for_admin_reorder()}
-            if role_name not in available_roles:
-                _log_role_position_error(
-                    actor_id=message.from_user.id if message.from_user else None,
-                    operation="role_order",
-                    role_name=role_name,
-                    category=category,
-                    requested_position=int(position_raw) if position_raw.lstrip("-").isdigit() else None,
-                    computed_last_position=int(preview.get("computed_last_position", 0)),
-                    source="fallback_text_command",
-                    message="roles_admin role_order denied role missing from canonical catalog",
-                )
-                await message.answer(_canonical_role_missing_message())
-                return
-            if not position_raw.lstrip("-").isdigit():
-                await message.answer("❌ Формат: /roles_admin role_order <role_name> <category> <position>")
-                return
-            ok = RoleManagementService.move_role(
-                role_name,
-                category,
-                int(position_raw),
-                actor_id=str(message.from_user.id) if message.from_user else None,
-                operation="role_order",
-            )
-            if not ok:
-                _log_role_position_error(
-                    actor_id=message.from_user.id if message.from_user else None,
-                    operation="role_order",
-                    role_name=role_name,
-                    category=category,
-                    requested_position=int(position_raw),
-                    computed_last_position=int(preview.get("computed_last_position", 0)),
-                    source="fallback_text_command",
-                    message="roles_admin role_order failed",
-                )
-            await message.answer("✅ Очередность роли обновлена." if ok else "❌ Не удалось обновить очередь роли. Проверь синхронизацию каталога и логи.")
-            return
-
-        if subcommand == "user_roles":
-            raw_target = " ".join(args).strip() if args else None
-            resolved = _resolve_telegram_target(
-                actor_id=message.from_user.id if message.from_user else None,
-                raw_target=raw_target,
-                reply_user=message.reply_to_message.from_user if message.reply_to_message else None,
-                operation="user_roles",
-                source="fallback_text_command",
-            )
-            if not resolved:
-                await message.answer(f"❌ Укажи пользователя по правилам поиска. {_telegram_user_lookup_hint()}")
-                return
-            if resolved.get("error"):
-                await message.answer(str(resolved.get("message") or "❌ Не удалось найти пользователя."))
-                return
-            account_id = str(resolved.get("account_id") or "").strip()
-            if not account_id:
-                await message.answer(_user_without_account_message())
-                return
-            roles = RoleManagementService.get_user_roles_by_account(account_id)
-            if not roles:
-                await message.answer("📭 У пользователя нет ролей.")
-                return
-            lines = [f"🧾 Роли пользователя {resolved['label']}:"]
-            for role in roles:
-                description = str(role.get("description") or "").strip()
-                line = f"• {role['name']} ({role['category']})"
-                if description:
-                    line += f" — {description}"
-                lines.append(line)
-            await message.answer("\n".join(lines))
-            return
-
-        if subcommand in {"user_grant", "user_revoke"} and (len(args) >= 2 or (len(args) >= 1 and message.reply_to_message)):
-            reply_user = message.reply_to_message.from_user if message.reply_to_message else None
-            raw_target = args[0] if len(args) >= 2 else None
-            role_name = " ".join(args[1:]) if len(args) >= 2 else " ".join(args)
-            resolved = _resolve_telegram_target(
-                actor_id=message.from_user.id if message.from_user else None,
-                raw_target=raw_target,
-                reply_user=reply_user,
-                operation=subcommand,
-                source="fallback_text_command",
-            )
-            if not resolved:
-                await message.answer(f"❌ Укажи пользователя по правилам поиска. {_telegram_user_lookup_hint()}")
-                return
-            if resolved.get("error"):
-                await message.answer(str(resolved.get("message") or "❌ Не удалось найти пользователя."))
-                return
-            account_id = str(resolved.get("account_id") or "").strip()
-            if not account_id:
-                await message.answer(_user_without_account_message())
-                return
-            if subcommand == "user_grant":
-                role_info = RoleManagementService.get_role(role_name)
-                category = role_info.get("category_name") if role_info else None
-                ok = RoleManagementService.assign_user_role_by_account(
-                    account_id,
-                    role_name,
-                    category=category,
-                    actor_provider="telegram",
-                    actor_user_id=str(message.from_user.id) if message.from_user else None,
-                )
-                sync_result = None
-                if ok.get("ok"):
-                    sync_result = await _sync_linked_discord_role(resolved, role_name, revoke=False, source="telegram_command")
-                await message.answer(
-                    f"✅ Роль выдана пользователю {resolved['label']}."
-                    f"{_discord_sync_status_note(sync_result)}"
-                    if ok.get("ok")
-                    else _role_assignment_error_message(ok, default_message=f"❌ Не удалось выдать роль. {_telegram_user_lookup_hint()}")
-                )
-            else:
-                ok = RoleManagementService.revoke_user_role_by_account(
-                    account_id,
-                    role_name,
-                    actor_provider="telegram",
-                    actor_user_id=str(message.from_user.id) if message.from_user else None,
-                )
-                sync_result = None
-                if ok.get("ok"):
-                    sync_result = await _sync_linked_discord_role(resolved, role_name, revoke=True, source="telegram_command")
-                await message.answer(
-                    f"✅ Роль снята у пользователя {resolved['label']}."
-                    f"{_discord_sync_status_note(sync_result)}"
-                    if ok.get("ok")
-                    else _role_assignment_error_message(ok, default_message=f"❌ Не удалось снять роль. {_telegram_user_lookup_hint()}")
-                )
-            return
-
-        await message.answer("❌ Неверная команда или аргументы. Напишите /roles_admin или /rolesadmin для панели управления.")
     except Exception:
         logger.exception(
             "roles_admin command failed actor_id=%s text=%s",
