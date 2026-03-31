@@ -79,8 +79,7 @@ def _role_catalog_note() -> str:
     return (
         "Команды списка и изменения ролей стараются автоматически подтягивать актуальные Discord-роли в "
         "канонический каталог <code>roles</code>. Внешние Discord-роли можно <code>move/order</code>, "
-        "но нельзя <code>delete</code>. Если роль не видна, обнови экран, при необходимости запусти "
-        "<code>/rolesadmin sync_discord_roles</code> в Discord и проверь консольные логи."
+        "но нельзя <code>delete</code>. Если роль не видна, обнови экран и проверь консольные логи."
     )
 
 
@@ -106,7 +105,7 @@ def _delete_role_result_message(result: dict[str, object]) -> str:
 def _canonical_role_missing_message() -> str:
     return (
         "❌ Роль не найдена в каталоге `roles`.\n"
-        "Сначала дождись синхронизации Discord-ролей или запусти `/rolesadmin sync_discord_roles` в Discord, потом попробуй ещё раз."
+        "Сначала дождись синхронизации Discord-ролей или обнови экран панели, потом попробуй ещё раз."
     )
 
 

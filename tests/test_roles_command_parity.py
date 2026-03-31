@@ -38,9 +38,9 @@ def test_telegram_help_text_marks_rolesadmin_alias_and_limits() -> None:
     assert "/roles_admin / /rolesadmin" in helpy_text
     assert "/title @username" in helpy_text
     assert "/guiy_owner" not in helpy_text
-    assert "sync_discord_roles" in roles_admin_help
-    assert "текстовый alias <code>/rolesadmin</code>" in roles_admin_help
-    assert "пакетный выбор" in roles_admin_help
+    assert "sync_discord_roles" not in roles_admin_help
+    assert "/roles_admin" in roles_admin_help
+    assert "используйте кнопки" in roles_admin_help
 
 
 def test_telegram_roles_admin_source_accepts_rolesadmin_alias() -> None:
@@ -66,5 +66,5 @@ def test_discord_rolesadmin_help_source_marks_alias_and_batch_limits() -> None:
     source = (REPO_ROOT / "bot" / "commands" / "roles_admin.py").read_text()
 
     assert "Паритет названий" in source
-    assert "sync_discord_roles" in source
-    assert "Пакетный режим доступен на обеих платформах" in source
+    assert "sync_discord_roles" not in source
+    assert "пакет" in source

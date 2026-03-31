@@ -79,6 +79,15 @@ def _can_manage_points(actor_level: int) -> bool:
     return actor_level >= 80
 
 
+def _can_manage_bank(actor_level: int) -> bool:
+    return actor_level >= 100
+
+
+def _is_super_admin_titles(actor_titles: tuple[str, ...]) -> bool:
+    normalized = {normalize_protected_profile_title(title) for title in actor_titles if str(title).strip()}
+    return bool(normalized & {"глава клуба", "главный вице"})
+
+
 def _can_manage_own_engagement(actor_titles: tuple[str, ...]) -> bool:
     normalized = {normalize_protected_profile_title(title) for title in actor_titles if str(title).strip()}
     return bool(normalized & {"глава клуба", "главный вице"})
@@ -210,6 +219,74 @@ def _build_tickets_keyboard(target_id: int, actor_id: int) -> InlineKeyboardMark
     )
 
 
+def _build_bank_root_keyboard(actor_id: int, *, allow_settings: bool) -> InlineKeyboardMarkup | None:
+    if not allow_settings:
+        return None
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⚙️ Настройка банка", callback_data=f"bank:settings:0:{actor_id}")],
+        ]
+    )
+
+
+def _build_bank_settings_keyboard(actor_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="ℹ️ Что делает команда", callback_data=f"bank:help:0:{actor_id}")],
+            [InlineKeyboardButton(text="➕ Добавить в банк", callback_data=f"bank:add:0:{actor_id}")],
+            [InlineKeyboardButton(text="➖ Списать из банка", callback_data=f"bank:spend:0:{actor_id}")],
+            [InlineKeyboardButton(text="📚 История банка", callback_data=f"bank:history:0:{actor_id}")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"bank:back:0:{actor_id}")],
+        ]
+    )
+
+
+def _format_bank_history_text(entries: list[dict[str, object]]) -> str:
+    if not entries:
+        return (
+            "📚 <b>История банка</b>\n"
+            "Что это: последние операции банка.\n"
+            "Что делать сейчас: операций пока нет.\n"
+            "Что будет дальше: после пополнения или списания запись появится автоматически."
+        )
+
+    lines = [
+        "📚 <b>История банка</b>",
+        "Что это: последние 10 операций банка.",
+        "Что делать сейчас: проверьте сумму и причину каждой операции.",
+        "Что будет дальше: новые операции будут появляться сверху списка.",
+        "",
+    ]
+    for item in entries:
+        amount = float(item.get("amount") or 0)
+        reason = str(item.get("reason") or "Без причины")
+        ts = str(item.get("timestamp") or "").replace("T", " ")[:19]
+        sign = "➕" if amount >= 0 else "➖"
+        lines.append(f"{sign} <b>{amount:.2f}</b> • {ts}\nПричина: {reason}")
+    return "\n\n".join(lines)
+
+
+def _load_bank_history_entries(limit: int = 10) -> list[dict[str, object]]:
+    if not db.supabase:
+        return []
+    try:
+        result = (
+            db.supabase.table("bank_history")
+            .select("amount,reason,timestamp")
+            .order("timestamp", desc=True)
+            .limit(max(1, min(int(limit), 20)))
+            .execute()
+        )
+        return [row for row in (result.data or []) if isinstance(row, dict)]
+    except Exception:
+        logger.exception("failed to load bank history for telegram")
+        return []
+
+
+def _load_bank_balance() -> float:
+    return float(db.get_bank_balance())
+
+
 def _get_score_snapshot(account_id: str) -> tuple[float, int, int]:
     if not db.supabase:
         return 0.0, 0, 0
@@ -278,6 +355,66 @@ async def balance_command(message: Message) -> None:
             message.text,
         )
         await message.answer("❌ Ошибка получения баланса.")
+
+
+@router.message(Command("bank"))
+async def bank_command(message: Message) -> None:
+    try:
+        persist_telegram_identity_from_user(message.from_user)
+        if not message.from_user:
+            await message.answer("❌ Не удалось определить пользователя Telegram.")
+            return
+
+        actor_id = str(message.from_user.id)
+        authority = await run_blocking_io(
+            "telegram.bank.resolve_authority",
+            AuthorityService.resolve_authority,
+            "telegram",
+            actor_id,
+            logger=logger,
+        )
+
+        if message.chat.type != "private":
+            if not _can_manage_bank(authority.level):
+                await message.answer(
+                    "❌ Команда банка пока недоступна для вашего звания.\n"
+                    "Что делать сейчас: обратитесь к старшему администратору.\n"
+                    "Что будет дальше: после повышения откроется просмотр банкового баланса."
+                )
+                return
+            total = await run_blocking_io("telegram.bank.balance.guild", _load_bank_balance, logger=logger)
+            await message.answer(
+                "🏦 <b>Банк клуба</b>\n"
+                f"Текущий баланс: <b>{total:.2f}</b>\n"
+                "Настройки для суперадминов в лс",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        if not _is_super_admin_titles(authority.titles):
+            await message.answer(
+                "❌ Экран настройки банка в ЛС доступен только суперадмину.\n"
+                "Что делать сейчас: обратитесь к суперадмину.\n"
+                "Что будет дальше: суперадмин сможет выполнить пополнение, списание и просмотр истории."
+            )
+            return
+
+        total = await run_blocking_io("telegram.bank.balance.private", _load_bank_balance, logger=logger)
+        await message.answer(
+            "🏦 <b>Банк клуба</b>\n"
+            f"Текущий баланс: <b>{total:.2f}</b>\n"
+            "Настройки для суперадминов в лс",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_build_bank_root_keyboard(int(actor_id), allow_settings=True),
+        )
+    except Exception:
+        logger.exception(
+            "bank command failed actor_id=%s chat_id=%s text=%s",
+            message.from_user.id if message.from_user else None,
+            message.chat.id if message.chat else None,
+            message.text,
+        )
+        await message.answer("❌ Ошибка открытия банка.")
 
 
 @router.message(Command("points"))
@@ -602,6 +739,113 @@ async def tickets_callback(callback: CallbackQuery) -> None:
         await callback.answer("Ошибка меню билетов", show_alert=True)
 
 
+@router.callback_query(F.data.startswith("bank:"))
+async def bank_callback(callback: CallbackQuery) -> None:
+    try:
+        persist_telegram_identity_from_user(callback.from_user)
+        if not callback.from_user:
+            await callback.answer("Ошибка пользователя", show_alert=True)
+            return
+        payload = _parse_callback_payload(str(callback.data))
+        if payload is None:
+            logger.error("bank callback got malformed payload=%s", callback.data)
+            await callback.answer("Ошибка меню банка", show_alert=True)
+            return
+        action, _, owner_id = payload
+        if not await _guard_callback_actor(callback, owner_id):
+            return
+
+        actor_id = str(callback.from_user.id)
+        authority = await run_blocking_io(
+            "telegram.bank_callback.resolve_authority",
+            AuthorityService.resolve_authority,
+            "telegram",
+            actor_id,
+            logger=logger,
+        )
+        if callback.message and callback.message.chat.type != "private":
+            logger.warning("bank callback denied non-private actor_id=%s action=%s", actor_id, action)
+            await callback.answer("Настройка банка доступна только в ЛС с ботом.", show_alert=True)
+            return
+        if not _is_super_admin_titles(authority.titles):
+            logger.warning("bank callback denied non-super-admin actor_id=%s action=%s", actor_id, action)
+            await callback.answer("Настройка банка доступна только суперадмину.", show_alert=True)
+            return
+
+        if action == "help":
+            await callback.answer(
+                "ℹ️ Формат для изменения: число | причина\nПример: 15 | Компенсация за ивент",
+                show_alert=True,
+            )
+            return
+
+        if action == "settings":
+            if callback.message:
+                await callback.message.edit_text(
+                    "⚙️ <b>Настройка банка</b>\n"
+                    "Выберите действие. Для пополнения и списания причина обязательна.",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=_build_bank_settings_keyboard(int(actor_id)),
+                )
+            await callback.answer()
+            return
+
+        if action == "history":
+            entries = await run_blocking_io(
+                "telegram.bank_callback.history_entries",
+                _load_bank_history_entries,
+                10,
+                logger=logger,
+            )
+            text = _format_bank_history_text(entries)
+            if callback.message:
+                await callback.message.edit_text(
+                    text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=_build_bank_settings_keyboard(int(actor_id)),
+                )
+            await callback.answer("История обновлена")
+            return
+
+        if action == "back":
+            total = await run_blocking_io("telegram.bank_callback.balance", _load_bank_balance, logger=logger)
+            if callback.message:
+                await callback.message.edit_text(
+                    "🏦 <b>Банк клуба</b>\n"
+                    f"Текущий баланс: <b>{total:.2f}</b>\n"
+                    "Настройки для суперадминов в лс",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=_build_bank_root_keyboard(int(actor_id), allow_settings=True),
+                )
+            await callback.answer()
+            return
+
+        if action not in {"add", "spend"}:
+            await callback.answer("Неизвестное действие", show_alert=True)
+            return
+
+        flow_message_id = callback.message.message_id if callback.message else None
+        flow_chat_id = callback.message.chat.id if callback.message and callback.message.chat else None
+        _PENDING_ACTIONS[callback.from_user.id] = PendingAction(
+            domain="bank",
+            operation=action,
+            target_provider_user_id=actor_id,
+            actor_provider_user_id=actor_id,
+            chat_id=flow_chat_id,
+            flow_message_id=flow_message_id,
+        )
+        if callback.message:
+            await callback.message.edit_text(
+                "Введите данные в формате: <code>число | причина</code>.\n"
+                "Причина обязательна. Пример: <code>25 | Компенсация за ивент</code>",
+                parse_mode=ParseMode.HTML,
+            )
+        await callback.answer()
+    except Exception:
+        logger.exception("bank callback failed callback_data=%s", callback.data)
+        await callback.answer("Ошибка меню банка", show_alert=True)
+
+
 @router.message(F.from_user, F.from_user.id.func(has_pending_action))
 async def pending_action_handler(message: Message) -> None:
     persist_telegram_identity_from_user(message.from_user)
@@ -632,34 +876,46 @@ async def pending_action_handler(message: Message) -> None:
             await message.answer("❌ Недостаточно полномочий для редактирования билетов.")
             _PENDING_ACTIONS.pop(message.from_user.id, None)
             return
-        if str(pending.target_provider_user_id) == str(message.from_user.id):
-            if not _can_manage_own_engagement(authority.titles):
-                logger.warning(
-                    "pending action self-edit denied actor_id=%s domain=%s",
-                    message.from_user.id,
-                    pending.domain,
-                )
-                await message.answer("❌ Нельзя редактировать себя. Доступно только Главе клуба и Главному вице.")
+        if pending.domain == "bank":
+            if message.chat.type != "private":
+                logger.warning("pending bank action denied non-private actor_id=%s", message.from_user.id)
+                await message.answer("❌ Настройка банка доступна только в ЛС с ботом.")
                 _PENDING_ACTIONS.pop(message.from_user.id, None)
                 return
-        elif not await run_blocking_io(
-            "telegram.pending_action.can_manage_target",
-            AuthorityService.can_manage_target,
-            "telegram",
-            str(message.from_user.id),
-            "telegram",
-            str(pending.target_provider_user_id),
-            logger=logger,
-        ):
-            logger.warning(
-                "pending action denied by hierarchy actor_id=%s target_id=%s domain=%s",
-                message.from_user.id,
-                pending.target_provider_user_id,
-                pending.domain,
-            )
-            await message.answer("❌ Нельзя выполнять действие для пользователя с равным/более высоким званием.")
-            _PENDING_ACTIONS.pop(message.from_user.id, None)
-            return
+            if not _is_super_admin_titles(authority.titles):
+                logger.warning("pending bank action denied non-super-admin actor_id=%s", message.from_user.id)
+                await message.answer("❌ Настройка банка доступна только суперадмину.")
+                _PENDING_ACTIONS.pop(message.from_user.id, None)
+                return
+        else:
+            if str(pending.target_provider_user_id) == str(message.from_user.id):
+                if not _can_manage_own_engagement(authority.titles):
+                    logger.warning(
+                        "pending action self-edit denied actor_id=%s domain=%s",
+                        message.from_user.id,
+                        pending.domain,
+                    )
+                    await message.answer("❌ Нельзя редактировать себя. Доступно только Главе клуба и Главному вице.")
+                    _PENDING_ACTIONS.pop(message.from_user.id, None)
+                    return
+            elif not await run_blocking_io(
+                "telegram.pending_action.can_manage_target",
+                AuthorityService.can_manage_target,
+                "telegram",
+                str(message.from_user.id),
+                "telegram",
+                str(pending.target_provider_user_id),
+                logger=logger,
+            ):
+                logger.warning(
+                    "pending action denied by hierarchy actor_id=%s target_id=%s domain=%s",
+                    message.from_user.id,
+                    pending.target_provider_user_id,
+                    pending.domain,
+                )
+                await message.answer("❌ Нельзя выполнять действие для пользователя с равным/более высоким званием.")
+                _PENDING_ACTIONS.pop(message.from_user.id, None)
+                return
 
         raw = (message.text or "").strip()
 
@@ -750,6 +1006,58 @@ async def pending_action_handler(message: Message) -> None:
                 await _respond_in_flow(message, pending, "❌ Не удалось обновить билеты. Проверьте привязку аккаунта.")
             else:
                 await _respond_in_flow(message, pending, f"✅ Билеты успешно {verb}: {amount}. Причина: {reason_raw}")
+
+        elif pending.domain == "bank":
+            if "|" not in raw:
+                await _respond_in_flow(message, pending, "❌ Неверный формат. Используйте: число | причина")
+                return
+            amount_raw, reason_raw = [part.strip() for part in raw.split("|", 1)]
+            if not reason_raw:
+                await _respond_in_flow(message, pending, "❌ Причина обязательна. Изменение отменено.")
+                _PENDING_ACTIONS.pop(message.from_user.id, None)
+                return
+            amount = float(amount_raw.replace(",", "."))
+            if amount <= 0:
+                await _respond_in_flow(message, pending, "❌ Сумма должна быть больше 0.")
+                return
+
+            if pending.operation == "add":
+                ok = await run_blocking_io(
+                    "telegram.pending_action.bank_add",
+                    db.add_to_bank_with_history,
+                    int(pending.actor_provider_user_id),
+                    amount,
+                    reason_raw,
+                    logger=logger,
+                )
+                action_text = "добавлено в банк"
+            else:
+                ok = await run_blocking_io(
+                    "telegram.pending_action.bank_spend",
+                    db.spend_from_bank,
+                    amount,
+                    int(pending.actor_provider_user_id),
+                    reason_raw,
+                    logger=logger,
+                )
+                action_text = "списано из банка"
+
+            if not ok:
+                await _respond_in_flow(
+                    message,
+                    pending,
+                    "❌ Операция с банком не выполнена. Проверьте баланс, доступ и логи сервера.",
+                )
+            else:
+                total = await run_blocking_io("telegram.pending_action.bank_balance", _load_bank_balance, logger=logger)
+                await _respond_in_flow(
+                    message,
+                    pending,
+                    (
+                        f"✅ Успешно {action_text}: {amount:.2f}. Причина: {reason_raw}\n"
+                        f"Текущий баланс банка: {total:.2f}"
+                    ),
+                )
 
         _PENDING_ACTIONS.pop(message.from_user.id, None)
     except ValueError:
