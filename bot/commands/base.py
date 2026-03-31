@@ -582,78 +582,47 @@ def _build_bank_balance_embed(*, actor_id: int | None = None) -> discord.Embed:
         embed.set_footer(text=f"Запросил: {actor_id}")
     return embed
 
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        try:
-            if not AuthorityService.has_command_permission("discord", str(interaction.user.id), "bank_manage"):
-                logger.warning(
-                    "bank modal permission denied actor_id=%s operation=%s",
-                    interaction.user.id,
-                    self.operation,
-                )
-                await interaction.response.send_message("❌ Недостаточно полномочий для управления банком.", ephemeral=True)
-                return
 
-            amount = float(str(self.amount.value).replace(",", "."))
-            if amount <= 0:
-                await interaction.response.send_message("❌ Сумма должна быть больше 0.", ephemeral=True)
-                return
+def _load_bank_history_rows(limit: int = 10) -> list[dict[str, Any]]:
+    if not db.supabase:
+        return []
+    result = (
+        db.supabase.table("bank_history")
+        .select("*")
+        .order("timestamp", desc=True)
+        .limit(max(1, min(int(limit), 20)))
+        .execute()
+    )
+    return [row for row in (result.data or []) if isinstance(row, dict)]
 
-            reason = str(self.reason.value).strip()
-            if not reason:
-                await interaction.response.send_message("❌ Причина обязательна.", ephemeral=True)
-                return
 
-            if self.operation == "add":
-                ok = db.add_to_bank_with_history(self.actor_id, amount, reason)
-                action_line = f"✅ В банк добавлено **{amount:.2f}** баллов.\nПричина: {reason}"
-            else:
-                ok = db.spend_from_bank(amount, self.actor_id, reason)
-                action_line = f"💸 Из банка списано **{amount:.2f}** баллов.\nПричина: {reason}"
+def _build_bank_history_embed(rows: list[dict[str, Any]]) -> discord.Embed:
+    embed = discord.Embed(title="📚 История операций банка", color=discord.Color.teal())
+    if not rows:
+        embed.description = (
+            "Что это: последние операции банка.\n"
+            "Что делать сейчас: операций пока нет.\n"
+            "Что будет дальше: после пополнения или списания записи появятся в этом списке."
+        )
+        return embed
 
-            if not ok:
-                logger.error(
-                    "bank modal operation failed actor_id=%s operation=%s amount=%s reason=%s",
-                    self.actor_id,
-                    self.operation,
-                    amount,
-                    reason,
-                )
-                await interaction.response.send_message(
-                    "❌ Операция не выполнена. Проверьте доступ, баланс и логи сервера.",
-                    ephemeral=True,
-                )
-                return
+    embed.description = (
+        "Что это: последние операции банка.\n"
+        "Что делать сейчас: проверьте сумму и причину каждой операции.\n"
+        "Что будет дальше: новые операции будут добавляться сверху."
+    )
+    for entry in rows:
+        amt = float(entry.get("amount") or 0)
+        ts = str(entry.get("timestamp") or "").replace("T", " ")[:19]
+        user_id = entry.get("user_id")
+        name = f"<@{user_id}>" if user_id is not None else "Неизвестно"
+        embed.add_field(
+            name=f"{'➕' if amt >= 0 else '➖'} {amt:.2f} баллов • {ts}",
+            value=f"👤 {name}\n📝 {entry.get('reason') or 'Без причины'}",
+            inline=False,
+        )
+    return embed
 
-            logger.info(
-                "bank modal operation success actor_id=%s operation=%s amount=%s reason=%s",
-                self.actor_id,
-                self.operation,
-                amount,
-                reason,
-            )
-            embed = _build_bank_balance_embed(actor_id=self.actor_id)
-            await interaction.response.send_message(action_line, embed=embed, ephemeral=True)
-        except ValueError:
-            logger.exception(
-                "bank modal amount parse failed actor_id=%s operation=%s amount_raw=%s",
-                self.actor_id,
-                self.operation,
-                self.amount.value,
-            )
-            if interaction.response.is_done():
-                await interaction.followup.send("❌ Некорректный формат суммы.", ephemeral=True)
-            else:
-                await interaction.response.send_message("❌ Некорректный формат суммы.", ephemeral=True)
-        except Exception:
-            logger.exception(
-                "bank modal submit failed actor_id=%s operation=%s",
-                self.actor_id,
-                self.operation,
-            )
-            if interaction.response.is_done():
-                await interaction.followup.send("❌ Ошибка выполнения банковой операции.", ephemeral=True)
-            else:
-                await interaction.response.send_message("❌ Ошибка выполнения банковой операции.", ephemeral=True)
 
 class BankActionModal(discord.ui.Modal):
     def __init__(self, *, actor_id: int, operation: str):
@@ -805,6 +774,19 @@ class BankSettingsView(discord.ui.View):
     async def spend_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.send_modal(BankActionModal(actor_id=self.owner_id, operation="spend"))
 
+    @discord.ui.button(label="📚 История банка", style=discord.ButtonStyle.secondary)
+    async def history_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        try:
+            rows = await asyncio.to_thread(_load_bank_history_rows, 10)
+            embed = _build_bank_history_embed(rows)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        except Exception:
+            logger.exception("bank settings history render failed actor_id=%s", interaction.user.id)
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Не удалось открыть историю банка.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Не удалось открыть историю банка.", ephemeral=True)
+
 
 class BankRootView(discord.ui.View):
     def __init__(self, *, owner_id: int):
@@ -876,45 +858,6 @@ async def bank_balance(ctx):
     except Exception:
         logger.exception("bank command failed actor_id=%s guild_id=%s", ctx.author.id, ctx.guild.id if ctx.guild else None)
         await send_temp(ctx, "❌ Не удалось открыть панель банка. Попробуйте ещё раз позже.")
-
-
-@bot.hybrid_command(name="bankhistory", description="История операций клуба")
-async def bank_history(ctx):
-    if not await _check_command_authority(ctx, "bank_manage"):
-        return
-    if not db.supabase:
-        await send_temp(ctx, "❌ Supabase не инициализирован")
-        return
-
-    try:
-        result = (
-            db.supabase.table("bank_history")
-            .select("*")
-            .order("timestamp", desc=True)
-            .limit(10)
-            .execute()
-        )
-        if not result.data:
-            await send_temp(ctx, "📭 История пуста")
-            return
-        embed = discord.Embed(
-            title="📚 История операций банка", color=discord.Color.teal()
-        )
-        for entry in result.data:
-            user = ctx.guild.get_member(entry["user_id"])
-            name = user.display_name if user else f"<@{entry['user_id']}>"
-            amt = entry["amount"]
-            ts = entry["timestamp"][:19].replace("T", " ")
-            embed.add_field(
-                name=f"{'➕' if amt > 0 else '➖'} {amt:.2f} баллов • {ts}",
-                value=f"👤 {name}\n📝 {entry['reason']}",
-                inline=False,
-            )
-        await send_temp(ctx, embed=embed)
-    except Exception as e:
-        logger.exception("bank_history failed author_id=%s", ctx.author.id)
-        await send_temp(ctx, f"❌ Ошибка получения истории: {str(e)}")
-
 
 @bot.hybrid_command(name="balance", description="Показать баланс пользователя")
 async def balance(ctx, member: discord.Member = None):

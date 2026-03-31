@@ -85,6 +85,7 @@ BOT_COMMANDS = [
     BotCommand(command="link_discord", description="Сгенерировать код для привязки Discord"),
     BotCommand(command="roles", description="Каталог ролей и способов получения"),
     BotCommand(command="points", description="Меню управления баллами"),
+    BotCommand(command="bank", description="Баланс банка и настройка (суперадмин в ЛС)"),
     BotCommand(command="balance", description="Показать баланс пользователя"),
     BotCommand(command="shop", description="Открыть магазин в личных сообщениях"),
     BotCommand(command="tickets", description="Меню управления билетами"),
