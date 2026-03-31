@@ -1152,6 +1152,71 @@ class Database:
             logger.error(f"Ошибка обновления банка: {str(e)}")
             return False
 
+    def add_to_bank_with_history(self, user_id: int, amount: float, reason: str) -> bool:
+        """Пополнить банк и записать операцию в историю.
+
+        Если запись в history не удалась, баланс банка откатывается до исходного значения.
+        """
+        try:
+            if not self.supabase:
+                logger.warning(
+                    "❌ add_to_bank_with_history: Supabase не инициализирован user_id=%s amount=%s",
+                    user_id,
+                    amount,
+                )
+                return False
+            if amount <= 0:
+                logger.warning(
+                    "❌ add_to_bank_with_history: invalid amount user_id=%s amount=%s reason=%s",
+                    user_id,
+                    amount,
+                    reason,
+                )
+                return False
+
+            current = self.get_bank_balance()
+            new_total = current + amount
+            self.supabase.table("bank").upsert({
+                "id": 1,
+                "total": new_total,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }).execute()
+
+            if not self.log_bank_income(user_id, amount, reason):
+                logger.error(
+                    "❌ add_to_bank_with_history: history insert failed, rolling back bank total user_id=%s amount=%s reason=%s current=%s attempted_total=%s",
+                    user_id,
+                    amount,
+                    reason,
+                    current,
+                    new_total,
+                )
+                self.supabase.table("bank").upsert({
+                    "id": 1,
+                    "total": current,
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }).execute()
+                return False
+
+            logger.info(
+                "✅ add_to_bank_with_history: success user_id=%s amount=%s reason=%s previous_total=%s new_total=%s",
+                user_id,
+                amount,
+                reason,
+                current,
+                new_total,
+            )
+            return True
+        except Exception as e:
+            logger.error(
+                "❌ add_to_bank_with_history failed user_id=%s amount=%s reason=%s error=%s",
+                user_id,
+                amount,
+                reason,
+                e,
+            )
+            return False
+
     def record_payment(self, user_id: int, fine_id: int, amount: float, author_id: int) -> bool:
         """Совместимый wrapper оплаты штрафа по user_id."""
         log_legacy_identity_path_detected(
@@ -1452,8 +1517,24 @@ class Database:
                 "reason": reason,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             })
-
-            self.supabase.table("bank_history").insert(history_payload).execute()
+            try:
+                self.supabase.table("bank_history").insert(history_payload).execute()
+            except Exception as history_error:
+                logger.error(
+                    "❌ spend_from_bank history insert failed, rolling back bank total user_id=%s amount=%s reason=%s current=%s attempted_total=%s error=%s",
+                    user_id,
+                    amount,
+                    reason,
+                    current,
+                    new_total,
+                    history_error,
+                )
+                self.supabase.table("bank").upsert({
+                    "id": 1,
+                    "total": current,
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }).execute()
+                return False
 
             return True
         except Exception as e:
