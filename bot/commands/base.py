@@ -582,6 +582,84 @@ def _build_bank_balance_embed(*, actor_id: int | None = None) -> discord.Embed:
         embed.set_footer(text=f"Запросил: {actor_id}")
     return embed
 
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            if not AuthorityService.has_command_permission("discord", str(interaction.user.id), "bank_manage"):
+                logger.warning(
+                    "bank modal permission denied actor_id=%s operation=%s",
+                    interaction.user.id,
+                    self.operation,
+                )
+                await interaction.response.send_message("❌ Недостаточно полномочий для управления банком.", ephemeral=True)
+                return
+
+            amount = float(str(self.amount.value).replace(",", "."))
+            if amount <= 0:
+                await interaction.response.send_message("❌ Сумма должна быть больше 0.", ephemeral=True)
+                return
+
+            reason = str(self.reason.value).strip()
+            if not reason:
+                await interaction.response.send_message("❌ Причина обязательна.", ephemeral=True)
+                return
+
+            if self.operation == "add":
+                ok = db.add_to_bank_with_history(self.actor_id, amount, reason)
+                action_line = f"✅ В банк добавлено **{amount:.2f}** баллов.\nПричина: {reason}"
+            else:
+                ok = db.spend_from_bank(amount, self.actor_id, reason)
+                action_line = f"💸 Из банка списано **{amount:.2f}** баллов.\nПричина: {reason}"
+
+            if not ok:
+                logger.error(
+                    "bank modal operation failed actor_id=%s operation=%s amount=%s reason=%s",
+                    self.actor_id,
+                    self.operation,
+                    amount,
+                    reason,
+                )
+                await interaction.response.send_message(
+                    "❌ Операция не выполнена. Проверьте доступ, баланс и логи сервера.",
+                    ephemeral=True,
+                )
+                return
+
+            logger.info(
+                "bank modal operation success actor_id=%s operation=%s amount=%s reason=%s",
+                self.actor_id,
+                self.operation,
+                amount,
+                reason,
+            )
+            embed = _build_bank_balance_embed(actor_id=self.actor_id)
+            await interaction.response.send_message(action_line, embed=embed, ephemeral=True)
+        except ValueError:
+            logger.exception(
+                "bank modal amount parse failed actor_id=%s operation=%s amount_raw=%s",
+                self.actor_id,
+                self.operation,
+                self.amount.value,
+            )
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Некорректный формат суммы.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Некорректный формат суммы.", ephemeral=True)
+        except Exception:
+            logger.exception(
+                "bank modal submit failed actor_id=%s operation=%s",
+                self.actor_id,
+                self.operation,
+            )
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Ошибка выполнения банковой операции.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Ошибка выполнения банковой операции.", ephemeral=True)
+
+
+class BankSettingsView(discord.ui.View):
+    def __init__(self, *, owner_id: int):
+        super().__init__(timeout=300)
+        self.owner_id = owner_id
 
 class BankActionModal(discord.ui.Modal):
     def __init__(self, *, actor_id: int, operation: str):
