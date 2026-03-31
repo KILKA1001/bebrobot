@@ -282,6 +282,7 @@ def get_shop_catalog_items(*, log_context: str = "shop", account_id: str | None 
 
     hidden_locked_roles = 0
     hidden_downgraded_roles = 0
+    hidden_owned_roles = 0
     for row in shop_rows:
         role_name = str(row.get("role_name") or "").strip()
         role_meta = role_lookup.get(role_name.lower())
@@ -290,6 +291,15 @@ def get_shop_catalog_items(*, log_context: str = "shop", account_id: str | None 
             continue
         role = role_meta["role"]
         category_name = str(role_meta["category"])
+        if account_key and role_name.lower() in owned_roles:
+            hidden_owned_roles += 1
+            logger.info(
+                "shop_catalog_hidden_owned_role log_context=%s account_id=%s role_name=%s reason=already_owned",
+                log_context,
+                account_key,
+                role_name,
+            )
+            continue
         role_rank = _volunteer_role_rank(role)
         if (
             account_key
@@ -367,6 +377,14 @@ def get_shop_catalog_items(*, log_context: str = "shop", account_id: str | None 
             log_context,
             account_key or None,
             hidden_downgraded_roles,
+            len(indexed_ids),
+        )
+    if hidden_owned_roles:
+        logger.info(
+            "shop_catalog_owned_filter_applied log_context=%s account_id=%s hidden_owned_roles=%s visible_items=%s",
+            log_context,
+            account_key or None,
+            hidden_owned_roles,
             len(indexed_ids),
         )
     return indexed_ids
@@ -660,30 +678,6 @@ def purchase_shop_item(
                         item.role_name,
                         lower_role_name,
                         revoke_result.get("reason"),
-                    )
-
-        if item.price_points > 0:
-            bank_reason = f"Покупка роли в магазине: {item.role_name}"
-            bank_income_added = db.add_to_bank(float(item.price_points))
-            if not bank_income_added:
-                logger.error(
-                    "shop_purchase_bank_income_failed provider=%s actor_user_id=%s account_id=%s shop_item_id=%s amount=%s",
-                    provider,
-                    actor_id,
-                    account_key,
-                    item_key,
-                    item.price_points,
-                )
-            else:
-                bank_income_logged = db.log_bank_income_by_account(account_key, float(item.price_points), bank_reason)
-                if not bank_income_logged:
-                    logger.error(
-                        "shop_purchase_bank_income_log_failed provider=%s actor_user_id=%s account_id=%s shop_item_id=%s amount=%s",
-                        provider,
-                        actor_id,
-                        account_key,
-                        item_key,
-                        item.price_points,
                     )
 
         logger.info(
