@@ -1,6 +1,7 @@
 import logging
 from dataclasses import dataclass
 
+from bot.data import db
 from bot.services import AccountsService, PointsService, RoleManagementService
 from bot.services.ux_texts import compose_three_block_plain
 from bot.utils.roles_and_activities import ROLE_THRESHOLDS
@@ -659,6 +660,30 @@ def purchase_shop_item(
                         item.role_name,
                         lower_role_name,
                         revoke_result.get("reason"),
+                    )
+
+        if item.price_points > 0:
+            bank_reason = f"Покупка роли в магазине: {item.role_name}"
+            bank_income_added = db.add_to_bank(float(item.price_points))
+            if not bank_income_added:
+                logger.error(
+                    "shop_purchase_bank_income_failed provider=%s actor_user_id=%s account_id=%s shop_item_id=%s amount=%s",
+                    provider,
+                    actor_id,
+                    account_key,
+                    item_key,
+                    item.price_points,
+                )
+            else:
+                bank_income_logged = db.log_bank_income_by_account(account_key, float(item.price_points), bank_reason)
+                if not bank_income_logged:
+                    logger.error(
+                        "shop_purchase_bank_income_log_failed provider=%s actor_user_id=%s account_id=%s shop_item_id=%s amount=%s",
+                        provider,
+                        actor_id,
+                        account_key,
+                        item_key,
+                        item.price_points,
                     )
 
         logger.info(
