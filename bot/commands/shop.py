@@ -115,7 +115,7 @@ class ShopView(discord.ui.View):
             self.account_id,
             self.author_id,
         )
-        items = get_shop_catalog_items(log_context="shop:discord:view")
+        items = get_shop_catalog_items(log_context="shop:discord:view", account_id=self.account_id)
         page_data = get_shop_page_slice(items, self.page, page_size=SHOP_PAGE_SIZE)
         self.page = page_data.page
         self.total_pages = page_data.total_pages
@@ -287,7 +287,7 @@ class ShopView(discord.ui.View):
         self.add_item(cancel_btn)
 
     def _selected_item(self):
-        items = get_shop_catalog_items(log_context="shop:discord:selected")
+        items = get_shop_catalog_items(log_context="shop:discord:selected", account_id=self.account_id)
         return find_shop_item(items, self.selected_item_id or "")
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -346,7 +346,7 @@ class ShopView(discord.ui.View):
     async def _switch_page(self, interaction: discord.Interaction, *, requested_page: int, action: str) -> None:
         try:
             old_page = self.page
-            items = get_shop_catalog_items(log_context="shop:discord:page_switch")
+            items = get_shop_catalog_items(log_context="shop:discord:page_switch", account_id=self.account_id)
             page_data = get_shop_page_slice(items, requested_page, page_size=SHOP_PAGE_SIZE)
             self.page = page_data.page
             self.mode = "list"
@@ -373,7 +373,7 @@ class ShopView(discord.ui.View):
 
     async def _on_item_click(self, interaction: discord.Interaction, *, shop_item_id: str, page: int) -> None:
         try:
-            items = get_shop_catalog_items(log_context="shop:discord:item")
+            items = get_shop_catalog_items(log_context="shop:discord:item", account_id=self.account_id)
             item = find_shop_item(items, shop_item_id)
             if not item:
                 logger.error(

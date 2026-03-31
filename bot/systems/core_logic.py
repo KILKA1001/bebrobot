@@ -300,34 +300,12 @@ def _build_missing_account_embed(member: discord.abc.User, *, title: str) -> dis
 
 
 async def update_roles(member: discord.Member):
-    user_id = member.id
-    account_id = _resolve_account_id_from_discord(user_id, handler="update_roles")
-    if not account_id:
-        return
-    user_points, _ = _get_balance_snapshot(account_id, discord_user_id=user_id, handler="update_roles")
-    threshold_role_ids = set(ROLE_THRESHOLDS)
-
-    target_role_id = None
-    for role_id, threshold in sorted(ROLE_THRESHOLDS.items(), key=lambda x: x[1], reverse=True):
-        if user_points >= threshold:
-            target_role_id = role_id
-            break
-
-    desired_roles = [role for role in member.roles if role.id not in threshold_role_ids]
-    if target_role_id:
-        target_role = member.guild.get_role(target_role_id)
-        if target_role:
-            desired_roles.append(target_role)
-
-    current_role_ids = {role.id for role in member.roles}
-    desired_role_ids = {role.id for role in desired_roles}
-    if current_role_ids == desired_role_ids:
-        return
-
-    try:
-        await member.edit(roles=desired_roles, reason="Обновление роли по баллам")
-    except (discord.Forbidden, discord.HTTPException) as exc:
-        logging.warning("Не удалось обновить роли пользователя %s: %s", user_id, exc)
+    logger.debug(
+        "update_roles skipped: volunteer roles are managed by shop purchases member_id=%s guild_id=%s threshold_roles=%s",
+        getattr(member, "id", None),
+        getattr(getattr(member, "guild", None), "id", None),
+        len(ROLE_THRESHOLDS),
+    )
 
 
 class HistoryView(SafeView):

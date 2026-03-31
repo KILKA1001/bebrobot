@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from bot.services import AccountsService, PointsService, RoleManagementService
 from bot.services.ux_texts import compose_three_block_plain
+from bot.utils.roles_and_activities import ROLE_THRESHOLDS
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ SHOP_TEXT_CONFIRM_PURCHASE = compose_three_block_plain(
 )
 SHOP_TEXT_ITEM_UNAVAILABLE = "❌ Этот товар сейчас недоступен. Что дальше: вернитесь в список и выберите другой."
 SHOP_TEXT_ROLE_NOT_SELLABLE = "❌ Этот товар сейчас недоступен. Что дальше: вернитесь в список и выберите другой."
+SHOP_TEXT_ROLE_CHAIN_REQUIRED = "❌ Для покупки роли «{target}» сначала купите роль «{required}». Что дальше: вернитесь в список и купите предыдущую роль цепочки."
 SHOP_TEXT_PRICE_CHANGED = "❌ Цена изменилась. Что дальше: вернитесь в список и откройте товар ещё раз."
 SHOP_TEXT_ALREADY_OWNED = "ℹ️ Эта роль уже есть у вас."
 SHOP_TEXT_INSUFFICIENT_POINTS = "❌ Не хватает баллов: нужно {required}, у вас {current}. Что дальше: выберите роль подешевле или накопите баллы."
@@ -91,6 +93,23 @@ SHOP_UX_CHECKLIST: tuple[str, ...] = (
     "Подтверждение: пользователь понимает, что покупка произойдёт после подтверждения.",
     "Ошибки: каждое сообщение объясняет причину и что делать дальше.",
 )
+
+_VOLUNTEER_ROLE_NAMES_BY_DISCORD_ID: dict[int, str] = {
+    1212624623548768287: "Бог среди волонтеров",
+    1105906637824331788: "Легендарный среди волонтеров",
+    1137775519589466203: "Мастер волонтер",
+    1105906455233703989: "Хороший Помощник Бебр",
+    1105906310131744868: "Новый волонтер",
+}
+_VOLUNTEER_ROLE_CHAIN_BY_DISCORD_ID: tuple[int, ...] = tuple(
+    role_id for role_id, _ in sorted(ROLE_THRESHOLDS.items(), key=lambda item: item[1])
+)
+_VOLUNTEER_ROLE_RANK_BY_DISCORD_ID: dict[int, int] = {
+    role_id: index for index, role_id in enumerate(_VOLUNTEER_ROLE_CHAIN_BY_DISCORD_ID)
+}
+_VOLUNTEER_ROLE_CANONICAL_BY_LOWER: dict[str, str] = {
+    role_name.lower(): role_name for role_name in _VOLUNTEER_ROLE_NAMES_BY_DISCORD_ID.values()
+}
 
 
 @dataclass(frozen=True)
@@ -173,7 +192,71 @@ def _normalize_shop_page(requested_page: int, total_items: int, *, page_size: in
     return min(max(int(requested_page), 0), max_page)
 
 
-def get_shop_catalog_items(*, log_context: str = "shop") -> list[ShopItem]:
+def _load_owned_role_names_for_account(account_id: str) -> set[str]:
+    try:
+        owned_roles = RoleManagementService.get_user_roles_by_account(account_id)
+        return {str(role.get("name") or "").strip().lower() for role in owned_roles if str(role.get("name") or "").strip()}
+    except Exception as error:  # noqa: BLE001
+        logger.exception("shop_owned_roles_load_error account_id=%s error=%s", account_id, error)
+        return set()
+
+
+def _is_volunteer_chain_locked(*, role_name: str, role_meta: dict, owned_roles: set[str]) -> bool:
+    if role_name.lower() in owned_roles:
+        return False
+    required_role_name, required_role_discord_id = _required_previous_volunteer_role(role_name, role_meta)
+    if not required_role_name:
+        return False
+    if required_role_name.lower() in owned_roles:
+        return False
+    for owned_role_name in owned_roles:
+        try:
+            owned_role_lookup_name = _VOLUNTEER_ROLE_CANONICAL_BY_LOWER.get(owned_role_name, owned_role_name)
+            owned_role_state = RoleManagementService.get_role(owned_role_lookup_name) or {}
+            owned_discord_role_id = int(str(owned_role_state.get("discord_role_id") or "").strip())
+            if required_role_discord_id is not None and owned_discord_role_id == required_role_discord_id:
+                return False
+        except (TypeError, ValueError):
+            continue
+        except Exception as error:  # noqa: BLE001
+            logger.exception(
+                "shop_chain_role_lookup_error role_name=%s owned_role=%s error=%s",
+                role_name,
+                owned_role_name,
+                error,
+            )
+    return True
+
+
+def _volunteer_role_rank(role_meta: dict) -> int | None:
+    try:
+        role_discord_id = int(str(role_meta.get("discord_role_id") or "").strip())
+    except (TypeError, ValueError):
+        return None
+    return _VOLUNTEER_ROLE_RANK_BY_DISCORD_ID.get(role_discord_id)
+
+
+def _highest_owned_volunteer_rank(owned_roles: set[str]) -> int | None:
+    highest_rank: int | None = None
+    for owned_role_name in owned_roles:
+        try:
+            owned_role_lookup_name = _VOLUNTEER_ROLE_CANONICAL_BY_LOWER.get(owned_role_name, owned_role_name)
+            owned_role_state = RoleManagementService.get_role(owned_role_lookup_name) or {}
+            owned_rank = _volunteer_role_rank(owned_role_state)
+            if owned_rank is None:
+                continue
+            if highest_rank is None or owned_rank > highest_rank:
+                highest_rank = owned_rank
+        except Exception as error:  # noqa: BLE001
+            logger.exception(
+                "shop_chain_rank_lookup_error owned_role=%s error=%s",
+                owned_role_name,
+                error,
+            )
+    return highest_rank
+
+
+def get_shop_catalog_items(*, log_context: str = "shop", account_id: str | None = None) -> list[ShopItem]:
     items: list[ShopItem] = []
     shop_rows = RoleManagementService.list_active_shop_role_items(category_code="roles")
     if not shop_rows:
@@ -190,6 +273,15 @@ def get_shop_catalog_items(*, log_context: str = "shop") -> list[ShopItem]:
             if role_name:
                 role_lookup[role_name.lower()] = {"role": role, "category": category_name}
 
+    owned_roles: set[str] = set()
+    account_key = str(account_id or "").strip()
+    if account_key:
+        owned_roles = _load_owned_role_names_for_account(account_key)
+    highest_owned_volunteer_rank = _highest_owned_volunteer_rank(owned_roles) if account_key else None
+
+    hidden_locked_roles = 0
+    hidden_downgraded_roles = 0
+    hidden_owned_roles = 0
     for row in shop_rows:
         role_name = str(row.get("role_name") or "").strip()
         role_meta = role_lookup.get(role_name.lower())
@@ -198,6 +290,41 @@ def get_shop_catalog_items(*, log_context: str = "shop") -> list[ShopItem]:
             continue
         role = role_meta["role"]
         category_name = str(role_meta["category"])
+        if account_key and role_name.lower() in owned_roles:
+            hidden_owned_roles += 1
+            logger.info(
+                "shop_catalog_hidden_owned_role log_context=%s account_id=%s role_name=%s reason=already_owned",
+                log_context,
+                account_key,
+                role_name,
+            )
+            continue
+        role_rank = _volunteer_role_rank(role)
+        if (
+            account_key
+            and role_rank is not None
+            and highest_owned_volunteer_rank is not None
+            and role_rank < highest_owned_volunteer_rank
+        ):
+            hidden_downgraded_roles += 1
+            logger.info(
+                "shop_catalog_hidden_downgraded_role log_context=%s account_id=%s role_name=%s highest_owned_rank=%s role_rank=%s",
+                log_context,
+                account_key,
+                role_name,
+                highest_owned_volunteer_rank,
+                role_rank,
+            )
+            continue
+        if account_key and _is_volunteer_chain_locked(role_name=role_name, role_meta=role, owned_roles=owned_roles):
+            hidden_locked_roles += 1
+            logger.info(
+                "shop_catalog_hidden_locked_role log_context=%s account_id=%s role_name=%s reason=missing_chain_prerequisite",
+                log_context,
+                account_key,
+                role_name,
+            )
+            continue
         effective_price = max(int(row.get("effective_price_points") or 0), 0)
         items.append(
             ShopItem(
@@ -235,6 +362,30 @@ def get_shop_catalog_items(*, log_context: str = "shop") -> list[ShopItem]:
                 is_sale_active=item.is_sale_active,
             )
         )
+    if hidden_locked_roles:
+        logger.info(
+            "shop_catalog_chain_filter_applied log_context=%s account_id=%s hidden_locked_roles=%s visible_items=%s",
+            log_context,
+            account_key or None,
+            hidden_locked_roles,
+            len(indexed_ids),
+        )
+    if hidden_downgraded_roles:
+        logger.info(
+            "shop_catalog_upgrade_filter_applied log_context=%s account_id=%s hidden_downgraded_roles=%s visible_items=%s",
+            log_context,
+            account_key or None,
+            hidden_downgraded_roles,
+            len(indexed_ids),
+        )
+    if hidden_owned_roles:
+        logger.info(
+            "shop_catalog_owned_filter_applied log_context=%s account_id=%s hidden_owned_roles=%s visible_items=%s",
+            log_context,
+            account_key or None,
+            hidden_owned_roles,
+            len(indexed_ids),
+        )
     return indexed_ids
 
 
@@ -245,6 +396,31 @@ def _parse_points(value: object) -> float:
     except (TypeError, ValueError):
         logger.error("shop_points_parse_error value=%s", value)
         return 0.0
+
+
+def _required_previous_volunteer_role(
+    role_name: str,
+    role_state: dict,
+) -> tuple[str | None, int | None]:
+    try:
+        role_discord_id = int(str(role_state.get("discord_role_id") or "").strip())
+    except (TypeError, ValueError):
+        return None, None
+    if role_discord_id not in _VOLUNTEER_ROLE_CHAIN_BY_DISCORD_ID:
+        return None, None
+    role_position = _VOLUNTEER_ROLE_CHAIN_BY_DISCORD_ID.index(role_discord_id)
+    if role_position <= 0:
+        return None, None
+    required_discord_id = _VOLUNTEER_ROLE_CHAIN_BY_DISCORD_ID[role_position - 1]
+    required_name = _VOLUNTEER_ROLE_NAMES_BY_DISCORD_ID.get(required_discord_id)
+    if not required_name:
+        logger.error(
+            "shop_purchase_chain_config_error role_name=%s required_discord_role_id=%s reason=missing_role_name",
+            role_name,
+            required_discord_id,
+        )
+        return None, None
+    return required_name, required_discord_id
 
 
 def purchase_shop_item(
@@ -280,7 +456,7 @@ def purchase_shop_item(
         return ShopPurchaseResult(ok=False, message="❌ Не удалось определить профиль или товар.", reason="invalid_identity")
 
     try:
-        current_items = get_shop_catalog_items(log_context=f"shop:purchase:{provider}")
+        current_items = get_shop_catalog_items(log_context=f"shop:purchase:{provider}", account_id=account_key)
         item = find_shop_item(current_items, item_key)
         if not item:
             logger.warning(
@@ -338,6 +514,46 @@ def purchase_shop_item(
                 item.role_name,
             )
             return ShopPurchaseResult(ok=False, message="ℹ️ Эта роль уже есть у вас.", reason="already_owned", role_name=item.role_name)
+
+        required_role_name, required_role_discord_id = _required_previous_volunteer_role(item.role_name, role_state)
+        if required_role_name:
+            owned_discord_role_ids: set[int] = set()
+            for owned_role_name in owned_roles:
+                try:
+                    owned_role_lookup_name = _VOLUNTEER_ROLE_CANONICAL_BY_LOWER.get(owned_role_name, owned_role_name)
+                    owned_role_state = RoleManagementService.get_role(owned_role_lookup_name) or {}
+                    owned_discord_role_id = int(str(owned_role_state.get("discord_role_id") or "").strip())
+                    owned_discord_role_ids.add(owned_discord_role_id)
+                except (TypeError, ValueError):
+                    continue
+                except Exception as error:  # noqa: BLE001
+                    logger.exception(
+                        "shop_purchase_chain_lookup_error provider=%s actor_user_id=%s account_id=%s owned_role=%s error=%s",
+                        provider,
+                        actor_id,
+                        account_key,
+                        owned_role_name,
+                        error,
+                    )
+            has_required_role = required_role_name.lower() in owned_roles or (
+                required_role_discord_id is not None and required_role_discord_id in owned_discord_role_ids
+            )
+            if not has_required_role:
+                logger.info(
+                    "shop_purchase_reject provider=%s actor_user_id=%s account_id=%s shop_item_id=%s reason=missing_chain_prerequisite role_name=%s required_role=%s",
+                    provider,
+                    actor_id,
+                    account_key,
+                    item_key,
+                    item.role_name,
+                    required_role_name,
+                )
+                return ShopPurchaseResult(
+                    ok=False,
+                    message=SHOP_TEXT_ROLE_CHAIN_REQUIRED.format(target=item.role_name, required=required_role_name),
+                    reason="missing_chain_prerequisite",
+                    role_name=item.role_name,
+                )
 
         profile = AccountsService.get_profile_by_account(account_key) or {}
         current_points = _parse_points(profile.get("points"))
@@ -426,6 +642,42 @@ def purchase_shop_item(
             item.price_points,
             item.is_sale_active,
         )
+        granted_role_rank = _volunteer_role_rank(role_state)
+        if granted_role_rank is not None and granted_role_rank > 0:
+            for lower_rank in range(granted_role_rank):
+                lower_role_id = _VOLUNTEER_ROLE_CHAIN_BY_DISCORD_ID[lower_rank]
+                lower_role_name = _VOLUNTEER_ROLE_NAMES_BY_DISCORD_ID.get(lower_role_id)
+                if not lower_role_name or lower_role_name.lower() == item.role_name.lower():
+                    continue
+                revoke_result = RoleManagementService.revoke_user_role_by_account(
+                    account_key,
+                    lower_role_name,
+                    actor_account_id=account_key,
+                    actor_provider=provider,
+                    actor_user_id=actor_id,
+                    target_provider=provider,
+                    target_user_id=actor_id,
+                    source=f"shop_purchase_upgrade:{provider}",
+                )
+                if bool(revoke_result.get("ok")):
+                    logger.info(
+                        "shop_purchase_upgrade_cleanup provider=%s actor_user_id=%s account_id=%s purchased_role=%s revoked_previous_role=%s",
+                        provider,
+                        actor_id,
+                        account_key,
+                        item.role_name,
+                        lower_role_name,
+                    )
+                else:
+                    logger.warning(
+                        "shop_purchase_upgrade_cleanup_failed provider=%s actor_user_id=%s account_id=%s purchased_role=%s revoke_role=%s revoke_reason=%s",
+                        provider,
+                        actor_id,
+                        account_key,
+                        item.role_name,
+                        lower_role_name,
+                        revoke_result.get("reason"),
+                    )
 
         logger.info(
             "shop_purchase_success provider=%s actor_user_id=%s account_id=%s shop_item_id=%s role_name=%s spent_points=%s",
@@ -479,7 +731,7 @@ def build_shop_render_payload(account_id: str | None) -> ShopRenderPayload:
         if account_id:
             profile = AccountsService.get_profile_by_account(str(account_id)) or {}
             points = str(profile.get("points") or "0").strip() or "0"
-        catalog = get_shop_catalog_items(log_context="shop:/shop")
+        catalog = get_shop_catalog_items(log_context="shop:/shop", account_id=account_id)
         if not catalog:
             logger.warning("shop_empty_catalog provider=shared account_id=%s category=%s", account_id, SHOP_RENDER_CATEGORY)
         return ShopRenderPayload(
