@@ -655,12 +655,6 @@ def _build_bank_balance_embed(*, actor_id: int | None = None) -> discord.Embed:
             else:
                 await interaction.response.send_message("❌ Ошибка выполнения банковой операции.", ephemeral=True)
 
-
-class BankSettingsView(discord.ui.View):
-    def __init__(self, *, owner_id: int):
-        super().__init__(timeout=300)
-        self.owner_id = owner_id
-
 class BankActionModal(discord.ui.Modal):
     def __init__(self, *, actor_id: int, operation: str):
         title = "Пополнение банка" if operation == "add" else "Списание из банка"
