@@ -572,12 +572,10 @@ def _build_bank_balance_embed(*, actor_id: int | None = None) -> discord.Embed:
         title="🏦 Банк клуба",
         color=discord.Color.gold(),
         description=(
-            "Что это: общий баланс клуба для штрафов, компенсаций и служебных операций.\n"
-            "Что делать сейчас: используйте кнопки ниже для настройки банка.\n"
-            "Что будет дальше: после операции баланс и история обновятся."
+            f"Текущий баланс: {total:.2f}\n"
+            "Настройки для суперадминов в лс"
         ),
     )
-    embed.add_field(name="Текущий баланс", value=f"**{total:.2f} баллов**", inline=False)
     if actor_id is not None:
         embed.set_footer(text=f"Запросил: {actor_id}")
     return embed

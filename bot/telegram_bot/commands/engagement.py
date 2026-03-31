@@ -385,9 +385,8 @@ async def bank_command(message: Message) -> None:
             total = await run_blocking_io("telegram.bank.balance.guild", _load_bank_balance, logger=logger)
             await message.answer(
                 "🏦 <b>Банк клуба</b>\n"
-                "Что это: общий баланс клуба для служебных операций.\n"
                 f"Текущий баланс: <b>{total:.2f}</b>\n"
-                "Что делать сейчас: для настройки (добавить/списать/история) откройте /bank в ЛС, если вы суперадмин.",
+                "Настройки для суперадминов в лс",
                 parse_mode=ParseMode.HTML,
             )
             return
@@ -403,10 +402,8 @@ async def bank_command(message: Message) -> None:
         total = await run_blocking_io("telegram.bank.balance.private", _load_bank_balance, logger=logger)
         await message.answer(
             "🏦 <b>Банк клуба</b>\n"
-            "Что это: общий баланс клуба для штрафов, компенсаций и служебных операций.\n"
             f"Текущий баланс: <b>{total:.2f}</b>\n"
-            "Что делать сейчас: нажмите «⚙️ Настройка банка» и выберите действие.\n"
-            "Что будет дальше: после операции баланс и история обновятся автоматически.",
+            "Настройки для суперадминов в лс",
             parse_mode=ParseMode.HTML,
             reply_markup=_build_bank_root_keyboard(int(actor_id), allow_settings=True),
         )
@@ -815,10 +812,8 @@ async def bank_callback(callback: CallbackQuery) -> None:
             if callback.message:
                 await callback.message.edit_text(
                     "🏦 <b>Банк клуба</b>\n"
-                    "Что это: общий баланс клуба для штрафов, компенсаций и служебных операций.\n"
                     f"Текущий баланс: <b>{total:.2f}</b>\n"
-                    "Что делать сейчас: нажмите «⚙️ Настройка банка» и выберите действие.\n"
-                    "Что будет дальше: после операции баланс и история обновятся автоматически.",
+                    "Настройки для суперадминов в лс",
                     parse_mode=ParseMode.HTML,
                     reply_markup=_build_bank_root_keyboard(int(actor_id), allow_settings=True),
                 )
