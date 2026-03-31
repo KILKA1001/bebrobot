@@ -12,7 +12,6 @@ import discord
 from bot.commands.base import bot
 from bot.services import AccountsService
 from bot.services.guiy_admin_service import (
-    GUIY_OWNER_DENIED_MESSAGE,
     GUIY_OWNER_REPLY_REQUIRED_MESSAGE,
     GUIY_OWNER_USAGE_TEXT,
     parse_guiy_owner_profile_payload,

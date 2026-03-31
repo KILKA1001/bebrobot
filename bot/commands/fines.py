@@ -6,11 +6,9 @@
 """
 
 import discord
-from discord.ext import commands
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from bot.commands.base import bot
 from bot.utils import send_temp, safe_send, format_moscow_date
 import os
 import logging

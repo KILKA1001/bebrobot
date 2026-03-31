@@ -70,8 +70,6 @@ from bot.telegram_bot.main import (
     run_polling as run_telegram_polling,
 )
 from bot.utils.discord_http import (
-    extract_retry_after_seconds,
-    is_cloudflare_rate_limited_http_exception,
     is_transient_rate_limit_error,
     log_discord_http_exception,
 )
