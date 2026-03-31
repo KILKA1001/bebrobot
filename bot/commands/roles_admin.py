@@ -157,9 +157,8 @@ def _delete_role_result_message(result: dict[str, Any]) -> str:
 
 def _render_command_alias_note() -> str:
     return (
-        "Паритет названий: в Discord команда называется <code>/rolesadmin</code>, а в Telegram — <code>/roles_admin</code>. "
-        "В Telegram дополнительно поддерживается текстовый alias <code>/rolesadmin</code>, чтобы не было ложных ожиданий при переключении между платформами. "
-        "Команда <code>sync_discord_roles</code> сейчас запускается только из Discord.\n\n"
+        "Паритет названий: в Discord команда <code>/rolesadmin</code>, в Telegram — <code>/roles_admin</code> (alias <code>/rolesadmin</code>). "
+        "Дальше в обеих панелях используйте кнопки.\n\n"
     )
 
 

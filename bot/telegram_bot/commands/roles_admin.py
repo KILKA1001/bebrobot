@@ -657,7 +657,6 @@ def _build_home_keyboard(
             [InlineKeyboardButton(text="🪪 Роли", callback_data=f"roles_admin:{actor_id}:actions:roles")],
             [InlineKeyboardButton(text="👥 Пользователи", callback_data=f"roles_admin:{actor_id}:actions:users")],
             [InlineKeyboardButton(text="📋 Категории и роли", callback_data=f"roles_admin:{actor_id}:list:0")],
-            [InlineKeyboardButton(text="🆘 Не работают кнопки?", callback_data=f"roles_admin:{actor_id}:fallback")],
             [InlineKeyboardButton(text="ℹ️ Что делает каждая функция", callback_data=f"roles_admin:{actor_id}:help")],
             [InlineKeyboardButton(text="🔄 Обновить", callback_data=f"roles_admin:{actor_id}:home")],
         ]
@@ -1420,58 +1419,32 @@ def _render_home_text(*, hidden_sections: tuple[str, ...] = tuple()) -> str:
     return (
         "🛠 <b>Панель управления ролями</b>\n\n"
         f"{_render_hidden_sections_note(hidden_sections)}"
-        "Все обновления идут в <b>одном сообщении</b> через кнопки.\n"
-        "Главный экран разделён на <b>Категории</b>, <b>Роли</b> и <b>Пользователи</b>.\n\n"
-        "<b>С чего начать: 2 подхода</b>\n"
-        "<b>Подход 1 — настрой каталог:</b> создай категорию, затем роль и сразу заполни описание с полем «как получить».\n"
-        "<b>Подход 2 — работай с пользователем:</b> после настройки каталога выдай или сними роль у человека.\n\n"
-        "<b>Короткие примеры</b>\n"
-        "• Новая роль: Категории → создать категорию → Роли → создать роль.\n"
-        "• Изменить порядок: Роли → move/order → выбрать позицию.\n"
-        "• Работа с пользователем: Пользователи → найти человека → выдать/снять роль.\n\n"
-        "Если кнопки не срабатывают, открой <b>🆘 Не работают кнопки?</b> — там короткие резервные команды.\n"
-        "Подробности по каждому действию есть в <b>ℹ️ Что делает каждая функция</b>.\n"
-        "Как указывать пользователя: в ЛС — <code>@username</code> / <code>username</code>, в группе — reply, для Discord — <code>ds:username</code>. ID нужен только как резерв.\n\n"
-        f"{_role_catalog_note()}"
+        "Единый сценарий: <b>одна команда → кнопки → результат</b>.\n"
+        "1) Открой «Категории», если нужно подготовить структуру.\n"
+        "2) Открой «Роли», чтобы создать или изменить роль.\n"
+        "3) Открой «Пользователи», чтобы выдать или снять роль.\n\n"
+        "Если сообщение устарело, нажми «🔄 Обновить».\n"
+        "Подробности по шагам есть в «ℹ️ Что делает каждая функция»."
     )
 
 
 
 def _render_command_alias_note() -> str:
     return (
-        "<b>Паритет команд:</b> в Telegram основная команда — <code>/roles_admin</code>, но текстовый alias <code>/rolesadmin</code> тоже поддерживается для паритета с Discord. "
-        "Команда <code>sync_discord_roles</code> сейчас запускается только в Discord через <code>/rolesadmin sync_discord_roles</code>, поэтому в Telegram интерфейсе она упоминается как внешний шаг, а не как локальная кнопка.\n\n"
+        "<b>Паритет команд:</b> Telegram — <code>/roles_admin</code> (alias <code>/rolesadmin</code>), Discord — <code>/rolesadmin</code>. "
+        "На обеих платформах вход одинаковый: открой команду и работай кнопками.\n\n"
     )
 
 
 def _render_fallback_text() -> str:
     return (
         "🆘 <b>Не работают кнопки?</b>\n\n"
-        "Если Telegram-кнопки не срабатывают, отправляй команду одной строкой после <code>/roles_admin</code> или <code>/rolesadmin</code>. "
-        "Для длинного описания используй разделитель <code>|</code>.\n\n"
-        f"{_render_command_alias_note()}"
-        "<b>С чего начать: 2 подхода</b>\n"
-        "<b>Подход 1 — настрой каталог</b>\n"
-        "1. <code>/roles_admin category_create &lt;name&gt; [position]</code>\n"
-        "2. <code>/roles_admin role_create &lt;category&gt; | &lt;name&gt; | &lt;description&gt; | [&lt;как получить&gt;] | [discord_role_id] | [sellable|not_sellable] | [position]</code>\n"
-        "3. При необходимости: <code>/roles_admin role_edit_description ...</code> и <code>/roles_admin role_edit_acquire_hint ...</code>\n"
-        "<b>Подход 2 — работай с пользователем</b>\n"
-        "4. Для выдачи: <code>/roles_admin user_grant &lt;@username|ds:username&gt; &lt;role_name&gt;</code>\n"
-        "5. Для снятия: <code>/roles_admin user_revoke &lt;@username|ds:username&gt; &lt;role_name&gt;</code>\n\n"
-        "<b>Ещё команды</b>\n"
-        "<code>/roles_admin category_order &lt;name&gt; &lt;position&gt;</code>\n"
-        "<code>/roles_admin category_delete &lt;name&gt;</code>\n"
-        "<code>/roles_admin role_move &lt;name&gt; &lt;category&gt; [position]</code>\n"
-        "<code>/roles_admin role_order &lt;role_name&gt; &lt;category&gt; &lt;position&gt;</code>\n"
-        "<code>/roles_admin role_delete &lt;name&gt;</code>\n"
-        "<code>/roles_admin user_roles [reply|@username|username|tg:@username|ds:username|id]</code>\n\n"
-        "<b>Пошаговые примеры</b>\n"
-        "• Создать роль: сначала категория, потом роль, описание и способ получения.\n"
-        "• Переместить роль: укажи роль, категорию и позицию; без <code>position</code> роль будет добавлена последней.\n"
-        "• Найти пользователя: в ЛС — @username / username, в группе — reply, для Discord — mention / username / display_name или <code>ds:username</code>.\n"
-        "• Если найдено несколько совпадений, бот покажет кандидатов и попросит уточнение.\n"
-        "• Внешние Discord-роли не удаляются из каталога: их можно только перемещать и сортировать.\n\n"
-        f"{_role_catalog_note()}"
+        "Подкоманды отключены.\n"
+        "Открой /roles_admin и используй кнопки.\n\n"
+        "Если кнопка не отвечает:\n"
+        "• Нажми «🔄 Обновить».\n"
+        "• Отправь /roles_admin ещё раз.\n"
+        "• Если проблема осталась — передай администратору время и скрин этого экрана."
     )
 
 
@@ -1481,36 +1454,14 @@ def _render_fallback_text() -> str:
 def _render_help_text() -> str:
     return (
         "ℹ️ <b>Что делает /roles_admin</b>\n\n"
-        f"{_render_command_alias_note()}"
-        "<b>С чего начать: 2 подхода</b>\n"
-        "<b>Подход 1 — настрой каталог</b>\n"
-        "1. <code>category_create &lt;name&gt; [position]</code> — создай или обнови категорию (<b>только Глава клуба/Главный вице</b>).\n"
-        "2. <code>role_create &lt;category&gt; | &lt;name&gt; | &lt;description&gt; | [&lt;как получить&gt;] | [discord_role_id] | [sellable|not_sellable] | [position]</code> — создай роль внутри категории.\n"
-        "3. <code>role_edit_description</code> и <code>role_edit_acquire_hint</code> — дополни описание роли и способ получения, если нужно изменить их позже.\n"
-        "<b>Подход 2 — работай с пользователем</b>\n"
-        "4. <code>user_grant</code> / <code>user_revoke</code> — выдай или сними роль у пользователя.\n\n"
-        "<b>Категории</b>\n"
-        "• <code>category_create &lt;name&gt; [position]</code> — создать/обновить категорию.\n"
-        "• <code>category_order &lt;name&gt; &lt;position&gt;</code> — выставить порядок категории.\n"
-        "• <code>category_delete &lt;name&gt;</code> — удалить категорию (роли уйдут в 'Без категории').\n\n"
-        "<b>Роли</b>\n"
-        "• <code>role_create ...</code> — сначала категория, затем название роли, описание, способ получения и опциональные параметры.\n"
-        "• <code>role_edit_description &lt;name&gt; | &lt;description&gt;</code> — обновить описание роли.\n"
-        "• <code>role_edit_acquire_hint &lt;name&gt; | &lt;как получить&gt;</code> — обновить инструкцию, как получить роль.\n"
-        "• <code>role_move &lt;name&gt; &lt;category&gt; [position]</code> — переместить роль в другую категорию.\n"
-        "• <code>role_order &lt;role_name&gt; &lt;category&gt; &lt;position&gt;</code> — выставить очередь роли в категории.\n"
-        "• <code>role_delete &lt;name&gt;</code> — удалить роль из каталога; внешние Discord-роли можно только move/order.\n"
-        "• После выбора категории бот показывает подсказку по оставшимся полям; для move/order он ещё показывает текущий список ролей и выбор позиции.\n"
-        "• Если позицию не указывать в <code>role_create</code> или <code>role_move</code>, роль будет добавлена последней.\n"
-        "• Описание роли и блок «как получить» видны пользователям прямо в карточках и списках.\n\n"
-        "<b>Роли пользователей</b>\n"
-        "• <code>user_roles [reply|@username|username|tg:@username|ds:username|id]</code> — показать роли пользователя.\n"
-        "• <code>user_grant &lt;@username|ds:username&gt; &lt;role_name&gt;</code> — выдать роль в БД.\n"
-        "• <code>user_revoke &lt;@username|ds:username&gt; &lt;role_name&gt;</code> — снять роль в БД.\n"
-        "• Кнопочная панель выдачи/снятия ролей поддерживает пакетный выбор: можно заходить в разные категории, отмечать несколько ролей и подтверждать всё одной кнопкой.\n"
-        "• Порядок ввода одинаковый: Telegram ЛС — <code>@username</code> / <code>username</code>, Telegram группа — reply, Discord — mention / username / display_name.\n"
-        "• Если нужен Discord fallback, укажи <code>ds:username</code>; для Telegram можно явно написать <code>tg:@username</code>; ID оставь как резерв.\n"
-        "• Если найдено несколько совпадений, бот покажет кандидатов и попросит уточнение.\n\n"
+        "Это экран админа ролей.\n"
+        "Главное правило: используйте кнопки внутри панели.\n\n"
+        "<b>Порядок работы</b>\n"
+        "1) Категории → подготовить структуру.\n"
+        "2) Роли → создать или изменить роль.\n"
+        "3) Пользователи → выдать или снять роль.\n\n"
+        "Подкоманды в сообщении больше не используются.\n"
+        "Если что-то пошло не так, нажмите «🔄 Обновить» и снова откройте /roles_admin.\n\n"
         "<b>Кнопки в панели</b>\n"
         "• 'Категории и роли' — просмотр списка и переход по категориям.\n"
         "• Внутри категории доступны кнопки удаления категории/ролей.\n"
