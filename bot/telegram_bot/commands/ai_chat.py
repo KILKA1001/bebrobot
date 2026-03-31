@@ -250,6 +250,14 @@ async def handle_guiy_chat(message: Message) -> None:
         return
 
     sender_id = message.from_user.id if message.from_user else None
+    logger.info(
+        "telegram ai text update received chat_id=%s user_id=%s message_id=%s has_text=%s has_media=%s",
+        message.chat.id,
+        sender_id,
+        message.message_id,
+        bool(text),
+        bool(media_inputs),
+    )
     if has_pending_action(sender_id) or has_pending_profile_edit(sender_id):
         logger.info(
             "telegram ai skipped due to active command flow chat_id=%s user_id=%s",

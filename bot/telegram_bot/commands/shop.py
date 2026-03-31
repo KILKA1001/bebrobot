@@ -41,6 +41,25 @@ class PendingShopAdminAction:
 
 _SHOP_ADMIN_PENDING_ACTIONS: dict[int, PendingShopAdminAction] = {}
 
+
+def has_pending_shop_admin_action(telegram_user_id: int | None) -> bool:
+    if telegram_user_id is None:
+        return False
+    pending = _SHOP_ADMIN_PENDING_ACTIONS.get(telegram_user_id)
+    if not pending:
+        return False
+    if (time.time() - pending.created_at) > _SHOP_ADMIN_PENDING_TTL_SECONDS:
+        _SHOP_ADMIN_PENDING_ACTIONS.pop(telegram_user_id, None)
+        logger.info(
+            "shop_admin_pending_state_expired provider=telegram actor_user_id=%s action=%s role_name=%s ttl_seconds=%s",
+            telegram_user_id,
+            pending.action,
+            pending.role_name,
+            _SHOP_ADMIN_PENDING_TTL_SECONDS,
+        )
+        return False
+    return True
+
 SHOP_OPEN_PROMPT_TEXT = "Откройте магазин в личных сообщениях, я уже отправил вам инструкцию."
 DM_FALLBACK_TEXT = (
     "❌ Не удалось отправить инструкцию в личные сообщения.\n"
@@ -755,20 +774,17 @@ async def shop_callback(callback: CallbackQuery) -> None:
     await callback.answer("Неизвестное действие, обновите страницу.", show_alert=True)
 
 
-@router.message(F.from_user, F.text)
+@router.message(F.from_user, F.text, F.from_user.id.func(has_pending_shop_admin_action))
 async def shop_admin_pending_input(message: Message) -> None:
     if message.from_user is None:
         return
     pending = _SHOP_ADMIN_PENDING_ACTIONS.get(message.from_user.id)
     if pending is None:
+        logger.info("shop_admin_pending_handler_invoked_without_state provider=telegram actor_user_id=%s", message.from_user.id)
         return
     if not _shop_is_superadmin(message.from_user.id):
         _SHOP_ADMIN_PENDING_ACTIONS.pop(message.from_user.id, None)
         logger.warning("shop_admin_pending_denied provider=telegram actor_user_id=%s", message.from_user.id)
-        return
-    if (time.time() - pending.created_at) > _SHOP_ADMIN_PENDING_TTL_SECONDS:
-        _SHOP_ADMIN_PENDING_ACTIONS.pop(message.from_user.id, None)
-        await message.answer("⌛ Сессия настройки магазина истекла. Откройте /shop заново.")
         return
 
     text = str(message.text or "").strip()
