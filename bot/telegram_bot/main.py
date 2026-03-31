@@ -1,4 +1,8 @@
-"""Telegram runtime module, called from unified launcher in `bot/main.py`."""
+"""
+Назначение: модуль "main" реализует продуктовый контур в зоне Telegram.
+Ответственность: единая точка для сценариев и правил модуля без дублирования логики между платформами.
+Где используется: Telegram.
+"""
 
 import asyncio
 import contextlib

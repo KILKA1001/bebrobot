@@ -1,4 +1,8 @@
-"""Utility functions for points formatting."""
+"""
+Назначение: модуль "points" реализует продуктовый контур в зоне общая логика.
+Ответственность: единая точка для сценариев и правил модуля без дублирования логики между платформами.
+Где используется: общая логика.
+"""
 
 def format_points(points: float) -> str:
     """Return a human-friendly representation of points.

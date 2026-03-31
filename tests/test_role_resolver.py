@@ -1,3 +1,9 @@
+"""
+Назначение: модуль "test role resolver" реализует продуктовый контур в зоне Discord/Telegram/общая логика (тесты).
+Ответственность: единая точка для сценариев и правил модуля без дублирования логики между платформами.
+Где используется: Discord/Telegram/общая логика (тесты).
+"""
+
 from datetime import datetime, timedelta, timezone
 import unittest
 from unittest.mock import patch

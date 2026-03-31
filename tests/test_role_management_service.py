@@ -1,3 +1,9 @@
+"""
+Назначение: модуль "test role management service" реализует продуктовый контур в зоне Discord/Telegram/общая логика (тесты).
+Ответственность: единая точка для сценариев и правил модуля без дублирования логики между платформами.
+Где используется: Discord/Telegram/общая логика (тесты).
+"""
+
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace

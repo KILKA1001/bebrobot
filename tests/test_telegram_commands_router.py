@@ -1,3 +1,9 @@
+"""
+Назначение: модуль "test telegram commands router" реализует продуктовый контур в зоне Discord/Telegram/общая логика (тесты).
+Ответственность: единая точка для сценариев и правил модуля без дублирования логики между платформами.
+Где используется: Discord/Telegram/общая логика (тесты).
+"""
+
 from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, patch

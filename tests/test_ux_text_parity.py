@@ -1,3 +1,9 @@
+"""
+Назначение: модуль "test ux text parity" реализует продуктовый контур в зоне Discord/Telegram/общая логика (тесты).
+Ответственность: единая точка для сценариев и правил модуля без дублирования логики между платформами.
+Где используется: Discord/Telegram/общая логика (тесты).
+"""
+
 from pathlib import Path
 
 from bot.services import shop_service

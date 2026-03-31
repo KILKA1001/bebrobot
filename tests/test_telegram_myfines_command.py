@@ -1,3 +1,9 @@
+"""
+Назначение: модуль "test telegram myfines command" реализует продуктовый контур в зоне Discord/Telegram/общая логика (тесты).
+Ответственность: единая точка для сценариев и правил модуля без дублирования логики между платформами.
+Где используется: Discord/Telegram/общая логика (тесты).
+"""
+
 from bot.telegram_bot.commands.fines import _format_fine_line, _pay_keyboard
 
 

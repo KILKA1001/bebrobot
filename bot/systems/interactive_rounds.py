@@ -1,3 +1,9 @@
+"""
+Назначение: модуль "interactive rounds" реализует продуктовый контур в зоне общая логика.
+Ответственность: единая точка для сценариев и правил модуля без дублирования логики между платформами.
+Где используется: общая логика.
+"""
+
 import discord
 from discord import Embed, Interaction, ButtonStyle, ui
 from discord.ui import Button

@@ -1,3 +1,9 @@
+"""
+Назначение: модуль "link handler" реализует продуктовый контур в зоне Telegram.
+Ответственность: единая точка для сценариев и правил модуля без дублирования логики между платформами.
+Где используется: Telegram.
+"""
+
 from bot.systems.linking_logic import consume_telegram_link_code
 
 

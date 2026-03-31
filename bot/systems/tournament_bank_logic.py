@@ -1,4 +1,10 @@
-﻿from bot.data.tournament_db import set_bank_type
+"""
+Назначение: модуль "tournament bank logic" реализует продуктовый контур в зоне общая логика.
+Ответственность: единая точка для сценариев и правил модуля без дублирования логики между платформами.
+Где используется: общая логика.
+"""
+
+from bot.data.tournament_db import set_bank_type
 from typing import Literal
 
 BankType = Literal[1, 2, 3, 4]
