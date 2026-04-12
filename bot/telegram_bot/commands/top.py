@@ -11,10 +11,10 @@ import logging
 
 from aiogram import F, Router
 from aiogram.filters import Command
+from aiogram.enums import ParseMode
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.services import AccountsService, PointsService
-from bot.services.ux_texts import compose_three_block_message
 from bot.telegram_bot.identity import persist_telegram_identity_from_user
 from bot.utils import format_points
 
@@ -83,11 +83,10 @@ def _render_top_text(*, period: str, page: int) -> tuple[str, InlineKeyboardMark
     page_entries = entries[start : start + _PAGE_SIZE]
     period_label = _PERIOD_LABELS.get(safe_period, _PERIOD_LABELS[PointsService.LEADERBOARD_PERIOD_ALL])
 
-    header = compose_three_block_message(
-        what="это общий рейтинг участников по баллам.",
-        now="выберите период кнопками и при необходимости перелистните страницы.",
-        next_step="после переключения периода список обновится автоматически.",
-        emoji="🏆",
+    header = (
+        "🏆 <b>Топ участников</b>\n"
+        "Смотрите, кто сейчас впереди по количеству баллов.\n"
+        "Период можно переключать кнопками ниже."
     )
 
     lines = [f"<b>Период:</b> {period_label}", f"<b>Страница:</b> {safe_page + 1}/{total_pages}", ""]
@@ -111,14 +110,15 @@ async def top_command(message: Message) -> None:
     period = PointsService.LEADERBOARD_PERIOD_ALL
     try:
         text, keyboard = _render_top_text(period=period, page=0)
-        await message.answer(text, reply_markup=keyboard)
+        await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
     except Exception:
         logger.exception(
-            "telegram top command failed platform=%s actor_id=%s chat_id=%s mode=%s",
+            "telegram top command failed platform=%s actor_id=%s chat_id=%s period=%s page=%s",
             "telegram",
             actor_id,
             chat_id,
             period,
+            0,
         )
         await message.answer("❌ Не удалось открыть рейтинг. Подробности записаны в консоль.")
 
@@ -149,14 +149,15 @@ async def top_callback(callback: CallbackQuery) -> None:
     try:
         page = int(page_raw)
         text, keyboard = _render_top_text(period=mode, page=page)
-        await callback.message.edit_text(text=text, reply_markup=keyboard)
+        await callback.message.edit_text(text=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
         await callback.answer()
     except Exception:
         logger.exception(
-            "telegram top callback failed platform=%s actor_id=%s chat_id=%s mode=%s",
+            "telegram top callback failed platform=%s actor_id=%s chat_id=%s period=%s page=%s",
             "telegram",
             actor_id,
             chat_id,
             mode,
+            page_raw,
         )
         await callback.answer("Не удалось обновить рейтинг. Подробности в консоли.", show_alert=True)
