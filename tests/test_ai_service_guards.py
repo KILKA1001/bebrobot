@@ -45,6 +45,8 @@ class GuiyAIGuardsTests(unittest.TestCase):
     def setUp(self):
         ai_service._DIALOG_ACTIVE_USERS.clear()
         ai_service._DIALOG_MEMORY.clear()
+        ai_service._AI_COOLDOWN_UNTIL.clear()
+        ai_service._AI_HARD_QUOTA_UNTIL.clear()
 
     def tearDown(self):
         asyncio.run(close_shared_http_session())
@@ -198,6 +200,7 @@ class GuiyAIGuardsTests(unittest.TestCase):
             photo=None,
             document=None,
             chat=SimpleNamespace(id=77, type="private"),
+            message_id=1,
             from_user=SimpleNamespace(id=42),
             reply_to_message=None,
             bot=SimpleNamespace(get_me=AsyncMock(return_value=SimpleNamespace(id=999, username="GuiyBot"))),
@@ -228,6 +231,7 @@ class GuiyAIGuardsTests(unittest.TestCase):
             photo=None,
             document=None,
             chat=SimpleNamespace(id=-100, type="supergroup"),
+            message_id=1,
             from_user=SimpleNamespace(id=42),
             reply_to_message=None,
             bot=SimpleNamespace(get_me=AsyncMock(return_value=SimpleNamespace(id=999, username="GuiyBot"))),
@@ -258,6 +262,7 @@ class GuiyAIGuardsTests(unittest.TestCase):
             photo=None,
             document=None,
             chat=SimpleNamespace(id=77, type="private"),
+            message_id=1,
             from_user=SimpleNamespace(id=42),
             reply_to_message=None,
             bot=SimpleNamespace(get_me=AsyncMock(return_value=SimpleNamespace(id=999, username="GuiyBot"))),
@@ -289,6 +294,7 @@ class GuiyAIGuardsTests(unittest.TestCase):
             photo=None,
             document=None,
             chat=SimpleNamespace(id=-100, type="supergroup"),
+            message_id=1,
             from_user=SimpleNamespace(id=42),
             reply_to_message=None,
             bot=SimpleNamespace(get_me=failing_get_me),
@@ -722,27 +728,28 @@ class GuiyAIGuardsTests(unittest.TestCase):
 
 
     def test_set_ai_cooldown_caps_soft_quota(self):
-        old = ai_service._AI_COOLDOWN_UNTIL
         now = ai_service.time.time()
-        try:
-            ai_service._AI_COOLDOWN_UNTIL = 0
-            ai_service._set_ai_cooldown(3600, hard_quota=False)
-            delta = int(ai_service._AI_COOLDOWN_UNTIL - now)
-            self.assertLessEqual(delta, 91)
-        finally:
-            ai_service._AI_COOLDOWN_UNTIL = old
+        ai_service._set_ai_cooldown(
+            3600,
+            provider="telegram",
+            conversation_id="chat-1",
+            hard_quota=False,
+        )
+        delta = int(ai_service._AI_COOLDOWN_UNTIL["telegram:chat-1"] - now)
+        self.assertLessEqual(delta, 91)
 
     def test_set_ai_cooldown_caps_hard_quota(self):
-        old = ai_service._AI_COOLDOWN_UNTIL
         now = ai_service.time.time()
-        try:
-            ai_service._AI_COOLDOWN_UNTIL = 0
-            ai_service._set_ai_cooldown(7200, hard_quota=True)
-            delta = int(ai_service._AI_COOLDOWN_UNTIL - now)
-            self.assertLessEqual(delta, 901)
-            self.assertGreaterEqual(delta, 10)
-        finally:
-            ai_service._AI_COOLDOWN_UNTIL = old
+        ai_service._set_ai_cooldown(
+            7200,
+            provider="telegram",
+            conversation_id="chat-1",
+            hard_quota=True,
+        )
+        delta = int(ai_service._AI_COOLDOWN_UNTIL["telegram:chat-1"] - now)
+        self.assertLessEqual(delta, 901)
+        self.assertGreaterEqual(delta, 10)
+        self.assertIn("telegram:chat-1", ai_service._AI_HARD_QUOTA_UNTIL)
 
     @patch.dict("os.environ", {"GROQ_API_KEY": "x", "GROQ_MODELS": "moonshotai/kimi-k2-instruct-0905,llama-3.3-70b-versatile"}, clear=True)
     @patch(
@@ -755,24 +762,20 @@ class GuiyAIGuardsTests(unittest.TestCase):
         ),
     )
     def test_generate_once_temporary_upstream_429_does_not_enable_cooldown(self, mock_request):
-        old = ai_service._AI_COOLDOWN_UNTIL
-        try:
-            ai_service._AI_COOLDOWN_UNTIL = 0
-
-            reply, status = asyncio.run(
-                ai_service._generate_once(
-                    "x",
-                    "moonshotai/kimi-k2-instruct-0905",
-                    "sys",
-                    "user",
-                )
+        reply, status = asyncio.run(
+            ai_service._generate_once(
+                "x",
+                "moonshotai/kimi-k2-instruct-0905",
+                "sys",
+                "user",
+                provider="telegram",
+                conversation_id="chat-1",
             )
-            self.assertIsNone(reply)
-            self.assertEqual(status, 429)
-            self.assertEqual(ai_service._AI_COOLDOWN_UNTIL, 0)
-            mock_request.assert_awaited_once()
-        finally:
-            ai_service._AI_COOLDOWN_UNTIL = old
+        )
+        self.assertIsNone(reply)
+        self.assertEqual(status, 429)
+        self.assertEqual(ai_service._AI_COOLDOWN_UNTIL, {})
+        mock_request.assert_awaited_once()
 
     @patch("bot.services.ai_service.aiohttp.ClientSession")
     def test_init_shared_http_session_reuses_existing_session(self, mock_session_cls):
@@ -801,31 +804,58 @@ class GuiyAIGuardsTests(unittest.TestCase):
     @patch.dict("os.environ", {"GROQ_API_KEY": "x"}, clear=True)
     @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=(None, None))
     def test_generate_reply_reports_quota_cooldown(self, mock_generate):
-        old = ai_service._AI_COOLDOWN_UNTIL
-        old_hard = ai_service._AI_HARD_QUOTA_UNTIL
-        try:
-            ai_service._AI_COOLDOWN_UNTIL = 9999999999
-            reply = asyncio.run(generate_guiy_reply("Гуй, ты тут?"))
-            self.assertEqual(reply, "Я очень устал, не мешай мне спать.")
-            mock_generate.assert_not_called()
-        finally:
-            ai_service._AI_COOLDOWN_UNTIL = old
-            ai_service._AI_HARD_QUOTA_UNTIL = old_hard
+        ai_service._AI_COOLDOWN_UNTIL["unknown:platform"] = 9999999999
+        reply = asyncio.run(generate_guiy_reply("Гуй, ты тут?"))
+        self.assertEqual(reply, "Я очень устал, не мешай мне спать.")
+        mock_generate.assert_not_called()
 
     @patch.dict("os.environ", {"GROQ_API_KEY": "x"}, clear=True)
     @patch("bot.services.ai_service._generate_with_model_fallback", new_callable=AsyncMock, return_value=(None, None))
     def test_generate_reply_reports_hard_quota_cooldown(self, mock_generate):
-        old = ai_service._AI_COOLDOWN_UNTIL
-        old_hard = ai_service._AI_HARD_QUOTA_UNTIL
-        try:
-            ai_service._AI_COOLDOWN_UNTIL = 9999999999
-            ai_service._AI_HARD_QUOTA_UNTIL = 9999999999
-            reply = asyncio.run(generate_guiy_reply("Гуй, ты тут?"))
-            self.assertEqual(reply, "Я очень устал, не мешай мне спать.")
-            mock_generate.assert_not_called()
-        finally:
-            ai_service._AI_COOLDOWN_UNTIL = old
-            ai_service._AI_HARD_QUOTA_UNTIL = old_hard
+        ai_service._AI_COOLDOWN_UNTIL["unknown:platform"] = 9999999999
+        ai_service._AI_HARD_QUOTA_UNTIL["unknown:platform"] = 9999999999
+        reply = asyncio.run(generate_guiy_reply("Гуй, ты тут?"))
+        self.assertEqual(reply, "Я очень устал, не мешай мне спать.")
+        mock_generate.assert_not_called()
+
+    @patch.dict("os.environ", {"GROQ_API_KEY": "x"}, clear=True)
+    @patch("bot.services.ai_service.asyncio.sleep", new_callable=AsyncMock)
+    @patch("bot.services.ai_service.random.uniform", return_value=3.4)
+    @patch(
+        "bot.services.ai_service._generate_with_model_fallback",
+        new_callable=AsyncMock,
+        return_value=("Ответ без блокировки", "moonshotai/kimi-k2-instruct-0905"),
+    )
+    def test_conversation_cooldown_isolated_between_telegram_and_discord(
+        self,
+        mock_generate,
+        _mock_uniform,
+        _mock_sleep,
+    ):
+        ai_service._set_ai_cooldown(
+            120,
+            provider="telegram",
+            conversation_id="tg-chat-1",
+            user_id="100",
+            hard_quota=False,
+        )
+
+        reply = asyncio.run(
+            generate_guiy_reply(
+                "Гуй, ты тут?",
+                provider="discord",
+                conversation_id="dc-channel-1",
+                user_id="200",
+            )
+        )
+
+        self.assertEqual(reply, "Ответ без блокировки")
+        mock_generate.assert_awaited_once()
+
+    def test_cooldown_scope_key_falls_back_to_platform_when_conversation_missing(self):
+        key, scope_kind = ai_service._resolve_cooldown_scope("telegram", None)
+        self.assertEqual(key, "telegram:platform")
+        self.assertEqual(scope_kind, "platform")
 
     @patch.dict("os.environ", {"GROQ_API_KEY": "x"}, clear=True)
     @patch("bot.services.ai_service.asyncio.sleep", new_callable=AsyncMock)

@@ -51,9 +51,11 @@ AI_HTTP_MAX_RETRIES = max(0, int(os.getenv("AI_HTTP_MAX_RETRIES", "2")))
 AI_HTTP_RETRY_BASE_DELAY_SECONDS = max(0.1, float(os.getenv("AI_HTTP_RETRY_BASE_DELAY_SEC", "1.5")))
 DEFAULT_GROQ_OPENAI_BASE_URL = "https://api.groq.com/openai/v1"
 
-# Global backoff guard for quota/rate-limit errors.
-_AI_COOLDOWN_UNTIL = 0.0
-_AI_HARD_QUOTA_UNTIL = 0.0
+# Scoped backoff guard for quota/rate-limit errors.
+# Key format: "{provider}:{conversation_id}".
+# When conversation context is missing, fallback uses provider-level scope.
+_AI_COOLDOWN_UNTIL: dict[str, float] = {}
+_AI_HARD_QUOTA_UNTIL: dict[str, float] = {}
 _AI_HTTP_SESSION: aiohttp.ClientSession | None = None
 _AI_HTTP_SESSION_LOCK = asyncio.Lock()
 
@@ -971,30 +973,99 @@ def _is_temporary_upstream_rate_limited(body: str) -> bool:
     )
 
 
-def _set_ai_cooldown(seconds: int, *, hard_quota: bool = False) -> None:
-    global _AI_COOLDOWN_UNTIL, _AI_HARD_QUOTA_UNTIL
+def _resolve_cooldown_scope(provider: str | None, conversation_id: str | int | None) -> tuple[str, str]:
+    provider_part = (provider or "unknown").strip().lower() or "unknown"
+    if conversation_id is None:
+        return f"{provider_part}:platform", "platform"
+
+    conversation_part = str(conversation_id).strip()
+    if not conversation_part:
+        return f"{provider_part}:platform", "platform"
+
+    return f"{provider_part}:{conversation_part}", "conversation"
+
+
+def _set_ai_cooldown(
+    seconds: int,
+    *,
+    provider: str | None,
+    conversation_id: str | int | None,
+    user_id: str | int | None = None,
+    hard_quota: bool = False,
+) -> None:
     max_window = 900 if hard_quota else 90
     bounded = max(10, min(seconds, max_window))
     until = time.time() + bounded
-    _AI_COOLDOWN_UNTIL = max(_AI_COOLDOWN_UNTIL, until)
+    cooldown_scope, cooldown_scope_kind = _resolve_cooldown_scope(provider, conversation_id)
+    _AI_COOLDOWN_UNTIL[cooldown_scope] = max(_AI_COOLDOWN_UNTIL.get(cooldown_scope, 0.0), until)
     if hard_quota:
-        _AI_HARD_QUOTA_UNTIL = max(_AI_HARD_QUOTA_UNTIL, until)
+        _AI_HARD_QUOTA_UNTIL[cooldown_scope] = max(_AI_HARD_QUOTA_UNTIL.get(cooldown_scope, 0.0), until)
     logger.warning(
-        "AI cooldown enabled for %ss (hard_quota=%s until=%s)",
+        "AI cooldown enabled for %ss (hard_quota=%s until=%s provider=%s conversation_id=%s user_id=%s cooldown_scope=%s cooldown_scope_kind=%s)",
         bounded,
         hard_quota,
-        int(_AI_COOLDOWN_UNTIL),
+        int(_AI_COOLDOWN_UNTIL[cooldown_scope]),
+        provider,
+        conversation_id,
+        user_id,
+        cooldown_scope,
+        cooldown_scope_kind,
     )
 
 
-def _get_cooldown_remaining() -> int:
-    remaining = int(_AI_COOLDOWN_UNTIL - time.time())
-    return max(0, remaining)
+def _get_cooldown_remaining(
+    *,
+    provider: str | None,
+    conversation_id: str | int | None,
+    user_id: str | int | None = None,
+) -> int:
+    cooldown_scope, cooldown_scope_kind = _resolve_cooldown_scope(provider, conversation_id)
+    remaining = int(_AI_COOLDOWN_UNTIL.get(cooldown_scope, 0.0) - time.time())
+    normalized = max(0, remaining)
+    if normalized > 0:
+        logger.warning(
+            "AI cooldown active remaining=%ss provider=%s conversation_id=%s user_id=%s cooldown_scope=%s cooldown_scope_kind=%s",
+            normalized,
+            provider,
+            conversation_id,
+            user_id,
+            cooldown_scope,
+            cooldown_scope_kind,
+        )
+    return normalized
 
 
-def _get_hard_quota_remaining() -> int:
-    remaining = int(_AI_HARD_QUOTA_UNTIL - time.time())
-    return max(0, remaining)
+def _get_hard_quota_remaining(
+    *,
+    provider: str | None,
+    conversation_id: str | int | None,
+    user_id: str | int | None = None,
+) -> int:
+    cooldown_scope, cooldown_scope_kind = _resolve_cooldown_scope(provider, conversation_id)
+    remaining = int(_AI_HARD_QUOTA_UNTIL.get(cooldown_scope, 0.0) - time.time())
+    normalized = max(0, remaining)
+    if normalized > 0:
+        logger.warning(
+            "AI hard quota cooldown active remaining=%ss provider=%s conversation_id=%s user_id=%s cooldown_scope=%s cooldown_scope_kind=%s",
+            normalized,
+            provider,
+            conversation_id,
+            user_id,
+            cooldown_scope,
+            cooldown_scope_kind,
+        )
+    return normalized
+
+
+def _cleanup_expired_cooldowns() -> None:
+    now = time.time()
+    expired_soft = [scope for scope, until in _AI_COOLDOWN_UNTIL.items() if until <= now]
+    for scope in expired_soft:
+        _AI_COOLDOWN_UNTIL.pop(scope, None)
+
+    expired_hard = [scope for scope, until in _AI_HARD_QUOTA_UNTIL.items() if until <= now]
+    for scope in expired_hard:
+        _AI_HARD_QUOTA_UNTIL.pop(scope, None)
 
 
 def _fallback_reply(reason: str) -> str:
@@ -1206,6 +1277,9 @@ async def _generate_once(
     top_p: float = 0.95,
     max_completion_tokens: int = 4096,
     reasoning_effort: str | None = None,
+    provider: str | None = None,
+    conversation_id: str | int | None = None,
+    user_id: str | int | None = None,
 ) -> tuple[str | None, int]:
     request_kwargs: dict[str, Any] = {
         "model": model,
@@ -1257,12 +1331,21 @@ async def _generate_once(
         if _is_hard_quota_exhausted(body):
             retry_after = _extract_retry_after_seconds({}, body) or 3600
             logger.error(
-                "Groq rate limit: hard quota exhausted model=%s cooldown=%ss body=%s",
+                "Groq rate limit: hard quota exhausted model=%s cooldown=%ss provider=%s conversation_id=%s user_id=%s body=%s",
                 model,
                 retry_after,
+                provider,
+                conversation_id,
+                user_id,
                 body[:800],
             )
-            _set_ai_cooldown(retry_after, hard_quota=True)
+            _set_ai_cooldown(
+                retry_after,
+                provider=provider,
+                conversation_id=conversation_id,
+                user_id=user_id,
+                hard_quota=True,
+            )
         elif _is_temporary_upstream_rate_limited(body):
             logger.warning(
                 "Groq temporary upstream error model=%s status=%s body=%s",
@@ -1273,12 +1356,21 @@ async def _generate_once(
         else:
             retry_after = _extract_retry_after_seconds({}, body) or 60
             logger.warning(
-                "Groq rate limit model=%s cooldown=%ss body=%s",
+                "Groq rate limit model=%s cooldown=%ss provider=%s conversation_id=%s user_id=%s body=%s",
                 model,
                 retry_after,
+                provider,
+                conversation_id,
+                user_id,
                 body[:800],
             )
-            _set_ai_cooldown(retry_after, hard_quota=False)
+            _set_ai_cooldown(
+                retry_after,
+                provider=provider,
+                conversation_id=conversation_id,
+                user_id=user_id,
+                hard_quota=False,
+            )
 
     if _should_retry_status(status):
         logger.warning(
@@ -1317,6 +1409,9 @@ async def _generate_with_model_fallback(
     user_text: str,
     *,
     route_label: str = "text",
+    provider: str | None = None,
+    conversation_id: str | int | None = None,
+    user_id: str | int | None = None,
 ) -> tuple[str | None, str | None]:
     last_status: int | None = None
     model_chain = _resolve_text_models()
@@ -1339,6 +1434,9 @@ async def _generate_with_model_fallback(
             model,
             system_prompt,
             user_text,
+            provider=provider,
+            conversation_id=conversation_id,
+            user_id=user_id,
             **request_kwargs,
         )
         if reply:
@@ -1369,18 +1467,34 @@ async def _generate_with_model_fallback(
     return None, None
 
 
-def _build_cooldown_reply() -> str:
-    hard_quota_remaining = _get_hard_quota_remaining()
+def _build_cooldown_reply(
+    *,
+    provider: str | None,
+    conversation_id: str | int | None,
+    user_id: str | int | None = None,
+) -> str:
+    hard_quota_remaining = _get_hard_quota_remaining(
+        provider=provider,
+        conversation_id=conversation_id,
+        user_id=user_id,
+    )
     if hard_quota_remaining > 0:
         logger.warning(
-            "AI hard quota cooldown active remaining=%ss; requires billing/credits update",
+            "AI hard quota cooldown active remaining=%ss provider=%s conversation_id=%s user_id=%s; requires billing/credits update",
             hard_quota_remaining,
+            provider,
+            conversation_id,
+            user_id,
         )
         return _fallback_reply(
             f"лимиты AI провайдера исчерпаны, проверь billing/credits и подожди {hard_quota_remaining}с"
         )
 
-    cooldown_remaining = _get_cooldown_remaining()
+    cooldown_remaining = _get_cooldown_remaining(
+        provider=provider,
+        conversation_id=conversation_id,
+        user_id=user_id,
+    )
     return _fallback_reply(f"лимит AI провайдера, подожди {cooldown_remaining}с")
 
 
@@ -1392,15 +1506,33 @@ async def generate_guiy_reply(
     conversation_id: str | int | None = None,
     media_inputs: list[dict[str, str]] | None = None,
 ) -> str | None:
+    _cleanup_expired_cooldowns()
     api_key = (os.getenv("GROQ_API_KEY") or "").strip()
     if not api_key:
         logger.error("GROQ_API_KEY is empty, cannot generate ai reply")
         return _fallback_reply("нет GROQ_API_KEY")
 
-    cooldown_remaining = _get_cooldown_remaining()
+    cooldown_remaining = _get_cooldown_remaining(
+        provider=provider,
+        conversation_id=conversation_id,
+        user_id=user_id,
+    )
     if cooldown_remaining > 0:
-        logger.warning("AI request skipped due to active cooldown remaining=%ss", cooldown_remaining)
-        return _build_cooldown_reply()
+        cooldown_scope, cooldown_scope_kind = _resolve_cooldown_scope(provider, conversation_id)
+        logger.warning(
+            "AI request skipped due to active cooldown remaining=%ss provider=%s conversation_id=%s user_id=%s cooldown_scope=%s cooldown_scope_kind=%s",
+            cooldown_remaining,
+            provider,
+            conversation_id,
+            user_id,
+            cooldown_scope,
+            cooldown_scope_kind,
+        )
+        return _build_cooldown_reply(
+            provider=provider,
+            conversation_id=conversation_id,
+            user_id=user_id,
+        )
 
     effective_user_text = _effective_user_text(user_text, media_inputs)
     media_summary: str | None = None
@@ -1522,11 +1654,22 @@ async def generate_guiy_reply(
             base_prompt,
             effective_user_text,
             route_label=route,
+            provider=provider,
+            conversation_id=conversation_id,
+            user_id=user_id,
         )
         if not first_try:
-            cooldown_remaining = _get_cooldown_remaining()
+            cooldown_remaining = _get_cooldown_remaining(
+                provider=provider,
+                conversation_id=conversation_id,
+                user_id=user_id,
+            )
             if cooldown_remaining > 0:
-                return _build_cooldown_reply()
+                return _build_cooldown_reply(
+                    provider=provider,
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                )
             return _fallback_reply("ошибка Groq API")
 
         if not _is_role_break(first_try):
@@ -1561,11 +1704,22 @@ async def generate_guiy_reply(
             strict_prompt,
             effective_user_text,
             route_label=f"{route}:role_retry",
+            provider=provider,
+            conversation_id=conversation_id,
+            user_id=user_id,
         )
         if not second_try:
-            cooldown_remaining = _get_cooldown_remaining()
+            cooldown_remaining = _get_cooldown_remaining(
+                provider=provider,
+                conversation_id=conversation_id,
+                user_id=user_id,
+            )
             if cooldown_remaining > 0:
-                return _build_cooldown_reply()
+                return _build_cooldown_reply(
+                    provider=provider,
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                )
             return _fallback_reply("повторная ошибка Groq API")
 
         if _is_role_break(second_try):
