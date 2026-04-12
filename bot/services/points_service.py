@@ -159,8 +159,22 @@ class PointsService:
         return PointsService._get_all_time_scores()
 
     @staticmethod
+    def _filter_positive_entries(entries: list[tuple[int, float]], period: str) -> list[tuple[int, float]]:
+        filtered_entries = [(int(user_id), float(points)) for user_id, points in entries if float(points) > 0]
+        removed_count = len(entries) - len(filtered_entries)
+        logger.info(
+            "points leaderboard filtered non-positive entries period=%s removed_count=%s total_before=%s total_after=%s",
+            period,
+            removed_count,
+            len(entries),
+            len(filtered_entries),
+        )
+        return filtered_entries
+
+    @staticmethod
     def _get_all_time_scores() -> list[tuple[int, float]]:
-        return sorted(((int(user_id), float(points)) for user_id, points in db.scores.items()), key=lambda item: item[1], reverse=True)
+        entries = sorted(((int(user_id), float(points)) for user_id, points in db.scores.items()), key=lambda item: item[1], reverse=True)
+        return PointsService._filter_positive_entries(entries, PointsService.LEADERBOARD_PERIOD_ALL)
 
     @staticmethod
     def _get_scores_by_range(days: int) -> list[tuple[int, float]]:
@@ -188,7 +202,9 @@ class PointsService:
                     temp_scores[user_id] += float(entry.get("points") or 0)
                 except (TypeError, ValueError, KeyError):
                     continue
-        return sorted(temp_scores.items(), key=lambda item: item[1], reverse=True)
+        entries = sorted(temp_scores.items(), key=lambda item: item[1], reverse=True)
+        period = next((name for name, period_days in PointsService.LEADERBOARD_PERIOD_DAYS.items() if int(period_days) == int(days)), str(days))
+        return PointsService._filter_positive_entries(entries, period)
 
     @staticmethod
     def add_points_by_account(account_id: str, points: float, reason: str, author_account_id: str) -> bool:
