@@ -211,6 +211,7 @@ class AccountsServiceTests(unittest.TestCase):
         AccountsService._account_titles_cache = {}
         AccountsService._account_id_cache = {}
         AccountsService._title_roles_cache = None
+        AccountsService._account_identities_account_id_required_cache = None
 
     def tearDown(self):
         self.patcher.stop()
@@ -341,7 +342,7 @@ class AccountsServiceTests(unittest.TestCase):
             {"account_id": "acc-1", "provider": "discord", "provider_user_id": "111"}
         ]
 
-        AccountsService.persist_identity_lookup_fields(
+        metrics = AccountsService.persist_identity_lookup_fields(
             "discord",
             "111",
             username="bebrobot",
@@ -352,11 +353,13 @@ class AccountsServiceTests(unittest.TestCase):
         self.assertEqual(self.fake_db.tables["account_identities"][0]["username"], "bebrobot")
         self.assertEqual(self.fake_db.tables["account_identities"][0]["display_name"], "Bebra Bot")
         self.assertEqual(self.fake_db.tables["account_identities"][0]["global_username"], "bebra.global")
+        self.assertEqual(metrics["updated"], 1)
+        self.assertEqual(metrics["skipped_due_to_account_id_required"], 0)
 
     def test_persist_identity_lookup_fields_skips_insert_when_account_id_is_required(self):
         self.fake_db.supabase = _StrictIdentitySupabase(self.fake_db)
 
-        AccountsService.persist_identity_lookup_fields(
+        metrics = AccountsService.persist_identity_lookup_fields(
             "telegram",
             "222",
             username="lookup_only",
@@ -364,6 +367,8 @@ class AccountsServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(self.fake_db.tables["account_identities"], [])
+        self.assertEqual(metrics["updated"], 0)
+        self.assertEqual(metrics["skipped_due_to_account_id_required"], 1)
 
     def test_register_creates_account_and_identity(self):
         ok, message = AccountsService.register_identity("discord", "111")

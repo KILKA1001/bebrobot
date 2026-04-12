@@ -42,6 +42,7 @@ class AccountsService:
     _account_titles_cache: dict[str, list[str]] = {}
     _account_id_cache: dict[tuple[str, str], tuple[float, str | None]] = {}
     _title_roles_cache: dict[int, str] | None = None
+    _account_identities_account_id_required_cache: bool | None = None
     MAX_VISIBLE_PROFILE_ROLES = 3
     ACCOUNT_ID_CACHE_TTL_SEC = int(os.getenv("ACCOUNT_ID_CACHE_TTL_SEC", "300"))
     FALLBACK_CHAT_MEMBER_TITLE = "участник чата"
@@ -609,7 +610,7 @@ class AccountsService:
 
         try:
             before_row = AccountsService._load_identity_row(normalized_provider, provider_user_id)
-            AccountsService.persist_identity_lookup_fields(
+            hydration_metrics = AccountsService.persist_identity_lookup_fields(
                 normalized_provider,
                 provider_user_id,
                 username=username,
@@ -633,7 +634,7 @@ class AccountsService:
                 status = "skipped"
 
             logger.info(
-                "refresh_identity_from_platform_user result=%s provider=%s provider_user_id=%s source_handler=%s guild_id=%s chat_id=%s fallback_reason=%s",
+                "refresh_identity_from_platform_user result=%s provider=%s provider_user_id=%s source_handler=%s guild_id=%s chat_id=%s fallback_reason=%s updated=%s skipped_due_to_account_id_required=%s inserted=%s",
                 status,
                 normalized_provider,
                 provider_user_id,
@@ -641,6 +642,9 @@ class AccountsService:
                 guild_id,
                 chat_id,
                 ",".join(fallback_reasons) if fallback_reasons else "none",
+                int(hydration_metrics.get("updated") or 0),
+                int(hydration_metrics.get("skipped_due_to_account_id_required") or 0),
+                int(hydration_metrics.get("inserted") or 0),
             )
             return status
         except Exception:
@@ -662,9 +666,14 @@ class AccountsService:
         username: str | None = None,
         display_name: str | None = None,
         global_username: str | None = None,
-    ) -> None:
+    ) -> dict[str, int]:
+        metrics = {
+            "updated": 0,
+            "inserted": 0,
+            "skipped_due_to_account_id_required": 0,
+        }
         if not db.supabase:
-            return
+            return metrics
 
         normalized_provider = str(provider or "").strip()
         normalized_provider_user_id = str(provider_user_id or "").strip()
@@ -674,7 +683,7 @@ class AccountsService:
                 provider,
                 provider_user_id,
             )
-            return
+            return metrics
 
         normalized_username = str(username or "").lstrip("@").strip() or None
         normalized_display_name = str(display_name or "").strip() or None
@@ -694,7 +703,7 @@ class AccountsService:
                 payload[key] = value
 
         if len(payload) <= 2:
-            return
+            return metrics
 
         payload_variants: list[dict[str, str]] = []
         variant_keys = [
@@ -738,6 +747,7 @@ class AccountsService:
                 )
                 updated_rows = list(response.data or [])
                 if updated_rows:
+                    metrics["updated"] += 1
                     if variant != payload:
                         logger.info(
                             "persist_identity_lookup_fields updated existing row with fallback columns provider=%s provider_user_id=%s payload_keys=%s requested_keys=%s",
@@ -761,14 +771,45 @@ class AccountsService:
             lowered = AccountsService._format_db_error(error).lower()
             return "null value in column \"account_id\"" in lowered and "23502" in lowered
 
+        account_id_required = AccountsService._is_account_id_required_for_account_identities()
+
         for variant in payload_variants:
             if _update_existing_identity(variant):
-                return
+                logger.info(
+                    "identity_lookup_hydration_metrics provider=%s provider_user_id=%s updated=%s skipped_due_to_account_id_required=%s inserted=%s",
+                    normalized_provider,
+                    normalized_provider_user_id,
+                    metrics["updated"],
+                    metrics["skipped_due_to_account_id_required"],
+                    metrics["inserted"],
+                )
+                return metrics
+
+        if account_id_required:
+            metrics["skipped_due_to_account_id_required"] += 1
+            logger.warning(
+                "persist_identity_lookup_fields skipped insert because account_id is required provider=%s provider_user_id=%s username=%s display_name=%s global_username=%s",
+                normalized_provider,
+                normalized_provider_user_id,
+                normalized_username,
+                normalized_display_name,
+                normalized_global_username,
+            )
+            logger.info(
+                "identity_lookup_hydration_metrics provider=%s provider_user_id=%s updated=%s skipped_due_to_account_id_required=%s inserted=%s",
+                normalized_provider,
+                normalized_provider_user_id,
+                metrics["updated"],
+                metrics["skipped_due_to_account_id_required"],
+                metrics["inserted"],
+            )
+            return metrics
 
         last_error: Exception | None = None
         for variant in payload_variants:
             try:
                 db.supabase.table("account_identities").upsert(variant, on_conflict="provider,provider_user_id").execute()
+                metrics["inserted"] += 1
                 if variant != payload:
                     logger.info(
                         "persist_identity_lookup_fields saved with fallback columns provider=%s provider_user_id=%s payload_keys=%s requested_keys=%s",
@@ -777,10 +818,20 @@ class AccountsService:
                         sorted(k for k in variant.keys() if k not in {"provider", "provider_user_id"}),
                         sorted(k for k in payload.keys() if k not in {"provider", "provider_user_id"}),
                     )
-                return
+                logger.info(
+                    "identity_lookup_hydration_metrics provider=%s provider_user_id=%s updated=%s skipped_due_to_account_id_required=%s inserted=%s",
+                    normalized_provider,
+                    normalized_provider_user_id,
+                    metrics["updated"],
+                    metrics["skipped_due_to_account_id_required"],
+                    metrics["inserted"],
+                )
+                return metrics
             except Exception as error:
                 last_error = error
                 if _is_missing_account_id_violation(error):
+                    AccountsService._account_identities_account_id_required_cache = True
+                    metrics["skipped_due_to_account_id_required"] += 1
                     logger.warning(
                         "persist_identity_lookup_fields skipped insert because account_id is required provider=%s provider_user_id=%s username=%s display_name=%s global_username=%s",
                         normalized_provider,
@@ -789,7 +840,15 @@ class AccountsService:
                         normalized_display_name,
                         normalized_global_username,
                     )
-                    return
+                    logger.info(
+                        "identity_lookup_hydration_metrics provider=%s provider_user_id=%s updated=%s skipped_due_to_account_id_required=%s inserted=%s",
+                        normalized_provider,
+                        normalized_provider_user_id,
+                        metrics["updated"],
+                        metrics["skipped_due_to_account_id_required"],
+                        metrics["inserted"],
+                    )
+                    return metrics
                 logger.warning(
                     "persist_identity_lookup_fields upsert failed provider=%s provider_user_id=%s payload_keys=%s error=%s",
                     normalized_provider,
@@ -808,6 +867,49 @@ class AccountsService:
                 normalized_global_username,
                 AccountsService._format_db_error(last_error),
             )
+        logger.info(
+            "identity_lookup_hydration_metrics provider=%s provider_user_id=%s updated=%s skipped_due_to_account_id_required=%s inserted=%s",
+            normalized_provider,
+            normalized_provider_user_id,
+            metrics["updated"],
+            metrics["skipped_due_to_account_id_required"],
+            metrics["inserted"],
+        )
+        return metrics
+
+    @staticmethod
+    def _is_account_id_required_for_account_identities() -> bool:
+        cached = AccountsService._account_identities_account_id_required_cache
+        if cached is not None:
+            return bool(cached)
+        if not db.supabase:
+            return False
+        try:
+            rows = (
+                db.supabase.table("information_schema.columns")
+                .select("is_nullable")
+                .eq("table_schema", "public")
+                .eq("table_name", "account_identities")
+                .eq("column_name", "account_id")
+                .limit(1)
+                .execute()
+                .data
+                or []
+            )
+            if rows:
+                required = str(rows[0].get("is_nullable") or "").strip().upper() == "NO"
+                AccountsService._account_identities_account_id_required_cache = required
+                logger.info(
+                    "account_identities account_id nullability checked is_required=%s source=information_schema.columns",
+                    required,
+                )
+                return required
+        except Exception as error:
+            logger.warning(
+                "account_identities account_id nullability check failed error=%s",
+                AccountsService._format_db_error(error),
+            )
+        return False
 
     @staticmethod
     def resolve_account_id(provider: str, provider_user_id: str) -> Optional[str]:
