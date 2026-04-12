@@ -211,7 +211,7 @@ def _render_top_text(
 
     lines: list[str] = []
     if not page_entries:
-        lines.append("Пока нет данных для отображения.")
+        lines.append("Пока нет участников с положительным балансом баллов.")
     else:
         for idx, (user_id, points) in enumerate(page_entries, start=start + 1):
             lines.append(

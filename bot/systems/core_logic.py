@@ -836,7 +836,7 @@ class TopView(SafeView):
         if not entries:
             embed = discord.Embed(
                 title="🏆 Топ участников",
-                description="Нет данных для отображения.",
+                description="Пока нет участников с положительным балансом баллов.",
                 color=discord.Color.gold(),
             )
             embed.set_footer(text=f"Страница {self.page}/{self.total_pages} • Период: {period_label}")
