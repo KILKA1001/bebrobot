@@ -27,13 +27,11 @@ This matrix reflects the current command parity between Discord and Telegram imp
 | Guiy owner | hidden `guiy_owner` owner-only command | private `/guiy_owner` owner-only command | partial | Функциональность owner-only управления Гуем есть на обеих платформах, но интерфейс различается: в Discord это скрытая prefix-команда `guiy_owner`, а в Telegram — приватная slash-команда `/guiy_owner`, регистрируемая только в owner-scoped command menu. На обеих платформах вход в «Профиль Гуя» теперь автоматически делает bootstrap общего аккаунта бота при первом открытии и сразу показывает кнопки редактирования; отдельное действие `register_profile` оставлено как явный ручной шаг. Публичный help её не рекламирует, чтобы не создавать ложных ожиданий у обычных пользователей. |
 | Points | `/addpoints` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Points | `/removepoints` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
-| Points | `/leaderboard` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
+| Points | `/top` | `/top` | full | Unified leaderboard with period switch (all time / month / week) is available in both runtimes. |
 | Points | `/history` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Points | `/roles` | `/roles` | full | Unified public roles catalog is available in both runtimes: roles are grouped by category and show description, acquisition method, and acquisition hint; both versions now start with the same onboarding block explaining what roles are, where to read acquisition info, and which roles are manual vs automatic. |
 | Points | `/activities` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Points | `/undo` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
-| Points | `/awardmonthtop` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
-| Points | `/tophistory` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Points | `/ping` | — | missing | No Telegram counterpart in the current Telegram router/command registry. |
 | Points | `/bank` + кнопка `⚙️ Настройка банка` (`add/spend/history`) | `/bank` + кнопка `⚙️ Настройка банка` (`add/spend/history`) | full | На обеих платформах `/bank` показывает баланс. Кнопочный сценарий настройки (пополнение/списание/история) доступен только суперадмину в ЛС, с обязательной причиной для изменений; отдельная команда `bankhistory` удалена как дублирующая кнопку истории. |
 | Points | `/balance` | `/balance [reply|id]` | partial | Read-only balance view is available in Telegram; Discord supports optional member argument via mention. |

@@ -476,33 +476,6 @@ async def log_action_cancellation(ctx, member: discord.Member, entries: list):
     await safe_send(channel, "\n".join(lines))
 
 
-async def run_monthly_top(ctx, month: Optional[int] = None, year: Optional[int] = None):
-    logger.error(
-        "legacy month-top flow called unexpectedly function=run_monthly_top actor_id=%s guild_id=%s month=%s year=%s",
-        getattr(getattr(ctx, "author", None), "id", None),
-        getattr(getattr(ctx, "guild", None), "id", None),
-        month,
-        year,
-    )
-    await send_temp(
-        ctx,
-        "⚠️ Начисление бонусов за топ месяца отключено. Если это действие запускается автоматически, сообщите администратору.",
-    )
-
-
-async def tophistory(ctx, month: Optional[int] = None, year: Optional[int] = None):
-    logger.error(
-        "legacy month-top flow called unexpectedly function=tophistory actor_id=%s guild_id=%s month=%s year=%s",
-        getattr(getattr(ctx, "author", None), "id", None),
-        getattr(getattr(ctx, "guild", None), "id", None),
-        month,
-        year,
-    )
-    await send_temp(
-        ctx,
-        "⚠️ История топа месяца отключена. Если это действие запускается автоматически, сообщите администратору.",
-    )
-
 @dataclass(frozen=True)
 class HelpVisibilityContext:
     level: int = 0
@@ -798,7 +771,7 @@ class AdminCategoryView(SafeView):
         embed = get_help_embed("points", visibility=self.visibility)
         await interaction.response.edit_message(embed=embed, view=HelpView(self.user))
 
-class LeaderboardView(SafeView):
+class TopView(SafeView):
     def __init__(self, ctx, mode="all", page=1):
         super().__init__(timeout=120)
         self.ctx = ctx
@@ -860,7 +833,7 @@ class LeaderboardView(SafeView):
                 await interaction.response.edit_message(embed=self.get_embed(), view=self)
         except Exception:
             logger.exception(
-                "leaderboard interaction failed platform=%s actor_id=%s guild_id=%s mode=%s action=%s",
+                "top interaction failed platform=%s actor_id=%s guild_id=%s mode=%s action=%s",
                 "discord",
                 interaction.user.id if interaction.user else None,
                 interaction.guild_id,
@@ -876,7 +849,7 @@ class LeaderboardView(SafeView):
                 await interaction.response.edit_message(embed=self.get_embed(), view=self)
         except Exception:
             logger.exception(
-                "leaderboard interaction failed platform=%s actor_id=%s guild_id=%s mode=%s action=%s",
+                "top interaction failed platform=%s actor_id=%s guild_id=%s mode=%s action=%s",
                 "discord",
                 interaction.user.id if interaction.user else None,
                 interaction.guild_id,
@@ -893,7 +866,7 @@ class LeaderboardView(SafeView):
             await interaction.response.edit_message(embed=self.get_embed(), view=self)
         except Exception:
             logger.exception(
-                "leaderboard interaction failed platform=%s actor_id=%s guild_id=%s mode=%s action=%s",
+                "top interaction failed platform=%s actor_id=%s guild_id=%s mode=%s action=%s",
                 "discord",
                 interaction.user.id if interaction.user else None,
                 interaction.guild_id,
@@ -910,7 +883,7 @@ class LeaderboardView(SafeView):
             await interaction.response.edit_message(embed=self.get_embed(), view=self)
         except Exception:
             logger.exception(
-                "leaderboard interaction failed platform=%s actor_id=%s guild_id=%s mode=%s action=%s",
+                "top interaction failed platform=%s actor_id=%s guild_id=%s mode=%s action=%s",
                 "discord",
                 interaction.user.id if interaction.user else None,
                 interaction.guild_id,
@@ -927,7 +900,7 @@ class LeaderboardView(SafeView):
             await interaction.response.edit_message(embed=self.get_embed(), view=self)
         except Exception:
             logger.exception(
-                "leaderboard interaction failed platform=%s actor_id=%s guild_id=%s mode=%s action=%s",
+                "top interaction failed platform=%s actor_id=%s guild_id=%s mode=%s action=%s",
                 "discord",
                 interaction.user.id if interaction.user else None,
                 interaction.guild_id,
