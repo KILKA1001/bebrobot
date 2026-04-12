@@ -17,12 +17,11 @@ from bot.utils.roles_and_activities import (
     ACTIVITY_CATEGORIES,
     display_last_edit_date,
 )
-from bot.systems import render_history, log_action_cancellation, tophistory
+from bot.systems import render_history, log_action_cancellation
 from bot.systems.core_logic import (
     _get_action_rows_for_account,
     _resolve_account_id_from_discord,
     update_roles,
-    run_monthly_top,
     get_help_embed,
     HelpView,
     LeaderboardView,
@@ -536,24 +535,6 @@ async def undo(ctx, member: discord.Member, count: int = 1):
         )
     await send_temp(ctx, embed=embed)
     await log_action_cancellation(ctx, member, undo_entries)
-
-
-@bot.hybrid_command(
-    name="awardmonthtop", description="Начислить бонусы за выбранный месяц"
-)
-async def award_monthtop(ctx, month: Optional[int] = None, year: Optional[int] = None):
-    if not await _check_command_authority(ctx, "monthtop_manage"):
-        return
-    await run_monthly_top(ctx, month, year)
-
-
-@bot.hybrid_command(
-    name="tophistory", description="История начислений топов месяца"
-)
-async def tophistory_cmd(
-    ctx, month: Optional[int] = None, year: Optional[int] = None
-):
-    await tophistory(ctx, month, year)
 
 
 @bot.hybrid_command(name="helpy", description="Показать список команд")

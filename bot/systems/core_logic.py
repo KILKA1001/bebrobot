@@ -477,102 +477,31 @@ async def log_action_cancellation(ctx, member: discord.Member, entries: list):
 
 
 async def run_monthly_top(ctx, month: Optional[int] = None, year: Optional[int] = None):
-    """Award monthly top bonuses.
-
-    Parameters
-    ----------
-    ctx : commands.Context
-        Command context.
-    month : Optional[int], optional
-        Month number to calculate results for. Defaults to current month.
-    year : Optional[int], optional
-        Year number to calculate results for. Defaults to current year.
-    """
-    now = datetime.now(pytz.timezone('Europe/Moscow'))
-    current_month = month or now.month
-    current_year = year or now.year
-    from collections import defaultdict
-    monthly_scores = defaultdict(float)
-    for action in db.actions:
-        if action.get('is_undo'):
-            continue
-        timestamp = action.get('timestamp')
-        if isinstance(timestamp, str):
-            try:
-                dt = datetime.fromisoformat(timestamp)
-            except ValueError:
-                continue
-            if dt.month == current_month and dt.year == current_year:
-                uid = int(action['user_id'])
-                monthly_scores[uid] += float(action['points'])
-    if not monthly_scores:
-        await send_temp(ctx, "❌ Нет данных о баллах за этот месяц.")
-        return
-
-    top_users = sorted(monthly_scores.items(), key=lambda x: x[1], reverse=True)[:3]
-    percentages = [0.125, 0.075, 0.05]
-
-    entries_to_log = []
-    formatted = []
-
-    for i, (uid, score) in enumerate(top_users):
-        percent = percentages[i]
-        bonus = round(score * percent, 2)
-        db.add_action(uid, bonus, f"Бонус за {i + 1} место ({score} баллов)", ctx.author.id)
-        member = ctx.guild.get_member(uid)
-        name = member.display_name if member else f"<@{uid}>"
-
-        formatted.append(
-            (name, f"{i + 1} место\nЗаработано: {score:.2f} баллов\nБонус: +{bonus:.2f} баллов")
-        )
-        entries_to_log.append((uid, score, percent))
-
-    db.log_monthly_top(entries_to_log, current_month, current_year)
-    embed = build_top_embed("🏆 Топ месяца", formatted, color=discord.Color.gold())
-    await send_temp(ctx, embed=embed)
+    logger.error(
+        "legacy month-top flow called unexpectedly function=run_monthly_top actor_id=%s guild_id=%s month=%s year=%s",
+        getattr(getattr(ctx, "author", None), "id", None),
+        getattr(getattr(ctx, "guild", None), "id", None),
+        month,
+        year,
+    )
+    await send_temp(
+        ctx,
+        "⚠️ Начисление бонусов за топ месяца отключено. Если это действие запускается автоматически, сообщите администратору.",
+    )
 
 
 async def tophistory(ctx, month: Optional[int] = None, year: Optional[int] = None):
-    now = datetime.now()
-    month = month or now.month
-    year = year or now.year
-
-    if not db.supabase:
-        await send_temp(ctx, "❌ Supabase не инициализирован.")
-        return
-
-    try:
-        response = db.supabase \
-            .table("monthly_top_log") \
-            .select("*") \
-            .eq("month", month) \
-            .eq("year", year) \
-            .order("place") \
-            .execute()
-
-        entries = response.data
-        if not entries:
-            await send_temp(ctx, f"📭 Нет записей за {month:02d}.{year}")
-            return
-
-        formatted = []
-        for entry in entries:
-            uid = entry['user_id']
-            place = entry['place']
-            bonus = entry['bonus']
-            member = ctx.guild.get_member(uid)
-            name = member.display_name if member else f"<@{uid}>"
-            formatted.append((name, f"{place} место • +{bonus} баллов"))
-
-        embed = build_top_embed(
-            title=f"📅 История топа — {month:02d}.{year}",
-            entries=formatted,
-            color=discord.Color.green(),
-        )
-        await send_temp(ctx, embed=embed)
-
-    except Exception as e:
-        await send_temp(ctx, f"❌ Ошибка при получении данных: {e}")
+    logger.error(
+        "legacy month-top flow called unexpectedly function=tophistory actor_id=%s guild_id=%s month=%s year=%s",
+        getattr(getattr(ctx, "author", None), "id", None),
+        getattr(getattr(ctx, "guild", None), "id", None),
+        month,
+        year,
+    )
+    await send_temp(
+        ctx,
+        "⚠️ История топа месяца отключена. Если это действие запускается автоматически, сообщите администратору.",
+    )
 
 @dataclass(frozen=True)
 class HelpVisibilityContext:
@@ -758,7 +687,6 @@ def get_help_embed(category: str, visibility: HelpVisibilityContext | None = Non
         lines = [
             "`/ping` — проверить, работает ли бот.",
             "`/helpy` — открыть меню справки.",
-            "`/tophistory [месяц] [год]` — история топов месяца.",
             "`/mapinfo id` — информация о карте по ID (ID — последняя цифра в названии карты).",
             "`/jointournament id` — заявиться на турнир.",
             "`/tournamenthistory [n]` — последние турниры.",
@@ -780,7 +708,7 @@ def get_help_embed(category: str, visibility: HelpVisibilityContext | None = Non
             "`/addpoints @пользователь сумма [причина]` — начислить баллы.\n"
             "`/removepoints @пользователь сумма [причина]` — снять баллы.\n"
             "`/undo @пользователь [кол-во]` — отменить последние действия.\n"
-            "`/awardmonthtop [месяц] [год]` — бонусы за топ месяца."
+            "`/points [@пользователь]` — открыть меню изменения баллов с подсказками по шагам."
         )
     elif category == "admin_fines":
         embed.title = "📉 Мод-команды: штрафы и кейсы"
@@ -1077,20 +1005,5 @@ def build_balance_embed(member: discord.abc.User, guild: discord.Guild | None = 
     embed.add_field(name="🪙 Золотые билеты", value=f"{gold}", inline=True)
     embed.add_field(name="🏅 Роли", value=role_names, inline=False)
     embed.add_field(name="📊 Место в топе", value=f"{place}" if place else "Не в топе", inline=False)
-
-    # ➕ Добавим бонусы за топ месяца
-    top_bonus_count = 0
-    top_bonus_sum = 0.0
-    for action in _get_action_rows_for_account(account_id, discord_user_id=user_id, handler="build_balance_embed"):
-        if action.get("reason", "").startswith("Бонус за "):
-            top_bonus_count += 1
-            top_bonus_sum += action.get("points", 0)
-
-    if top_bonus_count:
-        embed.add_field(
-            name="🏆 Бонусы за топ месяца",
-            value=f"{top_bonus_count} наград, {top_bonus_sum:.2f} баллов",
-            inline=False
-        )
 
     return embed

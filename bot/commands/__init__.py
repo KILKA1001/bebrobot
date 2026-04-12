@@ -1,4 +1,4 @@
-from bot.commands.base import bot, run_monthly_top
+from bot.commands.base import bot
 
 # Import all command modules to register them
 from . import fines  # noqa: F401
@@ -28,7 +28,6 @@ from .shop import shop
 
 __all__ = [
     "bot",
-    "run_monthly_top",
     "createtournament",
     "jointournament",
     "tournamentadmin",
