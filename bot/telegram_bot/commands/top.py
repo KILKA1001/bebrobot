@@ -12,7 +12,7 @@ import logging
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, User
 
 from bot.services import AccountsService, PointsService
 from bot.telegram_bot.identity import persist_telegram_identity_from_user
@@ -63,17 +63,50 @@ def _build_top_keyboard(*, period: str, page: int, total_pages: int) -> InlineKe
     )
 
 
-def _resolve_display_name(user_id: int) -> str:
-    telegram_name = AccountsService.get_best_public_name("telegram", str(user_id))
-    if telegram_name:
-        return str(telegram_name)
-    discord_name = AccountsService.get_best_public_name("discord", str(user_id))
-    if discord_name:
-        return str(discord_name)
+def _local_telegram_name_from_user(user: User | None) -> str | None:
+    if not user:
+        return None
+    full_name = str(user.full_name or "").strip()
+    if full_name:
+        return full_name
+    username = str(user.username or "").strip()
+    if username:
+        return f"@{username}"
+    return None
+
+
+def _resolve_display_name(user_id: int, *, local_telegram_names: dict[int, str] | None = None) -> str:
+    try:
+        account_id = AccountsService.resolve_account_id("telegram", str(user_id))
+    except Exception:
+        logger.exception("telegram top resolve account_id failed platform=%s user_id=%s", "telegram", user_id)
+        account_id = None
+
+    if account_id:
+        try:
+            account_best_name = AccountsService.get_best_public_name("discord", None, account_id=account_id)
+            if account_best_name:
+                return str(account_best_name)
+            account_best_name = AccountsService.get_best_public_name("telegram", None, account_id=account_id)
+            if account_best_name:
+                return str(account_best_name)
+        except Exception:
+            logger.exception(
+                "telegram top resolve identity name failed platform=%s user_id=%s account_id=%s",
+                "telegram",
+                user_id,
+                account_id,
+            )
+
+    local_name = (local_telegram_names or {}).get(int(user_id))
+    if local_name:
+        return local_name
+
+    logger.warning("telegram top fallback to id platform=%s user_id=%s", "telegram", user_id)
     return f"ID {user_id}"
 
 
-def _render_top_text(*, period: str, page: int) -> tuple[str, InlineKeyboardMarkup]:
+def _render_top_text(*, period: str, page: int, local_telegram_names: dict[int, str] | None = None) -> tuple[str, InlineKeyboardMarkup]:
     safe_period = _normalize_period(period)
     entries = PointsService.get_leaderboard_entries(safe_period)
     total_pages = max(1, (len(entries) + _PAGE_SIZE - 1) // _PAGE_SIZE)
@@ -94,7 +127,9 @@ def _render_top_text(*, period: str, page: int) -> tuple[str, InlineKeyboardMark
         lines.append("Пока нет данных для отображения.")
     else:
         for idx, (user_id, points) in enumerate(page_entries, start=start + 1):
-            lines.append(f"{idx}. <b>{_resolve_display_name(int(user_id))}</b> — {format_points(points)} баллов")
+            lines.append(
+                f"{idx}. <b>{_resolve_display_name(int(user_id), local_telegram_names=local_telegram_names)}</b> — {format_points(points)} баллов"
+            )
 
     lines.extend(["", f"<b>Период:</b> {period_label}", f"<b>Страница:</b> {safe_page + 1}/{total_pages}"])
 
@@ -110,8 +145,10 @@ async def top_command(message: Message) -> None:
     actor_id = message.from_user.id
     chat_id = message.chat.id if message.chat else None
     period = PointsService.LEADERBOARD_PERIOD_ALL
+    local_telegram_names = {message.from_user.id: _local_telegram_name_from_user(message.from_user)}
+    local_telegram_names = {uid: name for uid, name in local_telegram_names.items() if name}
     try:
-        text, keyboard = _render_top_text(period=period, page=0)
+        text, keyboard = _render_top_text(period=period, page=0, local_telegram_names=local_telegram_names)
         await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
     except Exception:
         logger.exception(
@@ -143,6 +180,8 @@ async def top_callback(callback: CallbackQuery) -> None:
     actor_id = callback.from_user.id
     chat_id = callback.message.chat.id if callback.message else None
     mode = _normalize_period(period)
+    local_telegram_names = {callback.from_user.id: _local_telegram_name_from_user(callback.from_user)}
+    local_telegram_names = {uid: name for uid, name in local_telegram_names.items() if name}
 
     if action not in {"period", "page"}:
         await callback.answer("Неизвестное действие", show_alert=True)
@@ -150,7 +189,7 @@ async def top_callback(callback: CallbackQuery) -> None:
 
     try:
         page = int(page_raw)
-        text, keyboard = _render_top_text(period=mode, page=page)
+        text, keyboard = _render_top_text(period=mode, page=page, local_telegram_names=local_telegram_names)
         await callback.message.edit_text(text=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
         await callback.answer()
     except Exception:

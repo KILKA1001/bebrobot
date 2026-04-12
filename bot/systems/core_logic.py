@@ -805,7 +805,28 @@ class TopView(SafeView):
         formatted = []
         for uid, points in entries:
             member = self.ctx.guild.get_member(uid)
-            name = member.display_name if member else f"<@{uid}>"
+            name = member.display_name if member else None
+            if not name:
+                try:
+                    identity_name = AccountsService.get_best_public_name("discord", str(uid))
+                except Exception:
+                    logger.exception(
+                        "discord top identity lookup failed platform=%s guild_id=%s user_id=%s",
+                        "discord",
+                        self.ctx.guild.id if self.ctx.guild else None,
+                        uid,
+                    )
+                    identity_name = None
+                if identity_name:
+                    name = str(identity_name)
+                else:
+                    logger.warning(
+                        "discord top fallback to id platform=%s guild_id=%s user_id=%s",
+                        "discord",
+                        self.ctx.guild.id if self.ctx.guild else None,
+                        uid,
+                    )
+                    name = f"Пользователь (ID: {uid})"
 
             roles = []
             if member:
