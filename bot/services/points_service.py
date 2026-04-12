@@ -197,11 +197,43 @@ class PointsService:
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
             if ts >= cutoff:
-                try:
-                    user_id = int(entry["user_id"])
-                    temp_scores[user_id] += float(entry.get("points") or 0)
-                except (TypeError, ValueError, KeyError):
+                points = float(entry.get("points") or 0)
+                raw_user_id = entry.get("user_id")
+                if raw_user_id not in (None, ""):
+                    try:
+                        user_id = int(raw_user_id)
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            "period_score_row_skipped_missing_identity reason=invalid_user_id user_id=%s account_id=%s timestamp=%s",
+                            raw_user_id,
+                            entry.get("account_id"),
+                            ts.isoformat(),
+                        )
+                        continue
+                    temp_scores[user_id] += points
                     continue
+                account_id = str(entry.get("account_id") or "").strip()
+                if not account_id:
+                    logger.warning(
+                        "period_score_row_skipped_missing_identity reason=missing_user_id_and_account_id timestamp=%s",
+                        ts.isoformat(),
+                    )
+                    continue
+                anchor_user_id = PointsService._resolve_anchor_user_id(account_id)
+                if anchor_user_id is None:
+                    logger.warning(
+                        "period_score_row_skipped_missing_identity reason=anchor_not_resolved account_id=%s timestamp=%s",
+                        account_id,
+                        ts.isoformat(),
+                    )
+                    continue
+                logger.info(
+                    "period_score_row_mapped_from_account_id account_id=%s anchor_user_id=%s timestamp=%s",
+                    account_id,
+                    anchor_user_id,
+                    ts.isoformat(),
+                )
+                temp_scores[int(anchor_user_id)] += points
         entries = sorted(temp_scores.items(), key=lambda item: item[1], reverse=True)
         period = next((name for name, period_days in PointsService.LEADERBOARD_PERIOD_DAYS.items() if int(period_days) == int(days)), str(days))
         return PointsService._filter_positive_entries(entries, period)
