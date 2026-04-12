@@ -818,6 +818,8 @@ class TopView(SafeView):
         self.mode = mode
         self.page = page
         self.page_size = 5
+        self._resolved_name_cache: dict[int, str] = {}
+        self._seen_non_id_names: dict[int, str] = {}
         self.update_embed_data()
 
     def update_embed_data(self):
@@ -845,7 +847,11 @@ class TopView(SafeView):
         formatted = []
         for uid, points in entries:
             member = self.ctx.guild.get_member(uid)
-            name = member.display_name if member else None
+            cached_name = self._resolved_name_cache.get(int(uid))
+            name = cached_name or (member.display_name if member else None)
+            if name and not str(name).startswith("ID "):
+                self._seen_non_id_names[int(uid)] = str(name)
+                self._resolved_name_cache[int(uid)] = str(name)
             if not name:
                 account_id = None
                 try:
@@ -881,6 +887,8 @@ class TopView(SafeView):
                     identity_name = None
                 if identity_name:
                     name = str(identity_name)
+                    self._resolved_name_cache[int(uid)] = name
+                    self._seen_non_id_names[int(uid)] = name
                 else:
                     if member is not None:
                         _schedule_soft_identity_refresh_discord(
@@ -888,16 +896,29 @@ class TopView(SafeView):
                             guild_id=self.ctx.guild.id if self.ctx.guild else None,
                             source_handler="discord.top_render",
                         )
-                    logger.warning(
-                        "top name fallback to id platform=%s source_user_id=%s resolved_account_id=%s period=%s page=%s guild_id=%s",
-                        "discord",
-                        uid,
-                        account_id,
-                        self.mode,
-                        self.page,
-                        self.ctx.guild.id if self.ctx.guild else None,
-                    )
-                    name = f"ID {uid}"
+                    previous_name = self._seen_non_id_names.get(int(uid))
+                    if previous_name:
+                        logger.warning(
+                            "top_name_regressed_to_id platform=%s user_id=%s period=%s page=%s guild_id=%s",
+                            "discord",
+                            uid,
+                            self.mode,
+                            self.page,
+                            self.ctx.guild.id if self.ctx.guild else None,
+                        )
+                        name = previous_name
+                    else:
+                        logger.warning(
+                            "top name fallback to id platform=%s source_user_id=%s resolved_account_id=%s period=%s page=%s guild_id=%s",
+                            "discord",
+                            uid,
+                            account_id,
+                            self.mode,
+                            self.page,
+                            self.ctx.guild.id if self.ctx.guild else None,
+                        )
+                        name = f"ID {uid}"
+                    self._resolved_name_cache[int(uid)] = str(name)
 
             roles = []
             if member:
@@ -914,9 +935,26 @@ class TopView(SafeView):
         )
         return embed
 
+    def _schedule_callback_identity_refresh(self, interaction: discord.Interaction) -> None:
+        try:
+            if isinstance(interaction.user, discord.Member):
+                _schedule_soft_identity_refresh_discord(
+                    interaction.user,
+                    guild_id=interaction.guild_id,
+                    source_handler="discord.top_callback",
+                )
+        except Exception:
+            logger.exception(
+                "top callback identity refresh failed platform=%s actor_id=%s guild_id=%s",
+                "discord",
+                interaction.user.id if interaction.user else None,
+                interaction.guild_id,
+            )
+
     @discord.ui.button(label="◀️", style=discord.ButtonStyle.gray)
     async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
+            self._schedule_callback_identity_refresh(interaction)
             if self.page > 1:
                 self.page -= 1
                 await interaction.response.edit_message(embed=self.get_embed(), view=self)
@@ -933,6 +971,7 @@ class TopView(SafeView):
     @discord.ui.button(label="▶️", style=discord.ButtonStyle.gray)
     async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
+            self._schedule_callback_identity_refresh(interaction)
             if self.page < self.total_pages:
                 self.page += 1
                 await interaction.response.edit_message(embed=self.get_embed(), view=self)
@@ -949,6 +988,7 @@ class TopView(SafeView):
     @discord.ui.button(label="За неделю", style=discord.ButtonStyle.blurple)
     async def mode_week(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
+            self._schedule_callback_identity_refresh(interaction)
             self.mode = PointsService.LEADERBOARD_PERIOD_WEEK
             self.page = 1
             self.update_embed_data()
@@ -966,6 +1006,7 @@ class TopView(SafeView):
     @discord.ui.button(label="За месяц", style=discord.ButtonStyle.blurple)
     async def mode_month(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
+            self._schedule_callback_identity_refresh(interaction)
             self.mode = PointsService.LEADERBOARD_PERIOD_MONTH
             self.page = 1
             self.update_embed_data()
@@ -983,6 +1024,7 @@ class TopView(SafeView):
     @discord.ui.button(label="Все время", style=discord.ButtonStyle.green)
     async def mode_all(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
+            self._schedule_callback_identity_refresh(interaction)
             self.mode = PointsService.LEADERBOARD_PERIOD_ALL
             self.page = 1
             self.update_embed_data()
