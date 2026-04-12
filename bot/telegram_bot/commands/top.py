@@ -75,19 +75,28 @@ def _local_telegram_name_from_user(user: User | None) -> str | None:
     return None
 
 
-def _resolve_display_name(user_id: int, *, local_telegram_names: dict[int, str] | None = None) -> str:
+def _resolve_display_name(
+    user_id: int,
+    *,
+    period: str,
+    page: int,
+    local_telegram_names: dict[int, str] | None = None,
+) -> str:
+    account_id = None
     try:
         account_id = AccountsService.resolve_account_id("telegram", str(user_id))
     except Exception:
         logger.exception("telegram top resolve account_id failed platform=%s user_id=%s", "telegram", user_id)
-        account_id = None
+
+    if not account_id:
+        try:
+            account_id = AccountsService.resolve_account_id("discord", str(user_id))
+        except Exception:
+            logger.exception("telegram top resolve account_id failed platform=%s user_id=%s", "discord", user_id)
 
     if account_id:
         try:
-            account_best_name = AccountsService.get_best_public_name("discord", None, account_id=account_id)
-            if account_best_name:
-                return str(account_best_name)
-            account_best_name = AccountsService.get_best_public_name("telegram", None, account_id=account_id)
+            account_best_name = AccountsService.get_best_public_name(None, None, account_id=account_id)
             if account_best_name:
                 return str(account_best_name)
         except Exception:
@@ -102,7 +111,14 @@ def _resolve_display_name(user_id: int, *, local_telegram_names: dict[int, str] 
     if local_name:
         return local_name
 
-    logger.warning("telegram top fallback to id platform=%s user_id=%s", "telegram", user_id)
+    logger.warning(
+        "top name fallback to id platform=%s source_user_id=%s resolved_account_id=%s period=%s page=%s",
+        "telegram",
+        user_id,
+        account_id,
+        period,
+        page,
+    )
     return f"ID {user_id}"
 
 
@@ -128,7 +144,7 @@ def _render_top_text(*, period: str, page: int, local_telegram_names: dict[int, 
     else:
         for idx, (user_id, points) in enumerate(page_entries, start=start + 1):
             lines.append(
-                f"{idx}. <b>{_resolve_display_name(int(user_id), local_telegram_names=local_telegram_names)}</b> — {format_points(points)} баллов"
+                f"{idx}. <b>{_resolve_display_name(int(user_id), period=safe_period, page=safe_page, local_telegram_names=local_telegram_names)}</b> — {format_points(points)} баллов"
             )
 
     lines.extend(["", f"<b>Период:</b> {period_label}", f"<b>Страница:</b> {safe_page + 1}/{total_pages}"])

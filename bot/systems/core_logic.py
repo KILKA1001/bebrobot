@@ -807,8 +807,30 @@ class TopView(SafeView):
             member = self.ctx.guild.get_member(uid)
             name = member.display_name if member else None
             if not name:
+                account_id = None
                 try:
-                    identity_name = AccountsService.get_best_public_name("discord", str(uid))
+                    account_id = AccountsService.resolve_account_id("telegram", str(uid))
+                except Exception:
+                    logger.exception(
+                        "discord top resolve account_id failed platform=%s guild_id=%s user_id=%s",
+                        "telegram",
+                        self.ctx.guild.id if self.ctx.guild else None,
+                        uid,
+                    )
+                if not account_id:
+                    try:
+                        account_id = AccountsService.resolve_account_id("discord", str(uid))
+                    except Exception:
+                        logger.exception(
+                            "discord top resolve account_id failed platform=%s guild_id=%s user_id=%s",
+                            "discord",
+                            self.ctx.guild.id if self.ctx.guild else None,
+                            uid,
+                        )
+                try:
+                    identity_name = (
+                        AccountsService.get_best_public_name(None, None, account_id=account_id) if account_id else None
+                    )
                 except Exception:
                     logger.exception(
                         "discord top identity lookup failed platform=%s guild_id=%s user_id=%s",
@@ -821,12 +843,15 @@ class TopView(SafeView):
                     name = str(identity_name)
                 else:
                     logger.warning(
-                        "discord top fallback to id platform=%s guild_id=%s user_id=%s",
+                        "top name fallback to id platform=%s source_user_id=%s resolved_account_id=%s period=%s page=%s guild_id=%s",
                         "discord",
-                        self.ctx.guild.id if self.ctx.guild else None,
                         uid,
+                        account_id,
+                        self.mode,
+                        self.page,
+                        self.ctx.guild.id if self.ctx.guild else None,
                     )
-                    name = f"Пользователь (ID: {uid})"
+                    name = f"ID {uid}"
 
             roles = []
             if member:
