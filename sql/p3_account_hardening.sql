@@ -210,8 +210,7 @@ $$;
 -- DELETE FROM fine_payments;
 -- DELETE FROM fines;
 -- DELETE FROM bank_history;
--- DELETE FROM monthly_top_log;
--- DELETE FROM monthly_fine_hst;
+-- Legacy monthly top tables were removed in p11_drop_legacy_monthly_top_tables.sql.
 --
 -- INSERT INTO bank(id, total)
 -- VALUES (1, 0)
