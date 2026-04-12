@@ -541,24 +541,45 @@ async def on_ready():
 async def on_member_update(before: discord.Member, after: discord.Member):
     await handle_member_update_for_profile_titles(before, after)
 
+    from bot.services import AccountsService
+
+    AccountsService.refresh_identity_from_platform_user(
+        "discord",
+        after,
+        source_handler="discord.on_member_update",
+        guild_id=after.guild.id if after.guild else None,
+    )
+
     try:
         before_role_ids = {role.id for role in before.roles if not role.is_default()}
         after_role_ids = {role.id for role in after.roles if not role.is_default()}
         if before_role_ids == after_role_ids:
             return
 
-        from bot.services import AccountsService
-
         account_id = AccountsService.resolve_account_id("discord", str(after.id))
         if not account_id:
             return
         schedule_external_roles_sync(bot, str(account_id), reason="discord_member_update")
     except Exception:
-        logging.exception("external roles sync dispatch failed for member update member_id=%s guild_id=%s", after.id, after.guild.id if after.guild else None)
+        logging.exception(
+            "external roles sync dispatch failed provider=%s provider_user_id=%s guild_id=%s source_handler=%s",
+            "discord",
+            after.id,
+            after.guild.id if after.guild else None,
+            "discord.on_member_update",
+        )
 
 
 @bot.event
 async def on_member_join(member: discord.Member):
+    from bot.services import AccountsService
+
+    AccountsService.refresh_identity_from_platform_user(
+        "discord",
+        member,
+        source_handler="discord.on_member_join",
+        guild_id=member.guild.id if member.guild else None,
+    )
     await handle_member_join_for_profile_titles(member)
 
 
@@ -570,12 +591,11 @@ async def on_message(message: discord.Message):
     try:
         from bot.services import AccountsService
 
-        AccountsService.persist_identity_lookup_fields(
+        AccountsService.refresh_identity_from_platform_user(
             "discord",
-            str(message.author.id),
-            username=getattr(message.author, "name", None),
-            display_name=getattr(message.author, "display_name", None),
-            global_username=getattr(message.author, "global_name", None),
+            message.author,
+            source_handler="discord.on_message",
+            guild_id=message.guild.id if message.guild else None,
         )
         logging.info(
             "discord get_context begin channel_id=%s message_id=%s author_id=%s",
