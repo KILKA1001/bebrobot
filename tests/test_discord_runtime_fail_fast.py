@@ -8,6 +8,7 @@ import asyncio
 import importlib
 import os
 import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import discord
@@ -145,5 +146,41 @@ def test_on_member_remove_triggers_unlinked_identity_purge():
         with patch("bot.services.AccountsService.purge_unlinked_identity", return_value=(True, "purged")) as purge_mock:
             await bot_main.on_member_remove(member)
             purge_mock.assert_called_once_with("discord", "555")
+
+    asyncio.run(_exercise())
+
+
+class _FakeGuild:
+    def __init__(self, guild_id: int, members: list[object]):
+        self.id = guild_id
+        self.member_count = len(members)
+        self._members = members
+
+    async def fetch_members(self, limit=None):  # noqa: ANN001
+        for member in self._members:
+            yield member
+
+
+def test_full_identity_scan_collects_statuses_and_batches():
+    bot_main = load_bot_main()
+    members = [type("Member", (), {"id": idx})() for idx in range(1, 6)]
+    guild = _FakeGuild(77, members)
+    bot_main.DISCORD_FULL_SCAN_BATCH_SIZE = 2
+    bot_main.DISCORD_FULL_SCAN_PAUSE_SECONDS = 0.01
+
+    statuses = ["inserted", "updated", "skipped", "updated", "inserted"]
+
+    async def _exercise() -> None:
+        with (
+            patch("bot.main.bot", SimpleNamespace(guilds=[guild])),
+            patch("bot.main.asyncio.sleep", AsyncMock()) as sleep_mock,
+            patch(
+                "bot.services.AccountsService.refresh_identity_from_platform_user",
+                side_effect=statuses,
+            ) as refresh_mock,
+        ):
+            await bot_main._run_discord_full_identity_scan_once()
+            assert refresh_mock.call_count == 5
+            assert sleep_mock.await_count == 2
 
     asyncio.run(_exercise())
