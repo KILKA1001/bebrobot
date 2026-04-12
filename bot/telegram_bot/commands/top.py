@@ -89,12 +89,14 @@ def _render_top_text(*, period: str, page: int) -> tuple[str, InlineKeyboardMark
         "Период можно переключать кнопками ниже."
     )
 
-    lines = [f"<b>Период:</b> {period_label}", f"<b>Страница:</b> {safe_page + 1}/{total_pages}", ""]
+    lines: list[str] = []
     if not page_entries:
         lines.append("Пока нет данных для отображения.")
     else:
         for idx, (user_id, points) in enumerate(page_entries, start=start + 1):
             lines.append(f"{idx}. <b>{_resolve_display_name(int(user_id))}</b> — {format_points(points)} баллов")
+
+    lines.extend(["", f"<b>Период:</b> {period_label}", f"<b>Страница:</b> {safe_page + 1}/{total_pages}"])
 
     text = f"{header}\n\n" + "\n".join(lines)
     return text, _build_top_keyboard(period=safe_period, page=safe_page, total_pages=total_pages)

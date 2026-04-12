@@ -793,12 +793,10 @@ class TopView(SafeView):
             PointsService.LEADERBOARD_PERIOD_MONTH: "За месяц",
             PointsService.LEADERBOARD_PERIOD_WEEK: "За неделю",
         }.get(self.mode, "Все время")
-        period_hint = "Периоды: «Все время», «За месяц», «За неделю». Переключение — кнопками ниже."
-
         if not entries:
             embed = discord.Embed(
                 title="🏆 Топ участников",
-                description=f"{period_hint}\n\nНет данных для отображения.",
+                description="Нет данных для отображения.",
                 color=discord.Color.gold(),
             )
             embed.set_footer(text=f"Страница {self.page}/{self.total_pages} • Период: {period_label}")
@@ -822,7 +820,6 @@ class TopView(SafeView):
             footer=f"Страница {self.page}/{self.total_pages} • Период: {period_label}",
             start_index=start + 1,
         )
-        embed.description = period_hint
         return embed
 
     @discord.ui.button(label="◀️", style=discord.ButtonStyle.gray)
