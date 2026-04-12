@@ -24,7 +24,7 @@ from bot.systems.core_logic import (
     update_roles,
     get_help_embed,
     HelpView,
-    LeaderboardView,
+    TopView,
     build_balance_embed,
 )
 from bot.legacy_identity_logging import log_legacy_identity_fallback_used
@@ -115,11 +115,11 @@ async def _check_command_authority(ctx: commands.Context, command_key: str, targ
 )
 async def top(ctx):
     try:
-        view = LeaderboardView(ctx)
+        view = TopView(ctx)
         await send_temp(ctx, embed=view.get_embed(), view=view)
     except Exception:
         logger.exception(
-            "leaderboard command failed platform=%s actor_id=%s guild_id=%s mode=%s",
+            "top command failed platform=%s actor_id=%s guild_id=%s mode=%s",
             "discord",
             ctx.author.id if ctx.author else None,
             ctx.guild.id if ctx.guild else None,
