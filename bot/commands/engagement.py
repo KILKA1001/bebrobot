@@ -315,13 +315,87 @@ class EngagementMenuView(discord.ui.View):
             child.disabled = True
 
     def sync_buttons(self):
-        for child in self.children:
-            if not isinstance(child, discord.ui.Button):
-                continue
-            if self.domain == "points":
-                child.disabled = child.label in {"🎟️ + Обычные", "🎟️ - Обычные", "🪙 + Золотые", "🪙 - Золотые"}
-            else:
-                child.disabled = child.label in {"➕ Начислить баллы", "➖ Снять баллы"}
+        domain_buttons = {
+            "points": ("help_button", "points_add", "points_remove"),
+            "tickets": (
+                "help_button",
+                "tickets_add_normal",
+                "tickets_remove_normal",
+                "tickets_add_gold",
+                "tickets_remove_gold",
+            ),
+        }
+        try:
+            allowed_names = set(domain_buttons.get(self.domain, ("help_button",)))
+            if self.domain not in domain_buttons:
+                logger.warning(
+                    "discord engagement sync_buttons got unknown domain=%s actor_id=%s target_id=%s",
+                    self.domain,
+                    self.actor_id,
+                    getattr(self.target, "id", None),
+                )
+
+            known_buttons: dict[str, discord.ui.Button] = {}
+            for name in {
+                "help_button",
+                "points_add",
+                "points_remove",
+                "tickets_add_normal",
+                "tickets_remove_normal",
+                "tickets_add_gold",
+                "tickets_remove_gold",
+            }:
+                button = getattr(self, name, None)
+                if isinstance(button, discord.ui.Button):
+                    known_buttons[name] = button
+                else:
+                    logger.warning(
+                        "discord engagement sync_buttons missing expected button name=%s domain=%s",
+                        name,
+                        self.domain,
+                    )
+
+            button_to_name = {button: name for name, button in known_buttons.items()}
+
+            for child in list(self.children):
+                if not isinstance(child, discord.ui.Button):
+                    continue
+                button_name = button_to_name.get(child)
+                if not child.custom_id and not child.label:
+                    logger.warning(
+                        "discord engagement sync_buttons found button without custom_id/label domain=%s actor_id=%s",
+                        self.domain,
+                        self.actor_id,
+                    )
+                elif button_name is None:
+                    logger.warning(
+                        "discord engagement sync_buttons found unexpected button custom_id=%s label=%s domain=%s",
+                        child.custom_id,
+                        child.label,
+                        self.domain,
+                    )
+                if button_name not in allowed_names:
+                    self.remove_item(child)
+
+            for button_name in allowed_names:
+                button = known_buttons.get(button_name)
+                if not button:
+                    logger.warning(
+                        "discord engagement sync_buttons could not restore expected button name=%s domain=%s",
+                        button_name,
+                        self.domain,
+                    )
+                    continue
+                button.disabled = False
+                if button not in self.children:
+                    self.add_item(button)
+        except Exception:
+            logger.exception(
+                "discord engagement sync_buttons failed actor_id=%s target_id=%s domain=%s",
+                self.actor_id,
+                getattr(self.target, "id", None),
+                self.domain,
+            )
 
 
 async def _resolve_target_member(ctx: commands.Context, member: discord.Member | None) -> discord.Member | None:
