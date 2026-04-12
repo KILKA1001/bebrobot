@@ -6,6 +6,8 @@
 """
 
 import logging
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 
 from bot.data import db
 from bot.legacy_identity_logging import (
@@ -19,6 +21,14 @@ logger = logging.getLogger(__name__)
 
 
 class PointsService:
+    LEADERBOARD_PERIOD_ALL = "all"
+    LEADERBOARD_PERIOD_MONTH = "month"
+    LEADERBOARD_PERIOD_WEEK = "week"
+    LEADERBOARD_PERIOD_DAYS = {
+        LEADERBOARD_PERIOD_WEEK: 7,
+        LEADERBOARD_PERIOD_MONTH: 30,
+    }
+
     @staticmethod
     def _resolve_anchor_user_id(account_id: str) -> int | None:
         if not account_id:
@@ -140,6 +150,45 @@ class PointsService:
     def remove_points(discord_user_id: int, points: float, reason: str, author_id: int) -> bool:
         return PointsService.remove_points_by_identity("discord", str(discord_user_id), points, reason, author_id)
 
+    @staticmethod
+    def get_leaderboard_entries(period: str = LEADERBOARD_PERIOD_ALL) -> list[tuple[int, float]]:
+        normalized_period = str(period or PointsService.LEADERBOARD_PERIOD_ALL).strip().lower()
+        if normalized_period in PointsService.LEADERBOARD_PERIOD_DAYS:
+            days = int(PointsService.LEADERBOARD_PERIOD_DAYS[normalized_period])
+            return PointsService._get_scores_by_range(days)
+        return PointsService._get_all_time_scores()
+
+    @staticmethod
+    def _get_all_time_scores() -> list[tuple[int, float]]:
+        return sorted(((int(user_id), float(points)) for user_id, points in db.scores.items()), key=lambda item: item[1], reverse=True)
+
+    @staticmethod
+    def _get_scores_by_range(days: int) -> list[tuple[int, float]]:
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=int(days))
+        temp_scores = defaultdict(float)
+        for entry in db.actions:
+            if entry.get("is_undo"):
+                continue
+            ts = entry.get("timestamp")
+            if not ts:
+                continue
+            if isinstance(ts, str):
+                try:
+                    ts = datetime.fromisoformat(ts)
+                except Exception:
+                    continue
+            if not isinstance(ts, datetime):
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if ts >= cutoff:
+                try:
+                    user_id = int(entry["user_id"])
+                    temp_scores[user_id] += float(entry.get("points") or 0)
+                except (TypeError, ValueError, KeyError):
+                    continue
+        return sorted(temp_scores.items(), key=lambda item: item[1], reverse=True)
 
     @staticmethod
     def add_points_by_account(account_id: str, points: float, reason: str, author_account_id: str) -> bool:

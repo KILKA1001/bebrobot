@@ -112,11 +112,21 @@ async def _check_command_authority(ctx: commands.Context, command_key: str, targ
 
 
 @bot.hybrid_command(
-    name="leaderboard", description="Показать общий рейтинг по баллам"
+    name="top", description="Показать рейтинг по баллам"
 )
-async def leaderboard(ctx):
-    view = LeaderboardView(ctx)
-    await send_temp(ctx, embed=view.get_embed(), view=view)
+async def top(ctx):
+    try:
+        view = LeaderboardView(ctx)
+        await send_temp(ctx, embed=view.get_embed(), view=view)
+    except Exception:
+        logger.exception(
+            "leaderboard command failed platform=%s actor_id=%s guild_id=%s mode=%s",
+            "discord",
+            ctx.author.id if ctx.author else None,
+            ctx.guild.id if ctx.guild else None,
+            "all",
+        )
+        await send_temp(ctx, "❌ Не удалось открыть рейтинг. Подробности записаны в консоль.")
 
 
 @bot.hybrid_command(
