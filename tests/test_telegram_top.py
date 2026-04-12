@@ -48,3 +48,27 @@ class TelegramTopNameResolutionTests(unittest.TestCase):
 
         self.assertEqual(resolved, "Старое имя")
         self.assertTrue(any("top_name_regressed_to_id" in line for line in captured.output))
+
+    @patch("bot.telegram_bot.commands.top.AuthorityService.is_super_admin")
+    @patch("bot.telegram_bot.commands.top.AccountsService.get_best_public_name")
+    @patch("bot.telegram_bot.commands.top.AccountsService.resolve_account_id")
+    def test_resolve_display_name_logs_admin_hint_for_id_fallback(
+        self,
+        mock_resolve_account_id,
+        mock_get_best_public_name,
+        mock_is_super_admin,
+    ):
+        mock_resolve_account_id.return_value = None
+        mock_get_best_public_name.return_value = None
+        mock_is_super_admin.return_value = True
+
+        with self.assertLogs("bot.telegram_bot.commands.top", level="INFO") as captured:
+            resolved = _resolve_display_name(
+                77,
+                period="all",
+                page=0,
+                admin_actor_user_id=999,
+            )
+
+        self.assertEqual(resolved, "ID 77")
+        self.assertTrue(any("top id fallback admin hint" in line for line in captured.output))

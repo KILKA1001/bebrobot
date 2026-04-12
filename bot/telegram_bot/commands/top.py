@@ -17,7 +17,7 @@ from aiogram.filters import Command
 from aiogram.enums import ParseMode
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, User
 
-from bot.services import AccountsService, PointsService
+from bot.services import AccountsService, AuthorityService, PointsService
 from bot.telegram_bot.identity import persist_telegram_identity_from_user
 from bot.utils import format_points
 
@@ -177,6 +177,7 @@ def _resolve_display_name(
     local_telegram_names: dict[int, str] | None = None,
     local_telegram_users: dict[int, User] | None = None,
     chat_id: int | None = None,
+    admin_actor_user_id: int | None = None,
 ) -> str:
     if session_state is not None:
         cached = session_state.resolved_names.get(int(user_id))
@@ -234,6 +235,15 @@ def _resolve_display_name(
         period,
         page,
     )
+    if admin_actor_user_id and AuthorityService.is_super_admin("telegram", str(admin_actor_user_id)):
+        logger.info(
+            "top id fallback admin hint platform=%s source_user_id=%s period=%s page=%s hint=%s",
+            "telegram",
+            user_id,
+            period,
+            page,
+            "Профиль не привязан или lookup-поля пустые. Проверьте account_identities и обновление identity.",
+        )
     fallback_name = f"ID {user_id}"
     if session_state is not None:
         previous_name = session_state.seen_non_id_names.get(int(user_id))
@@ -259,6 +269,7 @@ def _render_top_text(
     local_telegram_names: dict[int, str] | None = None,
     local_telegram_users: dict[int, User] | None = None,
     chat_id: int | None = None,
+    admin_actor_user_id: int | None = None,
 ) -> tuple[str, InlineKeyboardMarkup]:
     safe_period = _normalize_period(period)
     entries = PointsService.get_leaderboard_entries(safe_period)
@@ -281,7 +292,7 @@ def _render_top_text(
     else:
         for idx, (user_id, points) in enumerate(page_entries, start=start + 1):
             lines.append(
-                f"{idx}. <b>{_resolve_display_name(int(user_id), period=safe_period, page=safe_page, session_state=session_state, local_telegram_names=local_telegram_names, local_telegram_users=local_telegram_users, chat_id=chat_id)}</b> — {format_points(points)} баллов"
+                f"{idx}. <b>{_resolve_display_name(int(user_id), period=safe_period, page=safe_page, session_state=session_state, local_telegram_names=local_telegram_names, local_telegram_users=local_telegram_users, chat_id=chat_id, admin_actor_user_id=admin_actor_user_id)}</b> — {format_points(points)} баллов"
             )
 
     lines.extend(["", f"<b>Период:</b> {period_label}", f"<b>Страница:</b> {safe_page + 1}/{total_pages}"])
@@ -312,6 +323,7 @@ async def top_command(message: Message) -> None:
             local_telegram_names=local_telegram_names,
             local_telegram_users=local_telegram_users,
             chat_id=chat_id,
+            admin_actor_user_id=actor_id,
         )
         sent = await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
         if sent.chat:
@@ -375,6 +387,7 @@ async def top_callback(callback: CallbackQuery) -> None:
             local_telegram_names=state.local_telegram_names,
             local_telegram_users=state.local_telegram_users,
             chat_id=chat_id,
+            admin_actor_user_id=actor_id,
         )
         await callback.message.edit_text(text=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
         await callback.answer()

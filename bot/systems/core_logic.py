@@ -917,6 +917,18 @@ class TopView(SafeView):
                             self.page,
                             self.ctx.guild.id if self.ctx.guild else None,
                         )
+                        actor_id = getattr(getattr(self, "ctx", None), "author", None)
+                        actor_user_id = getattr(actor_id, "id", None)
+                        if actor_user_id and AuthorityService.is_super_admin("discord", str(actor_user_id)):
+                            logger.info(
+                                "top id fallback admin hint platform=%s source_user_id=%s period=%s page=%s guild_id=%s hint=%s",
+                                "discord",
+                                uid,
+                                self.mode,
+                                self.page,
+                                self.ctx.guild.id if self.ctx.guild else None,
+                                "Профиль не привязан или lookup-поля пустые. Проверьте account_identities и обновление identity.",
+                            )
                         name = f"ID {uid}"
                     self._resolved_name_cache[int(uid)] = str(name)
 
