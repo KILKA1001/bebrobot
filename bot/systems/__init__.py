@@ -5,8 +5,6 @@ from bot.systems.core_logic import (
     render_history,
     HistoryView,
     log_action_cancellation,
-    run_monthly_top,
-    tophistory
 )
 
 __all__ = [
@@ -14,7 +12,5 @@ __all__ = [
     "render_history",
     "HistoryView",
     "log_action_cancellation",
-    "run_monthly_top",
-    "tophistory",
     "bets_logic",
 ]

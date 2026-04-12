@@ -532,12 +532,6 @@ async def on_ready():
             operation_id="startup-loop-9",
             startup_burst=True,
         )
-        _create_task_with_startup_logging(
-            monthly_top_task(),
-            step="monthly_top_task",
-            operation_id="startup-loop-10",
-            startup_burst=True,
-        )
 
     print('--- Ленивый режим загрузки данных активирован ---')
     print("📡 Задачи активированы.")
@@ -770,59 +764,10 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 async def monthly_top_task():
-    await bot.wait_until_ready()
-    while not bot.is_closed():
-        now = datetime.now(pytz.timezone('Europe/Moscow'))
-        if now.day == 1:
-            try:
-                if db.supabase:
-                    check = db.supabase.table("monthly_top_log") \
-                        .select("id") \
-                        .eq("month", now.month) \
-                        .eq("year", now.year) \
-                        .execute()
-                    if check.data:
-                        print("⏳ Топ уже начислен в этом месяце")
-                        await asyncio.sleep(3600)
-                        continue
-
-                logging.info("discord get_channel begin channel_id=%s", TOP_CHANNEL_ID)
-                channel = bot.get_channel(TOP_CHANNEL_ID)
-                logging.info(
-                    "discord get_channel complete channel_id=%s found=%s",
-                    TOP_CHANNEL_ID,
-                    isinstance(channel, discord.TextChannel),
-                )
-                if isinstance(channel, discord.TextChannel):
-                    msg = await safe_send(
-                        channel,
-                        "🔁 Запускаем автоматический топ месяца...",
-                    )
-                    logging.info(
-                        "discord get_context begin channel_id=%s source=monthly_top_task message_exists=%s",
-                        getattr(channel, "id", None),
-                        bool(msg or channel.last_message),
-                    )
-                    ctx = await bot.get_context(msg or channel.last_message)
-                    logging.info(
-                        "discord get_context complete channel_id=%s source=monthly_top_task valid=%s",
-                        getattr(channel, "id", None),
-                        getattr(ctx, "valid", False),
-                    )
-
-                    from bot.systems.core_logic import run_monthly_top
-                    await run_monthly_top(ctx, now.month, now.year)
-
-                    logging.info(
-                        "legacy monthly fine top flow disabled source=monthly_top_task reason=rep_primary_entrypoint"
-                    )
-                else:
-                    logging.error("❌ Указанный канал недоступен или не текстовый channel_id=%s", TOP_CHANNEL_ID)
-
-            except Exception:
-                logging.exception("❌ Ошибка автозапуска топа месяца")
-
-        await asyncio.sleep(3600)
+    logging.error(
+        "legacy month-top flow called unexpectedly function=monthly_top_task top_channel_id=%s",
+        TOP_CHANNEL_ID,
+    )
 
 
 def should_sync_commands() -> bool:

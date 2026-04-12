@@ -953,31 +953,6 @@ class Database:
             traceback.print_exc()
         return 0
 
-    def log_monthly_top(self, entries: list, month: int, year: int):
-        """Запись топа месяца в Supabase"""
-        if not self.supabase:
-            logger.warning("Supabase не инициализирован для логирования топа")
-            return False
-
-        log_entries = [
-            {
-                "user_id": uid,
-                "month": month,
-                "year": year,
-                "place": i + 1,
-                "bonus": round(points * percent, 2)
-            }
-            for i, (uid, points, percent) in enumerate(entries)
-        ]
-
-        try:
-            self.supabase.table("monthly_top_log").insert(log_entries).execute()
-            logger.info("✅ Лог топа месяца записан")
-            return True
-        except Exception as e:
-            logger.error(f"❌ Ошибка записи топа месяца: {e}")
-            return False
-
 #Штрафы
     def load_fines(self):
         """Загружает штрафы и оплаты из Supabase"""
