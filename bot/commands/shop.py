@@ -28,7 +28,7 @@ from bot.services.shop_service import (
     get_shop_page_slice,
     purchase_shop_item,
 )
-from bot.utils import send_temp
+from bot.utils import safe_followup_send, send_temp
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,10 @@ DM_FALLBACK_TEXT = (
 
 class ShopView(discord.ui.View):
     def __init__(self, *, author_id: int, account_id: str | None, page: int = 0):
-        super().__init__(timeout=600)
+        # Не ограничиваем время жизни панели в рамках текущего процесса бота.
+        # Это позволяет пользователю взаимодействовать с магазином без принудительного
+        # таймаута View (при условии, что бот запущен и сообщение не удалено).
+        super().__init__(timeout=None)
         self.author_id = int(author_id)
         self.account_id = account_id
         self.page = max(int(page), 0)
@@ -85,10 +88,11 @@ class ShopView(discord.ui.View):
                 self.account_id,
             )
             try:
+                await self._ack_component_interaction(interaction, action="category_roles")
                 self.mode = "list"
                 self.page = 0
                 self._render()
-                await interaction.response.edit_message(embed=self._list_embed(), view=self)
+                await interaction.message.edit(embed=self._list_embed(), view=self)
             except Exception as error:  # noqa: BLE001
                 logger.exception(
                     "shop_list_screen_render_error provider=discord actor_user_id=%s action=category_select error=%s",
@@ -100,7 +104,7 @@ class ShopView(discord.ui.View):
                     self.author_id,
                     error,
                 )
-                await interaction.response.send_message(SHOP_TEXT_PROTECTED_FAILURE, ephemeral=True)
+                await self._send_interaction_error(interaction)
 
         roles_btn.callback = roles_cb
         self.add_item(roles_btn)
@@ -163,17 +167,18 @@ class ShopView(discord.ui.View):
                 self.account_id,
             )
             try:
+                await self._ack_component_interaction(interaction, action="back_to_categories")
                 self.mode = "categories"
                 self.selected_item_id = None
                 self._render()
-                await interaction.response.edit_message(embed=self._category_embed(), view=self)
+                await interaction.message.edit(embed=self._category_embed(), view=self)
             except Exception as error:  # noqa: BLE001
                 logger.exception(
                     "shop_category_screen_render_error provider=discord actor_user_id=%s source=grid error=%s",
                     self.author_id,
                     error,
                 )
-                await interaction.response.send_message(SHOP_TEXT_PROTECTED_FAILURE, ephemeral=True)
+                await self._send_interaction_error(interaction)
 
         back.callback = back_cb
         next_btn.callback = next_cb
@@ -198,9 +203,10 @@ class ShopView(discord.ui.View):
 
         async def buy_cb(interaction: discord.Interaction):
             try:
+                await self._ack_component_interaction(interaction, action="open_confirm")
                 self.mode = "confirm"
                 self._render()
-                await interaction.response.edit_message(embed=self._item_confirm_embed(item), view=self)
+                await interaction.message.edit(embed=self._item_confirm_embed(item), view=self)
             except Exception as error:  # noqa: BLE001
                 logger.exception(
                     "shop_confirm_screen_render_error provider=discord actor_user_id=%s shop_item_id=%s error=%s",
@@ -208,20 +214,21 @@ class ShopView(discord.ui.View):
                     item.shop_item_id,
                     error,
                 )
-                await interaction.response.send_message(SHOP_TEXT_PROTECTED_FAILURE, ephemeral=True)
+                await self._send_interaction_error(interaction)
 
         async def back_cb(interaction: discord.Interaction):
             try:
+                await self._ack_component_interaction(interaction, action="back_from_card")
                 self.mode = "list"
                 self._render()
-                await interaction.response.edit_message(embed=self._list_embed(), view=self)
+                await interaction.message.edit(embed=self._list_embed(), view=self)
             except Exception as error:  # noqa: BLE001
                 logger.exception(
                     "shop_list_screen_render_error provider=discord actor_user_id=%s action=back_from_card error=%s",
                     self.author_id,
                     error,
                 )
-                await interaction.response.send_message(SHOP_TEXT_PROTECTED_FAILURE, ephemeral=True)
+                await self._send_interaction_error(interaction)
 
         buy_btn.callback = buy_cb
         back_btn.callback = back_cb
@@ -240,6 +247,7 @@ class ShopView(discord.ui.View):
         cancel_btn = discord.ui.Button(label="Отмена", style=discord.ButtonStyle.secondary)
 
         async def confirm_cb(interaction: discord.Interaction):
+            await self._ack_component_interaction(interaction, action="confirm_purchase")
             result = purchase_shop_item(
                 account_id=str(self.account_id or ""),
                 shop_item_id=item.shop_item_id,
@@ -257,7 +265,7 @@ class ShopView(discord.ui.View):
                 )
                 self.mode = "card"
                 self._render()
-                await interaction.response.edit_message(embed=self._item_embed(item), view=self)
+                await interaction.message.edit(embed=self._item_embed(item), view=self)
                 await interaction.followup.send(result.message, ephemeral=True)
                 return
 
@@ -272,13 +280,14 @@ class ShopView(discord.ui.View):
             )
             embed = self._category_embed()
             embed.description = f"{embed.description}\n\n{result.message}"
-            await interaction.response.edit_message(embed=embed, view=self)
+            await interaction.message.edit(embed=embed, view=self)
 
         async def cancel_cb(interaction: discord.Interaction):
             try:
+                await self._ack_component_interaction(interaction, action="cancel_confirm")
                 self.mode = "card"
                 self._render()
-                await interaction.response.edit_message(embed=self._item_embed(item), view=self)
+                await interaction.message.edit(embed=self._item_embed(item), view=self)
             except Exception as error:  # noqa: BLE001
                 logger.exception(
                     "shop_card_screen_render_error provider=discord actor_user_id=%s action=cancel_confirm shop_item_id=%s error=%s",
@@ -286,7 +295,7 @@ class ShopView(discord.ui.View):
                     item.shop_item_id,
                     error,
                 )
-                await interaction.response.send_message(SHOP_TEXT_PROTECTED_FAILURE, ephemeral=True)
+                await self._send_interaction_error(interaction)
 
         confirm_btn.callback = confirm_cb
         cancel_btn.callback = cancel_cb
@@ -303,6 +312,26 @@ class ShopView(discord.ui.View):
             await interaction.response.send_message("Эта панель доступна только автору команды /shop.", ephemeral=True)
             return False
         return True
+
+    async def _ack_component_interaction(self, interaction: discord.Interaction, *, action: str) -> None:
+        if interaction.response.is_done():
+            return
+        try:
+            await interaction.response.defer()
+        except Exception as error:  # noqa: BLE001
+            logger.exception(
+                "shop_interaction_ack_error provider=discord actor_user_id=%s action=%s error=%s",
+                self.author_id,
+                action,
+                error,
+            )
+            raise
+
+    async def _send_interaction_error(self, interaction: discord.Interaction) -> None:
+        if interaction.response.is_done():
+            await safe_followup_send(interaction, SHOP_TEXT_PROTECTED_FAILURE, ephemeral=True)
+            return
+        await interaction.response.send_message(SHOP_TEXT_PROTECTED_FAILURE, ephemeral=True)
 
     def _list_embed(self) -> discord.Embed:
         payload = build_shop_render_payload(self.account_id)
@@ -352,6 +381,7 @@ class ShopView(discord.ui.View):
 
     async def _switch_page(self, interaction: discord.Interaction, *, requested_page: int, action: str) -> None:
         try:
+            await self._ack_component_interaction(interaction, action=f"page_{action}")
             old_page = self.page
             items = get_shop_catalog_items(log_context="shop:discord:page_switch", account_id=self.account_id)
             page_data = get_shop_page_slice(items, requested_page, page_size=SHOP_PAGE_SIZE)
@@ -367,7 +397,7 @@ class ShopView(discord.ui.View):
                 self.total_pages,
                 action,
             )
-            await interaction.response.edit_message(embed=self._list_embed(), view=self)
+            await interaction.message.edit(embed=self._list_embed(), view=self)
         except Exception as error:  # noqa: BLE001
             logger.exception(
                 "shop_list_screen_render_error provider=discord actor_user_id=%s requested_page=%s action=%s error=%s",
@@ -376,10 +406,11 @@ class ShopView(discord.ui.View):
                 action,
                 error,
             )
-            await interaction.response.send_message(SHOP_TEXT_PROTECTED_FAILURE, ephemeral=True)
+            await self._send_interaction_error(interaction)
 
     async def _on_item_click(self, interaction: discord.Interaction, *, shop_item_id: str, page: int) -> None:
         try:
+            await self._ack_component_interaction(interaction, action="open_item_card")
             items = get_shop_catalog_items(log_context="shop:discord:item", account_id=self.account_id)
             item = find_shop_item(items, shop_item_id)
             if not item:
@@ -388,7 +419,10 @@ class ShopView(discord.ui.View):
                     self.author_id,
                     shop_item_id,
                 )
-                await interaction.response.send_message(SHOP_TEXT_ITEM_NOT_FOUND, ephemeral=True)
+                if interaction.response.is_done():
+                    await safe_followup_send(interaction, SHOP_TEXT_ITEM_NOT_FOUND, ephemeral=True)
+                else:
+                    await interaction.response.send_message(SHOP_TEXT_ITEM_NOT_FOUND, ephemeral=True)
                 return
             self.page = max(int(page), 0)
             self.mode = "card"
@@ -401,7 +435,7 @@ class ShopView(discord.ui.View):
                 shop_item_id,
                 self.page + 1,
             )
-            await interaction.response.edit_message(embed=self._item_embed(item), view=self)
+            await interaction.message.edit(embed=self._item_embed(item), view=self)
         except Exception as error:  # noqa: BLE001
             logger.exception(
                 "shop_card_screen_render_error provider=discord actor_user_id=%s shop_item_id=%s error=%s",
@@ -409,7 +443,7 @@ class ShopView(discord.ui.View):
                 shop_item_id,
                 error,
             )
-            await interaction.response.send_message(SHOP_TEXT_PROTECTED_FAILURE, ephemeral=True)
+            await self._send_interaction_error(interaction)
 
 
 @bot.hybrid_command(name="shop", description="Открыть магазин (в личных сообщениях)")
