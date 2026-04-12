@@ -1452,11 +1452,11 @@ class Database:
 
     def log_monthly_fine_top(self, entries: list):
         logger.warning(
-            "legacy monthly fine top write blocked entries=%s table=monthly_fine_hst reason=topfines_retired",
+            "legacy monthly fine top write blocked entries=%s reason=topfines_retired",
             len(entries or []),
         )
         logger.warning(
-            "legacy storage remains compatibility-only table=fines monthly_table=monthly_fine_hst action=skip_write",
+            "legacy storage remains compatibility-only table=fines action=skip_write",
         )
         return False
 
