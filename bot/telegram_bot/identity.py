@@ -24,7 +24,9 @@ def persist_telegram_identity_from_user(user: Any | None) -> None:
         )
     except Exception:
         logger.exception(
-            "persist_telegram_identity_from_user crashed user_id=%s username=%s",
+            "persist_telegram_identity_from_user crashed provider=%s provider_user_id=%s chat_id=%s source_handler=%s",
+            "telegram",
             getattr(user, "id", None),
-            getattr(user, "username", None),
+            None,
+            "telegram.persist_telegram_identity_from_user",
         )

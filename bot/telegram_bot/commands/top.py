@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from aiogram import F, Router
@@ -75,12 +76,69 @@ def _local_telegram_name_from_user(user: User | None) -> str | None:
     return None
 
 
+def _schedule_soft_identity_refresh_telegram(
+    *,
+    provider_user_id: int,
+    chat_id: int | None,
+    source_handler: str,
+    local_user: User | None,
+) -> None:
+    if local_user is None:
+        logger.info(
+            "telegram top soft identity refresh skipped provider=%s provider_user_id=%s chat_id=%s source_handler=%s reason=%s",
+            "telegram",
+            provider_user_id,
+            chat_id,
+            source_handler,
+            "user_object_missing",
+        )
+        return
+
+    async def _runner() -> None:
+        try:
+            AccountsService.refresh_identity_from_platform_user(
+                "telegram",
+                local_user,
+                source_handler=source_handler,
+                chat_id=chat_id,
+            )
+        except Exception:
+            logger.exception(
+                "telegram top soft identity refresh failed provider=%s provider_user_id=%s chat_id=%s source_handler=%s",
+                "telegram",
+                provider_user_id,
+                chat_id,
+                source_handler,
+            )
+
+    try:
+        asyncio.get_running_loop().create_task(_runner())
+        logger.info(
+            "telegram top soft identity refresh launched provider=%s provider_user_id=%s chat_id=%s source_handler=%s",
+            "telegram",
+            provider_user_id,
+            chat_id,
+            source_handler,
+        )
+    except RuntimeError:
+        logger.warning(
+            "telegram top soft identity refresh skipped provider=%s provider_user_id=%s chat_id=%s source_handler=%s reason=%s",
+            "telegram",
+            provider_user_id,
+            chat_id,
+            source_handler,
+            "event_loop_unavailable",
+        )
+
+
 def _resolve_display_name(
     user_id: int,
     *,
     period: str,
     page: int,
     local_telegram_names: dict[int, str] | None = None,
+    local_telegram_users: dict[int, User] | None = None,
+    chat_id: int | None = None,
 ) -> str:
     account_id = None
     try:
@@ -111,6 +169,12 @@ def _resolve_display_name(
     if local_name:
         return local_name
 
+    _schedule_soft_identity_refresh_telegram(
+        provider_user_id=int(user_id),
+        chat_id=chat_id,
+        source_handler="telegram.top_render",
+        local_user=(local_telegram_users or {}).get(int(user_id)),
+    )
     logger.warning(
         "top name fallback to id platform=%s source_user_id=%s resolved_account_id=%s period=%s page=%s",
         "telegram",
@@ -122,7 +186,14 @@ def _resolve_display_name(
     return f"ID {user_id}"
 
 
-def _render_top_text(*, period: str, page: int, local_telegram_names: dict[int, str] | None = None) -> tuple[str, InlineKeyboardMarkup]:
+def _render_top_text(
+    *,
+    period: str,
+    page: int,
+    local_telegram_names: dict[int, str] | None = None,
+    local_telegram_users: dict[int, User] | None = None,
+    chat_id: int | None = None,
+) -> tuple[str, InlineKeyboardMarkup]:
     safe_period = _normalize_period(period)
     entries = PointsService.get_leaderboard_entries(safe_period)
     total_pages = max(1, (len(entries) + _PAGE_SIZE - 1) // _PAGE_SIZE)
@@ -144,7 +215,7 @@ def _render_top_text(*, period: str, page: int, local_telegram_names: dict[int, 
     else:
         for idx, (user_id, points) in enumerate(page_entries, start=start + 1):
             lines.append(
-                f"{idx}. <b>{_resolve_display_name(int(user_id), period=safe_period, page=safe_page, local_telegram_names=local_telegram_names)}</b> — {format_points(points)} баллов"
+                f"{idx}. <b>{_resolve_display_name(int(user_id), period=safe_period, page=safe_page, local_telegram_names=local_telegram_names, local_telegram_users=local_telegram_users, chat_id=chat_id)}</b> — {format_points(points)} баллов"
             )
 
     lines.extend(["", f"<b>Период:</b> {period_label}", f"<b>Страница:</b> {safe_page + 1}/{total_pages}"])
@@ -163,8 +234,15 @@ async def top_command(message: Message) -> None:
     period = PointsService.LEADERBOARD_PERIOD_ALL
     local_telegram_names = {message.from_user.id: _local_telegram_name_from_user(message.from_user)}
     local_telegram_names = {uid: name for uid, name in local_telegram_names.items() if name}
+    local_telegram_users = {message.from_user.id: message.from_user}
     try:
-        text, keyboard = _render_top_text(period=period, page=0, local_telegram_names=local_telegram_names)
+        text, keyboard = _render_top_text(
+            period=period,
+            page=0,
+            local_telegram_names=local_telegram_names,
+            local_telegram_users=local_telegram_users,
+            chat_id=chat_id,
+        )
         await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
     except Exception:
         logger.exception(
@@ -198,6 +276,7 @@ async def top_callback(callback: CallbackQuery) -> None:
     mode = _normalize_period(period)
     local_telegram_names = {callback.from_user.id: _local_telegram_name_from_user(callback.from_user)}
     local_telegram_names = {uid: name for uid, name in local_telegram_names.items() if name}
+    local_telegram_users = {callback.from_user.id: callback.from_user}
 
     if action not in {"period", "page"}:
         await callback.answer("Неизвестное действие", show_alert=True)
@@ -205,7 +284,13 @@ async def top_callback(callback: CallbackQuery) -> None:
 
     try:
         page = int(page_raw)
-        text, keyboard = _render_top_text(period=mode, page=page, local_telegram_names=local_telegram_names)
+        text, keyboard = _render_top_text(
+            period=mode,
+            page=page,
+            local_telegram_names=local_telegram_names,
+            local_telegram_users=local_telegram_users,
+            chat_id=chat_id,
+        )
         await callback.message.edit_text(text=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
         await callback.answer()
     except Exception:

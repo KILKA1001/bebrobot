@@ -4,6 +4,7 @@
 Где используется: общая логика.
 """
 
+import asyncio
 import discord
 from dataclasses import dataclass
 from typing import Optional
@@ -68,6 +69,45 @@ def _resolve_account_id_from_discord(discord_user_id: int, *, handler: str) -> s
         discord_user_id=discord_user_id,
     )
     return None
+
+
+def _schedule_soft_identity_refresh_discord(user_obj, *, guild_id: int | None, source_handler: str) -> None:
+    async def _runner() -> None:
+        try:
+            AccountsService.refresh_identity_from_platform_user(
+                "discord",
+                user_obj,
+                source_handler=source_handler,
+                guild_id=guild_id,
+            )
+        except Exception:
+            logger.exception(
+                "top soft identity refresh failed provider=%s provider_user_id=%s guild_id=%s source_handler=%s",
+                "discord",
+                getattr(user_obj, "id", None),
+                guild_id,
+                source_handler,
+            )
+
+    try:
+        asyncio.get_running_loop().create_task(_runner())
+        logger.info(
+            "top soft identity refresh launched provider=%s provider_user_id=%s guild_id=%s source_handler=%s",
+            "discord",
+            getattr(user_obj, "id", None),
+            guild_id,
+            source_handler,
+        )
+    except RuntimeError:
+        logger.warning(
+            "top soft identity refresh skipped provider=%s provider_user_id=%s guild_id=%s source_handler=%s reason=%s",
+            "discord",
+            getattr(user_obj, "id", None),
+            guild_id,
+            source_handler,
+            "event_loop_unavailable",
+        )
+
 
 
 def _ensure_core_data_loaded() -> None:
@@ -842,6 +882,12 @@ class TopView(SafeView):
                 if identity_name:
                     name = str(identity_name)
                 else:
+                    if member is not None:
+                        _schedule_soft_identity_refresh_discord(
+                            member,
+                            guild_id=self.ctx.guild.id if self.ctx.guild else None,
+                            source_handler="discord.top_render",
+                        )
                     logger.warning(
                         "top name fallback to id platform=%s source_user_id=%s resolved_account_id=%s period=%s page=%s guild_id=%s",
                         "discord",

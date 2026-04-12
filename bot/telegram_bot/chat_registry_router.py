@@ -13,6 +13,7 @@ from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 
 from bot.services import GuiyPublishDestinationsService
+from bot.telegram_bot.identity import persist_telegram_identity_from_user
 
 logger = logging.getLogger(__name__)
 router = Router(name="telegram_chat_registry")
@@ -70,3 +71,38 @@ async def remember_bot_membership(update: ChatMemberUpdated) -> None:
         chat_type=getattr(chat, "type", None),
         is_active=is_active,
     )
+
+
+@router.chat_member(F.chat.type.in_(_GROUP_CHAT_TYPES))
+async def remember_user_membership(update: ChatMemberUpdated) -> None:
+    _remember_chat(update.chat)
+
+    old_status = str(getattr(getattr(update, "old_chat_member", None), "status", "") or "").strip()
+    new_status = str(getattr(getattr(update, "new_chat_member", None), "status", "") or "").strip()
+
+    transitioned_to_active = old_status in {"left", "kicked"} and new_status in {"member", "administrator", "creator", "restricted"}
+    transitioned_from_active = old_status in {"member", "administrator", "creator", "restricted"} and new_status in {"left", "kicked"}
+
+    member_user = getattr(getattr(update, "new_chat_member", None), "user", None)
+    if transitioned_to_active and member_user is not None and not getattr(member_user, "is_bot", False):
+        persist_telegram_identity_from_user(member_user)
+        logger.info(
+            "telegram chat_member identity refresh started provider=%s provider_user_id=%s chat_id=%s source_handler=%s old_status=%s new_status=%s",
+            "telegram",
+            getattr(member_user, "id", None),
+            getattr(update.chat, "id", None),
+            "telegram.chat_member",
+            old_status,
+            new_status,
+        )
+
+    if transitioned_to_active or transitioned_from_active:
+        logger.info(
+            "telegram user chat membership update chat_id=%s user_id=%s old_status=%s new_status=%s",
+            getattr(update.chat, "id", None),
+            getattr(member_user, "id", None),
+            old_status,
+            new_status,
+        )
+
+    raise SkipHandler()

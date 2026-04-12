@@ -13,7 +13,7 @@ import uuid
 import re
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 from bot.data import db
 from bot.legacy_identity_logging import log_legacy_schema_fallback
@@ -538,6 +538,117 @@ class AccountsService:
                 return {"status": "ok", "lookup_value": token, "candidates": candidates, "result": candidates[0]}
 
         return {"status": "not_found", "lookup_value": token, "candidates": [], "reason": "not_found"}
+
+
+    @staticmethod
+    def refresh_identity_from_platform_user(
+        provider: str,
+        user_obj: Any | None,
+        *,
+        source_handler: str,
+        guild_id: int | str | None = None,
+        chat_id: int | str | None = None,
+    ) -> str:
+        """Обновляет lookup-поля identity из объекта пользователя платформы."""
+
+        normalized_provider = str(provider or "").strip().lower()
+        if user_obj is None:
+            logger.info(
+                "refresh_identity_from_platform_user result=%s provider=%s provider_user_id=%s source_handler=%s guild_id=%s chat_id=%s fallback_reason=%s",
+                "skipped",
+                normalized_provider,
+                None,
+                source_handler,
+                guild_id,
+                chat_id,
+                "user_obj_missing",
+            )
+            return "skipped"
+
+        provider_user_id = str(getattr(user_obj, "id", "") or "").strip()
+        if not provider_user_id:
+            logger.info(
+                "refresh_identity_from_platform_user result=%s provider=%s provider_user_id=%s source_handler=%s guild_id=%s chat_id=%s fallback_reason=%s",
+                "skipped",
+                normalized_provider,
+                None,
+                source_handler,
+                guild_id,
+                chat_id,
+                "provider_user_id_missing",
+            )
+            return "skipped"
+
+        username_sources = (
+            str(getattr(user_obj, "name", "") or "").strip(),
+            str(getattr(user_obj, "username", "") or "").strip(),
+        )
+        display_sources = (
+            str(getattr(user_obj, "display_name", "") or "").strip(),
+            str(getattr(user_obj, "full_name", "") or "").strip(),
+            str(getattr(user_obj, "global_name", "") or "").strip(),
+        )
+
+        username = next((value for value in username_sources if value), None)
+        display_name = next((value for value in display_sources if value), None)
+        global_username = str(getattr(user_obj, "global_name", "") or "").strip() or None
+
+        fallback_reasons: list[str] = []
+        if username and username == username_sources[1] and not username_sources[0]:
+            fallback_reasons.append("username_from_username_field")
+        if display_name and display_name == display_sources[1] and not display_sources[0]:
+            fallback_reasons.append("display_name_from_full_name")
+        if display_name and display_name == display_sources[2] and not display_sources[0] and not display_sources[1]:
+            fallback_reasons.append("display_name_from_global_name")
+        if not username and not display_name and not global_username:
+            fallback_reasons.append("all_identity_fields_empty")
+
+        try:
+            before_row = AccountsService._load_identity_row(normalized_provider, provider_user_id)
+            AccountsService.persist_identity_lookup_fields(
+                normalized_provider,
+                provider_user_id,
+                username=username,
+                display_name=display_name,
+                global_username=global_username,
+            )
+            after_row = AccountsService._load_identity_row(normalized_provider, provider_user_id)
+
+            status = "skipped"
+            if before_row is None and after_row is not None:
+                status = "inserted"
+            elif before_row is not None and after_row is not None:
+                tracked_fields = ("username", "display_name", "global_username")
+                changed = any(
+                    str((before_row or {}).get(field) or "").strip()
+                    != str((after_row or {}).get(field) or "").strip()
+                    for field in tracked_fields
+                )
+                status = "updated" if changed else "skipped"
+            elif before_row is None and after_row is None:
+                status = "skipped"
+
+            logger.info(
+                "refresh_identity_from_platform_user result=%s provider=%s provider_user_id=%s source_handler=%s guild_id=%s chat_id=%s fallback_reason=%s",
+                status,
+                normalized_provider,
+                provider_user_id,
+                source_handler,
+                guild_id,
+                chat_id,
+                ",".join(fallback_reasons) if fallback_reasons else "none",
+            )
+            return status
+        except Exception:
+            logger.exception(
+                "refresh_identity_from_platform_user failed provider=%s provider_user_id=%s guild_id=%s chat_id=%s source_handler=%s",
+                normalized_provider,
+                provider_user_id,
+                guild_id,
+                chat_id,
+                source_handler,
+            )
+            return "skipped"
 
     @staticmethod
     def persist_identity_lookup_fields(
