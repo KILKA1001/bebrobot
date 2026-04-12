@@ -8,7 +8,6 @@ import discord
 from dataclasses import dataclass
 from typing import Optional
 from datetime import datetime, timezone, timedelta
-from collections import defaultdict
 import pytz
 import traceback
 import logging
@@ -19,7 +18,7 @@ from bot.legacy_identity_logging import (
     log_legacy_identity_path_detected,
     log_legacy_schema_fallback,
 )
-from bot.services import AccountsService, AuthorityService
+from bot.services import AccountsService, AuthorityService, PointsService
 from bot.services.profile_titles import normalize_protected_profile_title
 from bot.utils.roles_and_activities import ROLE_THRESHOLDS
 from bot.utils import (
@@ -712,7 +711,7 @@ def get_help_embed(category: str, visibility: HelpVisibilityContext | None = Non
     if category == "points":
         lines = [
             "`/balance [@пользователь]` — показать текущий баланс.",
-            "`/leaderboard` — топ пользователей по баллам.",
+            "`/top` — открыть рейтинг по баллам с периодами: все время, месяц, неделя.",
             "`/history [@пользователь] [страница]` — история изменений баллов.",
         ]
         if _help_can_manage_points(visibility):
@@ -881,47 +880,27 @@ class LeaderboardView(SafeView):
         self.update_embed_data()
 
     def update_embed_data(self):
-        if self.mode == "week":
-            self.entries = self.get_scores_by_range(days=7)
-        elif self.mode == "month":
-            self.entries = self.get_scores_by_range(days=30)
-        else:
-            self.entries = sorted(db.scores.items(), key=lambda x: x[1], reverse=True)
+        self.entries = PointsService.get_leaderboard_entries(self.mode)
 
         self.total_pages = max(1, (len(self.entries) + self.page_size - 1) // self.page_size)
-
-    def get_scores_by_range(self, days):
-        now = datetime.now(timezone.utc)
-        cutoff = now - timedelta(days=days)
-        temp_scores = defaultdict(float)
-        for entry in db.actions:
-            if entry.get("is_undo"):
-                continue
-            ts = entry.get("timestamp")
-            if not ts:
-                continue  # Пропускаем пустые timestamp
-            if isinstance(ts, str):
-                try:
-                    ts = datetime.fromisoformat(ts)
-                except Exception:
-                    continue
-            if not ts or not isinstance(ts, datetime):
-                continue  # Пропускаем если не удалось распарсить
-            if ts >= cutoff:
-                temp_scores[int(entry["user_id"])] += float(entry["points"])
-        return sorted(temp_scores.items(), key=lambda x: x[1], reverse=True)
 
     def get_embed(self):
         start = (self.page - 1) * self.page_size
         entries = self.entries[start:start + self.page_size]
+        period_label = {
+            PointsService.LEADERBOARD_PERIOD_ALL: "Все время",
+            PointsService.LEADERBOARD_PERIOD_MONTH: "За месяц",
+            PointsService.LEADERBOARD_PERIOD_WEEK: "За неделю",
+        }.get(self.mode, "Все время")
+        period_hint = "Периоды: «Все время», «За месяц», «За неделю». Переключение — кнопками ниже."
 
         if not entries:
             embed = discord.Embed(
                 title="🏆 Топ участников",
-                description="Нет данных для отображения.",
+                description=f"{period_hint}\n\nНет данных для отображения.",
                 color=discord.Color.gold(),
             )
-            embed.set_footer(text=f"Страница {self.page}/{self.total_pages} • Режим: {self.mode}")
+            embed.set_footer(text=f"Страница {self.page}/{self.total_pages} • Период: {period_label}")
             return embed
 
         formatted = []
@@ -935,47 +914,98 @@ class LeaderboardView(SafeView):
             role_text = f"\nРоль: {', '.join(roles)}" if roles else ""
             formatted.append((name, f"**{format_points(points)}** баллов{role_text}"))
 
-        footer = f"Страница {self.page}/{self.total_pages} • Режим: {self.mode}"
-        return build_top_embed(
+        embed = build_top_embed(
             title="🏆 Топ участников",
             entries=formatted,
             color=discord.Color.gold(),
-            footer=footer,
+            footer=f"Страница {self.page}/{self.total_pages} • Период: {period_label}",
             start_index=start + 1,
         )
+        embed.description = period_hint
+        return embed
 
     @discord.ui.button(label="◀️", style=discord.ButtonStyle.gray)
     async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.page > 1:
-            self.page -= 1
-            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        try:
+            if self.page > 1:
+                self.page -= 1
+                await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        except Exception:
+            logger.exception(
+                "leaderboard interaction failed platform=%s actor_id=%s guild_id=%s mode=%s action=%s",
+                "discord",
+                interaction.user.id if interaction.user else None,
+                interaction.guild_id,
+                self.mode,
+                "prev_page",
+            )
 
     @discord.ui.button(label="▶️", style=discord.ButtonStyle.gray)
     async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.page < self.total_pages:
-            self.page += 1
-            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        try:
+            if self.page < self.total_pages:
+                self.page += 1
+                await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        except Exception:
+            logger.exception(
+                "leaderboard interaction failed platform=%s actor_id=%s guild_id=%s mode=%s action=%s",
+                "discord",
+                interaction.user.id if interaction.user else None,
+                interaction.guild_id,
+                self.mode,
+                "next_page",
+            )
 
-    @discord.ui.button(label="Неделя", style=discord.ButtonStyle.blurple)
+    @discord.ui.button(label="За неделю", style=discord.ButtonStyle.blurple)
     async def mode_week(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.mode = "week"
-        self.page = 1
-        self.update_embed_data()
-        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        try:
+            self.mode = PointsService.LEADERBOARD_PERIOD_WEEK
+            self.page = 1
+            self.update_embed_data()
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        except Exception:
+            logger.exception(
+                "leaderboard interaction failed platform=%s actor_id=%s guild_id=%s mode=%s action=%s",
+                "discord",
+                interaction.user.id if interaction.user else None,
+                interaction.guild_id,
+                PointsService.LEADERBOARD_PERIOD_WEEK,
+                "set_mode",
+            )
 
-    @discord.ui.button(label="Месяц", style=discord.ButtonStyle.blurple)
+    @discord.ui.button(label="За месяц", style=discord.ButtonStyle.blurple)
     async def mode_month(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.mode = "month"
-        self.page = 1
-        self.update_embed_data()
-        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        try:
+            self.mode = PointsService.LEADERBOARD_PERIOD_MONTH
+            self.page = 1
+            self.update_embed_data()
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        except Exception:
+            logger.exception(
+                "leaderboard interaction failed platform=%s actor_id=%s guild_id=%s mode=%s action=%s",
+                "discord",
+                interaction.user.id if interaction.user else None,
+                interaction.guild_id,
+                PointsService.LEADERBOARD_PERIOD_MONTH,
+                "set_mode",
+            )
 
     @discord.ui.button(label="Все время", style=discord.ButtonStyle.green)
     async def mode_all(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.mode = "all"
-        self.page = 1
-        self.update_embed_data()
-        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        try:
+            self.mode = PointsService.LEADERBOARD_PERIOD_ALL
+            self.page = 1
+            self.update_embed_data()
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        except Exception:
+            logger.exception(
+                "leaderboard interaction failed platform=%s actor_id=%s guild_id=%s mode=%s action=%s",
+                "discord",
+                interaction.user.id if interaction.user else None,
+                interaction.guild_id,
+                PointsService.LEADERBOARD_PERIOD_ALL,
+                "set_mode",
+            )
 
 async def transfer_data_logic(old_id: int, new_id: int) -> discord.Embed:
     success = db.transfer_user_data(old_id, new_id)
