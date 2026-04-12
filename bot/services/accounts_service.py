@@ -45,6 +45,10 @@ class AccountsService:
     MAX_VISIBLE_PROFILE_ROLES = 3
     ACCOUNT_ID_CACHE_TTL_SEC = int(os.getenv("ACCOUNT_ID_CACHE_TTL_SEC", "300"))
     FALLBACK_CHAT_MEMBER_TITLE = "участник чата"
+    PURGE_RESULT_PURGED = "purged"
+    PURGE_RESULT_SKIPPED_LINKED = "skipped_linked"
+    PURGE_RESULT_SKIPPED_NOT_FOUND = "skipped_not_found"
+    PURGE_RESULT_FAILED = "failed"
 
     @staticmethod
     def _account_id_cache_key(provider: str, provider_user_id: str) -> tuple[str, str]:
@@ -2425,3 +2429,90 @@ class AccountsService:
                 db._inc_metric("unlink_fail")
             logger.error("unlink_identity failed (%s:%s): %s", provider, provider_user_id, e)
             return False, "Ошибка unlink"
+
+    @staticmethod
+    def purge_unlinked_identity(provider: str, provider_user_id: str) -> tuple[bool, str]:
+        normalized_provider = str(provider or "").strip().lower()
+        normalized_user_id = str(provider_user_id or "").strip()
+        if not db.supabase:
+            logger.error(
+                "identity_purge_result=%s provider=%s provider_user_id=%s reason=db_unavailable",
+                AccountsService.PURGE_RESULT_FAILED,
+                normalized_provider,
+                normalized_user_id,
+            )
+            return False, AccountsService.PURGE_RESULT_FAILED
+
+        if normalized_provider not in {"discord", "telegram"} or not normalized_user_id:
+            logger.warning(
+                "identity_purge_result=%s provider=%s provider_user_id=%s reason=invalid_params",
+                AccountsService.PURGE_RESULT_FAILED,
+                normalized_provider,
+                normalized_user_id,
+            )
+            return False, AccountsService.PURGE_RESULT_FAILED
+
+        try:
+            lookup = (
+                db.supabase.table("account_identities")
+                .select("provider,provider_user_id,account_id")
+                .eq("provider", normalized_provider)
+                .eq("provider_user_id", normalized_user_id)
+                .limit(1)
+                .execute()
+            )
+            rows = lookup.data or []
+            if not rows:
+                logger.info(
+                    "identity_purge_result=%s provider=%s provider_user_id=%s",
+                    AccountsService.PURGE_RESULT_SKIPPED_NOT_FOUND,
+                    normalized_provider,
+                    normalized_user_id,
+                )
+                return False, AccountsService.PURGE_RESULT_SKIPPED_NOT_FOUND
+
+            account_id = str(rows[0].get("account_id") or "").strip()
+            if account_id:
+                logger.info(
+                    "identity_purge_result=%s provider=%s provider_user_id=%s account_id=%s event=skip_purge_linked_account",
+                    AccountsService.PURGE_RESULT_SKIPPED_LINKED,
+                    normalized_provider,
+                    normalized_user_id,
+                    account_id,
+                )
+                return False, AccountsService.PURGE_RESULT_SKIPPED_LINKED
+
+            deleted = (
+                db.supabase.table("account_identities")
+                .delete()
+                .eq("provider", normalized_provider)
+                .eq("provider_user_id", normalized_user_id)
+                .is_("account_id", "null")
+                .execute()
+            )
+            deleted_rows = deleted.data or []
+            if not deleted_rows:
+                logger.info(
+                    "identity_purge_result=%s provider=%s provider_user_id=%s reason=row_missing_on_delete",
+                    AccountsService.PURGE_RESULT_SKIPPED_NOT_FOUND,
+                    normalized_provider,
+                    normalized_user_id,
+                )
+                return False, AccountsService.PURGE_RESULT_SKIPPED_NOT_FOUND
+
+            AccountsService.invalidate_account_id_cache(normalized_provider, normalized_user_id)
+            logger.info(
+                "identity_purge_result=%s provider=%s provider_user_id=%s",
+                AccountsService.PURGE_RESULT_PURGED,
+                normalized_provider,
+                normalized_user_id,
+            )
+            return True, AccountsService.PURGE_RESULT_PURGED
+        except Exception:
+            logger.exception(
+                "identity_purge_result=%s provider=%s provider_user_id=%s",
+                AccountsService.PURGE_RESULT_FAILED,
+                normalized_provider,
+                normalized_user_id,
+            )
+            return False, AccountsService.PURGE_RESULT_FAILED

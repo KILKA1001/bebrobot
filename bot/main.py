@@ -584,6 +584,29 @@ async def on_member_join(member: discord.Member):
 
 
 @bot.event
+async def on_member_remove(member: discord.Member):
+    from bot.services import AccountsService
+
+    try:
+        purged, purge_result = AccountsService.purge_unlinked_identity("discord", str(member.id))
+        logging.info(
+            "discord member remove identity purge completed provider=%s provider_user_id=%s guild_id=%s purged=%s purge_result=%s",
+            "discord",
+            member.id,
+            member.guild.id if member.guild else None,
+            purged,
+            purge_result,
+        )
+    except Exception:
+        logging.exception(
+            "discord member remove identity purge failed provider=%s provider_user_id=%s guild_id=%s",
+            "discord",
+            member.id,
+            member.guild.id if member.guild else None,
+        )
+
+
+@bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
         return

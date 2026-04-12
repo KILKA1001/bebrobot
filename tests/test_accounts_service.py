@@ -885,6 +885,34 @@ class AccountsServiceTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(message, "Аккаунт успешно привязан")
 
+    def test_purge_unlinked_identity_purges_row_with_null_account_id(self):
+        self.fake_db.tables["account_identities"] = [
+            {"provider": "telegram", "provider_user_id": "321", "account_id": None}
+        ]
+
+        ok, result = AccountsService.purge_unlinked_identity("telegram", "321")
+
+        self.assertTrue(ok)
+        self.assertEqual(result, AccountsService.PURGE_RESULT_PURGED)
+        self.assertEqual(self.fake_db.tables["account_identities"], [])
+
+    def test_purge_unlinked_identity_skips_when_linked_account_exists(self):
+        self.fake_db.tables["account_identities"] = [
+            {"provider": "discord", "provider_user_id": "654", "account_id": "acc-9"}
+        ]
+
+        ok, result = AccountsService.purge_unlinked_identity("discord", "654")
+
+        self.assertFalse(ok)
+        self.assertEqual(result, AccountsService.PURGE_RESULT_SKIPPED_LINKED)
+        self.assertEqual(len(self.fake_db.tables["account_identities"]), 1)
+
+    def test_purge_unlinked_identity_returns_skipped_not_found(self):
+        ok, result = AccountsService.purge_unlinked_identity("telegram", "999")
+
+        self.assertFalse(ok)
+        self.assertEqual(result, AccountsService.PURGE_RESULT_SKIPPED_NOT_FOUND)
+
 
 if __name__ == "__main__":
     unittest.main()

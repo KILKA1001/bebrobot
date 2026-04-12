@@ -14,6 +14,7 @@ from bot.telegram_bot.chat_registry_router import (
     remember_group_callback,
     remember_group_edited_message,
     remember_group_message,
+    remember_user_membership,
 )
 
 
@@ -49,6 +50,25 @@ class TelegramChatRegistryRouterTests(unittest.IsolatedAsyncioTestCase):
                 await remember_group_callback(callback)
 
         register_mock.assert_called_once()
+
+    async def test_chat_member_left_triggers_purge_for_regular_user(self):
+        update = SimpleNamespace(
+            chat=SimpleNamespace(id=-1001, title="Группа", type="supergroup"),
+            old_chat_member=SimpleNamespace(status="member"),
+            new_chat_member=SimpleNamespace(
+                status="left",
+                user=SimpleNamespace(id=777, is_bot=False),
+            ),
+        )
+
+        with (
+            patch("bot.telegram_bot.chat_registry_router.GuiyPublishDestinationsService.register_telegram_chat"),
+            patch("bot.telegram_bot.chat_registry_router.AccountsService.purge_unlinked_identity", return_value=(True, "purged")) as purge_mock,
+        ):
+            with self.assertRaises(SkipHandler):
+                await remember_user_membership(update)
+
+        purge_mock.assert_called_once_with("telegram", "777")
 
 
 if __name__ == "__main__":
