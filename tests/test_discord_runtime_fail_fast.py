@@ -131,3 +131,19 @@ def test_restore_runtime_views_once_skips_duplicate_db_reads_on_reconnect():
     assert get_status_mock.call_count == 1
     assert list_participants_mock.call_count == 1
     assert add_view_mock.call_count == 3
+
+
+def test_on_member_remove_triggers_unlinked_identity_purge():
+    bot_main = load_bot_main()
+    member = type(
+        "Member",
+        (),
+        {"id": 555, "guild": type("Guild", (), {"id": 42})()},
+    )()
+
+    async def _exercise() -> None:
+        with patch("bot.services.AccountsService.purge_unlinked_identity", return_value=(True, "purged")) as purge_mock:
+            await bot_main.on_member_remove(member)
+            purge_mock.assert_called_once_with("discord", "555")
+
+    asyncio.run(_exercise())

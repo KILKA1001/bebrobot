@@ -12,6 +12,7 @@ from aiogram import F, Router
 from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 
+from bot.services import AccountsService
 from bot.services import GuiyPublishDestinationsService
 from bot.telegram_bot.identity import persist_telegram_identity_from_user
 
@@ -95,6 +96,29 @@ async def remember_user_membership(update: ChatMemberUpdated) -> None:
             old_status,
             new_status,
         )
+
+    if new_status in {"left", "kicked"} and member_user is not None and not getattr(member_user, "is_bot", False):
+        try:
+            purged, purge_result = AccountsService.purge_unlinked_identity("telegram", str(member_user.id))
+            logger.info(
+                "telegram chat_member identity purge completed provider=%s provider_user_id=%s chat_id=%s purged=%s purge_result=%s old_status=%s new_status=%s",
+                "telegram",
+                getattr(member_user, "id", None),
+                getattr(update.chat, "id", None),
+                purged,
+                purge_result,
+                old_status,
+                new_status,
+            )
+        except Exception:
+            logger.exception(
+                "telegram chat_member identity purge failed provider=%s provider_user_id=%s chat_id=%s old_status=%s new_status=%s",
+                "telegram",
+                getattr(member_user, "id", None),
+                getattr(update.chat, "id", None),
+                old_status,
+                new_status,
+            )
 
     if transitioned_to_active or transitioned_from_active:
         logger.info(
