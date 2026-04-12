@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from dataclasses import dataclass, field
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -24,6 +26,7 @@ router = Router()
 
 _PAGE_SIZE = 5
 _CALLBACK_PREFIX = "top"
+_SESSION_TTL_SECONDS = 60 * 30
 
 _PERIOD_LABELS = {
     PointsService.LEADERBOARD_PERIOD_ALL: "Все время",
@@ -32,11 +35,45 @@ _PERIOD_LABELS = {
 }
 
 
+@dataclass
+class _TopMessageSessionState:
+    resolved_names: dict[int, str] = field(default_factory=dict)
+    seen_non_id_names: dict[int, str] = field(default_factory=dict)
+    local_telegram_names: dict[int, str] = field(default_factory=dict)
+    local_telegram_users: dict[int, User] = field(default_factory=dict)
+    expires_at: float = 0.0
+
+
+_TOP_MESSAGE_SESSION_STATE: dict[tuple[int, int], _TopMessageSessionState] = {}
+
+
 def _normalize_period(period: str | None) -> str:
     normalized = str(period or PointsService.LEADERBOARD_PERIOD_ALL).strip().lower()
     if normalized in _PERIOD_LABELS:
         return normalized
     return PointsService.LEADERBOARD_PERIOD_ALL
+
+
+def _is_id_fallback_name(name: str) -> bool:
+    return str(name).startswith("ID ")
+
+
+def _cleanup_expired_sessions() -> None:
+    now = time.time()
+    stale_keys = [key for key, state in _TOP_MESSAGE_SESSION_STATE.items() if state.expires_at <= now]
+    for key in stale_keys:
+        _TOP_MESSAGE_SESSION_STATE.pop(key, None)
+
+
+def _get_or_create_session_state(chat_id: int, message_id: int) -> _TopMessageSessionState:
+    _cleanup_expired_sessions()
+    key = (int(chat_id), int(message_id))
+    state = _TOP_MESSAGE_SESSION_STATE.get(key)
+    if state is None:
+        state = _TopMessageSessionState()
+        _TOP_MESSAGE_SESSION_STATE[key] = state
+    state.expires_at = time.time() + _SESSION_TTL_SECONDS
+    return state
 
 
 def _build_top_keyboard(*, period: str, page: int, total_pages: int) -> InlineKeyboardMarkup:
@@ -136,10 +173,16 @@ def _resolve_display_name(
     *,
     period: str,
     page: int,
+    session_state: _TopMessageSessionState | None = None,
     local_telegram_names: dict[int, str] | None = None,
     local_telegram_users: dict[int, User] | None = None,
     chat_id: int | None = None,
 ) -> str:
+    if session_state is not None:
+        cached = session_state.resolved_names.get(int(user_id))
+        if cached:
+            return cached
+
     account_id = None
     try:
         account_id = AccountsService.resolve_account_id("telegram", str(user_id))
@@ -156,7 +199,12 @@ def _resolve_display_name(
         try:
             account_best_name = AccountsService.get_best_public_name(None, None, account_id=account_id)
             if account_best_name:
-                return str(account_best_name)
+                resolved = str(account_best_name)
+                if session_state is not None:
+                    session_state.resolved_names[int(user_id)] = resolved
+                    if not _is_id_fallback_name(resolved):
+                        session_state.seen_non_id_names[int(user_id)] = resolved
+                return resolved
         except Exception:
             logger.exception(
                 "telegram top resolve identity name failed platform=%s user_id=%s account_id=%s",
@@ -167,6 +215,9 @@ def _resolve_display_name(
 
     local_name = (local_telegram_names or {}).get(int(user_id))
     if local_name:
+        if session_state is not None:
+            session_state.resolved_names[int(user_id)] = str(local_name)
+            session_state.seen_non_id_names[int(user_id)] = str(local_name)
         return local_name
 
     _schedule_soft_identity_refresh_telegram(
@@ -183,13 +234,28 @@ def _resolve_display_name(
         period,
         page,
     )
-    return f"ID {user_id}"
+    fallback_name = f"ID {user_id}"
+    if session_state is not None:
+        previous_name = session_state.seen_non_id_names.get(int(user_id))
+        if previous_name:
+            logger.warning(
+                "top_name_regressed_to_id platform=%s user_id=%s period=%s page=%s",
+                "telegram",
+                user_id,
+                period,
+                page,
+            )
+            session_state.resolved_names[int(user_id)] = previous_name
+            return previous_name
+        session_state.resolved_names[int(user_id)] = fallback_name
+    return fallback_name
 
 
 def _render_top_text(
     *,
     period: str,
     page: int,
+    session_state: _TopMessageSessionState | None = None,
     local_telegram_names: dict[int, str] | None = None,
     local_telegram_users: dict[int, User] | None = None,
     chat_id: int | None = None,
@@ -215,7 +281,7 @@ def _render_top_text(
     else:
         for idx, (user_id, points) in enumerate(page_entries, start=start + 1):
             lines.append(
-                f"{idx}. <b>{_resolve_display_name(int(user_id), period=safe_period, page=safe_page, local_telegram_names=local_telegram_names, local_telegram_users=local_telegram_users, chat_id=chat_id)}</b> — {format_points(points)} баллов"
+                f"{idx}. <b>{_resolve_display_name(int(user_id), period=safe_period, page=safe_page, session_state=session_state, local_telegram_names=local_telegram_names, local_telegram_users=local_telegram_users, chat_id=chat_id)}</b> — {format_points(points)} баллов"
             )
 
     lines.extend(["", f"<b>Период:</b> {period_label}", f"<b>Страница:</b> {safe_page + 1}/{total_pages}"])
@@ -235,15 +301,25 @@ async def top_command(message: Message) -> None:
     local_telegram_names = {message.from_user.id: _local_telegram_name_from_user(message.from_user)}
     local_telegram_names = {uid: name for uid, name in local_telegram_names.items() if name}
     local_telegram_users = {message.from_user.id: message.from_user}
+    session_state = _TopMessageSessionState()
+    session_state.local_telegram_names.update(local_telegram_names)
+    session_state.local_telegram_users.update(local_telegram_users)
     try:
         text, keyboard = _render_top_text(
             period=period,
             page=0,
+            session_state=session_state,
             local_telegram_names=local_telegram_names,
             local_telegram_users=local_telegram_users,
             chat_id=chat_id,
         )
-        await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        sent = await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        if sent.chat:
+            state = _get_or_create_session_state(sent.chat.id, sent.message_id)
+            state.resolved_names.update(session_state.resolved_names)
+            state.seen_non_id_names.update(session_state.seen_non_id_names)
+            state.local_telegram_names.update(local_telegram_names)
+            state.local_telegram_users.update(local_telegram_users)
     except Exception:
         logger.exception(
             "telegram top command failed platform=%s actor_id=%s chat_id=%s period=%s page=%s",
@@ -274,9 +350,17 @@ async def top_callback(callback: CallbackQuery) -> None:
     actor_id = callback.from_user.id
     chat_id = callback.message.chat.id if callback.message else None
     mode = _normalize_period(period)
+    state = _get_or_create_session_state(chat_id, callback.message.message_id)
     local_telegram_names = {callback.from_user.id: _local_telegram_name_from_user(callback.from_user)}
     local_telegram_names = {uid: name for uid, name in local_telegram_names.items() if name}
-    local_telegram_users = {callback.from_user.id: callback.from_user}
+    state.local_telegram_names.update(local_telegram_names)
+    state.local_telegram_users[callback.from_user.id] = callback.from_user
+    _schedule_soft_identity_refresh_telegram(
+        provider_user_id=callback.from_user.id,
+        chat_id=chat_id,
+        source_handler="telegram.top_callback",
+        local_user=callback.from_user,
+    )
 
     if action not in {"period", "page"}:
         await callback.answer("Неизвестное действие", show_alert=True)
@@ -287,8 +371,9 @@ async def top_callback(callback: CallbackQuery) -> None:
         text, keyboard = _render_top_text(
             period=mode,
             page=page,
-            local_telegram_names=local_telegram_names,
-            local_telegram_users=local_telegram_users,
+            session_state=state,
+            local_telegram_names=state.local_telegram_names,
+            local_telegram_users=state.local_telegram_users,
             chat_id=chat_id,
         )
         await callback.message.edit_text(text=text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
