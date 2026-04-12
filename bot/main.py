@@ -90,6 +90,7 @@ commands_synced = False
 presence_initialized = False
 runtime_views_restored = False
 telegram_runtime_started = False
+discord_full_scan_started = False
 telegram_runtime_guard = asyncio.Lock()
 
 COMMAND_SYNC_STATE_FILE = os.getenv(
@@ -97,6 +98,8 @@ COMMAND_SYNC_STATE_FILE = os.getenv(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "command_sync_state.json"),
 )
 COMMAND_SYNC_MIN_INTERVAL = int(os.getenv("COMMAND_SYNC_MIN_INTERVAL", "21600"))
+DISCORD_FULL_SCAN_BATCH_SIZE = max(1, int(os.getenv("DISCORD_FULL_SCAN_BATCH_SIZE", "200")))
+DISCORD_FULL_SCAN_PAUSE_SECONDS = max(0.0, float(os.getenv("DISCORD_FULL_SCAN_PAUSE_SECONDS", "1.0")))
 bot = command_bot
 db.bot = bot
 
@@ -213,6 +216,95 @@ def _create_task_with_startup_logging(
         task_name=task.get_name(),
     )
     return task
+
+
+async def _run_discord_full_identity_scan_once() -> None:
+    from bot.services import AccountsService
+
+    totals = {"updated": 0, "inserted": 0, "skipped": 0}
+    logging.info(
+        "discord identity full scan started guilds=%s batch_size=%s pause_seconds=%s",
+        len(bot.guilds),
+        DISCORD_FULL_SCAN_BATCH_SIZE,
+        DISCORD_FULL_SCAN_PAUSE_SECONDS,
+    )
+
+    for guild in bot.guilds:
+        guild_totals = {"updated": 0, "inserted": 0, "skipped": 0}
+        processed = 0
+        current_batch = 0
+        try:
+            logging.info(
+                "discord identity full scan guild started guild_id=%s member_count=%s",
+                guild.id,
+                getattr(guild, "member_count", None),
+            )
+            async for member in guild.fetch_members(limit=None):
+                processed += 1
+                current_batch += 1
+                try:
+                    status = AccountsService.refresh_identity_from_platform_user(
+                        "discord",
+                        member,
+                        source_handler="discord.full_scan",
+                        guild_id=guild.id,
+                    )
+                except Exception:
+                    logging.exception(
+                        "discord identity full scan member refresh failed guild_id=%s member_id=%s",
+                        guild.id,
+                        getattr(member, "id", None),
+                    )
+                    status = "skipped"
+
+                normalized_status = status if status in guild_totals else "skipped"
+                guild_totals[normalized_status] += 1
+                totals[normalized_status] += 1
+
+                if current_batch >= DISCORD_FULL_SCAN_BATCH_SIZE:
+                    logging.info(
+                        "discord identity full scan progress guild_id=%s processed=%s updated=%s inserted=%s skipped=%s",
+                        guild.id,
+                        processed,
+                        guild_totals["updated"],
+                        guild_totals["inserted"],
+                        guild_totals["skipped"],
+                    )
+                    current_batch = 0
+                    if DISCORD_FULL_SCAN_PAUSE_SECONDS > 0:
+                        await asyncio.sleep(DISCORD_FULL_SCAN_PAUSE_SECONDS)
+
+            logging.info(
+                "discord identity full scan guild completed guild_id=%s processed=%s updated=%s inserted=%s skipped=%s",
+                guild.id,
+                processed,
+                guild_totals["updated"],
+                guild_totals["inserted"],
+                guild_totals["skipped"],
+            )
+        except discord.Forbidden:
+            logging.exception("discord identity full scan forbidden guild_id=%s", getattr(guild, "id", None))
+        except discord.HTTPException as exc:
+            log_discord_http_exception(
+                "discord identity full scan http exception",
+                exc,
+                stage="on_ready.full_scan",
+                guild_id=getattr(guild, "id", None),
+                processed=processed,
+            )
+        except Exception:
+            logging.exception(
+                "discord identity full scan failed guild_id=%s processed=%s",
+                getattr(guild, "id", None),
+                processed,
+            )
+
+    logging.info(
+        "discord identity full scan completed updated=%s inserted=%s skipped=%s",
+        totals["updated"],
+        totals["inserted"],
+        totals["skipped"],
+    )
 
 
 def _reset_discord_http_client_state(reason: str) -> None:
@@ -412,7 +504,7 @@ async def on_ready():
     print(f'🟢 Бот {bot.user} запущен!')
     print(f'Серверов: {len(bot.guilds)}')
 
-    global tasks_started, startup_tasks_started, commands_synced, presence_initialized
+    global tasks_started, startup_tasks_started, commands_synced, presence_initialized, discord_full_scan_started
     if not tasks_started:
         tasks_started = True
 
@@ -522,6 +614,15 @@ async def on_ready():
             logging.exception("❌ Ошибка синхронизации slash-команд | %s", _startup_context(step="tree_sync", should_sync=should_sync))
     
     _restore_runtime_views_once()
+
+    if not discord_full_scan_started:
+        discord_full_scan_started = True
+        _create_task_with_startup_logging(
+            _run_discord_full_identity_scan_once(),
+            step="discord_full_identity_scan_once",
+            operation_id="startup-once-full-scan",
+            startup_burst=True,
+        )
 
     # Не дублируем фоновые задачи при повторном on_ready (reconnect)
     if not startup_tasks_started:
