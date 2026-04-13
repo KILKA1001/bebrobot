@@ -11,9 +11,13 @@ from datetime import datetime, timedelta, timezone
 
 from bot.data import db
 from bot.services.accounts_service import AccountsService
+from bot.services.authority_service import AuthorityService
 from bot.services.council_pause_service import CouncilPauseService
 
 logger = logging.getLogger(__name__)
+
+_DECISION_ENTITY_TYPE = "council_decision"
+_FINAL_DECISION_FORBIDDEN_MESSAGE = "❌ Это действие доступно только суперадмину."
 
 
 class CouncilFeedbackService:
@@ -37,6 +41,143 @@ class CouncilFeedbackService:
                 provider_user_id,
             )
             return None
+
+    @staticmethod
+    def _record_final_decision_audit(
+        *,
+        provider: str,
+        actor_user_id: str,
+        action: str,
+        decision_id: int | None,
+        result: str,
+        reason: str,
+    ) -> None:
+        logger.info(
+            "council final decision audit provider=%s actor_user_id=%s action=%s decision_id=%s result=%s reason=%s",
+            provider,
+            actor_user_id,
+            action,
+            decision_id,
+            result,
+            reason,
+        )
+        if not db.supabase:
+            return
+        try:
+            db.supabase.table("council_audit_log").insert(
+                {
+                    "entity_type": _DECISION_ENTITY_TYPE,
+                    "entity_id": decision_id,
+                    "action": action,
+                    "status": result,
+                    "actor_profile_id": None,
+                    "source_platform": provider,
+                    "details": {
+                        "actor_user_id": actor_user_id,
+                        "result": result,
+                        "reason": reason,
+                    },
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ).execute()
+        except Exception:
+            logger.exception(
+                "council final decision audit write failed provider=%s actor_user_id=%s action=%s decision_id=%s",
+                provider,
+                actor_user_id,
+                action,
+                decision_id,
+            )
+
+    @staticmethod
+    def edit_final_decision(*, provider: str, actor_user_id: str, decision_id: int, decision_text: str) -> dict[str, object]:
+        normalized_provider = str(provider or "").strip().lower()
+        normalized_actor_user_id = str(actor_user_id or "").strip()
+        normalized_text = str(decision_text or "").strip()
+
+        if not AuthorityService.is_super_admin(normalized_provider, normalized_actor_user_id):
+            CouncilFeedbackService._record_final_decision_audit(
+                provider=normalized_provider,
+                actor_user_id=normalized_actor_user_id,
+                action="edit_final",
+                decision_id=decision_id,
+                result="denied",
+                reason="not_superadmin",
+            )
+            return {"ok": False, "reason": "forbidden", "message": _FINAL_DECISION_FORBIDDEN_MESSAGE}
+
+        CouncilFeedbackService._record_final_decision_audit(
+            provider=normalized_provider,
+            actor_user_id=normalized_actor_user_id,
+            action="edit_final",
+            decision_id=decision_id,
+            result="allowed",
+            reason="superadmin",
+        )
+
+        if not db.supabase:
+            logger.error("council edit final decision failed: db unavailable decision_id=%s", decision_id)
+            return {"ok": False, "reason": "db_unavailable", "message": "❌ База данных недоступна. Попробуйте позже."}
+        if not normalized_text:
+            return {"ok": False, "reason": "empty_text", "message": "❌ Введите текст итога перед сохранением."}
+
+        try:
+            db.supabase.table("council_decisions").update(
+                {
+                    "decision_text": normalized_text,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ).eq("id", int(decision_id)).execute()
+            return {"ok": True, "message": "✅ Итог обновлён."}
+        except Exception:
+            logger.exception(
+                "council edit final decision failed provider=%s actor_user_id=%s decision_id=%s",
+                normalized_provider,
+                normalized_actor_user_id,
+                decision_id,
+            )
+            return {"ok": False, "reason": "db_error", "message": "❌ Не удалось обновить итог. Попробуйте позже."}
+
+    @staticmethod
+    def delete_final_decision(*, provider: str, actor_user_id: str, decision_id: int) -> dict[str, object]:
+        normalized_provider = str(provider or "").strip().lower()
+        normalized_actor_user_id = str(actor_user_id or "").strip()
+
+        if not AuthorityService.is_super_admin(normalized_provider, normalized_actor_user_id):
+            CouncilFeedbackService._record_final_decision_audit(
+                provider=normalized_provider,
+                actor_user_id=normalized_actor_user_id,
+                action="delete_final",
+                decision_id=decision_id,
+                result="denied",
+                reason="not_superadmin",
+            )
+            return {"ok": False, "reason": "forbidden", "message": _FINAL_DECISION_FORBIDDEN_MESSAGE}
+
+        CouncilFeedbackService._record_final_decision_audit(
+            provider=normalized_provider,
+            actor_user_id=normalized_actor_user_id,
+            action="delete_final",
+            decision_id=decision_id,
+            result="allowed",
+            reason="superadmin",
+        )
+
+        if not db.supabase:
+            logger.error("council delete final decision failed: db unavailable decision_id=%s", decision_id)
+            return {"ok": False, "reason": "db_unavailable", "message": "❌ База данных недоступна. Попробуйте позже."}
+
+        try:
+            db.supabase.table("council_decisions").delete().eq("id", int(decision_id)).execute()
+            return {"ok": True, "message": "✅ Итог удалён."}
+        except Exception:
+            logger.exception(
+                "council delete final decision failed provider=%s actor_user_id=%s decision_id=%s",
+                normalized_provider,
+                normalized_actor_user_id,
+                decision_id,
+            )
+            return {"ok": False, "reason": "db_error", "message": "❌ Не удалось удалить итог. Попробуйте позже."}
 
     @staticmethod
     def _get_active_term_id() -> int | None:

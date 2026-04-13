@@ -103,3 +103,87 @@ def test_submit_proposal_when_pause_enabled_sets_waiting_launch_status(monkeypat
     assert result["status"] == "awaiting_term_launch"
     assert "Ожидает запуска созыва" in result["status_label"]
     assert inserted_payloads and inserted_payloads[0]["term_id"] == 77
+
+
+def test_edit_final_decision_denies_non_superadmin_and_writes_audit(monkeypatch):
+    audit_rows: list[dict[str, object]] = []
+
+    class _AuditTable:
+        def insert(self, payload: dict[str, object]):
+            audit_rows.append(payload)
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=[{"ok": True}])
+
+    class _Supabase:
+        def table(self, name: str):
+            if name == "council_audit_log":
+                return _AuditTable()
+            raise AssertionError(name)
+
+    monkeypatch.setattr("bot.services.council_feedback_service.db.supabase", _Supabase())
+    monkeypatch.setattr("bot.services.council_feedback_service.AuthorityService.is_super_admin", staticmethod(lambda *_args: False))
+
+    result = CouncilFeedbackService.edit_final_decision(
+        provider="telegram",
+        actor_user_id="111",
+        decision_id=7,
+        decision_text="Новый итог",
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "forbidden"
+    assert "только суперадмину" in result["message"].lower()
+    assert audit_rows
+    assert audit_rows[0]["entity_type"] == "council_decision"
+    assert audit_rows[0]["entity_id"] == 7
+    assert audit_rows[0]["status"] == "denied"
+    assert audit_rows[0]["details"]["actor_user_id"] == "111"
+
+
+def test_delete_final_decision_allows_superadmin_and_deletes_row(monkeypatch):
+    audit_rows: list[dict[str, object]] = []
+    deleted_ids: list[int] = []
+
+    class _AuditTable:
+        def insert(self, payload: dict[str, object]):
+            audit_rows.append(payload)
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=[{"ok": True}])
+
+    class _DecisionsTable:
+        def delete(self):
+            return self
+
+        def eq(self, _field: str, value: int):
+            deleted_ids.append(value)
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=[{"id": 9}])
+
+    class _Supabase:
+        def table(self, name: str):
+            if name == "council_audit_log":
+                return _AuditTable()
+            if name == "council_decisions":
+                return _DecisionsTable()
+            raise AssertionError(name)
+
+    monkeypatch.setattr("bot.services.council_feedback_service.db.supabase", _Supabase())
+    monkeypatch.setattr("bot.services.council_feedback_service.AuthorityService.is_super_admin", staticmethod(lambda *_args: True))
+
+    result = CouncilFeedbackService.delete_final_decision(
+        provider="discord",
+        actor_user_id="222",
+        decision_id=9,
+    )
+
+    assert result["ok"] is True
+    assert deleted_ids == [9]
+    assert audit_rows
+    assert audit_rows[0]["status"] == "allowed"
+    assert audit_rows[0]["details"]["reason"] == "superadmin"
