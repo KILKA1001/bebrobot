@@ -2039,7 +2039,7 @@ class ModerationService:
 
         if fine_applied and fine_points > 0:
             rollback_reason = f"Rollback moderation case #{case_row.get('id') if case_row else 'unknown'}"
-            if db.add_action_by_account(target_subject["account_id"], fine_points, rollback_reason, actor_subject["account_id"], is_undo=True, op_key=f"{op_key}:rollback:fine"):
+            if db.add_action_by_account(target_subject["account_id"], fine_points, rollback_reason, actor_subject["account_id"], op_key=f"{op_key}:rollback:fine"):
                 rolled_back.append("fine_apply")
             else:
                 dirty_state.append("fine_apply")

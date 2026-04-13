@@ -182,8 +182,6 @@ class PointsService:
         cutoff = now - timedelta(days=int(days))
         temp_scores = defaultdict(float)
         for entry in db.actions:
-            if entry.get("is_undo"):
-                continue
             ts = entry.get("timestamp")
             if not ts:
                 continue

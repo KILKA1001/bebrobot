@@ -194,7 +194,6 @@ def _normalize_history_entry(action: dict) -> dict:
         "reason": action.get("reason") or "Не указана",
         "author_account_id": action.get("author_account_id"),
         "timestamp": action.get("timestamp"),
-        "is_undo": bool(action.get("is_undo", False)),
     }
 
 
@@ -440,8 +439,6 @@ async def render_history(ctx_or_interaction, member: discord.Member, page: int):
         for action in page_actions:
             points = action.get("points", 0)
             emoji = "🟢" if points >= 0 else "🔴"
-            if action.get("is_undo", False):
-                emoji = "⚪"
 
             timestamp = action.get("timestamp")
             if isinstance(timestamp, str):
@@ -720,7 +717,6 @@ def get_help_embed(category: str, visibility: HelpVisibilityContext | None = Non
         embed.description = (
             "`/addpoints @пользователь сумма [причина]` — начислить баллы.\n"
             "`/removepoints @пользователь сумма [причина]` — снять баллы.\n"
-            "`/undo @пользователь [кол-во]` — отменить последние действия.\n"
             "`/points [@пользователь]` — открыть меню изменения баллов с подсказками по шагам."
         )
     elif category == "admin_fines":
