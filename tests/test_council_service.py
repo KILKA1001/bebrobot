@@ -169,3 +169,40 @@ def test_council_service_supports_tie_resolution_scheduler_and_publication():
     )
     assert publication.action == "runoff"
     assert "+1 день" in publication.body
+
+
+def test_council_service_question_flow_from_moderation_to_archive():
+    approved = council_service.decide_question_moderation_approval(
+        question_id=501,
+        current_status="draft",
+        moderator_profile_id="mod-501",
+        approved_at=datetime(2026, 4, 13, 13, 0, tzinfo=timezone.utc),
+    )
+    assert approved.accepted is True
+    assert approved.next_status == "discussion"
+
+    voting = council_service.decide_question_start_voting(
+        question_id=501,
+        current_status="discussion",
+        actor_profile_id="mod-501",
+        started_at=datetime(2026, 4, 13, 13, 0, tzinfo=timezone.utc),
+    )
+    assert voting.accepted is True
+    assert voting.next_status == "voting"
+    assert voting.voting_ends_at == datetime(2026, 4, 13, 13, 30, tzinfo=timezone.utc)
+
+    archive = council_service.resolve_question_voting_for_archive(
+        question_id=501,
+        current_status="voting",
+        votes=(
+            {"vote_value": "yes"},
+            {"vote_value": "no"},
+            {"vote_value": "yes"},
+        ),
+        required_comment="Большинство поддержало предложение.",
+        closed_by_profile_id="mod-501",
+        closed_at=datetime(2026, 4, 13, 13, 30, tzinfo=timezone.utc),
+    )
+    assert archive.accepted is True
+    assert archive.next_status == "decided"
+    assert (archive.archive_payload or {}).get("result") == "accepted"

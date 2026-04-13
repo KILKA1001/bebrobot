@@ -10,6 +10,9 @@ from bot.domain.council_lifecycle import (
     ElectionRoundResolution,
     ElectionSchedulerAction,
     ElectionStatusPublication,
+    QuestionArchiveDecision,
+    QuestionModerationDecision,
+    QuestionVotingTransitionDecision,
     ELECTION_STATUS_VALUES,
     QUESTION_STATUS_VALUES,
     TERM_STATUS_VALUES,
@@ -22,6 +25,9 @@ from bot.domain.council_lifecycle import (
     decide_ballot_submission,
     build_election_status_publication,
     build_term_launch_notification_targets,
+    decide_question_moderation_approval,
+    decide_question_start_voting,
+    resolve_question_voting_for_archive,
     decide_manual_candidate_addition,
     decide_candidate_review_action,
     decide_term_launch_confirmation,
@@ -210,6 +216,55 @@ class CouncilService:
             role_name=role_name,
             round_number=round_number,
             winner_mentions=winner_mentions,
+        )
+
+    def decide_question_moderation_approval(
+        self,
+        *,
+        question_id: int | None,
+        current_status: str,
+        moderator_profile_id: str,
+        approved_at: datetime | None = None,
+    ) -> QuestionModerationDecision:
+        return decide_question_moderation_approval(
+            question_id=question_id,
+            current_status=current_status,
+            moderator_profile_id=moderator_profile_id,
+            approved_at=approved_at,
+        )
+
+    def decide_question_start_voting(
+        self,
+        *,
+        question_id: int | None,
+        current_status: str,
+        actor_profile_id: str,
+        started_at: datetime | None = None,
+    ) -> QuestionVotingTransitionDecision:
+        return decide_question_start_voting(
+            question_id=question_id,
+            current_status=current_status,
+            actor_profile_id=actor_profile_id,
+            started_at=started_at,
+        )
+
+    def resolve_question_voting_for_archive(
+        self,
+        *,
+        question_id: int | None,
+        current_status: str,
+        votes: list[dict[str, object]] | tuple[dict[str, object], ...],
+        required_comment: str,
+        closed_by_profile_id: str,
+        closed_at: datetime | None = None,
+    ) -> QuestionArchiveDecision:
+        return resolve_question_voting_for_archive(
+            question_id=question_id,
+            current_status=current_status,
+            votes=votes,
+            required_comment=required_comment,
+            closed_by_profile_id=closed_by_profile_id,
+            closed_at=closed_at,
         )
 
 
