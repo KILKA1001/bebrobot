@@ -519,8 +519,13 @@ def test_council_service_process_replacement_assignment_triggers_retry_on_partia
     )
 
     assert result["ok"] is False
-    assert sequence == ["status_upsert", "discord_role", "journal"]
+    assert sequence == ["status_upsert", "discord_role", "journal", "journal"]
     assert triggered == [("member-new-778", "council_member_replacement_role_grant_failed")]
+
+
+def test_council_service_classifies_discord_link_missing_reason():
+    reason = council_service._classify_discord_sync_reason("discord_api_error", "timeout", discord_user_id=None)
+    assert reason == "discord_link_missing"
 
 
 def test_council_service_blocks_question_voting_start_when_pause_enabled(monkeypatch):

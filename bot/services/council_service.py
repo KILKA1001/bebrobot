@@ -54,8 +54,10 @@ from bot.services.council_pause_service import CouncilPauseService
 from bot.services.external_roles_sync_service import ExternalRolesSyncService
 from bot.services.role_management_service import RoleManagementService
 from bot.data import db
+from bot.utils.structured_logging import log_critical_event
 
 logger = logging.getLogger(__name__)
+_DISCORD_COUNCIL_ROLE_OPERATION_CODE = "council.discord.role_sync"
 
 
 @dataclass(frozen=True)
@@ -289,6 +291,16 @@ class CouncilService:
                 )
                 if result.get("ok"):
                     assigned += 1
+                    self._log_discord_council_role_sync(
+                        action="grant",
+                        guild_id=None,
+                        user_id=self._load_discord_user_id_for_account(account_id),
+                        term_id=None,
+                        council_role=role_code,
+                        discord_role_id=self._resolve_configured_discord_role_id(role_code),
+                        result="success",
+                        reason="ok",
+                    )
                     logger.info(
                         "council term formation role grant success account_id=%s role_code=%s project_role=%s discord_role_id=%s permissions_scope=organizational_visual_status_only",
                         account_id,
@@ -298,6 +310,22 @@ class CouncilService:
                     )
                     continue
                 failed += 1
+                discord_user_id = self._load_discord_user_id_for_account(account_id)
+                normalized_reason = self._classify_discord_sync_reason(
+                    str(result.get("reason") or "").strip() or None,
+                    str(result.get("message") or "").strip() or None,
+                    discord_user_id=discord_user_id,
+                )
+                correlation_id, request_id = self._log_discord_council_role_sync(
+                    action="grant",
+                    guild_id=None,
+                    user_id=discord_user_id,
+                    term_id=None,
+                    council_role=role_code,
+                    discord_role_id=self._resolve_configured_discord_role_id(role_code),
+                    result="failed",
+                    reason=normalized_reason,
+                )
                 logger.error(
                     "council term formation role grant failed account_id=%s role_code=%s project_role=%s discord_role_id=%s reason=%s message=%s",
                     account_id,
@@ -306,6 +334,28 @@ class CouncilService:
                     self._resolve_configured_discord_role_id(role_code),
                     result.get("reason"),
                     result.get("message"),
+                )
+                self._write_term_member_role_journal(
+                    term_id=None,
+                    entity_id=None,
+                    action="discord_council_role_sync_critical",
+                    status="failed",
+                    actor_profile_id=actor_user_id,
+                    source_platform=actor_provider if actor_provider in {"discord", "telegram", "system"} else "system",
+                    details={
+                        "operation_code": _DISCORD_COUNCIL_ROLE_OPERATION_CODE,
+                        "action": "grant",
+                        "platform": "discord",
+                        "guild_id": None,
+                        "user_id": discord_user_id,
+                        "term_id": None,
+                        "council_role": role_code,
+                        "discord_role_id": str(self._resolve_configured_discord_role_id(role_code) or ""),
+                        "result": "failed",
+                        "reason": normalized_reason,
+                        "correlation_id": correlation_id,
+                        "request_id": request_id,
+                    },
                 )
 
         return {
@@ -324,6 +374,72 @@ class CouncilService:
         if normalized_role_code == "observer":
             return self._discord_roles_config.observer_role_id
         return None
+
+    @staticmethod
+    def _load_discord_user_id_for_account(account_id: str) -> str | None:
+        account_key = str(account_id or "").strip()
+        if not account_key or not db.supabase:
+            return None
+        try:
+            response = (
+                db.supabase.table("account_identities")
+                .select("provider,provider_user_id")
+                .eq("account_id", account_key)
+                .execute()
+            )
+            for row in response.data or []:
+                provider = str(row.get("provider") or "").strip().lower()
+                provider_user_id = str(row.get("provider_user_id") or "").strip()
+                if provider == "discord" and provider_user_id:
+                    return provider_user_id
+        except Exception:
+            logger.exception("council discord role sync failed to load account identity account_id=%s", account_key)
+        return None
+
+    @staticmethod
+    def _classify_discord_sync_reason(reason: str | None, message: str | None, *, discord_user_id: str | None) -> str:
+        if not discord_user_id:
+            return "discord_link_missing"
+        reason_key = str(reason or "").strip().lower()
+        message_key = str(message or "").strip().lower()
+        if reason_key in {"bot_missing_permissions", "forbidden"} or "permission" in message_key or "forbidden" in message_key:
+            return "bot_missing_permissions"
+        if reason_key in {"discord_role_not_found", "role_not_found"} or "role not found" in message_key:
+            return "discord_role_not_found"
+        if reason_key in {"discord_member_not_found", "member_not_found"} or "member not found" in message_key or "not in guild" in message_key:
+            return "discord_member_not_found"
+        if reason_key in {"network_error", "api_timeout", "discord_api_error"} or "timeout" in message_key or "network" in message_key:
+            return "discord_api_failure"
+        return reason_key or "unknown_error"
+
+    def _log_discord_council_role_sync(
+        self,
+        *,
+        action: str,
+        guild_id: str | None,
+        user_id: str | None,
+        term_id: int | None,
+        council_role: str | None,
+        discord_role_id: int | None,
+        result: str,
+        reason: str,
+    ) -> tuple[str, str]:
+        return log_critical_event(
+            logger,
+            level=logging.INFO if result == "success" else logging.ERROR,
+            operation_code=_DISCORD_COUNCIL_ROLE_OPERATION_CODE,
+            reason=reason,
+            platform="discord",
+            user_id=user_id,
+            entity_type="council_term_member_role_sync",
+            entity_id=term_id,
+            action=action,
+            guild_id=guild_id,
+            term_id=term_id,
+            council_role=council_role,
+            discord_role_id=str(discord_role_id) if discord_role_id is not None else None,
+            result=result,
+        )
 
     @staticmethod
     def _resolve_project_role_for_term_member(role_code: str) -> str | None:
@@ -437,6 +553,8 @@ class CouncilService:
         project_role_name = self._resolve_project_role_for_term_member(role_code)
         role_result: dict[str, object] = {"ok": True, "reason": "role_not_required"}
         if project_role_name:
+            configured_role_id = self._resolve_configured_discord_role_id(role_code)
+            discord_user_id = self._load_discord_user_id_for_account(member_profile_id)
             role_result = RoleManagementService.revoke_user_role_by_account(
                 member_profile_id,
                 project_role_name,
@@ -445,6 +563,16 @@ class CouncilService:
                 source="council_member_exit",
             )
             if role_result.get("ok"):
+                self._log_discord_council_role_sync(
+                    action="revoke",
+                    guild_id=None,
+                    user_id=discord_user_id,
+                    term_id=term_id,
+                    council_role=role_code,
+                    discord_role_id=configured_role_id,
+                    result="success",
+                    reason="ok",
+                )
                 logger.info(
                     "council term member exit role revoke success term_id=%s member_profile_id=%s role_code=%s project_role=%s",
                     term_id,
@@ -453,6 +581,21 @@ class CouncilService:
                     project_role_name,
                 )
             else:
+                normalized_reason = self._classify_discord_sync_reason(
+                    str(role_result.get("reason") or "").strip() or None,
+                    str(role_result.get("message") or "").strip() or None,
+                    discord_user_id=discord_user_id,
+                )
+                correlation_id, request_id = self._log_discord_council_role_sync(
+                    action="revoke",
+                    guild_id=None,
+                    user_id=discord_user_id,
+                    term_id=term_id,
+                    council_role=role_code,
+                    discord_role_id=configured_role_id,
+                    result="failed",
+                    reason=normalized_reason,
+                )
                 logger.error(
                     "council term member exit role revoke failed term_id=%s member_profile_id=%s role_code=%s project_role=%s reason=%s message=%s",
                     term_id,
@@ -461,6 +604,28 @@ class CouncilService:
                     project_role_name,
                     role_result.get("reason"),
                     role_result.get("message"),
+                )
+                self._write_term_member_role_journal(
+                    term_id=term_id,
+                    entity_id=member_entity_id,
+                    action="discord_council_role_sync_critical",
+                    status="failed",
+                    actor_profile_id=actor_profile_id,
+                    source_platform=source_platform,
+                    details={
+                        "operation_code": _DISCORD_COUNCIL_ROLE_OPERATION_CODE,
+                        "action": "revoke",
+                        "platform": "discord",
+                        "guild_id": None,
+                        "user_id": discord_user_id,
+                        "term_id": term_id,
+                        "council_role": role_code,
+                        "discord_role_id": str(configured_role_id or ""),
+                        "result": "failed",
+                        "reason": normalized_reason,
+                        "correlation_id": correlation_id,
+                        "request_id": request_id,
+                    },
                 )
                 ExternalRolesSyncService.trigger_account_sync(
                     member_profile_id,
@@ -550,6 +715,8 @@ class CouncilService:
         project_role_name = self._resolve_project_role_for_term_member(replaced_role_code)
         role_result: dict[str, object] = {"ok": True, "reason": "role_not_required"}
         if project_role_name:
+            configured_role_id = self._resolve_configured_discord_role_id(replaced_role_code)
+            discord_user_id = self._load_discord_user_id_for_account(replacement_profile_id)
             role_result = RoleManagementService.assign_user_role_by_account(
                 replacement_profile_id,
                 project_role_name,
@@ -558,6 +725,16 @@ class CouncilService:
                 source="council_member_replacement",
             )
             if role_result.get("ok"):
+                self._log_discord_council_role_sync(
+                    action="grant",
+                    guild_id=None,
+                    user_id=discord_user_id,
+                    term_id=term_id,
+                    council_role=replaced_role_code,
+                    discord_role_id=configured_role_id,
+                    result="success",
+                    reason="ok",
+                )
                 logger.info(
                     "council replacement assignment role grant success term_id=%s replacement_profile_id=%s role_code=%s project_role=%s",
                     term_id,
@@ -566,6 +743,21 @@ class CouncilService:
                     project_role_name,
                 )
             else:
+                normalized_reason = self._classify_discord_sync_reason(
+                    str(role_result.get("reason") or "").strip() or None,
+                    str(role_result.get("message") or "").strip() or None,
+                    discord_user_id=discord_user_id,
+                )
+                correlation_id, request_id = self._log_discord_council_role_sync(
+                    action="grant",
+                    guild_id=None,
+                    user_id=discord_user_id,
+                    term_id=term_id,
+                    council_role=replaced_role_code,
+                    discord_role_id=configured_role_id,
+                    result="failed",
+                    reason=normalized_reason,
+                )
                 logger.error(
                     "council replacement assignment role grant failed term_id=%s replacement_profile_id=%s role_code=%s project_role=%s reason=%s message=%s",
                     term_id,
@@ -574,6 +766,28 @@ class CouncilService:
                     project_role_name,
                     role_result.get("reason"),
                     role_result.get("message"),
+                )
+                self._write_term_member_role_journal(
+                    term_id=term_id,
+                    entity_id=member_entity_id,
+                    action="discord_council_role_sync_critical",
+                    status="failed",
+                    actor_profile_id=actor_profile_id,
+                    source_platform=source_platform,
+                    details={
+                        "operation_code": _DISCORD_COUNCIL_ROLE_OPERATION_CODE,
+                        "action": "grant",
+                        "platform": "discord",
+                        "guild_id": None,
+                        "user_id": discord_user_id,
+                        "term_id": term_id,
+                        "council_role": replaced_role_code,
+                        "discord_role_id": str(configured_role_id or ""),
+                        "result": "failed",
+                        "reason": normalized_reason,
+                        "correlation_id": correlation_id,
+                        "request_id": request_id,
+                    },
                 )
                 ExternalRolesSyncService.trigger_account_sync(
                     replacement_profile_id,
