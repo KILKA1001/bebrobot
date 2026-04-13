@@ -14,6 +14,15 @@ from discord.ext import commands
 
 from bot.commands.base import bot
 from bot.services.council_feedback_service import CouncilFeedbackService
+from bot.services.proposal_ui_texts import (
+    render_archive_empty_text,
+    render_archive_lines,
+    render_confirmation_prompt,
+    render_help_text,
+    render_menu_overview,
+    render_status_text,
+    render_submit_success_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +87,9 @@ class ProposalConfirmView(discord.ui.View):
             await interaction.response.edit_message(
                 embed=discord.Embed(
                     title="✅ Предложение отправлено",
-                    description=(
-                        f"Номер: **#{result.get('proposal_id')}**\n"
-                        f"Текущий статус: {result.get('status_label')}\n\n"
-                        "Что будет дальше: статус можно открыть кнопкой «Статус» в основном меню команды /proposal."
+                    description=render_submit_success_text(
+                        proposal_id=result.get("proposal_id"),
+                        status_label=result.get("status_label"),
                     ),
                     color=discord.Color.green(),
                 ),
@@ -116,24 +124,14 @@ class ProposalRootView(discord.ui.View):
     def build_root_embed(self) -> discord.Embed:
         return discord.Embed(
             title="🗂 Меню предложений",
-            description=(
-                "В этом меню одна команда закрывает весь сценарий:\n"
-                "• Подать предложение\n"
-                "• Статус\n"
-                "• Архив решений\n"
-                "• Помощь\n\n"
-                "Переходите кнопками ниже — дополнительные команды не нужны."
-            ),
+            description=render_menu_overview(),
             color=discord.Color.blurple(),
         )
 
     def build_confirmation_embed(self) -> discord.Embed:
         return discord.Embed(
             title="📨 Подтверждение отправки",
-            description=(
-                "Проверьте текст перед отправкой в Совет.\n"
-                "Если нужно, нажмите «Изменить»."
-            ),
+            description=render_confirmation_prompt(),
             color=discord.Color.gold(),
         ).add_field(name="Заголовок", value=self.pending_title or "—", inline=False).add_field(name="Текст", value=self.pending_text or "—", inline=False)
 
@@ -154,10 +152,11 @@ class ProposalRootView(discord.ui.View):
             await interaction.response.send_message(
                 embed=discord.Embed(
                     title="📍 Текущий статус",
-                    description=(
-                        f"Предложение: **#{payload.get('proposal_id')} — {payload.get('title')}**\n"
-                        f"Статус: {payload.get('status_label')}\n"
-                        f"Последнее обновление: `{payload.get('updated_at') or '—'}`"
+                    description=render_status_text(
+                        proposal_id=payload.get("proposal_id"),
+                        title=payload.get("title"),
+                        status_label=payload.get("status_label"),
+                        updated_at=payload.get("updated_at"),
                     ),
                     color=discord.Color.blue(),
                 ),
@@ -172,15 +171,9 @@ class ProposalRootView(discord.ui.View):
         try:
             rows = CouncilFeedbackService.get_decisions_archive(limit=5)
             if not rows:
-                await interaction.response.send_message(
-                    "📚 Архив пока пуст. Когда появятся решения, они будут доступны в этом разделе.", ephemeral=True
-                )
+                await interaction.response.send_message(render_archive_empty_text(), ephemeral=True)
                 return
-            lines = []
-            for row in rows:
-                lines.append(
-                    f"• #{row.get('id')} [{row.get('decision_code') or 'решение'}] {str(row.get('decision_text') or 'Без текста')[:160]}"
-                )
+            lines = render_archive_lines(rows, text_limit=160)
             await interaction.response.send_message(
                 embed=discord.Embed(title="📚 Архив решений", description="\n".join(lines), color=discord.Color.dark_teal()),
                 ephemeral=True,
@@ -191,14 +184,7 @@ class ProposalRootView(discord.ui.View):
 
     @discord.ui.button(label="❓ Помощь", style=discord.ButtonStyle.secondary)
     async def show_help(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await interaction.response.send_message(
-            "❓ Как пользоваться:\n"
-            "1) Нажмите «Подать предложение».\n"
-            "2) Заполните заголовок и текст.\n"
-            "3) Проверьте экран подтверждения и отправьте.\n"
-            "4) В любой момент открывайте «Статус» для проверки обработки.",
-            ephemeral=True,
-        )
+        await interaction.response.send_message(render_help_text(), ephemeral=True)
 
 
 @bot.hybrid_command(name="proposal", description="Единое меню подачи предложений в Совет")
