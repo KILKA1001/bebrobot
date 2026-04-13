@@ -20,6 +20,7 @@ def test_publish_decision_requires_separate_confirmation(monkeypatch):
 def test_superadmin_can_save_and_clear_channel(monkeypatch):
     upserts: list[dict[str, object]] = []
     deleted_providers: list[str] = []
+    audit_rows: list[dict[str, object]] = []
 
     class _Table:
         def __init__(self, name: str):
@@ -31,6 +32,11 @@ def test_superadmin_can_save_and_clear_channel(monkeypatch):
             return self
 
         def delete(self):
+            return self
+
+        def insert(self, payload: dict[str, object]):
+            if self.name == "council_audit_log":
+                audit_rows.append(payload)
             return self
 
         def eq(self, field: str, value: str):
@@ -65,6 +71,9 @@ def test_superadmin_can_save_and_clear_channel(monkeypatch):
     assert upserts and upserts[0]["payload"]["destination_id"] == "-100123"
     assert clear_result["ok"] is True
     assert "telegram" in deleted_providers
+    assert len(audit_rows) >= 2
+    assert any(row.get("action") == "set_channel" and row.get("status") == "success" for row in audit_rows)
+    assert any(row.get("action") == "clear_channel" and row.get("status") == "success" for row in audit_rows)
 
 
 def test_non_superadmin_cannot_set_channel(monkeypatch):

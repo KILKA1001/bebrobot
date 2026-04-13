@@ -18,9 +18,13 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from bot.services.council_feedback_service import CouncilFeedbackService
 from bot.services.council_system_events_service import CouncilSystemEventsService
 from bot.services.proposal_ui_texts import (
+    ARCHIVE_PERIOD_LABELS,
+    ARCHIVE_STATUS_LABELS,
+    ARCHIVE_TYPE_LABELS,
     build_status_parts,
     build_submit_success_parts,
     render_archive_empty_text,
+    render_archive_filters_text,
     render_archive_lines,
     render_help_text,
     render_menu_overview,
@@ -40,6 +44,25 @@ class PendingProposal:
 _PENDING_PROPOSAL_INPUT: dict[int, float] = {}
 _PENDING_PROPOSAL_CONFIRM: dict[int, PendingProposal] = {}
 _PENDING_TTL_SECONDS = 900
+_ARCHIVE_FILTERS_BY_USER: dict[int, dict[str, str]] = {}
+
+
+def _archive_filters(user_id: int) -> dict[str, str]:
+    current = _ARCHIVE_FILTERS_BY_USER.get(user_id) or {"period_code": "90d", "status_code": "all", "question_type_code": "all"}
+    _ARCHIVE_FILTERS_BY_USER[user_id] = current
+    return current
+
+
+def _archive_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    current = _archive_filters(user_id)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"🗓 {ARCHIVE_PERIOD_LABELS.get(current['period_code'], '90 дней')}", callback_data="proposal:archive_period")],
+            [InlineKeyboardButton(text=f"📌 {ARCHIVE_STATUS_LABELS.get(current['status_code'], 'Все статусы')}", callback_data="proposal:archive_status")],
+            [InlineKeyboardButton(text=f"🧩 {ARCHIVE_TYPE_LABELS.get(current['question_type_code'], 'Все типы')}", callback_data="proposal:archive_type")],
+            [InlineKeyboardButton(text="↩️ В меню", callback_data="proposal:menu")],
+        ]
+    )
 
 
 def _menu_keyboard() -> InlineKeyboardMarkup:
@@ -223,16 +246,83 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
             return
 
         if action == "archive":
-            rows = CouncilFeedbackService.get_decisions_archive(limit=5)
+            filters = _archive_filters(actor_id)
+            rows = CouncilFeedbackService.get_decisions_archive(
+                limit=5,
+                period_code=filters["period_code"],
+                status_code=filters["status_code"],
+                question_type_code=filters["question_type_code"],
+            )
             if not rows:
-                text = f"📚 <b>{render_archive_empty_text().removeprefix('📚 ')}</b>"
+                text = (
+                    f"📚 <b>{render_archive_empty_text().removeprefix('📚 ')}</b>\n\n"
+                    + render_archive_filters_text(
+                        period_code=filters["period_code"],
+                        status_code=filters["status_code"],
+                        question_type_code=filters["question_type_code"],
+                    )
+                )
             else:
                 raw_lines = render_archive_lines(rows, text_limit=180)
-                chunks = ["📚 <b>Архив решений</b>"]
+                chunks = [
+                    "📚 <b>Архив решений</b>",
+                    render_archive_filters_text(
+                        period_code=filters["period_code"],
+                        status_code=filters["status_code"],
+                        question_type_code=filters["question_type_code"],
+                    ),
+                ]
                 for line in raw_lines:
                     chunks.append(line)
                 text = "\n".join(chunks)
-            await callback.message.edit_text(text, parse_mode="HTML", reply_markup=_menu_keyboard())
+            await callback.message.edit_text(text, parse_mode="HTML", reply_markup=_archive_keyboard(actor_id))
+            await callback.answer()
+            return
+
+        if action in {"archive_period", "archive_status", "archive_type"}:
+            filters = _archive_filters(actor_id)
+            if action == "archive_period":
+                chain = ["30d", "90d", "365d", "all"]
+                current = filters["period_code"]
+                filters["period_code"] = chain[(chain.index(current) + 1) % len(chain)] if current in chain else chain[0]
+            elif action == "archive_status":
+                chain = ["all", "accepted", "rejected", "pending"]
+                current = filters["status_code"]
+                filters["status_code"] = chain[(chain.index(current) + 1) % len(chain)] if current in chain else chain[0]
+            else:
+                chain = ["all", "general", "election", "other"]
+                current = filters["question_type_code"]
+                filters["question_type_code"] = chain[(chain.index(current) + 1) % len(chain)] if current in chain else chain[0]
+            _ARCHIVE_FILTERS_BY_USER[actor_id] = filters
+            rows = CouncilFeedbackService.get_decisions_archive(
+                limit=5,
+                period_code=filters["period_code"],
+                status_code=filters["status_code"],
+                question_type_code=filters["question_type_code"],
+            )
+            if not rows:
+                text = (
+                    f"📚 <b>{render_archive_empty_text().removeprefix('📚 ')}</b>\n\n"
+                    + render_archive_filters_text(
+                        period_code=filters["period_code"],
+                        status_code=filters["status_code"],
+                        question_type_code=filters["question_type_code"],
+                    )
+                )
+            else:
+                raw_lines = render_archive_lines(rows, text_limit=180)
+                text = "\n".join(
+                    [
+                        "📚 <b>Архив решений</b>",
+                        render_archive_filters_text(
+                            period_code=filters["period_code"],
+                            status_code=filters["status_code"],
+                            question_type_code=filters["question_type_code"],
+                        ),
+                        *raw_lines,
+                    ]
+                )
+            await callback.message.edit_text(text, parse_mode="HTML", reply_markup=_archive_keyboard(actor_id))
             await callback.answer()
             return
 

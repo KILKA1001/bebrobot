@@ -23,6 +23,53 @@ _EVENT_CODES = {
 
 class CouncilSystemEventsService:
     @staticmethod
+    def _record_admin_action(
+        *,
+        provider: str,
+        actor_user_id: str,
+        action: str,
+        destination_id: str | None,
+        status: str,
+        reason: str | None = None,
+    ) -> None:
+        logger.info(
+            "council_admin_action provider=%s actor_user_id=%s action=%s destination_id=%s status=%s reason=%s",
+            provider,
+            actor_user_id,
+            action,
+            destination_id or None,
+            status,
+            reason or None,
+        )
+        if not db.supabase:
+            return
+        try:
+            db.supabase.table("council_audit_log").insert(
+                {
+                    "entity_type": "system_event_channel",
+                    "entity_id": None,
+                    "action": action,
+                    "status": status,
+                    "actor_profile_id": None,
+                    "source_platform": provider,
+                    "details": {
+                        "actor_user_id": actor_user_id,
+                        "destination_id": destination_id,
+                        "reason": reason,
+                    },
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ).execute()
+        except Exception:
+            logger.exception(
+                "council admin action write failed provider=%s actor_user_id=%s action=%s status=%s",
+                provider,
+                actor_user_id,
+                action,
+                status,
+            )
+
+    @staticmethod
     def set_channel(*, provider: str, actor_user_id: str, destination_id: str | None) -> dict[str, object]:
         normalized_provider = str(provider or "").strip().lower()
         normalized_actor_id = str(actor_user_id or "").strip()
@@ -34,12 +81,28 @@ class CouncilSystemEventsService:
                 normalized_provider or None,
                 normalized_actor_id or None,
             )
+            CouncilSystemEventsService._record_admin_action(
+                provider=normalized_provider or "unknown",
+                actor_user_id=normalized_actor_id,
+                action="set_channel",
+                destination_id=normalized_destination or None,
+                status="failed",
+                reason="unsupported_provider",
+            )
             return {"ok": False, "reason": "unsupported_provider", "message": "❌ Неизвестная платформа."}
 
         if not normalized_actor_id:
             logger.error(
                 "council system events set channel rejected: empty actor id provider=%s",
                 normalized_provider,
+            )
+            CouncilSystemEventsService._record_admin_action(
+                provider=normalized_provider,
+                actor_user_id=normalized_actor_id,
+                action="set_channel",
+                destination_id=normalized_destination or None,
+                status="failed",
+                reason="empty_actor_id",
             )
             return {"ok": False, "reason": "empty_actor_id", "message": "❌ Не удалось определить администратора."}
 
@@ -50,6 +113,14 @@ class CouncilSystemEventsService:
                 normalized_actor_id,
                 normalized_destination or None,
             )
+            CouncilSystemEventsService._record_admin_action(
+                provider=normalized_provider,
+                actor_user_id=normalized_actor_id,
+                action="set_channel",
+                destination_id=normalized_destination or None,
+                status="denied",
+                reason="forbidden",
+            )
             return {"ok": False, "reason": "forbidden", "message": "❌ Действие доступно только суперадмину."}
 
         if not db.supabase:
@@ -57,6 +128,14 @@ class CouncilSystemEventsService:
                 "council system events set channel skipped: supabase is not configured provider=%s actor_user_id=%s",
                 normalized_provider,
                 normalized_actor_id,
+            )
+            CouncilSystemEventsService._record_admin_action(
+                provider=normalized_provider,
+                actor_user_id=normalized_actor_id,
+                action="set_channel",
+                destination_id=normalized_destination or None,
+                status="failed",
+                reason="db_unavailable",
             )
             return {"ok": False, "reason": "db_unavailable", "message": "❌ База данных недоступна. Попробуйте позже."}
 
@@ -77,6 +156,13 @@ class CouncilSystemEventsService:
                     normalized_destination,
                     normalized_actor_id,
                 )
+                CouncilSystemEventsService._record_admin_action(
+                    provider=normalized_provider,
+                    actor_user_id=normalized_actor_id,
+                    action="set_channel",
+                    destination_id=normalized_destination,
+                    status="success",
+                )
                 return {
                     "ok": True,
                     "configured": True,
@@ -90,6 +176,13 @@ class CouncilSystemEventsService:
                 normalized_provider,
                 normalized_actor_id,
             )
+            CouncilSystemEventsService._record_admin_action(
+                provider=normalized_provider,
+                actor_user_id=normalized_actor_id,
+                action="clear_channel",
+                destination_id=None,
+                status="success",
+            )
             return {"ok": True, "configured": False, "provider": normalized_provider, "destination_id": None}
         except Exception:
             logger.exception(
@@ -97,6 +190,14 @@ class CouncilSystemEventsService:
                 normalized_provider,
                 normalized_actor_id,
                 normalized_destination or None,
+            )
+            CouncilSystemEventsService._record_admin_action(
+                provider=normalized_provider,
+                actor_user_id=normalized_actor_id,
+                action="set_channel",
+                destination_id=normalized_destination or None,
+                status="failed",
+                reason="db_error",
             )
             return {"ok": False, "reason": "db_error", "message": "❌ Не удалось сохранить настройку. Подробности в логах."}
 

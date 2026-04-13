@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from bot.data import db
 from bot.services.accounts_service import AccountsService
@@ -183,19 +183,102 @@ class CouncilFeedbackService:
             return {"ok": False, "error": "status_failed", "message": "Не удалось получить статус. Попробуйте ещё раз."}
 
     @staticmethod
-    def get_decisions_archive(limit: int = 5) -> list[dict[str, object]]:
+    def get_decisions_archive(
+        *,
+        limit: int = 5,
+        period_code: str = "90d",
+        status_code: str = "all",
+        question_type_code: str = "all",
+    ) -> list[dict[str, object]]:
         if not db.supabase:
             return []
         try:
+            normalized_period = CouncilFeedbackService._normalize_archive_period(period_code)
+            normalized_status = CouncilFeedbackService._normalize_archive_status(status_code)
+            normalized_type = CouncilFeedbackService._normalize_archive_question_type(question_type_code)
             response = (
                 db.supabase.table("council_decisions")
                 .select("id,decision_code,decision_text,decided_at")
                 .order("decided_at", desc=True)
-                .limit(max(1, min(int(limit), 20)))
+                .limit(max(1, min(int(limit), 50)))
                 .execute()
             )
-            rows = [row for row in (response.data or []) if isinstance(row, dict)]
+            rows: list[dict[str, object]] = []
+            cutoff_dt = None
+            period_days = CouncilFeedbackService.ARCHIVE_PERIOD_DAYS.get(normalized_period)
+            if period_days is not None:
+                cutoff_dt = datetime.now(timezone.utc) - timedelta(days=period_days)
+
+            for row in response.data or []:
+                if not isinstance(row, dict):
+                    continue
+                decided_raw = str(row.get("decided_at") or "")
+                decided_dt: datetime | None = None
+                if decided_raw:
+                    try:
+                        decided_dt = datetime.fromisoformat(decided_raw.replace("Z", "+00:00"))
+                    except Exception:
+                        logger.exception("council feedback archive parse failed decided_at=%s row_id=%s", decided_raw, row.get("id"))
+                if cutoff_dt and decided_dt and decided_dt < cutoff_dt:
+                    continue
+
+                resolved_status = CouncilFeedbackService._resolve_status_code_from_decision(row.get("decision_code"))
+                resolved_type = CouncilFeedbackService._resolve_question_type_from_decision(row.get("decision_code"))
+                if normalized_status != "all" and resolved_status != normalized_status:
+                    continue
+                if normalized_type != "all" and resolved_type != normalized_type:
+                    continue
+
+                row["archive_status_code"] = resolved_status
+                row["archive_question_type_code"] = resolved_type
+                row["final_comment"] = str(row.get("decision_text") or "").strip()
+                rows.append(row)
+                if len(rows) >= max(1, min(int(limit), 20)):
+                    break
             return rows
         except Exception:
             logger.exception("council feedback archive load failed")
             return []
+    ARCHIVE_PERIOD_DAYS: dict[str, int | None] = {
+        "30d": 30,
+        "90d": 90,
+        "365d": 365,
+        "all": None,
+    }
+    ARCHIVE_STATUS_CODES: tuple[str, ...] = ("all", "accepted", "rejected", "pending")
+    ARCHIVE_QUESTION_TYPES: tuple[str, ...] = ("all", "general", "election", "other")
+
+    @staticmethod
+    def _normalize_archive_period(period_code: str | None) -> str:
+        code = str(period_code or "90d").strip().lower()
+        return code if code in CouncilFeedbackService.ARCHIVE_PERIOD_DAYS else "90d"
+
+    @staticmethod
+    def _normalize_archive_status(status_code: str | None) -> str:
+        code = str(status_code or "all").strip().lower()
+        return code if code in CouncilFeedbackService.ARCHIVE_STATUS_CODES else "all"
+
+    @staticmethod
+    def _normalize_archive_question_type(type_code: str | None) -> str:
+        code = str(type_code or "all").strip().lower()
+        return code if code in CouncilFeedbackService.ARCHIVE_QUESTION_TYPES else "all"
+
+    @staticmethod
+    def _resolve_status_code_from_decision(decision_code: object) -> str:
+        normalized = str(decision_code or "").strip().lower()
+        if any(token in normalized for token in ("accept", "approved", "yes", "pass")):
+            return "accepted"
+        if any(token in normalized for token in ("reject", "decline", "no", "deny")):
+            return "rejected"
+        return "pending"
+
+    @staticmethod
+    def _resolve_question_type_from_decision(decision_code: object) -> str:
+        normalized = str(decision_code or "").strip().lower()
+        if "election" in normalized or "candidate" in normalized:
+            return "election"
+        if not normalized:
+            return "other"
+        if any(token in normalized for token in ("question", "proposal", "council")):
+            return "general"
+        return "other"
