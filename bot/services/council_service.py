@@ -51,6 +51,7 @@ from bot.domain.council_lifecycle import (
 )
 
 from bot.services.council_pause_service import CouncilPauseService
+from bot.services.external_roles_sync_service import ExternalRolesSyncService
 from bot.services.role_management_service import RoleManagementService
 from bot.data import db
 
@@ -323,6 +324,279 @@ class CouncilService:
         if normalized_role_code == "observer":
             return self._discord_roles_config.observer_role_id
         return None
+
+    @staticmethod
+    def _resolve_project_role_for_term_member(role_code: str) -> str | None:
+        normalized_role_code = str(role_code or "").strip().lower()
+        if normalized_role_code in {"vice_council", "vice_council_member"}:
+            return "Вице Советчанин"
+        if normalized_role_code == "council_member":
+            return "Советчанин"
+        if normalized_role_code == "observer":
+            return "Наблюдатель"
+        return None
+
+    @staticmethod
+    def _write_term_member_role_journal(
+        *,
+        term_id: int | None,
+        entity_id: int | None,
+        action: str,
+        status: str,
+        actor_profile_id: str | None,
+        source_platform: str,
+        details: dict[str, object],
+    ) -> None:
+        if not db.supabase:
+            logger.error(
+                "council term member role journal skipped: db unavailable term_id=%s action=%s status=%s",
+                term_id,
+                action,
+                status,
+            )
+            return
+        try:
+            db.supabase.table("council_audit_log").insert(
+                {
+                    "term_id": term_id,
+                    "entity_type": "council_term_member_role_sync",
+                    "entity_id": entity_id,
+                    "action": action,
+                    "status": status,
+                    "actor_profile_id": actor_profile_id,
+                    "source_platform": source_platform,
+                    "details": details,
+                }
+            ).execute()
+        except Exception:
+            logger.exception(
+                "council term member role journal write failed term_id=%s entity_id=%s action=%s status=%s",
+                term_id,
+                entity_id,
+                action,
+                status,
+            )
+
+    def process_term_member_exit(
+        self,
+        *,
+        term_id: int | None,
+        member_profile_id: str,
+        role_code: str,
+        was_active: bool,
+        actor_profile_id: str | None,
+        source_platform: str = "system",
+        left_at: datetime | None = None,
+    ) -> dict[str, object]:
+        decision = self.decide_term_member_exit(
+            term_id=term_id,
+            member_profile_id=member_profile_id,
+            role_code=role_code,
+            was_active=was_active,
+            left_at=left_at,
+        )
+        if not decision.accepted:
+            logger.error(
+                "council term member exit rejected term_id=%s member_profile_id=%s role_code=%s reason=%s",
+                term_id,
+                member_profile_id,
+                role_code,
+                decision.reason,
+            )
+            return {"ok": False, "reason": decision.reason, "decision": decision}
+        if not db.supabase:
+            logger.error("council term member exit failed: db unavailable term_id=%s member_profile_id=%s", term_id, member_profile_id)
+            return {"ok": False, "reason": "db_unavailable", "decision": decision}
+
+        member_entity_id: int | None = None
+        patch = dict(decision.member_patch or {})
+        try:
+            update_query = db.supabase.table("council_term_members").update(patch).eq("term_id", int(term_id)).eq("profile_id", member_profile_id)
+            update_response = update_query.execute()
+            rows = list(update_response.data or [])
+            if rows:
+                raw_id = rows[0].get("id")
+                member_entity_id = int(raw_id) if raw_id is not None else None
+            logger.info(
+                "council term member exit status patch applied term_id=%s member_profile_id=%s role_code=%s patch=%s",
+                term_id,
+                member_profile_id,
+                role_code,
+                patch,
+            )
+        except Exception:
+            logger.exception(
+                "council term member exit failed to patch status term_id=%s member_profile_id=%s role_code=%s patch=%s",
+                term_id,
+                member_profile_id,
+                role_code,
+                patch,
+            )
+            return {"ok": False, "reason": "member_status_patch_failed", "decision": decision}
+
+        project_role_name = self._resolve_project_role_for_term_member(role_code)
+        role_result: dict[str, object] = {"ok": True, "reason": "role_not_required"}
+        if project_role_name:
+            role_result = RoleManagementService.revoke_user_role_by_account(
+                member_profile_id,
+                project_role_name,
+                actor_provider=source_platform,
+                actor_user_id=actor_profile_id,
+                source="council_member_exit",
+            )
+            if role_result.get("ok"):
+                logger.info(
+                    "council term member exit role revoke success term_id=%s member_profile_id=%s role_code=%s project_role=%s",
+                    term_id,
+                    member_profile_id,
+                    role_code,
+                    project_role_name,
+                )
+            else:
+                logger.error(
+                    "council term member exit role revoke failed term_id=%s member_profile_id=%s role_code=%s project_role=%s reason=%s message=%s",
+                    term_id,
+                    member_profile_id,
+                    role_code,
+                    project_role_name,
+                    role_result.get("reason"),
+                    role_result.get("message"),
+                )
+                ExternalRolesSyncService.trigger_account_sync(
+                    member_profile_id,
+                    reason="council_member_exit_role_revoke_failed",
+                )
+
+        journal_status = "success" if role_result.get("ok") else "failed"
+        self._write_term_member_role_journal(
+            term_id=term_id,
+            entity_id=member_entity_id,
+            action="term_member_exit_role_revoke",
+            status=journal_status,
+            actor_profile_id=actor_profile_id,
+            source_platform=source_platform,
+            details={
+                "member_profile_id": member_profile_id,
+                "role_code": role_code,
+                "project_role_name": project_role_name,
+                "status_patch": patch,
+                "role_result": role_result,
+            },
+        )
+        return {"ok": bool(role_result.get("ok")), "decision": decision, "role_result": role_result}
+
+    def process_replacement_assignment(
+        self,
+        *,
+        term_id: int | None,
+        actor_profile_id: str,
+        actor_role_code: str,
+        replaced_role_code: str,
+        replacement_profile_id: str,
+        source_list_code: str,
+        already_active_profile_ids: tuple[str, ...] | list[str],
+        source_platform: str = "system",
+    ) -> dict[str, object]:
+        decision = self.decide_replacement_assignment(
+            term_id=term_id,
+            actor_profile_id=actor_profile_id,
+            actor_role_code=actor_role_code,
+            replaced_role_code=replaced_role_code,
+            replacement_profile_id=replacement_profile_id,
+            source_list_code=source_list_code,
+            already_active_profile_ids=already_active_profile_ids,
+        )
+        if not decision.accepted:
+            logger.error(
+                "council replacement assignment rejected term_id=%s actor_profile_id=%s replacement_profile_id=%s reason=%s",
+                term_id,
+                actor_profile_id,
+                replacement_profile_id,
+                decision.reason,
+            )
+            return {"ok": False, "reason": decision.reason, "decision": decision}
+        if not db.supabase:
+            logger.error("council replacement assignment failed: db unavailable term_id=%s replacement_profile_id=%s", term_id, replacement_profile_id)
+            return {"ok": False, "reason": "db_unavailable", "decision": decision}
+
+        member_entity_id: int | None = None
+        assignment_payload = dict(decision.assignment_payload or {})
+        try:
+            insert_response = db.supabase.table("council_term_members").upsert(
+                assignment_payload,
+                on_conflict="term_id,profile_id",
+            ).execute()
+            rows = list(insert_response.data or [])
+            if rows:
+                raw_id = rows[0].get("id")
+                member_entity_id = int(raw_id) if raw_id is not None else None
+            logger.info(
+                "council replacement assignment status saved term_id=%s replacement_profile_id=%s role_code=%s source_list_code=%s",
+                term_id,
+                replacement_profile_id,
+                replaced_role_code,
+                source_list_code,
+            )
+        except Exception:
+            logger.exception(
+                "council replacement assignment failed to save membership term_id=%s replacement_profile_id=%s role_code=%s payload=%s",
+                term_id,
+                replacement_profile_id,
+                replaced_role_code,
+                assignment_payload,
+            )
+            return {"ok": False, "reason": "member_status_patch_failed", "decision": decision}
+
+        project_role_name = self._resolve_project_role_for_term_member(replaced_role_code)
+        role_result: dict[str, object] = {"ok": True, "reason": "role_not_required"}
+        if project_role_name:
+            role_result = RoleManagementService.assign_user_role_by_account(
+                replacement_profile_id,
+                project_role_name,
+                actor_provider=source_platform,
+                actor_user_id=actor_profile_id,
+                source="council_member_replacement",
+            )
+            if role_result.get("ok"):
+                logger.info(
+                    "council replacement assignment role grant success term_id=%s replacement_profile_id=%s role_code=%s project_role=%s",
+                    term_id,
+                    replacement_profile_id,
+                    replaced_role_code,
+                    project_role_name,
+                )
+            else:
+                logger.error(
+                    "council replacement assignment role grant failed term_id=%s replacement_profile_id=%s role_code=%s project_role=%s reason=%s message=%s",
+                    term_id,
+                    replacement_profile_id,
+                    replaced_role_code,
+                    project_role_name,
+                    role_result.get("reason"),
+                    role_result.get("message"),
+                )
+                ExternalRolesSyncService.trigger_account_sync(
+                    replacement_profile_id,
+                    reason="council_member_replacement_role_grant_failed",
+                )
+
+        journal_status = "success" if role_result.get("ok") else "failed"
+        self._write_term_member_role_journal(
+            term_id=term_id,
+            entity_id=member_entity_id,
+            action="term_member_replacement_role_grant",
+            status=journal_status,
+            actor_profile_id=actor_profile_id,
+            source_platform=source_platform,
+            details={
+                "replacement_profile_id": replacement_profile_id,
+                "replaced_role_code": replaced_role_code,
+                "project_role_name": project_role_name,
+                "assignment_payload": assignment_payload,
+                "role_result": role_result,
+            },
+        )
+        return {"ok": bool(role_result.get("ok")), "decision": decision, "role_result": role_result}
 
     def build_election_invite_segments(self) -> tuple[CouncilInviteSegment, ...]:
         return build_election_invite_segments()
