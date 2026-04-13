@@ -18,10 +18,38 @@ from bot.services.accounts_service import AccountsService
 from bot.services.auth.role_resolver import RoleResolver
 from bot.services.authority_service import AuthorityService
 from bot.services.role_management_service import RoleManagementService
+from bot.utils.structured_logging import generate_request_id, log_critical_event
 
 logger = logging.getLogger(__name__)
 
 admin_api_bp = Blueprint("admin_api", __name__)
+_ADMIN_API_OPERATION_CODE = "admin_api.custom_roles"
+
+
+def _log_admin_api_error(
+    *,
+    level: int,
+    reason: str,
+    user_id: str | None,
+    entity_type: str,
+    entity_id: str | None,
+    correlation_id: str,
+    request_id: str,
+    **extra_fields: Any,
+) -> None:
+    log_critical_event(
+        logger,
+        level=level,
+        operation_code=_ADMIN_API_OPERATION_CODE,
+        reason=reason,
+        platform="admin_api",
+        user_id=user_id,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        correlation_id=correlation_id,
+        request_id=request_id,
+        **extra_fields,
+    )
 
 
 def _resolve_account_id(provider: str, provider_user_id: str) -> str | None:
@@ -107,6 +135,8 @@ def admin_user_external_roles(provider: str, provider_user_id: str):
 
 @admin_api_bp.post("/admin/api/users/<provider>/<provider_user_id>/roles/custom")
 def admin_user_custom_roles(provider: str, provider_user_id: str):
+    correlation_id = request.headers.get("X-Correlation-ID") or generate_request_id()
+    request_id = generate_request_id()
     body = request.get_json(silent=True) or {}
     action = str(body.get("action") or "").strip().lower()
     role_name = str(body.get("role_id") or body.get("role_name") or "").strip().lower()
@@ -116,48 +146,83 @@ def admin_user_custom_roles(provider: str, provider_user_id: str):
     reason = str(body.get("reason") or "").strip() or None
 
     if action not in {"assign", "remove"} or not role_name or not actor_provider or not actor_user_id:
-        logger.error(
-            "admin api role change rejected: bad request provider=%s provider_user_id=%s action=%s role=%s actor=%s:%s",
-            provider,
-            provider_user_id,
-            action,
-            role_name,
-            actor_provider,
-            actor_user_id,
+        _log_admin_api_error(
+            level=logging.WARNING,
+            reason="validation_failed_bad_request",
+            user_id=actor_user_id or None,
+            entity_type="role_assignment",
+            entity_id=role_name or None,
+            correlation_id=correlation_id,
+            request_id=request_id,
+            provider=provider,
+            provider_user_id=str(provider_user_id),
+            action=action,
+            actor_provider=actor_provider,
+            actor_user_id=actor_user_id,
         )
         return jsonify({"ok": False, "error": "bad_request"}), 400
 
     if source not in {"custom", "system"}:
-        logger.error(
-            "admin api role change rejected: source not allowed provider=%s provider_user_id=%s source=%s",
-            provider,
-            provider_user_id,
-            source,
+        _log_admin_api_error(
+            level=logging.WARNING,
+            reason="validation_failed_source_not_allowed",
+            user_id=actor_user_id,
+            entity_type="role_assignment",
+            entity_id=role_name or None,
+            correlation_id=correlation_id,
+            request_id=request_id,
+            provider=provider,
+            provider_user_id=str(provider_user_id),
+            source=source,
         )
         return jsonify({"ok": False, "error": "source_not_allowed"}), 400
 
     if not AuthorityService.can_manage_role(actor_provider, actor_user_id, role_name):
-        logger.error(
-            "admin api role change forbidden actor=%s:%s target=%s:%s role=%s",
-            actor_provider,
-            actor_user_id,
-            provider,
-            provider_user_id,
-            role_name,
+        _log_admin_api_error(
+            level=logging.WARNING,
+            reason="permission_denied_role_manage",
+            user_id=actor_user_id,
+            entity_type="role_assignment",
+            entity_id=role_name,
+            correlation_id=correlation_id,
+            request_id=request_id,
+            actor_provider=actor_provider,
+            actor_user_id=actor_user_id,
+            provider=provider,
+            provider_user_id=str(provider_user_id),
         )
         return jsonify({"ok": False, "error": "forbidden_role_manage"}), 403
 
     account_id = _resolve_account_id(provider, provider_user_id)
     if not account_id:
-        logger.error(
-            "admin api role change failed: user not found provider=%s provider_user_id=%s",
-            provider,
-            provider_user_id,
+        _log_admin_api_error(
+            level=logging.WARNING,
+            reason="external_api_account_not_found",
+            user_id=actor_user_id,
+            entity_type="account",
+            entity_id=str(provider_user_id),
+            correlation_id=correlation_id,
+            request_id=request_id,
+            actor_provider=actor_provider,
+            provider=provider,
+            provider_user_id=str(provider_user_id),
         )
         return jsonify({"ok": False, "error": "user_not_found"}), 404
 
     if not db.supabase:
-        logger.error("admin api roles change failed: supabase is not configured")
+        _log_admin_api_error(
+            level=logging.ERROR,
+            reason="db_not_configured",
+            user_id=actor_user_id,
+            entity_type="database",
+            entity_id="supabase",
+            correlation_id=correlation_id,
+            request_id=request_id,
+            provider=provider,
+            provider_user_id=str(provider_user_id),
+            action=action,
+            role_name=role_name,
+        )
         return jsonify({"ok": False, "error": "db_not_configured"}), 500
 
     try:
@@ -177,15 +242,23 @@ def admin_user_custom_roles(provider: str, provider_user_id: str):
         else:
             table.delete().eq("account_id", account_id).eq("role_name", role_name).in_("source", ["custom", "system"]).execute()
     except Exception:
-        logger.exception(
-            "admin api role change failed action=%s provider=%s provider_user_id=%s role_name=%s actor=%s:%s",
-            action,
-            provider,
-            provider_user_id,
-            role_name,
-            actor_provider,
-            actor_user_id,
+        _log_admin_api_error(
+            level=logging.ERROR,
+            reason="db_write_failed",
+            user_id=actor_user_id,
+            entity_type="role_assignment",
+            entity_id=role_name,
+            correlation_id=correlation_id,
+            request_id=request_id,
+            provider=provider,
+            provider_user_id=str(provider_user_id),
+            action=action,
+            actor_provider=actor_provider,
+            actor_user_id=actor_user_id,
+            account_id=account_id,
+            error="exception_logged_with_stacktrace",
         )
+        logger.exception("admin api role change stacktrace")
         return jsonify({"ok": False, "error": "db_write_failed"}), 500
 
     _write_role_audit(
