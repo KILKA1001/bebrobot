@@ -20,7 +20,7 @@ from .tournament import (
     tournamentadmin,
 )
 from .maps import mapinfo
-from .linking import link_telegram, link, profile, profile_edit, register_account
+from .linking import link_telegram, link, profile, register_account
 from .rep import rep
 from .modstatus import modstatus
 from .title import title
@@ -35,7 +35,6 @@ __all__ = [
     "link_telegram",
     "link",
     "profile",
-    "profile_edit",
     "register_account",
     "rep",
     "modstatus",
