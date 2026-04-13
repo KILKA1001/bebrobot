@@ -8,7 +8,8 @@ from .role_management_service import RoleManagementService
 from .guiy_publish_destinations_service import GuiyPublishDestination, GuiyPublishDestinationsService
 from .moderation_service import ModerationService
 from .moderation_notifications import ModerationNotificationsService
+from .council_service import CouncilService, CouncilLifecycleSnapshot, council_service
 
-__all__ = ["AccountsService", "PointsService", "FinesService", "TicketsService", "AuthorityService", "ExternalRolesSyncService", "RoleManagementService", "GuiyPublishDestination", "GuiyPublishDestinationsService", "ModerationService", "ModerationNotificationsService", "shop_service"]
+__all__ = ["AccountsService", "PointsService", "FinesService", "TicketsService", "AuthorityService", "ExternalRolesSyncService", "RoleManagementService", "GuiyPublishDestination", "GuiyPublishDestinationsService", "ModerationService", "ModerationNotificationsService", "CouncilService", "CouncilLifecycleSnapshot", "council_service", "shop_service"]
 
 from . import shop_service
