@@ -254,9 +254,43 @@ def test_ballot_submission_uses_profile_id_and_blocks_cumulative_overflow():
     assert decision.accepted is False
     assert decision.reason == "ballot_limit_exceeded"
     assert decision.allowed_limit == 1
+    assert decision.remaining_votes == 0
 
 
 def test_election_validity_requires_minimum_three_ballots():
     assert COUNCIL_MIN_VALID_BALLOTS == 3
     assert is_election_valid_by_ballots(2) is False
     assert is_election_valid_by_ballots(3) is True
+
+
+def test_ballot_submission_rejects_invalid_candidate_ids_and_invalid_submitted_count():
+    invalid_ids = decide_ballot_submission(
+        election_id=17,
+        voter_profile_id="profile-501",
+        voter_role_code="observer",
+        selected_candidate_ids=[31, -1],
+    )
+    assert invalid_ids.accepted is False
+    assert invalid_ids.reason == "invalid_candidate_ids"
+
+    invalid_count = decide_ballot_submission(
+        election_id=18,
+        voter_profile_id="profile-502",
+        voter_role_code="observer",
+        selected_candidate_ids=[31],
+        already_submitted_ballots_count=-2,
+    )
+    assert invalid_count.accepted is False
+    assert invalid_count.reason == "invalid_already_submitted_ballots_count"
+
+
+def test_ballot_submission_success_reports_remaining_votes_for_ui():
+    accepted = decide_ballot_submission(
+        election_id=19,
+        voter_profile_id="profile-777",
+        voter_role_code="council_member",
+        selected_candidate_ids=[41],
+        already_submitted_ballots_count=0,
+    )
+    assert accepted.accepted is True
+    assert accepted.remaining_votes == 1

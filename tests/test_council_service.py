@@ -123,3 +123,16 @@ def test_council_service_ballot_submission_uses_shared_profile_id_and_threshold(
 
     assert council_service.is_election_valid_by_ballots(total_ballots_count=2) is False
     assert council_service.is_election_valid_by_ballots(total_ballots_count=3) is True
+
+
+def test_council_service_ballot_submission_success_exposes_ui_details():
+    accepted = council_service.decide_ballot_submission(
+        election_id=46,
+        voter_profile_id="profile-901",
+        voter_role_code="council_member",
+        selected_candidate_ids=[10],
+        already_submitted_ballots_count=0,
+    )
+    assert accepted.accepted is True
+    assert accepted.remaining_votes == 1
+    assert "Осталось голосов" in (accepted.user_message or "")
