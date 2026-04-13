@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from bot.domain.council_lifecycle import (
     COUNCIL_BALLOT_LIMITS_BY_ROLE,
     COUNCIL_MIN_VALID_BALLOTS,
@@ -14,8 +16,11 @@ from bot.domain.council_lifecycle import (
     decide_ballot_submission,
     decide_term_launch_confirmation,
     filter_confirmed_ballot_candidates,
+    build_election_status_publication,
     is_election_valid_by_ballots,
     is_valid_lifecycle_status,
+    plan_election_deadline_jobs,
+    resolve_election_round_on_deadline,
     validate_council_text_length,
 )
 
@@ -294,3 +299,69 @@ def test_ballot_submission_success_reports_remaining_votes_for_ui():
     )
     assert accepted.accepted is True
     assert accepted.remaining_votes == 1
+
+
+def test_election_deadline_resolver_starts_second_round_on_tie_for_single_seat():
+    deadline = datetime(2026, 4, 13, 10, 0, tzinfo=timezone.utc)
+    decision = resolve_election_round_on_deadline(
+        election_id=21,
+        election_role_code="vice_council_member",
+        current_round_number=1,
+        voting_ends_at=deadline,
+        candidate_votes=(
+            {"candidate_id": 1, "votes": 7},
+            {"candidate_id": 2, "votes": 7},
+            {"candidate_id": 3, "votes": 1},
+        ),
+    )
+    assert decision.accepted is True
+    assert decision.decision == "runoff"
+    assert decision.next_round_number == 2
+    assert decision.voting_ends_at == datetime(2026, 4, 14, 10, 0, tzinfo=timezone.utc)
+    assert decision.runoff_candidate_ids == (1, 2)
+
+
+def test_election_deadline_resolver_uses_cutoff_tie_logic_for_council_seats():
+    decision = resolve_election_round_on_deadline(
+        election_id=22,
+        election_role_code="council_member",
+        current_round_number=1,
+        voting_ends_at=None,
+        now=datetime(2026, 4, 13, 9, 0, tzinfo=timezone.utc),
+        candidate_votes=(
+            {"candidate_id": 10, "votes": 10},
+            {"candidate_id": 11, "votes": 6},
+            {"candidate_id": 12, "votes": 6},
+        ),
+    )
+    assert decision.decision == "runoff"
+    assert decision.runoff_candidate_ids == (11, 12)
+
+
+def test_election_deadline_scheduler_collects_expired_voting_rows():
+    actions = plan_election_deadline_jobs(
+        (
+            {"id": 1, "status": "voting", "voting_ends_at": datetime(2026, 4, 12, 0, 0, tzinfo=timezone.utc)},
+            {"id": 2, "status": "nomination", "voting_ends_at": datetime(2026, 4, 12, 0, 0, tzinfo=timezone.utc)},
+            {"id": 3, "status": "voting", "voting_ends_at": datetime(2026, 4, 14, 0, 0, tzinfo=timezone.utc)},
+        ),
+        now=datetime(2026, 4, 13, 0, 0, tzinfo=timezone.utc),
+    )
+    assert len(actions) == 1
+    assert actions[0].election_id == 1
+    assert actions[0].action == "close_and_resolve_tie"
+
+
+def test_election_publication_templates_cover_start_runoff_and_final():
+    start = build_election_status_publication(action="start", role_name="Советчане", round_number=1)
+    runoff = build_election_status_publication(action="runoff", role_name="Советчане", round_number=2)
+    final = build_election_status_publication(
+        action="final",
+        role_name="Советчане",
+        round_number=2,
+        winner_mentions=("<@1>", "<@2>"),
+    )
+    assert "Раунд 1 открыт" in start.body
+    assert "второй" not in runoff.body.lower()
+    assert "+1 день" in runoff.body
+    assert "<@1>, <@2>" in final.body
