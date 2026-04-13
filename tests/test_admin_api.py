@@ -124,5 +124,40 @@ class AdminApiTests(unittest.TestCase):
         self.assertIn("Discord/Telegram роли (только просмотр, синк)", text)
 
 
+    @patch("bot.admin_api.app.CouncilPauseService.get_pause_status_for_admin")
+    def test_admin_council_pause_api_returns_reason_and_timestamp(self, mock_pause_status):
+        mock_pause_status.return_value = {
+            "paused": True,
+            "reason": "term_ended_without_launch_confirmation",
+            "paused_at": "2026-04-13T12:00:00+00:00",
+            "message": "Пауза включена",
+        }
+
+        response = self.client.get("/admin/api/council/pause")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["paused"])
+        self.assertEqual(payload["reason"], "term_ended_without_launch_confirmation")
+        self.assertEqual(payload["paused_at"], "2026-04-13T12:00:00+00:00")
+
+    @patch("bot.admin_api.app.CouncilPauseService.get_pause_status_for_admin")
+    def test_admin_council_pause_view_shows_reason_and_timestamp(self, mock_pause_status):
+        mock_pause_status.return_value = {
+            "paused": True,
+            "reason": "term_ended_without_launch_confirmation",
+            "paused_at": "2026-04-13T12:00:00+00:00",
+            "message": "Пауза включена",
+        }
+
+        response = self.client.get("/admin/council/pause")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("term_ended_without_launch_confirmation", body)
+        self.assertIn("2026-04-13T12:00:00+00:00", body)
+
+
 if __name__ == "__main__":
     unittest.main()
