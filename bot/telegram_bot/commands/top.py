@@ -213,6 +213,28 @@ def _resolve_display_name(
                 user_id,
                 account_id,
             )
+        try:
+            discord_identity_context = AccountsService.get_public_identity_context(
+                "discord",
+                None,
+                account_id=account_id,
+            )
+            for field_name in ("display_name", "username", "global_username"):
+                discord_field_value = str(discord_identity_context.get(field_name) or "").strip()
+                if not discord_field_value:
+                    continue
+                resolved = discord_field_value
+                if session_state is not None:
+                    session_state.resolved_names[int(user_id)] = resolved
+                    if not _is_id_fallback_name(resolved):
+                        session_state.seen_non_id_names[int(user_id)] = resolved
+                return resolved
+        except Exception:
+            logger.exception(
+                "telegram top resolve discord identity failed account_id=%s provider_user_id=%s",
+                account_id,
+                user_id,
+            )
 
     local_name = (local_telegram_names or {}).get(int(user_id))
     if local_name:
@@ -228,12 +250,9 @@ def _resolve_display_name(
         local_user=(local_telegram_users or {}).get(int(user_id)),
     )
     logger.warning(
-        "top name fallback to id platform=%s source_user_id=%s resolved_account_id=%s period=%s page=%s",
-        "telegram",
-        user_id,
+        "top name fallback to id account_id=%s provider_user_id=%s",
         account_id,
-        period,
-        page,
+        user_id,
     )
     if admin_actor_user_id and AuthorityService.is_super_admin("telegram", str(admin_actor_user_id)):
         logger.info(
