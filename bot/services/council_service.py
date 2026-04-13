@@ -11,8 +11,10 @@ from bot.domain.council_lifecycle import (
     CandidateReviewDecision,
     CouncilInviteSegment,
     LaunchConfirmationDecision,
+    ManualCandidateAddDecision,
     build_election_invite_segments,
     build_term_launch_notification_targets,
+    decide_manual_candidate_addition,
     decide_candidate_review_action,
     decide_term_launch_confirmation,
     filter_confirmed_ballot_candidates,
@@ -117,6 +119,25 @@ class CouncilService:
         election_id: int | None = None,
     ) -> list[dict[str, object]]:
         return filter_confirmed_ballot_candidates(candidates, election_id=election_id)
+
+    def decide_manual_candidate_addition(
+        self,
+        *,
+        term_id: int | None,
+        election_status: str,
+        candidate_profile_id: str,
+        election_role_code: str,
+        actor_profile_id: str,
+        existing_candidates: list[dict[str, object]] | tuple[dict[str, object], ...],
+    ) -> ManualCandidateAddDecision:
+        return decide_manual_candidate_addition(
+            term_id=term_id,
+            election_status=election_status,
+            candidate_profile_id=candidate_profile_id,
+            election_role_code=election_role_code,
+            actor_profile_id=actor_profile_id,
+            existing_candidates=existing_candidates,
+        )
 
 
 council_service = CouncilService()

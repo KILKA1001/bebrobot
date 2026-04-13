@@ -64,3 +64,32 @@ def test_council_service_supports_candidate_confirmation_flow_and_ballot_filter(
     filtered = council_service.filter_confirmed_ballot_candidates(candidates, election_id=1)
     assert len(filtered) == 1
     assert filtered[0]["id"] == 10
+
+
+def test_council_service_manual_candidate_addition_returns_assignment_audit():
+    decision = council_service.decide_manual_candidate_addition(
+        term_id=3,
+        election_status="nomination",
+        candidate_profile_id="candidate-9",
+        election_role_code="council_member",
+        actor_profile_id="moderator-4",
+        existing_candidates=(),
+    )
+    assert decision.accepted is True
+    assert decision.assignment_log is not None
+    assert decision.assignment_log["assigned_by_profile_id"] == "moderator-4"
+
+
+def test_council_service_manual_candidate_addition_blocks_duplicates():
+    decision = council_service.decide_manual_candidate_addition(
+        term_id=3,
+        election_status="voting",
+        candidate_profile_id="candidate-9",
+        election_role_code="council_member",
+        actor_profile_id="moderator-4",
+        existing_candidates=(
+            {"term_id": 3, "role_code": "council_member", "profile_id": "candidate-9"},
+        ),
+    )
+    assert decision.accepted is False
+    assert decision.reason == "duplicate_candidate_for_role_term"
