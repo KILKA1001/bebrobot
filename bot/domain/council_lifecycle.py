@@ -66,12 +66,15 @@ CANDIDATE_STATUS_PENDING = "pending"
 CANDIDATE_STATUS_CONFIRMED = "confirmed"
 CANDIDATE_STATUS_REJECTED = "rejected"
 CANDIDATE_STATUS_WITHDRAWN = "withdrawn"
+CANDIDATE_STATUS_EXPIRED = "expired"
 CANDIDATE_STATUS_VALUES: tuple[str, ...] = (
     CANDIDATE_STATUS_PENDING,
     CANDIDATE_STATUS_CONFIRMED,
     CANDIDATE_STATUS_REJECTED,
     CANDIDATE_STATUS_WITHDRAWN,
+    CANDIDATE_STATUS_EXPIRED,
 )
+COUNCIL_INVITE_TTL_HOURS = 24
 
 COUNCIL_MIN_VALID_BALLOTS = 3
 COUNCIL_BALLOT_LIMITS_BY_ROLE: dict[str, int] = {
@@ -306,6 +309,16 @@ class CandidateReviewDecision:
     accepted: bool
     next_status: str | None
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class InviteDeadlineDecision:
+    accepted: bool
+    next_status: str | None = None
+    reason: str | None = None
+    notify_candidate: bool = False
+    notification_text: str | None = None
+    status_transition_log: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -985,6 +998,83 @@ def build_election_invite_segments() -> tuple[CouncilInviteSegment, ...]:
     )
 
 
+def compute_candidate_invite_expires_at(*, created_at: datetime) -> datetime:
+    if not isinstance(created_at, datetime):
+        logger.error("Council candidate invite expiry rejected invalid created_at=%s", created_at)
+        raise ValueError("created_at must be datetime")
+    return created_at + timedelta(hours=COUNCIL_INVITE_TTL_HOURS)
+
+
+def resolve_candidate_invite_deadline(
+    *,
+    current_status: str,
+    created_at: datetime | None,
+    invite_expires_at: datetime | None = None,
+    confirmed_at: datetime | None = None,
+    now: datetime | None = None,
+) -> InviteDeadlineDecision:
+    cleaned_status = (current_status or "").strip().lower()
+    now_dt = now or datetime.now(timezone.utc)
+
+    if cleaned_status not in CANDIDATE_STATUS_VALUES:
+        logger.error("Council candidate invite deadline rejected invalid status=%s", cleaned_status)
+        return InviteDeadlineDecision(accepted=False, reason="invalid_current_status")
+
+    if cleaned_status == CANDIDATE_STATUS_CONFIRMED:
+        return InviteDeadlineDecision(
+            accepted=True,
+            next_status=CANDIDATE_STATUS_CONFIRMED,
+            reason="already_confirmed",
+        )
+
+    if cleaned_status in (CANDIDATE_STATUS_REJECTED, CANDIDATE_STATUS_WITHDRAWN, CANDIDATE_STATUS_EXPIRED):
+        return InviteDeadlineDecision(accepted=True, next_status=cleaned_status, reason="already_terminal")
+
+    if not isinstance(created_at, datetime):
+        logger.error("Council candidate invite deadline rejected missing created_at status=%s", cleaned_status)
+        return InviteDeadlineDecision(accepted=False, reason="missing_created_at")
+
+    expires_at = invite_expires_at if isinstance(invite_expires_at, datetime) else compute_candidate_invite_expires_at(created_at=created_at)
+
+    if isinstance(confirmed_at, datetime) and confirmed_at <= expires_at:
+        transition_log = {
+            "from_status": cleaned_status,
+            "to_status": CANDIDATE_STATUS_CONFIRMED,
+            "reason": "confirmed_in_time",
+            "created_at": created_at.isoformat(),
+            "invite_expires_at": expires_at.isoformat(),
+            "confirmed_at": confirmed_at.isoformat(),
+        }
+        logger.info("Council candidate invite status transition %s", transition_log)
+        return InviteDeadlineDecision(
+            accepted=True,
+            next_status=CANDIDATE_STATUS_CONFIRMED,
+            reason="confirmed_in_time",
+            status_transition_log=transition_log,
+        )
+
+    if now_dt < expires_at:
+        return InviteDeadlineDecision(accepted=True, next_status=CANDIDATE_STATUS_PENDING, reason="awaiting_response")
+
+    transition_log = {
+        "from_status": cleaned_status,
+        "to_status": CANDIDATE_STATUS_EXPIRED,
+        "reason": "invite_expired_without_confirmation",
+        "created_at": created_at.isoformat(),
+        "invite_expires_at": expires_at.isoformat(),
+        "checked_at": now_dt.isoformat(),
+    }
+    logger.info("Council candidate invite status transition %s", transition_log)
+    return InviteDeadlineDecision(
+        accepted=True,
+        next_status=CANDIDATE_STATUS_EXPIRED,
+        reason="invite_expired_without_confirmation",
+        notify_candidate=True,
+        notification_text="Срок приглашения завершён. Вы не были включены в бюллетень.",
+        status_transition_log=transition_log,
+    )
+
+
 def decide_candidate_review_action(
     *,
     current_status: str,
@@ -1015,14 +1105,14 @@ def decide_candidate_review_action(
     if cleaned_action == "confirm":
         if cleaned_current == CANDIDATE_STATUS_CONFIRMED:
             return CandidateReviewDecision(accepted=False, next_status=None, reason="already_confirmed")
-        if cleaned_current in (CANDIDATE_STATUS_REJECTED, CANDIDATE_STATUS_WITHDRAWN):
+        if cleaned_current in (CANDIDATE_STATUS_REJECTED, CANDIDATE_STATUS_WITHDRAWN, CANDIDATE_STATUS_EXPIRED):
             return CandidateReviewDecision(accepted=False, next_status=None, reason="immutable_terminal_status")
         return CandidateReviewDecision(accepted=True, next_status=CANDIDATE_STATUS_CONFIRMED)
 
     if cleaned_action == "reject":
         if cleaned_current == CANDIDATE_STATUS_REJECTED:
             return CandidateReviewDecision(accepted=False, next_status=None, reason="already_rejected")
-        if cleaned_current == CANDIDATE_STATUS_WITHDRAWN:
+        if cleaned_current in (CANDIDATE_STATUS_WITHDRAWN, CANDIDATE_STATUS_EXPIRED):
             return CandidateReviewDecision(accepted=False, next_status=None, reason="immutable_terminal_status")
         return CandidateReviewDecision(accepted=True, next_status=CANDIDATE_STATUS_REJECTED)
 

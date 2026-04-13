@@ -95,7 +95,9 @@ CREATE TABLE IF NOT EXISTS council_election_candidates (
     profile_id UUID NOT NULL,
     nomination_text TEXT,
     status TEXT NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'confirmed', 'rejected', 'withdrawn', 'elected', 'not_elected')),
+        CHECK (status IN ('pending', 'confirmed', 'rejected', 'withdrawn', 'expired', 'elected', 'not_elected')),
+    invite_expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '24 hours'),
+    confirmed_at TIMESTAMPTZ,
     reviewed_by_profile_id UUID,
     reviewed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
