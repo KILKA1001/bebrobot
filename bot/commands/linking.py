@@ -433,7 +433,12 @@ async def profile(ctx):
             if referenced_message and referenced_message.author:
                 target_user = referenced_message.author
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-            pass
+            logger.exception(
+                "profile failed to load referenced message guild_id=%s channel_id=%s message_id=%s",
+                getattr(ctx.guild, "id", None),
+                getattr(ctx.channel, "id", None),
+                reference.message_id,
+            )
 
     display_name = getattr(target_user, "display_name", None) or getattr(target_user, "name", None)
     _persist_discord_identity(target_user)
@@ -495,7 +500,12 @@ async def profile_roles(ctx):
             if referenced_message and referenced_message.author:
                 target_user = referenced_message.author
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-            pass
+            logger.exception(
+                "profile_roles failed to load referenced message guild_id=%s channel_id=%s message_id=%s",
+                getattr(ctx.guild, "id", None),
+                getattr(ctx.channel, "id", None),
+                reference.message_id,
+            )
 
     display_name = getattr(target_user, "display_name", None) or getattr(target_user, "name", None)
     _persist_discord_identity(target_user)
@@ -516,4 +526,3 @@ async def profile_roles(ctx):
             embed.add_field(name=category_name, value="\n".join(f"• {name}" for name in role_names)[:1024], inline=False)
 
     await send_temp(ctx, embed=embed, delete_after=None)
-
