@@ -81,6 +81,7 @@ COUNCIL_BALLOT_LIMITS_BY_ROLE: dict[str, int] = {
 }
 
 COUNCIL_RUNOFF_EXTENSION_DAYS = 1
+COUNCIL_QUESTION_VOTING_DURATION_MINUTES = 30
 COUNCIL_SEATS_BY_ROLE: dict[str, int] = {
     COUNCIL_ROLE_VICE_COUNCIL_MEMBER: 1,
     COUNCIL_ROLE_COUNCIL_MEMBER: 2,
@@ -317,6 +318,32 @@ class BallotSubmissionDecision:
     remaining_votes: int | None = None
 
 
+@dataclass(frozen=True)
+class QuestionModerationDecision:
+    accepted: bool
+    next_status: str | None
+    reason: str | None = None
+    discussion_started_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class QuestionVotingTransitionDecision:
+    accepted: bool
+    next_status: str | None
+    reason: str | None = None
+    voting_starts_at: datetime | None = None
+    voting_ends_at: datetime | None = None
+    user_message: str | None = None
+
+
+@dataclass(frozen=True)
+class QuestionArchiveDecision:
+    accepted: bool
+    next_status: str | None
+    reason: str | None = None
+    archive_payload: dict[str, object] | None = None
+
+
 def decide_term_launch_confirmation(
     *,
     term_status: str,
@@ -394,6 +421,169 @@ def decide_term_launch_confirmation(
         launch_activated=launch_activated,
         event_should_be_saved=True,
         confirmed_by_role=confirmed_by_role,
+    )
+
+
+def decide_question_moderation_approval(
+    *,
+    question_id: int | None,
+    current_status: str,
+    moderator_profile_id: str,
+    approved_at: datetime | None = None,
+) -> QuestionModerationDecision:
+    cleaned_status = (current_status or "").strip().lower()
+    moderator_id = (moderator_profile_id or "").strip()
+
+    if not isinstance(question_id, int) or question_id <= 0:
+        logger.error("Council question moderation rejected: invalid question_id=%s moderator_profile_id=%s", question_id, moderator_id)
+        return QuestionModerationDecision(accepted=False, next_status=None, reason="invalid_question_id")
+    if cleaned_status != QUESTION_STATUS_DRAFT:
+        logger.error(
+            "Council question moderation rejected: invalid current status question_id=%s status=%s moderator_profile_id=%s",
+            question_id,
+            cleaned_status,
+            moderator_id,
+        )
+        return QuestionModerationDecision(accepted=False, next_status=None, reason="question_not_in_draft")
+    if not moderator_id:
+        logger.error("Council question moderation rejected: empty moderator profile id question_id=%s", question_id)
+        return QuestionModerationDecision(accepted=False, next_status=None, reason="empty_moderator_profile_id")
+
+    discussion_started_at = approved_at or datetime.now(timezone.utc)
+    logger.info(
+        "Council question moderation accepted question_id=%s moderator_profile_id=%s next_status=discussion discussion_started_at=%s",
+        question_id,
+        moderator_id,
+        discussion_started_at.isoformat(),
+    )
+    return QuestionModerationDecision(
+        accepted=True,
+        next_status=QUESTION_STATUS_DISCUSSION,
+        discussion_started_at=discussion_started_at,
+    )
+
+
+def decide_question_start_voting(
+    *,
+    question_id: int | None,
+    current_status: str,
+    actor_profile_id: str,
+    started_at: datetime | None = None,
+    voting_duration_minutes: int = COUNCIL_QUESTION_VOTING_DURATION_MINUTES,
+) -> QuestionVotingTransitionDecision:
+    cleaned_status = (current_status or "").strip().lower()
+    actor_id = (actor_profile_id or "").strip()
+    start_dt = started_at or datetime.now(timezone.utc)
+
+    if not isinstance(question_id, int) or question_id <= 0:
+        logger.error("Council question voting start rejected: invalid question_id=%s actor_profile_id=%s", question_id, actor_id)
+        return QuestionVotingTransitionDecision(accepted=False, next_status=None, reason="invalid_question_id")
+    if cleaned_status != QUESTION_STATUS_DISCUSSION:
+        logger.error(
+            "Council question voting start rejected: invalid current status question_id=%s status=%s actor_profile_id=%s",
+            question_id,
+            cleaned_status,
+            actor_id,
+        )
+        return QuestionVotingTransitionDecision(accepted=False, next_status=None, reason="question_not_in_discussion")
+    if not actor_id:
+        logger.error("Council question voting start rejected: empty actor profile id question_id=%s", question_id)
+        return QuestionVotingTransitionDecision(accepted=False, next_status=None, reason="empty_actor_profile_id")
+    if not isinstance(voting_duration_minutes, int) or voting_duration_minutes <= 0:
+        logger.error(
+            "Council question voting start rejected: invalid duration question_id=%s duration=%s actor_profile_id=%s",
+            question_id,
+            voting_duration_minutes,
+            actor_id,
+        )
+        return QuestionVotingTransitionDecision(accepted=False, next_status=None, reason="invalid_voting_duration_minutes")
+
+    end_dt = start_dt + timedelta(minutes=voting_duration_minutes)
+    logger.info(
+        "Council question voting started question_id=%s actor_profile_id=%s start=%s end=%s duration_minutes=%s",
+        question_id,
+        actor_id,
+        start_dt.isoformat(),
+        end_dt.isoformat(),
+        voting_duration_minutes,
+    )
+    return QuestionVotingTransitionDecision(
+        accepted=True,
+        next_status=QUESTION_STATUS_VOTING,
+        voting_starts_at=start_dt,
+        voting_ends_at=end_dt,
+        user_message="Голосование началось и закроется автоматически через 30 минут.",
+    )
+
+
+def resolve_question_voting_for_archive(
+    *,
+    question_id: int | None,
+    current_status: str,
+    votes: list[dict[str, object]] | tuple[dict[str, object], ...],
+    required_comment: str,
+    closed_by_profile_id: str,
+    closed_at: datetime | None = None,
+) -> QuestionArchiveDecision:
+    cleaned_status = (current_status or "").strip().lower()
+    close_comment = (required_comment or "").strip()
+    closer_id = (closed_by_profile_id or "").strip()
+    final_dt = closed_at or datetime.now(timezone.utc)
+
+    if not isinstance(question_id, int) or question_id <= 0:
+        logger.error("Council question archive rejected: invalid question_id=%s closed_by_profile_id=%s", question_id, closer_id)
+        return QuestionArchiveDecision(accepted=False, next_status=None, reason="invalid_question_id")
+    if cleaned_status != QUESTION_STATUS_VOTING:
+        logger.error(
+            "Council question archive rejected: invalid current status question_id=%s status=%s closed_by_profile_id=%s",
+            question_id,
+            cleaned_status,
+            closer_id,
+        )
+        return QuestionArchiveDecision(accepted=False, next_status=None, reason="question_not_in_voting")
+    if not close_comment:
+        logger.error("Council question archive rejected: missing required comment question_id=%s", question_id)
+        return QuestionArchiveDecision(accepted=False, next_status=None, reason="required_comment_missing")
+    if not closer_id:
+        logger.error("Council question archive rejected: missing closer profile id question_id=%s", question_id)
+        return QuestionArchiveDecision(accepted=False, next_status=None, reason="empty_closed_by_profile_id")
+
+    score = {"yes": 0, "no": 0, "abstain": 0}
+    for row in votes:
+        vote_value = str((row or {}).get("vote_value") or "").strip().lower()
+        if vote_value not in score:
+            logger.error("Council question archive skipped invalid vote question_id=%s vote=%s row=%s", question_id, vote_value, row)
+            continue
+        score[vote_value] += 1
+    total_votes = score["yes"] + score["no"] + score["abstain"]
+    if score["yes"] > score["no"]:
+        result_code = "accepted"
+    elif score["yes"] < score["no"]:
+        result_code = "rejected"
+    else:
+        result_code = "tie"
+
+    archive_payload = {
+        "question_id": question_id,
+        "result": result_code,
+        "score": score,
+        "total_votes": total_votes,
+        "required_comment": close_comment,
+        "closed_at": final_dt.isoformat(),
+        "closed_by_profile_id": closer_id,
+    }
+    logger.info(
+        "Council question voting archived question_id=%s result=%s score=%s total_votes=%s closed_at=%s",
+        question_id,
+        result_code,
+        score,
+        total_votes,
+        archive_payload["closed_at"],
+    )
+    return QuestionArchiveDecision(
+        accepted=True,
+        next_status=QUESTION_STATUS_DECIDED,
+        archive_payload=archive_payload,
     )
 
 

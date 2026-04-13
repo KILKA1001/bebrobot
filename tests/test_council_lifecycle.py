@@ -12,6 +12,8 @@ from bot.domain.council_lifecycle import (
     build_election_invite_segments,
     build_term_launch_notification_targets,
     decide_manual_candidate_addition,
+    decide_question_moderation_approval,
+    decide_question_start_voting,
     decide_candidate_review_action,
     decide_ballot_submission,
     decide_term_launch_confirmation,
@@ -21,6 +23,7 @@ from bot.domain.council_lifecycle import (
     is_valid_lifecycle_status,
     plan_election_deadline_jobs,
     resolve_election_round_on_deadline,
+    resolve_question_voting_for_archive,
     validate_council_text_length,
 )
 
@@ -365,3 +368,62 @@ def test_election_publication_templates_cover_start_runoff_and_final():
     assert "второй" not in runoff.body.lower()
     assert "+1 день" in runoff.body
     assert "<@1>, <@2>" in final.body
+
+
+def test_question_after_moderation_moves_to_discussion_then_voting_for_30_minutes():
+    approved_at = datetime(2026, 4, 13, 12, 0, tzinfo=timezone.utc)
+    moderation = decide_question_moderation_approval(
+        question_id=17,
+        current_status="draft",
+        moderator_profile_id="mod-1",
+        approved_at=approved_at,
+    )
+    assert moderation.accepted is True
+    assert moderation.next_status == "discussion"
+    assert moderation.discussion_started_at == approved_at
+
+    voting = decide_question_start_voting(
+        question_id=17,
+        current_status="discussion",
+        actor_profile_id="mod-1",
+        started_at=approved_at,
+    )
+    assert voting.accepted is True
+    assert voting.next_status == "voting"
+    assert voting.voting_ends_at == datetime(2026, 4, 13, 12, 30, tzinfo=timezone.utc)
+    assert "30 минут" in (voting.user_message or "")
+
+
+def test_question_archive_requires_comment_and_keeps_result_score_and_closed_at():
+    closed_at = datetime(2026, 4, 13, 12, 30, tzinfo=timezone.utc)
+    decision = resolve_question_voting_for_archive(
+        question_id=18,
+        current_status="voting",
+        votes=(
+            {"vote_value": "yes"},
+            {"vote_value": "yes"},
+            {"vote_value": "no"},
+            {"vote_value": "abstain"},
+        ),
+        required_comment="Решение принято большинством голосов.",
+        closed_by_profile_id="mod-2",
+        closed_at=closed_at,
+    )
+    assert decision.accepted is True
+    assert decision.next_status == "decided"
+    payload = decision.archive_payload or {}
+    assert payload["result"] == "accepted"
+    assert payload["score"] == {"yes": 2, "no": 1, "abstain": 1}
+    assert payload["required_comment"] == "Решение принято большинством голосов."
+    assert payload["closed_at"] == closed_at.isoformat()
+
+    rejected = resolve_question_voting_for_archive(
+        question_id=18,
+        current_status="voting",
+        votes=(),
+        required_comment="",
+        closed_by_profile_id="mod-2",
+        closed_at=closed_at,
+    )
+    assert rejected.accepted is False
+    assert rejected.reason == "required_comment_missing"
