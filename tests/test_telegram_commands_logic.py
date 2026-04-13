@@ -225,6 +225,12 @@ class TelegramCommandsLogicTests(unittest.TestCase):
         result = process_link_discord_command(telegram_user_id=100, is_private_chat=False)
         self.assertEqual(result, '❌ Команда привязки доступна только в личных сообщениях с ботом.')
 
+    def test_link_command_without_code_returns_clear_instructions(self):
+        result = process_link_command("/link", telegram_user_id=100, is_private_chat=True)
+        self.assertIn("Привязка Telegram и Discord", result)
+        self.assertIn("/link код", result)
+        self.assertIn("/link discord", result)
+
     def test_shop_command_contains_open_shop_hint(self):
         result = process_shop_command()
         self.assertIn("Магазин", result)

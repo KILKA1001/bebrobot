@@ -92,6 +92,77 @@ class ProfileEditModal(discord.ui.Modal):
 
 
 
+class DiscordLinkCodeModal(discord.ui.Modal, title="Привязка Discord и Telegram"):
+    def __init__(self, user_id: int):
+        super().__init__()
+        self.user_id = user_id
+        self.code_input = discord.ui.TextInput(
+            label="Код из Telegram",
+            placeholder="Вставьте код привязки",
+            required=True,
+            max_length=64,
+        )
+        self.add_item(self.code_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            _persist_discord_identity(interaction.user)
+            code = str(self.code_input.value or "").strip()
+            success, payload = await asyncio.to_thread(consume_discord_link_code, self.user_id, code)
+            prefix = "✅" if success else "❌"
+            await interaction.response.send_message(f"{prefix} {payload}", ephemeral=True)
+        except Exception:
+            logger.exception("discord link modal submit failed actor_id=%s", getattr(interaction.user, "id", None))
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Не удалось завершить привязку. Повторите попытку.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Не удалось завершить привязку. Повторите попытку.", ephemeral=True)
+
+
+class LinkMenuView(discord.ui.View):
+    def __init__(self, user_id: int):
+        super().__init__(timeout=300)
+        self.user_id = user_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Это меню открыто для другого пользователя.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="📨 Получить код для Telegram", style=discord.ButtonStyle.primary)
+    async def issue_code(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            _persist_discord_identity(interaction.user)
+            success, payload = await asyncio.to_thread(issue_discord_telegram_link_code, self.user_id)
+            if not success:
+                await interaction.response.send_message(f"❌ {payload}", ephemeral=True)
+                return
+            await interaction.response.send_message(
+                (
+                    "🔗 Код для привязки Telegram готов.\n"
+                    f"Код: `{payload}`\n"
+                    f"Срок действия: {AccountsService.LINK_TTL_MINUTES} минут.\n"
+                    "Откройте Telegram и отправьте команду `/link код`."
+                ),
+                ephemeral=True,
+            )
+        except Exception:
+            logger.exception("discord link issue code button failed actor_id=%s", getattr(interaction.user, "id", None))
+            await interaction.response.send_message("❌ Не удалось сгенерировать код. Повторите попытку.", ephemeral=True)
+
+    @discord.ui.button(label="⌨️ Ввести код из Telegram", style=discord.ButtonStyle.success)
+    async def consume_code(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            await interaction.response.send_modal(DiscordLinkCodeModal(user_id=self.user_id))
+        except Exception:
+            logger.exception("discord link consume code modal open failed actor_id=%s", getattr(interaction.user, "id", None))
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Не удалось открыть окно ввода кода.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Не удалось открыть окно ввода кода.", ephemeral=True)
+
+
 class VisibleRoleToggleButton(discord.ui.Button):
     def __init__(self, role_name: str, category_name: str, selected: bool, index: int):
         super().__init__(
@@ -370,39 +441,11 @@ async def register_account(ctx):
 
 @bot.hybrid_command(name="link_telegram", description="Сгенерировать код для привязки Telegram аккаунта")
 async def link_telegram(ctx):
-    _persist_discord_identity(ctx.author)
-    if not _is_private_context(ctx):
-        await send_temp(
-            ctx,
-            compose_three_block_plain(
-                what="Привязка работает только в личном чате.",
-                now="Откройте личные сообщения с ботом и повторите команду.",
-                next_step="Бот покажет код для привязки Telegram.",
-                emoji="❌",
-            ),
-            delete_after=None,
-        )
-        return
-
-    success, payload = await asyncio.to_thread(issue_discord_telegram_link_code, ctx.author.id)
-    if not success:
-        await send_temp(ctx, f"❌ {payload}", delete_after=None)
-        return
-
-    await send_temp(
-        ctx,
-        (
-            "🔗 Код привязки Telegram сгенерирован.\n"
-            f"Код: `{payload}`\n"
-            f"Срок действия: {AccountsService.LINK_TTL_MINUTES} минут.\n"
-            "Используйте в Telegram: `/link <код>`"
-        ),
-        delete_after=None,
-    )
+    await link(ctx, code=None)
 
 
-@bot.hybrid_command(name="link", description="Привязать Discord к аккаунту по коду из Telegram")
-async def link(ctx, code: str):
+@bot.hybrid_command(name="link", description="Привязка Discord и Telegram: код и ввод через меню")
+async def link(ctx, code: str | None = None):
     _persist_discord_identity(ctx.author)
     if not _is_private_context(ctx):
         await send_temp(
@@ -417,9 +460,25 @@ async def link(ctx, code: str):
         )
         return
 
-    success, payload = await asyncio.to_thread(consume_discord_link_code, ctx.author.id, code)
-    prefix = "✅" if success else "❌"
-    await send_temp(ctx, f"{prefix} {payload}", delete_after=None)
+    code_value = str(code or "").strip()
+    if code_value:
+        success, payload = await asyncio.to_thread(consume_discord_link_code, ctx.author.id, code_value)
+        prefix = "✅" if success else "❌"
+        await send_temp(ctx, f"{prefix} {payload}", delete_after=None)
+        return
+
+    view = LinkMenuView(user_id=ctx.author.id)
+    await send_temp(
+        ctx,
+        compose_three_block_plain(
+            what="Открыл меню привязки Discord и Telegram.",
+            now="Выберите действие кнопкой: получить код для Telegram или ввести код из Telegram.",
+            next_step="Если выберете ввод кода, откроется удобное окно для ввода.",
+            emoji="🔗",
+        ),
+        delete_after=None,
+        view=view,
+    )
 
 
 @bot.hybrid_command(name="profile", description="Показать профиль общего аккаунта")
