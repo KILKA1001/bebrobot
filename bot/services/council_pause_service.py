@@ -4,12 +4,19 @@ import logging
 from datetime import datetime, timezone
 
 from bot.data import db
+from bot.services.role_management_service import RoleManagementService
 from bot.utils.structured_logging import log_critical_event
 
 logger = logging.getLogger(__name__)
 
 _OPERATION_CODE = "council.lifecycle.pause_mode"
 _ENTITY_TYPE = "council_pause"
+_TERM_ROLE_CODE_TO_PROJECT_ROLE: dict[str, str] = {
+    "vice_council": "Вице Советчанин",
+    "vice_council_member": "Вице Советчанин",
+    "council_member": "Советчанин",
+    "observer": "Наблюдатель",
+}
 
 
 class CouncilPauseService:
@@ -137,6 +144,7 @@ class CouncilPauseService:
         platform: str,
         user_id: str | None,
         entity_id: int | None,
+        role_cleanup: dict[str, object] | None = None,
     ) -> None:
         action = "pause_enabled" if paused else "pause_disabled"
         correlation_id, request_id = log_critical_event(
@@ -168,6 +176,7 @@ class CouncilPauseService:
                         "platform": platform,
                         "user_id": user_id,
                         "entity_id": entity_id,
+                        "role_cleanup": role_cleanup or {},
                         "correlation_id": correlation_id,
                         "request_id": request_id,
                     },
@@ -185,23 +194,148 @@ class CouncilPauseService:
             )
 
     @staticmethod
+    def _load_term_members_for_role_cleanup(term_id: int | None) -> list[dict[str, object]]:
+        if not db.supabase or not isinstance(term_id, int):
+            return []
+        try:
+            response = (
+                db.supabase.table("council_term_members")
+                .select("profile_id,role_code,is_active")
+                .eq("term_id", term_id)
+                .execute()
+            )
+            return response.data or []
+        except Exception:
+            logger.exception("council pause failed to load term members for role cleanup term_id=%s", term_id)
+            return []
+
+    @staticmethod
+    def _revoke_term_member_project_roles(
+        *,
+        term_id: int | None,
+        platform: str,
+        user_id: str | None,
+        reason: str,
+    ) -> dict[str, object]:
+        members = CouncilPauseService._load_term_members_for_role_cleanup(term_id)
+        if not members:
+            logger.info("council pause role cleanup skipped no members term_id=%s reason=%s", term_id, reason)
+            return {"attempted": 0, "removed": 0, "not_removed": 0, "errors": []}
+
+        removed = 0
+        not_removed = 0
+        errors: list[dict[str, str]] = []
+        actor_provider = platform if platform in {"telegram", "discord", "system"} else "system"
+        actor_user_id = str(user_id or "council_lifecycle").strip() or "council_lifecycle"
+
+        for row in members:
+            account_id = str((row or {}).get("profile_id") or "").strip()
+            role_code = str((row or {}).get("role_code") or "").strip().lower()
+            project_role_name = _TERM_ROLE_CODE_TO_PROJECT_ROLE.get(role_code)
+            if not account_id or not project_role_name:
+                logger.warning(
+                    "council pause role cleanup skipped member term_id=%s account_id=%s role_code=%s",
+                    term_id,
+                    account_id or None,
+                    role_code or None,
+                )
+                continue
+            try:
+                result = RoleManagementService.revoke_user_role_by_account(
+                    account_id,
+                    project_role_name,
+                    actor_provider=actor_provider,
+                    actor_user_id=actor_user_id,
+                    source="council_term_paused_or_ended",
+                )
+            except Exception:
+                logger.exception(
+                    "council pause role cleanup crashed term_id=%s account_id=%s role_code=%s project_role=%s",
+                    term_id,
+                    account_id,
+                    role_code,
+                    project_role_name,
+                )
+                not_removed += 1
+                errors.append(
+                    {
+                        "account_id": account_id,
+                        "role_code": role_code,
+                        "project_role_name": project_role_name,
+                        "reason": "exception",
+                        "message": "revoke_user_role_by_account crashed",
+                    }
+                )
+                continue
+
+            if bool(result.get("ok")):
+                removed += 1
+                continue
+
+            not_removed += 1
+            failure_reason = str(result.get("reason") or "unknown").strip() or "unknown"
+            failure_message = str(result.get("message") or "").strip() or "role revoke returned not ok"
+            logger.error(
+                "council pause role cleanup failed term_id=%s account_id=%s role_code=%s project_role=%s reason=%s message=%s",
+                term_id,
+                account_id,
+                role_code,
+                project_role_name,
+                failure_reason,
+                failure_message,
+            )
+            errors.append(
+                {
+                    "account_id": account_id,
+                    "role_code": role_code,
+                    "project_role_name": project_role_name,
+                    "reason": failure_reason,
+                    "message": failure_message,
+                }
+            )
+
+        summary = {
+            "attempted": removed + not_removed,
+            "removed": removed,
+            "not_removed": not_removed,
+            "errors": errors,
+        }
+        logger.info(
+            "council pause role cleanup summary term_id=%s reason=%s attempted=%s removed=%s not_removed=%s",
+            term_id,
+            reason,
+            summary["attempted"],
+            summary["removed"],
+            summary["not_removed"],
+        )
+        return summary
+
+    @staticmethod
     def sync_pause_state(*, platform: str = "system", user_id: str | None = None) -> dict[str, object]:
         required, reason, entity_id = CouncilPauseService._is_pause_required()
         current = CouncilPauseService._read_latest_state()
 
         if required and not current.get("paused"):
+            role_cleanup = CouncilPauseService._revoke_term_member_project_roles(
+                term_id=entity_id,
+                platform=platform,
+                user_id=user_id,
+                reason=reason or "term_ended_without_launch_confirmation",
+            )
             CouncilPauseService._write_pause_event(
                 paused=True,
                 reason=reason or "term_ended_without_launch_confirmation",
                 platform=platform,
                 user_id=user_id,
                 entity_id=entity_id,
+                role_cleanup=role_cleanup,
             )
             return {
                 "paused": True,
                 "reason": reason or "term_ended_without_launch_confirmation",
                 "paused_at": datetime.now(timezone.utc).isoformat(),
                 "entity_id": entity_id,
+                "role_cleanup": role_cleanup,
             }
 
         if (not required) and current.get("paused"):
