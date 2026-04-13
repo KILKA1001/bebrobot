@@ -7,6 +7,7 @@
 from pathlib import Path
 
 from bot.services import shop_service
+from bot.services import proposal_ui_texts
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -76,3 +77,15 @@ def test_admin_commands_have_ux_screen_open_logging_parity() -> None:
     assert "screen=tournament_create" in discord_tournament
     assert "screen=tournament_admin" in discord_tournament
     assert "screen=tournament_manage" in discord_tournament
+
+
+def test_proposal_waiting_launch_status_has_connected_explanation() -> None:
+    text = proposal_ui_texts.render_status_text(
+        proposal_id=12,
+        title="Вопрос",
+        status_label="Ожидает запуска созыва",
+        updated_at="2026-04-13T10:00:00+00:00",
+    )
+
+    assert "Созыв Совета ещё не запущен" in text
+    assert "Проверьте раздел «Статус» позже" in text

@@ -198,6 +198,9 @@ def test_candidate_invite_deadline_moves_pending_to_expired_and_returns_notifica
     assert decision.next_status == "expired"
     assert decision.reason == "invite_expired_without_confirmation"
     assert decision.notify_candidate is True
+    assert "Срок приглашения истёк" in str(decision.notification_text)
+    assert "не включены в бюллетень" in str(decision.notification_text)
+    assert "обратиться к организатору выборов" in str(decision.notification_text)
     assert decision.status_transition_log is not None
 
 
