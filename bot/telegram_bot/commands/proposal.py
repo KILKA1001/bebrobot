@@ -16,6 +16,7 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.services.council_feedback_service import CouncilFeedbackService
+from bot.services.council_system_events_service import CouncilSystemEventsService
 from bot.services.proposal_ui_texts import (
     build_status_parts,
     build_submit_success_parts,
@@ -88,6 +89,50 @@ async def proposal_command(message: Message) -> None:
     except Exception:
         logger.exception("telegram proposal command failed actor_id=%s", getattr(message.from_user, "id", None))
         await message.answer("❌ Не удалось открыть меню предложений.")
+
+
+@router.message(Command("proposal_system_channel"))
+async def proposal_system_channel_command(message: Message) -> None:
+    try:
+        if not message.from_user:
+            await message.answer("❌ Не удалось определить пользователя.")
+            return
+        raw_text = str(getattr(message, "text", "") or "").strip()
+        parts = raw_text.split(maxsplit=1)
+        args = str(parts[1] if len(parts) > 1 else "show").strip().lower()
+        if args == "show":
+            current = CouncilSystemEventsService.get_channel("telegram")
+            if not current:
+                await message.answer(
+                    "ℹ️ Канал системных событий Совета пока не настроен.\n"
+                    "Суперадмин может выполнить `/proposal_system_channel set_here` в нужной группе.",
+                )
+                return
+            await message.answer(f"✅ Сейчас выбран чат `{current}` для системных событий Совета.", parse_mode="Markdown")
+            return
+        if args == "set_here":
+            result = CouncilSystemEventsService.set_channel(
+                provider="telegram",
+                actor_user_id=str(message.from_user.id),
+                destination_id=str(getattr(message.chat, "id", "") or ""),
+            )
+            await message.answer(str(result.get("message") or ("✅ Чат системных событий Совета сохранён." if result.get("ok") else "❌ Не удалось сохранить чат.")))
+            return
+        if args == "clear":
+            result = CouncilSystemEventsService.set_channel(
+                provider="telegram",
+                actor_user_id=str(message.from_user.id),
+                destination_id="",
+            )
+            await message.answer(str(result.get("message") or ("✅ Чат системных событий Совета очищен." if result.get("ok") else "❌ Не удалось очистить чат.")))
+            return
+        await message.answer(
+            "❌ Неизвестное действие. Доступно: show, set_here, clear.\n"
+            "Пример: /proposal_system_channel set_here"
+        )
+    except Exception:
+        logger.exception("telegram proposal system channel command failed actor_id=%s", getattr(message.from_user, "id", None))
+        await message.answer("❌ Ошибка настройки канала. Подробности в логах.")
 
 
 @router.callback_query(F.data.startswith("proposal:"))
