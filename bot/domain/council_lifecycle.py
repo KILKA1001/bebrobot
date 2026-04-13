@@ -56,6 +56,21 @@ MAX_COUNCIL_TEXT_LEN = 1000
 TERM_LAUNCH_ALLOWED_CONFIRM_ROLES: tuple[str, ...] = ("head_club", "main_vice")
 TERM_LAUNCH_ALLOWED_CONFIRM_ROLES_SET = set(TERM_LAUNCH_ALLOWED_CONFIRM_ROLES)
 
+COUNCIL_ROLE_VICE_COUNCIL_MEMBER = "vice_council_member"
+COUNCIL_ROLE_COUNCIL_MEMBER = "council_member"
+COUNCIL_ROLE_OBSERVER = "observer"
+
+CANDIDATE_STATUS_PENDING = "pending"
+CANDIDATE_STATUS_CONFIRMED = "confirmed"
+CANDIDATE_STATUS_REJECTED = "rejected"
+CANDIDATE_STATUS_WITHDRAWN = "withdrawn"
+CANDIDATE_STATUS_VALUES: tuple[str, ...] = (
+    CANDIDATE_STATUS_PENDING,
+    CANDIDATE_STATUS_CONFIRMED,
+    CANDIDATE_STATUS_REJECTED,
+    CANDIDATE_STATUS_WITHDRAWN,
+)
+
 
 @dataclass(frozen=True)
 class LaunchConfirmationDecision:
@@ -64,6 +79,21 @@ class LaunchConfirmationDecision:
     event_should_be_saved: bool
     rejection_reason: str | None = None
     confirmed_by_role: str | None = None
+
+
+@dataclass(frozen=True)
+class CouncilInviteSegment:
+    role_code: str
+    segment_code: str
+    required_titles: tuple[str, ...]
+    requires_profile_application: bool = False
+
+
+@dataclass(frozen=True)
+class CandidateReviewDecision:
+    accepted: bool
+    next_status: str | None
+    reason: str | None = None
 
 
 def decide_term_launch_confirmation(
@@ -157,6 +187,101 @@ def build_term_launch_notification_targets(
         if cleaned and cleaned not in request_targets:
             request_targets.append(cleaned)
     return tuple(request_targets)
+
+
+def build_election_invite_segments() -> tuple[CouncilInviteSegment, ...]:
+    return (
+        CouncilInviteSegment(
+            role_code=COUNCIL_ROLE_VICE_COUNCIL_MEMBER,
+            segment_code="vice_city_plus_main_vice",
+            required_titles=("vice_city", "main_vice"),
+        ),
+        CouncilInviteSegment(
+            role_code=COUNCIL_ROLE_COUNCIL_MEMBER,
+            segment_code="veterans",
+            required_titles=("veteran",),
+        ),
+        CouncilInviteSegment(
+            role_code=COUNCIL_ROLE_OBSERVER,
+            segment_code="profile_application",
+            required_titles=(),
+            requires_profile_application=True,
+        ),
+    )
+
+
+def decide_candidate_review_action(
+    *,
+    current_status: str,
+    action: str,
+    candidate_profile_id: str,
+    election_role_code: str,
+    actor_profile_id: str,
+    source_platform: str,
+) -> CandidateReviewDecision:
+    cleaned_current = (current_status or "").strip().lower()
+    cleaned_action = (action or "").strip().lower()
+    cleaned_candidate_id = (candidate_profile_id or "").strip()
+    cleaned_role_code = (election_role_code or "").strip().lower()
+    cleaned_actor_id = (actor_profile_id or "").strip()
+    cleaned_platform = (source_platform or "").strip().lower() or "unknown"
+
+    if cleaned_current not in CANDIDATE_STATUS_VALUES:
+        logger.error(
+            "Council candidate review rejected: invalid current status status=%s candidate_profile_id=%s role_code=%s actor_profile_id=%s source_platform=%s",
+            cleaned_current,
+            cleaned_candidate_id,
+            cleaned_role_code,
+            cleaned_actor_id,
+            cleaned_platform,
+        )
+        return CandidateReviewDecision(accepted=False, next_status=None, reason="invalid_current_status")
+
+    if cleaned_action == "confirm":
+        if cleaned_current == CANDIDATE_STATUS_CONFIRMED:
+            return CandidateReviewDecision(accepted=False, next_status=None, reason="already_confirmed")
+        if cleaned_current in (CANDIDATE_STATUS_REJECTED, CANDIDATE_STATUS_WITHDRAWN):
+            return CandidateReviewDecision(accepted=False, next_status=None, reason="immutable_terminal_status")
+        return CandidateReviewDecision(accepted=True, next_status=CANDIDATE_STATUS_CONFIRMED)
+
+    if cleaned_action == "reject":
+        if cleaned_current == CANDIDATE_STATUS_REJECTED:
+            return CandidateReviewDecision(accepted=False, next_status=None, reason="already_rejected")
+        if cleaned_current == CANDIDATE_STATUS_WITHDRAWN:
+            return CandidateReviewDecision(accepted=False, next_status=None, reason="immutable_terminal_status")
+        return CandidateReviewDecision(accepted=True, next_status=CANDIDATE_STATUS_REJECTED)
+
+    logger.error(
+        "Council candidate review rejected: unsupported action action=%s candidate_profile_id=%s role_code=%s actor_profile_id=%s source_platform=%s",
+        cleaned_action,
+        cleaned_candidate_id,
+        cleaned_role_code,
+        cleaned_actor_id,
+        cleaned_platform,
+    )
+    return CandidateReviewDecision(accepted=False, next_status=None, reason="unsupported_action")
+
+
+def filter_confirmed_ballot_candidates(
+    candidates: list[dict[str, object]] | tuple[dict[str, object], ...],
+    *,
+    election_id: int | None = None,
+) -> list[dict[str, object]]:
+    approved: list[dict[str, object]] = []
+    for row in candidates:
+        status = str((row or {}).get("status") or "").strip().lower()
+        if status == CANDIDATE_STATUS_CONFIRMED:
+            approved.append(dict(row))
+            continue
+        logger.warning(
+            "Council ballot candidate excluded: non-confirmed status election_id=%s candidate_id=%s profile_id=%s status=%s role_code=%s",
+            election_id,
+            (row or {}).get("id"),
+            (row or {}).get("profile_id"),
+            status or "missing",
+            (row or {}).get("role_code"),
+        )
+    return approved
 
 
 def is_valid_lifecycle_status(status: str, *, lifecycle: str) -> bool:

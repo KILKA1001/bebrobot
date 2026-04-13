@@ -7,6 +7,7 @@ def test_council_service_lifecycle_snapshot_contains_expected_statuses():
     assert "pending_launch_confirmation" in snapshot.term_statuses
     assert "voting" in snapshot.election_statuses
     assert "archived" in snapshot.question_statuses
+    assert "confirmed" in snapshot.candidate_statuses
 
 
 def test_council_service_validates_statuses_and_rejects_unknown_lifecycle():
@@ -42,3 +43,24 @@ def test_council_service_text_validation_uses_shared_domain_rules():
     valid_too_long, err_too_long = council_service.validate_text(field_name="Вопрос", text="x" * 1001)
     assert valid_too_long is False
     assert "1000" in (err_too_long or "")
+
+
+def test_council_service_supports_candidate_confirmation_flow_and_ballot_filter():
+    decision = council_service.decide_candidate_review_action(
+        current_status="pending",
+        action="confirm",
+        candidate_profile_id="candidate-1",
+        election_role_code="council_member",
+        actor_profile_id="moderator-1",
+        source_platform="discord",
+    )
+    assert decision.accepted is True
+    assert decision.next_status == "confirmed"
+
+    candidates = [
+        {"id": 10, "status": "confirmed"},
+        {"id": 11, "status": "pending"},
+    ]
+    filtered = council_service.filter_confirmed_ballot_candidates(candidates, election_id=1)
+    assert len(filtered) == 1
+    assert filtered[0]["id"] == 10

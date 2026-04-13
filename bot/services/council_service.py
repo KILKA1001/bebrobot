@@ -4,12 +4,18 @@ import logging
 from dataclasses import dataclass
 
 from bot.domain.council_lifecycle import (
+    CANDIDATE_STATUS_VALUES,
     ELECTION_STATUS_VALUES,
     QUESTION_STATUS_VALUES,
     TERM_STATUS_VALUES,
+    CandidateReviewDecision,
+    CouncilInviteSegment,
     LaunchConfirmationDecision,
+    build_election_invite_segments,
     build_term_launch_notification_targets,
+    decide_candidate_review_action,
     decide_term_launch_confirmation,
+    filter_confirmed_ballot_candidates,
     validate_council_text_length,
 )
 
@@ -21,6 +27,7 @@ class CouncilLifecycleSnapshot:
     term_statuses: tuple[str, ...]
     election_statuses: tuple[str, ...]
     question_statuses: tuple[str, ...]
+    candidate_statuses: tuple[str, ...]
 
 
 class CouncilService:
@@ -31,6 +38,7 @@ class CouncilService:
             term_statuses=TERM_STATUS_VALUES,
             election_statuses=ELECTION_STATUS_VALUES,
             question_statuses=QUESTION_STATUS_VALUES,
+            candidate_statuses=CANDIDATE_STATUS_VALUES,
         )
 
     def is_valid_status(self, *, lifecycle: str, status: str) -> bool:
@@ -79,6 +87,36 @@ class CouncilService:
             head_club_profile_id=head_club_profile_id,
             main_vice_profile_id=main_vice_profile_id,
         )
+
+    def build_election_invite_segments(self) -> tuple[CouncilInviteSegment, ...]:
+        return build_election_invite_segments()
+
+    def decide_candidate_review_action(
+        self,
+        *,
+        current_status: str,
+        action: str,
+        candidate_profile_id: str,
+        election_role_code: str,
+        actor_profile_id: str,
+        source_platform: str,
+    ) -> CandidateReviewDecision:
+        return decide_candidate_review_action(
+            current_status=current_status,
+            action=action,
+            candidate_profile_id=candidate_profile_id,
+            election_role_code=election_role_code,
+            actor_profile_id=actor_profile_id,
+            source_platform=source_platform,
+        )
+
+    def filter_confirmed_ballot_candidates(
+        self,
+        candidates: list[dict[str, object]] | tuple[dict[str, object], ...],
+        *,
+        election_id: int | None = None,
+    ) -> list[dict[str, object]]:
+        return filter_confirmed_ballot_candidates(candidates, election_id=election_id)
 
 
 council_service = CouncilService()
