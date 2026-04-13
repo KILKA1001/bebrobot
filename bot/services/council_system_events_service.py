@@ -10,6 +10,7 @@ from bot.services.authority_service import AuthorityService
 logger = logging.getLogger(__name__)
 
 _TABLE_NAME = "council_system_event_channels"
+_EVENT_MESSAGES_TABLE_NAME = "council_system_event_messages"
 _SUPPORTED_PROVIDERS = {"telegram", "discord"}
 _EVENT_CODES = {
     "election_started",
@@ -22,6 +23,26 @@ _EVENT_CODES = {
 
 
 class CouncilSystemEventsService:
+    @staticmethod
+    def _normalize_event_key(event_key: str | None) -> str | None:
+        normalized = str(event_key or "").strip().lower()
+        return normalized or None
+
+    @staticmethod
+    def _extract_message_id(payload: object) -> str | None:
+        if isinstance(payload, str):
+            normalized = payload.strip()
+            return normalized or None
+        if isinstance(payload, int):
+            return str(payload)
+        if isinstance(payload, dict):
+            candidate = payload.get("message_id")
+            if candidate is None:
+                return None
+            normalized = str(candidate).strip()
+            return normalized or None
+        return None
+
     @staticmethod
     def _record_admin_action(
         *,
@@ -236,11 +257,80 @@ class CouncilSystemEventsService:
         return mapping.get(normalized_event, "ℹ️ Системное событие Совета.")
 
     @staticmethod
+    def get_event_message_binding(*, provider: str, event_key: str) -> dict[str, str] | None:
+        normalized_provider = str(provider or "").strip().lower()
+        normalized_event_key = CouncilSystemEventsService._normalize_event_key(event_key)
+        if normalized_provider not in _SUPPORTED_PROVIDERS or not normalized_event_key or not db.supabase:
+            return None
+        try:
+            response = (
+                db.supabase.table(_EVENT_MESSAGES_TABLE_NAME)
+                .select("destination_id,message_id")
+                .eq("provider", normalized_provider)
+                .eq("event_key", normalized_event_key)
+                .limit(1)
+                .execute()
+            )
+            rows = response.data or []
+            if not rows:
+                return None
+            destination_id = str(rows[0].get("destination_id") or "").strip()
+            message_id = str(rows[0].get("message_id") or "").strip()
+            if not destination_id or not message_id:
+                return None
+            return {"destination_id": destination_id, "message_id": message_id}
+        except Exception:
+            logger.exception(
+                "council system event binding read failed provider=%s event_key=%s",
+                normalized_provider,
+                normalized_event_key,
+            )
+            return None
+
+    @staticmethod
+    def save_event_message_binding(*, provider: str, event_key: str, destination_id: str, message_id: str) -> bool:
+        normalized_provider = str(provider or "").strip().lower()
+        normalized_event_key = CouncilSystemEventsService._normalize_event_key(event_key)
+        normalized_destination = str(destination_id or "").strip()
+        normalized_message_id = str(message_id or "").strip()
+        if (
+            normalized_provider not in _SUPPORTED_PROVIDERS
+            or not normalized_event_key
+            or not normalized_destination
+            or not normalized_message_id
+            or not db.supabase
+        ):
+            return False
+        try:
+            db.supabase.table(_EVENT_MESSAGES_TABLE_NAME).upsert(
+                {
+                    "provider": normalized_provider,
+                    "event_key": normalized_event_key,
+                    "destination_id": normalized_destination,
+                    "message_id": normalized_message_id,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+                on_conflict="provider,event_key",
+            ).execute()
+            return True
+        except Exception:
+            logger.exception(
+                "council system event binding write failed provider=%s event_key=%s destination_id=%s message_id=%s",
+                normalized_provider,
+                normalized_event_key,
+                normalized_destination,
+                normalized_message_id,
+            )
+            return False
+
+    @staticmethod
     def publish_event(
         *,
         provider: str,
         event_code: str,
-        publisher: Callable[[str, str], bool],
+        publisher: Callable[[str, str], object],
+        editor: Callable[[str, str, str], bool] | None = None,
+        event_key: str | None = None,
         title: str | None = None,
         details: str | None = None,
         confirmed: bool = False,
@@ -273,8 +363,54 @@ class CouncilSystemEventsService:
             return {"ok": False, "reason": "channel_not_configured"}
 
         text = CouncilSystemEventsService.build_event_text(event_code=normalized_event, title=title, details=details)
+        normalized_event_key = CouncilSystemEventsService._normalize_event_key(event_key)
+
+        if normalized_event_key and editor:
+            binding = CouncilSystemEventsService.get_event_message_binding(
+                provider=normalized_provider,
+                event_key=normalized_event_key,
+            )
+            if binding:
+                bound_destination = binding["destination_id"]
+                bound_message_id = binding["message_id"]
+                if bound_destination != destination_id:
+                    logger.warning(
+                        "council system event edit fallback: destination changed provider=%s event_key=%s old_destination=%s new_destination=%s",
+                        normalized_provider,
+                        normalized_event_key,
+                        bound_destination,
+                        destination_id,
+                    )
+                else:
+                    try:
+                        edited = bool(editor(bound_destination, bound_message_id, text))
+                        if edited:
+                            return {
+                                "ok": True,
+                                "destination_id": bound_destination,
+                                "event_code": normalized_event,
+                                "event_key": normalized_event_key,
+                                "message_id": bound_message_id,
+                                "updated": True,
+                            }
+                        logger.warning(
+                            "council system event edit fallback: edit failed provider=%s event_key=%s destination_id=%s message_id=%s",
+                            normalized_provider,
+                            normalized_event_key,
+                            bound_destination,
+                            bound_message_id,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "council system event edit fallback: edit exception provider=%s event_key=%s destination_id=%s message_id=%s",
+                            normalized_provider,
+                            normalized_event_key,
+                            bound_destination,
+                            bound_message_id,
+                        )
         try:
-            delivered = bool(publisher(destination_id, text))
+            publish_result = publisher(destination_id, text)
+            delivered = bool(publish_result)
             if not delivered:
                 logger.error(
                     "council system event publish failed provider=%s destination_id=%s event_code=%s",
@@ -283,7 +419,31 @@ class CouncilSystemEventsService:
                     normalized_event,
                 )
                 return {"ok": False, "reason": "publish_failed"}
-            return {"ok": True, "destination_id": destination_id, "event_code": normalized_event}
+
+            message_id = CouncilSystemEventsService._extract_message_id(publish_result)
+            if normalized_event_key and message_id:
+                CouncilSystemEventsService.save_event_message_binding(
+                    provider=normalized_provider,
+                    event_key=normalized_event_key,
+                    destination_id=destination_id,
+                    message_id=message_id,
+                )
+            elif normalized_event_key:
+                logger.warning(
+                    "council system event publish missing message id for binding provider=%s event_key=%s destination_id=%s",
+                    normalized_provider,
+                    normalized_event_key,
+                    destination_id,
+                )
+
+            return {
+                "ok": True,
+                "destination_id": destination_id,
+                "event_code": normalized_event,
+                "event_key": normalized_event_key,
+                "message_id": message_id,
+                "updated": False,
+            }
         except Exception:
             logger.exception(
                 "council system event publish crashed provider=%s destination_id=%s event_code=%s",
