@@ -308,6 +308,22 @@ def test_ballot_submission_success_reports_remaining_votes_for_ui():
     assert accepted.remaining_votes == 1
 
 
+def test_ballot_submission_blocks_cross_platform_duplicate_with_telegram_priority():
+    denied = decide_ballot_submission(
+        election_id=20,
+        voter_profile_id="profile-shared-20",
+        voter_role_code="observer",
+        selected_candidate_ids=[51],
+        already_submitted_ballots_count=1,
+        source_platform="discord",
+        existing_ballot_platform="telegram",
+    )
+    assert denied.accepted is False
+    assert denied.reason == "cross_platform_duplicate_vote"
+    assert "уже зарегистрирован через Telegram" in (denied.user_message or "")
+    assert "Приоритет проведения выборов остаётся за Telegram" in (denied.user_message or "")
+
+
 def test_election_deadline_resolver_starts_second_round_on_tie_for_single_seat():
     deadline = datetime(2026, 4, 13, 10, 0, tzinfo=timezone.utc)
     decision = resolve_election_round_on_deadline(
@@ -499,6 +515,21 @@ def test_question_vote_submission_allows_only_one_vote_change():
     assert blocked_change.accepted is False
     assert blocked_change.reason == "vote_change_limit_reached"
     assert "уже меняли голос" in (blocked_change.user_message or "").lower()
+
+
+def test_question_vote_submission_blocks_cross_platform_duplicate_for_shared_profile():
+    blocked = decide_question_vote_submission(
+        question_id=21,
+        current_status="voting",
+        voter_profile_id="profile-shared-7",
+        voter_role_code="council_member",
+        vote_value="yes",
+        source_platform="discord",
+        existing_vote_platform="telegram",
+    )
+    assert blocked.accepted is False
+    assert blocked.reason == "cross_platform_duplicate_vote"
+    assert "уже учтён через Telegram" in (blocked.user_message or "")
 
 
 def test_term_member_exit_marks_member_as_dropout_for_active_term():

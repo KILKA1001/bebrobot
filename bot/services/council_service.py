@@ -222,6 +222,8 @@ class CouncilService:
         voter_role_code: str,
         selected_candidate_ids: list[int] | tuple[int, ...],
         already_submitted_ballots_count: int = 0,
+        source_platform: str | None = None,
+        existing_ballot_platform: str | None = None,
     ) -> BallotSubmissionDecision:
         return decide_ballot_submission(
             election_id=election_id,
@@ -229,6 +231,8 @@ class CouncilService:
             voter_role_code=voter_role_code,
             selected_candidate_ids=selected_candidate_ids,
             already_submitted_ballots_count=already_submitted_ballots_count,
+            source_platform=source_platform,
+            existing_ballot_platform=existing_ballot_platform,
         )
 
     def is_election_valid_by_ballots(self, *, total_ballots_count: int, min_valid_ballots: int = COUNCIL_MIN_VALID_BALLOTS) -> bool:
@@ -334,6 +338,8 @@ class CouncilService:
         current_score_yes: int = 0,
         current_score_no: int = 0,
         has_unreplaced_dropout: bool = False,
+        source_platform: str | None = None,
+        existing_vote_platform: str | None = None,
     ) -> QuestionVoteSubmissionDecision:
         return decide_question_vote_submission(
             question_id=question_id,
@@ -346,6 +352,8 @@ class CouncilService:
             current_score_yes=current_score_yes,
             current_score_no=current_score_no,
             has_unreplaced_dropout=has_unreplaced_dropout,
+            source_platform=source_platform,
+            existing_vote_platform=existing_vote_platform,
         )
 
 

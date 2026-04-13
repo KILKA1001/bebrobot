@@ -127,6 +127,20 @@ def test_council_service_ballot_submission_uses_shared_profile_id_and_threshold(
     assert council_service.is_election_valid_by_ballots(total_ballots_count=3) is True
 
 
+def test_council_service_ballot_submission_blocks_cross_platform_duplicate():
+    denied = council_service.decide_ballot_submission(
+        election_id=47,
+        voter_profile_id="profile-shared-47",
+        voter_role_code="observer",
+        selected_candidate_ids=[10],
+        source_platform="discord",
+        existing_ballot_platform="telegram",
+    )
+    assert denied.accepted is False
+    assert denied.reason == "cross_platform_duplicate_vote"
+    assert "Telegram" in (denied.user_message or "")
+
+
 def test_council_service_ballot_submission_success_exposes_ui_details():
     accepted = council_service.decide_ballot_submission(
         election_id=46,
@@ -232,6 +246,21 @@ def test_council_service_question_vote_submission_has_weight_and_change_limit():
     )
     assert blocked.accepted is False
     assert blocked.reason == "vote_change_limit_reached"
+
+
+def test_council_service_question_vote_submission_blocks_cross_platform_duplicate():
+    blocked = council_service.decide_question_vote_submission(
+        question_id=701,
+        current_status="voting",
+        voter_profile_id="profile-shared-701",
+        voter_role_code="council_member",
+        vote_value="yes",
+        source_platform="discord",
+        existing_vote_platform="telegram",
+    )
+    assert blocked.accepted is False
+    assert blocked.reason == "cross_platform_duplicate_vote"
+    assert "с другой платформы недоступен" in (blocked.user_message or "")
 
 
 def test_council_service_supports_member_dropout_replacement_and_quorum_snapshot():
