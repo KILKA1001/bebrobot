@@ -16,6 +16,14 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.services.council_feedback_service import CouncilFeedbackService
+from bot.services.proposal_ui_texts import (
+    build_status_parts,
+    build_submit_success_parts,
+    render_archive_empty_text,
+    render_archive_lines,
+    render_help_text,
+    render_menu_overview,
+)
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -73,9 +81,7 @@ async def proposal_command(message: Message) -> None:
             return
         _cleanup_pending(message.from_user.id)
         await message.answer(
-            "🗂 <b>Меню предложений</b>\n"
-            "Вся работа собрана в одной команде.\n"
-            "Используйте кнопки ниже: подача, статус, архив и помощь.",
+            "🗂 <b>Меню предложений</b>\n" + render_menu_overview(),
             reply_markup=_menu_keyboard(),
             parse_mode="HTML",
         )
@@ -96,8 +102,7 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
         if action == "menu":
             _cleanup_pending(actor_id)
             await callback.message.edit_text(
-                "🗂 <b>Меню предложений</b>\n"
-                "Выберите нужный раздел. Все переходы — внутри этого сценария.",
+                "🗂 <b>Меню предложений</b>\n" + render_menu_overview(),
                 reply_markup=_menu_keyboard(),
                 parse_mode="HTML",
             )
@@ -137,11 +142,15 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
                 await callback.answer()
                 return
             _cleanup_pending(actor_id)
+            success_parts = build_submit_success_parts(
+                proposal_id=result.get("proposal_id"),
+                status_label=result.get("status_label"),
+            )
             await callback.message.edit_text(
                 "✅ <b>Предложение отправлено</b>\n"
-                f"Номер: <b>#{result.get('proposal_id')}</b>\n"
-                f"Текущий статус: {result.get('status_label')}\n\n"
-                "Чтобы проверить обработку позже, нажмите «Статус» в меню /proposal.",
+                f"<b>{success_parts['proposal_number']}</b>\n"
+                f"{success_parts['status']}\n\n"
+                f"{success_parts['next_step']}",
                 parse_mode="HTML",
                 reply_markup=_menu_keyboard(),
             )
@@ -152,11 +161,17 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
             payload = CouncilFeedbackService.get_latest_status(provider="telegram", provider_user_id=str(actor_id))
             text = str(payload.get("message") or "")
             if payload.get("ok") and payload.get("has_data"):
+                status_parts = build_status_parts(
+                    proposal_id=payload.get("proposal_id"),
+                    title=payload.get("title"),
+                    status_label=payload.get("status_label"),
+                    updated_at=payload.get("updated_at"),
+                )
                 text = (
                     "📍 <b>Текущий статус</b>\n"
-                    f"Предложение: <b>#{payload.get('proposal_id')} — {payload.get('title')}</b>\n"
-                    f"Статус: {payload.get('status_label')}\n"
-                    f"Последнее обновление: <code>{payload.get('updated_at') or '—'}</code>"
+                    f"<b>{status_parts['proposal']}</b>\n"
+                    f"{status_parts['status']}\n"
+                    f"<code>{status_parts['updated_at']}</code>"
                 )
             await callback.message.edit_text(text, parse_mode="HTML", reply_markup=_menu_keyboard())
             await callback.answer()
@@ -165,13 +180,12 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
         if action == "archive":
             rows = CouncilFeedbackService.get_decisions_archive(limit=5)
             if not rows:
-                text = "📚 <b>Архив решений пока пуст.</b>"
+                text = f"📚 <b>{render_archive_empty_text().removeprefix('📚 ')}</b>"
             else:
+                raw_lines = render_archive_lines(rows, text_limit=180)
                 chunks = ["📚 <b>Архив решений</b>"]
-                for row in rows:
-                    chunks.append(
-                        f"• <b>#{row.get('id')}</b> [{row.get('decision_code') or 'решение'}] {str(row.get('decision_text') or 'Без текста')[:180]}"
-                    )
+                for line in raw_lines:
+                    chunks.append(line)
                 text = "\n".join(chunks)
             await callback.message.edit_text(text, parse_mode="HTML", reply_markup=_menu_keyboard())
             await callback.answer()
@@ -179,12 +193,7 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
 
         if action == "help":
             await callback.message.edit_text(
-                "❓ <b>Помощь</b>\n"
-                "1) Нажмите «Подать предложение».\n"
-                "2) Отправьте заголовок и текст одним сообщением.\n"
-                "3) Проверьте экран подтверждения.\n"
-                "4) Нажмите «Отправить».\n"
-                "5) Статус обработки смотрите кнопкой «Статус».",
+                render_help_text().replace("❓ Как пользоваться:", "❓ <b>Помощь</b>"),
                 parse_mode="HTML",
                 reply_markup=_menu_keyboard(),
             )
