@@ -92,6 +92,7 @@ BOT_COMMANDS = [
     BotCommand(command="title", description="Повысить/понизить звание пользователя (суперадмины)"),
     BotCommand(command="helpy", description="Список команд"),
     BotCommand(command="guiy", description="Обратиться к Гую (особенно в группе)"),
+    BotCommand(command="council", description="Единое меню Совета"),
 ]
 
 GUIY_OWNER_COMMANDS = [

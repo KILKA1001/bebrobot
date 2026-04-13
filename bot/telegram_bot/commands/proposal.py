@@ -47,6 +47,18 @@ _PENDING_TTL_SECONDS = 900
 _ARCHIVE_FILTERS_BY_USER: dict[int, dict[str, str]] = {}
 
 
+def _log_alias_event(*, operation: str, user_id: int | None, result: str) -> None:
+    logger.info(
+        "proposal alias event operation=%s platform=telegram user_id=%s result=%s",
+        operation,
+        user_id,
+        result,
+    )
+
+
+_log_alias_event(operation="command_alias_register:council", user_id=None, result="ok")
+
+
 def _archive_filters(user_id: int) -> dict[str, str]:
     current = _ARCHIVE_FILTERS_BY_USER.get(user_id) or {"period_code": "90d", "status_code": "all", "question_type_code": "all"}
     _ARCHIVE_FILTERS_BY_USER[user_id] = current
@@ -97,10 +109,14 @@ def _is_alive(created_at: float | None) -> bool:
     return (time.time() - created_at) <= _PENDING_TTL_SECONDS
 
 
-@router.message(Command("proposal"))
+@router.message(Command(commands=["proposal", "council"]))
 async def proposal_command(message: Message) -> None:
+    actor_id = getattr(message.from_user, "id", None)
+    command_name = str(getattr(message, "text", "") or "").split(maxsplit=1)[0].lstrip("/").lower()
+    operation = f"command_invoke:{command_name or 'proposal'}"
     try:
         if not message.from_user:
+            _log_alias_event(operation=operation, user_id=actor_id, result="failed_no_user")
             await message.answer("❌ Не удалось определить пользователя.")
             return
         _cleanup_pending(message.from_user.id)
@@ -115,7 +131,9 @@ async def proposal_command(message: Message) -> None:
             reply_markup=_menu_keyboard(),
             parse_mode="HTML",
         )
+        _log_alias_event(operation=operation, user_id=actor_id, result="ok")
     except Exception:
+        _log_alias_event(operation=operation, user_id=actor_id, result="error")
         logger.exception("telegram proposal command failed actor_id=%s", getattr(message.from_user, "id", None))
         await message.answer("❌ Не удалось открыть меню предложений.")
 

@@ -18,6 +18,16 @@ def test_proposal_command_registered_on_both_platforms() -> None:
     assert "proposal_router" in telegram_init
 
 
+def test_proposal_council_alias_registered_on_both_platforms() -> None:
+    discord_source = Path("bot/commands/proposal.py").read_text(encoding="utf-8")
+    telegram_source = Path("bot/telegram_bot/commands/proposal.py").read_text(encoding="utf-8")
+
+    assert 'aliases=["council"]' in discord_source
+    assert 'Command(commands=["proposal", "council"])' in telegram_source
+    assert "command_alias_register:council" in discord_source
+    assert "command_alias_register:council" in telegram_source
+
+
 def test_proposal_system_channel_command_exists_on_both_platforms() -> None:
     discord_source = Path("bot/commands/proposal.py").read_text(encoding="utf-8")
     telegram_source = Path("bot/telegram_bot/commands/proposal.py").read_text(encoding="utf-8")

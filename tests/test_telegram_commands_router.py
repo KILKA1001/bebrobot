@@ -105,3 +105,7 @@ class TelegramCommandsRouterTests(IsolatedAsyncioTestCase):
 
 def test_bot_commands_include_roles() -> None:
     assert any(command.command == "roles" for command in BOT_COMMANDS)
+
+
+def test_bot_commands_include_council_alias() -> None:
+    assert any(command.command == "council" for command in BOT_COMMANDS)

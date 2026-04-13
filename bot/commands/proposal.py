@@ -32,6 +32,18 @@ from bot.services.proposal_ui_texts import (
 logger = logging.getLogger(__name__)
 
 
+def _log_alias_event(*, operation: str, user_id: int | None, result: str) -> None:
+    logger.info(
+        "proposal alias event operation=%s platform=discord user_id=%s result=%s",
+        operation,
+        user_id,
+        result,
+    )
+
+
+_log_alias_event(operation="command_alias_register:council", user_id=None, result="ok")
+
+
 class ProposalSubmitModal(discord.ui.Modal, title="Подать предложение"):
     proposal_title = discord.ui.TextInput(label="Заголовок", max_length=140, required=True)
     proposal_text = discord.ui.TextInput(
@@ -306,16 +318,21 @@ class ProposalArchiveFilterView(discord.ui.View):
         self._sync_labels()
         await self._refresh_archive_message(interaction)
 
-@bot.hybrid_command(name="proposal", description="Единое меню подачи предложений в Совет")
+@bot.hybrid_command(name="proposal", aliases=["council"], description="Единое меню подачи предложений в Совет")
 async def proposal(ctx: commands.Context) -> None:
+    actor_id = getattr(getattr(ctx, "author", None), "id", None)
+    operation = f"command_invoke:{getattr(ctx, 'invoked_with', 'proposal')}"
     try:
         if not ctx.author:
+            _log_alias_event(operation=operation, user_id=actor_id, result="failed_no_user")
             await ctx.reply("❌ Не удалось определить пользователя.", mention_author=False)
             return
         view = ProposalRootView(actor_id=ctx.author.id)
         await ctx.reply(embed=view.build_root_embed(), view=view, mention_author=False)
+        _log_alias_event(operation=operation, user_id=actor_id, result="ok")
     except Exception:
-        logger.exception("discord proposal command failed actor_id=%s", getattr(getattr(ctx, "author", None), "id", None))
+        _log_alias_event(operation=operation, user_id=actor_id, result="error")
+        logger.exception("discord proposal command failed actor_id=%s", actor_id)
         await ctx.reply("❌ Не удалось открыть меню предложений.", mention_author=False)
 
 
