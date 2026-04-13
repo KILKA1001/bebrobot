@@ -12,6 +12,7 @@ from . import rep as rep_module  # noqa: F401
 from . import modstatus as modstatus_module  # noqa: F401
 from . import title as title_module  # noqa: F401
 from . import shop as shop_module  # noqa: F401
+from . import proposal as proposal_module  # noqa: F401
 
 # Import specific commands for explicit access if needed
 from .tournament import (
@@ -25,6 +26,7 @@ from .rep import rep
 from .modstatus import modstatus
 from .title import title
 from .shop import shop
+from .proposal import proposal
 
 __all__ = [
     "bot",
@@ -40,4 +42,5 @@ __all__ = [
     "modstatus",
     "title",
     "shop",
+    "proposal",
 ]
