@@ -225,6 +225,17 @@ def test_council_service_question_flow_from_moderation_to_archive():
 
 def test_council_service_grants_project_roles_for_formed_term_members(monkeypatch):
     calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        council_service,
+        "_discord_roles_config",
+        council_service_module.CouncilDiscordRolesConfig(
+            vice_council_role_id=1,
+            council_member_role_id=2,
+            observer_role_id=3,
+            grant_scenario_enabled=True,
+            missing_required_keys=(),
+        ),
+    )
 
     def _fake_assign(account_id: str, role_name: str, **_kwargs):
         calls.append((account_id, role_name))
@@ -253,6 +264,17 @@ def test_council_service_grants_project_roles_for_formed_term_members(monkeypatc
 
 def test_council_service_grants_project_roles_observer_disabled_and_idempotent(monkeypatch):
     calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        council_service,
+        "_discord_roles_config",
+        council_service_module.CouncilDiscordRolesConfig(
+            vice_council_role_id=1,
+            council_member_role_id=2,
+            observer_role_id=3,
+            grant_scenario_enabled=True,
+            missing_required_keys=(),
+        ),
+    )
 
     def _fake_assign(account_id: str, role_name: str, **_kwargs):
         calls.append((account_id, role_name))
@@ -279,6 +301,18 @@ def test_council_service_grants_project_roles_observer_disabled_and_idempotent(m
 
 
 def test_council_service_grants_project_roles_logs_failed_attempts(monkeypatch, caplog):
+    monkeypatch.setattr(
+        council_service,
+        "_discord_roles_config",
+        council_service_module.CouncilDiscordRolesConfig(
+            vice_council_role_id=1,
+            council_member_role_id=2,
+            observer_role_id=3,
+            grant_scenario_enabled=True,
+            missing_required_keys=(),
+        ),
+    )
+
     def _fake_assign(account_id: str, role_name: str, **_kwargs):
         if account_id == "member-fail":
             return {"ok": False, "reason": "db_error", "message": "insert failed"}
@@ -377,6 +411,116 @@ def test_council_service_supports_member_dropout_replacement_and_quorum_snapshot
     assert snapshot.quorum_min_votes == 2
     assert snapshot.has_quorum is True
     assert snapshot.has_unreplaced_dropout is True
+
+
+def test_council_service_process_term_member_exit_runs_status_then_role_then_journal(monkeypatch):
+    sequence: list[str] = []
+
+    class _Query:
+        def __init__(self, table: str):
+            self.table = table
+
+        def update(self, _payload):
+            sequence.append("status_update")
+            return self
+
+        def eq(self, *_args):
+            return self
+
+        def execute(self):
+            return type("Resp", (), {"data": [{"id": 91}]})()
+
+    class _Supabase:
+        def table(self, name: str):
+            if name == "council_term_members":
+                return _Query(name)
+            if name == "council_audit_log":
+                return self
+            raise AssertionError(name)
+
+        def insert(self, _payload):
+            sequence.append("journal")
+            return self
+
+        def execute(self):
+            return type("Resp", (), {"data": []})()
+
+    monkeypatch.setattr(council_service_module.db, "supabase", _Supabase())
+
+    def _fake_revoke(*_args, **_kwargs):
+        sequence.append("discord_role")
+        return {"ok": True}
+
+    monkeypatch.setattr(council_service_module.RoleManagementService, "revoke_user_role_by_account", staticmethod(_fake_revoke))
+
+    result = council_service.process_term_member_exit(
+        term_id=777,
+        member_profile_id="member-777",
+        role_code="council_member",
+        was_active=True,
+        actor_profile_id="vice-777",
+        source_platform="discord",
+    )
+
+    assert result["ok"] is True
+    assert sequence == ["status_update", "discord_role", "journal"]
+
+
+def test_council_service_process_replacement_assignment_triggers_retry_on_partial_failure(monkeypatch):
+    sequence: list[str] = []
+    triggered: list[tuple[str, str]] = []
+
+    class _Query:
+        def upsert(self, _payload, **_kwargs):
+            sequence.append("status_upsert")
+            return self
+
+        def execute(self):
+            return type("Resp", (), {"data": [{"id": 32}]})()
+
+    class _Supabase:
+        def table(self, name: str):
+            if name == "council_term_members":
+                return _Query()
+            if name == "council_audit_log":
+                return self
+            raise AssertionError(name)
+
+        def insert(self, _payload):
+            sequence.append("journal")
+            return self
+
+        def execute(self):
+            return type("Resp", (), {"data": []})()
+
+    monkeypatch.setattr(council_service_module.db, "supabase", _Supabase())
+
+    def _fake_assign(*_args, **_kwargs):
+        sequence.append("discord_role")
+        return {"ok": False, "reason": "discord_error", "message": "api timeout"}
+
+    def _fake_trigger(account_id: str, *, reason: str, bot=None):
+        _ = bot
+        triggered.append((account_id, reason))
+        return True
+
+    monkeypatch.setattr(council_service_module.RoleManagementService, "assign_user_role_by_account", staticmethod(_fake_assign))
+    monkeypatch.setattr(council_service_module.ExternalRolesSyncService, "trigger_account_sync", staticmethod(_fake_trigger))
+
+    result = council_service.process_replacement_assignment(
+        term_id=778,
+        actor_profile_id="vice-778",
+        actor_role_code="vice_council_member",
+        replaced_role_code="council_member",
+        replacement_profile_id="member-new-778",
+        source_list_code="election_results",
+        already_active_profile_ids=("vice-778",),
+        source_platform="discord",
+    )
+
+    assert result["ok"] is False
+    assert sequence == ["status_upsert", "discord_role", "journal"]
+    assert triggered == [("member-new-778", "council_member_replacement_role_grant_failed")]
 
 
 def test_council_service_blocks_question_voting_start_when_pause_enabled(monkeypatch):
