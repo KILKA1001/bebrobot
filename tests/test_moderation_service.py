@@ -169,7 +169,7 @@ class _FakeDb:
     def _inc_metric(self, name):
         self.metrics.append(name)
 
-    def add_action_by_account(self, account_id, points, reason, author_account_id, is_undo=False, op_key=None):
+    def add_action_by_account(self, account_id, points, reason, author_account_id, op_key=None):
         if self.fail_point_action:
             return False
         self.point_actions.append(
@@ -178,7 +178,6 @@ class _FakeDb:
                 "points": points,
                 "reason": reason,
                 "author_account_id": author_account_id,
-                "is_undo": is_undo,
                 "op_key": op_key,
             }
         )
@@ -671,7 +670,6 @@ class ModerationServiceTests(unittest.TestCase):
         self.assertEqual(result["error_code"], "finalize_case_failed")
         self.assertEqual(self.fake_db.point_actions[0]["points"], -3.0)
         self.assertEqual(self.fake_db.point_actions[1]["points"], 3.0)
-        self.assertTrue(self.fake_db.point_actions[1]["is_undo"])
         self.assertEqual(result["rollback_status"], "manual_review_required")
 
     def test_commit_case_moves_fine_to_bank_and_links_it_to_case_history(self):
@@ -716,7 +714,6 @@ class ModerationServiceTests(unittest.TestCase):
         self.assertEqual(self.fake_db.tables["bank_history"], [])
         self.assertEqual(self.fake_db.point_actions[0]["points"], -3.0)
         self.assertEqual(self.fake_db.point_actions[1]["points"], 3.0)
-        self.assertTrue(self.fake_db.point_actions[1]["is_undo"])
         self.assertIn(result["rollback_status"], {"rolled_back", "manual_review_required"})
 
 

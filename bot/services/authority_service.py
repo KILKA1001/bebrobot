@@ -107,7 +107,6 @@ COMMAND_LEVELS: dict[str, int] = {
     "tickets_manage": 100,
     "players_manage": 80,
     "bank_manage": 100,
-    "undo_manage": 100,
 }
 
 FALLBACK_CHAT_MEMBER_TITLE = "Участник чата"

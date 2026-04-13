@@ -635,7 +635,6 @@ class Database:
         points: float,
         reason: str,
         author_id: int,
-        is_undo: bool = False,
         author_account_id: Optional[str] = None,
         account_id: Optional[str] = None,
         op_key: Optional[str] = None,
@@ -865,20 +864,6 @@ class Database:
                     except Exception as author_update_error:
                         logger.error("❌ add_action: не удалось сохранить author_account_id op_key=%s error=%s", op_key, author_update_error)
 
-            if is_undo:
-                try:
-                    undo_started_at = time.perf_counter()
-                    self.supabase.table("actions").update({"is_undo": True}).eq("op_key", op_key).execute()
-                    self._log_db_timing(
-                        table="actions",
-                        operation="update",
-                        started_at=undo_started_at,
-                        account_id=resolved_account_id,
-                    )
-                    action_row["is_undo"] = True
-                except Exception as undo_error:
-                    logger.error("❌ Не удалось выставить is_undo для op_key=%s: %s", op_key, undo_error)
-
             self.actions.insert(0, action_row)
             if cache_user_id is not None:
                 if cache_user_id not in self.history:
@@ -888,7 +873,6 @@ class Database:
                     'reason': reason,
                     'author_account_id': action_row.get('author_account_id') or author_account_id,
                     'timestamp': action_row.get('timestamp') or datetime.now(timezone.utc).isoformat(),
-                    'is_undo': is_undo
                 })
 
             logger.info("✅ Действие сохранено account_id=%s op_key=%s", resolved_account_id, op_key)
@@ -899,7 +883,7 @@ class Database:
             traceback.print_exc()
             return False
 
-    def add_action_by_account(self, account_id: str, points: float, reason: str, author_account_id: str, is_undo: bool = False, op_key: Optional[str] = None) -> bool:
+    def add_action_by_account(self, account_id: str, points: float, reason: str, author_account_id: str, op_key: Optional[str] = None) -> bool:
         """Строгий account-first метод для действий по баллам."""
         if not author_account_id:
             logger.error("❌ add_action_by_account aborted: empty author_account_id account_id=%s reason=%s", account_id, reason)
@@ -910,7 +894,6 @@ class Database:
             points=points,
             reason=reason,
             author_id=author_user_id,
-            is_undo=is_undo,
             author_account_id=author_account_id,
             account_id=account_id,
             op_key=op_key,

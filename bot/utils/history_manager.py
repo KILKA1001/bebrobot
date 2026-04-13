@@ -13,7 +13,6 @@ from .points import format_points
 class ActionType(Enum):
     ADD = "Начисление"  # Добавление баллов
     REMOVE = "Снятие"  # Снятие баллов
-    UNDO = "Отмена"  # Отмена последнего действия
 
 
 # Класс для хранения информации о действии с баллами
@@ -53,8 +52,6 @@ def format_history_embed(
             # Получение данных из записи
             points = entry.get("points", 0)
             action_type = ActionType.ADD if points >= 0 else ActionType.REMOVE
-            if "is_undo" in entry:
-                action_type = ActionType.UNDO
 
             # Форматирование деталей записи
             timestamp = entry.get("timestamp", "Неизвестно")
@@ -79,8 +76,6 @@ def format_history_embed(
 
             # Выбор emoji в зависимости от типа действия
             color_emoji = "🟢" if points >= 0 else "🔴"
-            if action_type == ActionType.UNDO:
-                color_emoji = "⚪"
 
             # Добавление записи в embed
             embed.add_field(

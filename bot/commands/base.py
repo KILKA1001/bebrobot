@@ -17,17 +17,13 @@ from bot.utils.roles_and_activities import (
     ACTIVITY_CATEGORIES,
     display_last_edit_date,
 )
-from bot.systems import render_history, log_action_cancellation
+from bot.systems import render_history
 from bot.systems.core_logic import (
-    _get_action_rows_for_account,
-    _resolve_account_id_from_discord,
-    update_roles,
     get_help_embed,
     HelpView,
     TopView,
     build_balance_embed,
 )
-from bot.legacy_identity_logging import log_legacy_identity_fallback_used
 from bot.utils import send_temp
 from bot.utils.api_monitor import monitor
 from bot.services import AuthorityService, RoleManagementService
@@ -459,82 +455,6 @@ async def activities_cmd(ctx):
         embed.add_field(name=category_name, value=category_text, inline=False)
     embed.set_footer(text=display_last_edit_date())
     await send_temp(ctx, embed=embed)
-
-
-@bot.hybrid_command(
-    name="undo", description="Отменить последние начисления или списания"
-)
-async def undo(ctx, member: discord.Member, count: int = 1):
-    if not await _check_command_authority(ctx, "undo_manage", member):
-        return
-    user_id = member.id
-    account_id = _resolve_account_id_from_discord(user_id, handler="undo")
-    if account_id:
-        user_history = _get_action_rows_for_account(
-            account_id,
-            discord_user_id=user_id,
-            handler="undo",
-        )
-    else:
-        log_legacy_identity_fallback_used(
-            logger,
-            module=__name__,
-            handler="undo",
-            field="discord_user_id",
-            action="fallback_to_legacy_history_cache",
-            continue_execution=True,
-            discord_user_id=user_id,
-            recommended_field="account_id",
-            developer_hint="temporary compatibility path; resolve account_id before using undo history",
-        )
-        user_history = list(db.history.get(user_id, []))
-    if len(user_history) < count:
-        await send_temp(
-            ctx,
-            (
-                f"❌ Нельзя отменить **{count}** изменений для "
-                f"{member.display_name}, так как доступно только "
-                f"**{len(user_history)}** записей."
-            ),
-        )
-        return
-
-    undo_entries = []
-    for _ in range(count):
-        entry = user_history.pop()
-        points_val = entry.get("points", 0)
-        reason = entry.get("reason", "Без причины")
-        undo_entries.append((points_val, reason))
-
-        # Запись отмены в базу
-        db.add_action(
-            user_id=user_id,
-            points=-points_val,
-            reason=f"Отмена действия: {reason}",
-            author_id=ctx.author.id,
-            is_undo=True,
-        )
-
-    if user_id in db.history:
-        legacy_history = list(db.history.get(user_id, []))
-        if legacy_history:
-            db.history[user_id] = legacy_history[:-count]
-            if not db.history[user_id]:
-                del db.history[user_id]
-
-    await update_roles(member)
-
-    embed = discord.Embed(
-        title=f"↩️ Отменено {count} изменений для {member.display_name}",
-        color=discord.Color.orange(),
-    )
-    for i, (points_val, reason) in enumerate(undo_entries[::-1], start=1):
-        sign = "+" if points_val > 0 else ""
-        embed.add_field(
-            name=f"{i}. {sign}{points_val} баллов", value=reason, inline=False
-        )
-    await send_temp(ctx, embed=embed)
-    await log_action_cancellation(ctx, member, undo_entries)
 
 
 @bot.hybrid_command(name="helpy", description="Показать список команд")
