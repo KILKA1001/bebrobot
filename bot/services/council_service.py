@@ -52,6 +52,7 @@ from bot.domain.council_lifecycle import (
 
 from bot.services.council_pause_service import CouncilPauseService
 from bot.services.role_management_service import RoleManagementService
+from bot.data import db
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +65,108 @@ class CouncilLifecycleSnapshot:
     candidate_statuses: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class CouncilDiscordRolesConfig:
+    vice_council_role_id: int | None
+    council_member_role_id: int | None
+    observer_role_id: int | None
+    grant_scenario_enabled: bool
+    missing_required_keys: tuple[str, ...]
+
+
 class CouncilService:
     """Единый сервисный модуль доменных правил Совета для всех платформенных адаптеров."""
+
+    def __init__(self) -> None:
+        self._discord_roles_config = self._load_discord_roles_config()
+
+    def _load_discord_roles_config(self) -> CouncilDiscordRolesConfig:
+        if not db.supabase:
+            logger.error(
+                "council profile title config unavailable: supabase is not configured; scenario=council_term_formation_role_grant will be blocked"
+            )
+            return CouncilDiscordRolesConfig(
+                vice_council_role_id=None,
+                council_member_role_id=None,
+                observer_role_id=None,
+                grant_scenario_enabled=False,
+                missing_required_keys=("profile_title_roles:Вице Советчанин", "profile_title_roles:Советчанин"),
+            )
+
+        title_to_role_id: dict[str, int] = {}
+        try:
+            response = (
+                db.supabase.table("profile_title_roles")
+                .select("discord_role_id,title_name,is_active")
+                .eq("is_active", True)
+                .execute()
+            )
+            for row in response.data or []:
+                title_name = str(row.get("title_name") or "").strip().lower()
+                discord_role_id_raw = row.get("discord_role_id")
+                if not title_name or not discord_role_id_raw:
+                    continue
+                try:
+                    discord_role_id = int(discord_role_id_raw)
+                except (TypeError, ValueError):
+                    logger.error(
+                        "council profile title config invalid discord_role_id title_name=%s discord_role_id=%s",
+                        title_name,
+                        discord_role_id_raw,
+                    )
+                    continue
+                if discord_role_id <= 0:
+                    logger.error(
+                        "council profile title config non-positive discord_role_id title_name=%s discord_role_id=%s",
+                        title_name,
+                        discord_role_id_raw,
+                    )
+                    continue
+                if title_name not in title_to_role_id:
+                    title_to_role_id[title_name] = discord_role_id
+        except Exception:
+            logger.exception(
+                "council profile title config failed to load table=profile_title_roles; scenario=council_term_formation_role_grant will be blocked"
+            )
+            return CouncilDiscordRolesConfig(
+                vice_council_role_id=None,
+                council_member_role_id=None,
+                observer_role_id=None,
+                grant_scenario_enabled=False,
+                missing_required_keys=("profile_title_roles:Вице Советчанин", "profile_title_roles:Советчанин"),
+            )
+
+        vice_council_role_id = title_to_role_id.get("вице советчанин")
+        council_member_role_id = title_to_role_id.get("советчанин")
+        observer_role_id = title_to_role_id.get("наблюдатель")
+
+        missing_required_keys: list[str] = []
+        if vice_council_role_id is None:
+            missing_required_keys.append("profile_title_roles:Вице Советчанин")
+        if council_member_role_id is None:
+            missing_required_keys.append("profile_title_roles:Советчанин")
+
+        grant_scenario_enabled = len(missing_required_keys) == 0
+        if not grant_scenario_enabled:
+            logger.error(
+                "council profile title config missing required mappings keys=%s; scenario=council_term_formation_role_grant will be blocked",
+                ",".join(missing_required_keys),
+            )
+        else:
+            logger.info(
+                "council profile title config loaded from profile_title_roles vice_council=%s council_member=%s observer=%s",
+                vice_council_role_id,
+                council_member_role_id,
+                observer_role_id,
+            )
+
+        return CouncilDiscordRolesConfig(
+            vice_council_role_id=vice_council_role_id,
+            council_member_role_id=council_member_role_id,
+            observer_role_id=observer_role_id,
+            grant_scenario_enabled=grant_scenario_enabled,
+            missing_required_keys=tuple(missing_required_keys),
+        )
 
     def get_lifecycle_snapshot(self) -> CouncilLifecycleSnapshot:
         return CouncilLifecycleSnapshot(
@@ -131,6 +232,20 @@ class CouncilService:
         actor_user_id: str = "council_lifecycle",
     ) -> dict[str, object]:
         """Выдать проектные роли для сформированного состава созыва через существующий role-management механизм."""
+        if not self._discord_roles_config.grant_scenario_enabled:
+            logger.error(
+                "council term formation role grant blocked due to missing required config keys=%s",
+                ",".join(self._discord_roles_config.missing_required_keys),
+            )
+            return {
+                "ok": False,
+                "blocked": True,
+                "reason": "missing_required_profile_title_role_mapping",
+                "message": "В таблице profile_title_roles не заполнены обязательные соответствия ролей Совета. Сценарий назначения ролей созыва остановлен.",
+                "attempts": 0,
+                "assigned": 0,
+                "failed": 0,
+            }
 
         role_mapping: dict[str, tuple[str, int]] = {
             "vice_council": ("Вице Советчанин", 1),
@@ -174,18 +289,20 @@ class CouncilService:
                 if result.get("ok"):
                     assigned += 1
                     logger.info(
-                        "council term formation role grant success account_id=%s role_code=%s project_role=%s",
+                        "council term formation role grant success account_id=%s role_code=%s project_role=%s discord_role_id=%s permissions_scope=organizational_visual_status_only",
                         account_id,
                         role_code,
                         project_role_name,
+                        self._resolve_configured_discord_role_id(role_code),
                     )
                     continue
                 failed += 1
                 logger.error(
-                    "council term formation role grant failed account_id=%s role_code=%s project_role=%s reason=%s message=%s",
+                    "council term formation role grant failed account_id=%s role_code=%s project_role=%s discord_role_id=%s reason=%s message=%s",
                     account_id,
                     role_code,
                     project_role_name,
+                    self._resolve_configured_discord_role_id(role_code),
                     result.get("reason"),
                     result.get("message"),
                 )
@@ -196,6 +313,16 @@ class CouncilService:
             "assigned": assigned,
             "failed": failed,
         }
+
+    def _resolve_configured_discord_role_id(self, role_code: str) -> int | None:
+        normalized_role_code = (role_code or "").strip().lower()
+        if normalized_role_code in {"vice_council", "vice_council_member"}:
+            return self._discord_roles_config.vice_council_role_id
+        if normalized_role_code == "council_member":
+            return self._discord_roles_config.council_member_role_id
+        if normalized_role_code == "observer":
+            return self._discord_roles_config.observer_role_id
+        return None
 
     def build_election_invite_segments(self) -> tuple[CouncilInviteSegment, ...]:
         return build_election_invite_segments()
