@@ -47,12 +47,18 @@ class AccountsService:
         os.getenv("ACCOUNT_IDENTITIES_ACCOUNT_ID_REQUIRED", "")
     ).strip().lower()
     MAX_VISIBLE_PROFILE_ROLES = 3
+    HIDDEN_PROFILE_ROLE_NAMES = {"telegram linked", "discord linked"}
     ACCOUNT_ID_CACHE_TTL_SEC = int(os.getenv("ACCOUNT_ID_CACHE_TTL_SEC", "300"))
     FALLBACK_CHAT_MEMBER_TITLE = "участник чата"
     PURGE_RESULT_PURGED = "purged"
     PURGE_RESULT_SKIPPED_LINKED = "skipped_linked"
     PURGE_RESULT_SKIPPED_NOT_FOUND = "skipped_not_found"
     PURGE_RESULT_FAILED = "failed"
+
+    @staticmethod
+    def _is_hidden_profile_role(role_name: object) -> bool:
+        normalized = str(role_name or "").strip().lower()
+        return normalized in AccountsService.HIDDEN_PROFILE_ROLE_NAMES
 
     @staticmethod
     def _account_id_cache_key(provider: str, provider_user_id: str) -> tuple[str, str]:
@@ -2291,7 +2297,24 @@ class AccountsService:
                 AccountsService._format_db_error(e),
             )
 
-        role_names = [str(item.get("name") or "").strip() for item in resolved_roles if str(item.get("name") or "").strip()]
+        hidden_profile_roles = [
+            str(item.get("name") or "").strip()
+            for item in resolved_roles
+            if AccountsService._is_hidden_profile_role(item.get("name"))
+        ]
+        if hidden_profile_roles:
+            logger.info(
+                "get_profile_by_account filtered technical roles from profile output account_id=%s hidden_roles=%s",
+                account_id,
+                hidden_profile_roles,
+            )
+
+        profile_roles = [
+            item
+            for item in resolved_roles
+            if not AccountsService._is_hidden_profile_role(item.get("name"))
+        ]
+        role_names = [str(item.get("name") or "").strip() for item in profile_roles if str(item.get("name") or "").strip()]
         role_names_lower_to_original = {name.lower(): name for name in role_names}
         visible_roles: list[str] = []
         for selected in profile_visible_roles:
@@ -2303,7 +2326,7 @@ class AccountsService:
         else:
             visible_roles = visible_roles[: AccountsService.MAX_VISIBLE_PROFILE_ROLES]
 
-        roles_by_category = RoleResolver.group_roles_by_category(resolved_roles, account_id=str(account_id))
+        roles_by_category = RoleResolver.group_roles_by_category(profile_roles, account_id=str(account_id))
 
         try:
             from bot.services.external_roles_sync_service import ExternalRolesSyncService
