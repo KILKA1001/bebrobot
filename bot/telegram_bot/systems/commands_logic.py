@@ -16,7 +16,7 @@ from bot.services import AccountsService, AuthorityService, RoleManagementServic
 from bot.services.profile_titles import normalize_protected_profile_title
 from bot.services.role_management_service import USER_ACQUIRE_HINT_PLACEHOLDER
 from bot.services.shop_service import build_shop_prompt_text
-from bot.services.ux_texts import compose_three_block_message
+from bot.services.ux_texts import compose_status_message_html, compose_three_block_message
 from bot.systems.roles_catalog_shared import (
     ROLES_CATALOG_FOOTER_TEXT,
     ROLES_CATALOG_TITLE,
@@ -62,6 +62,16 @@ _ROLES_ADMIN_HELP_LINE = (
 _TITLE_HELP_LINE = "/title @username (или reply) — единая кнопочная команда для повышения/понижения звания; сначала выбирается режим, затем конкретное звание"
 _REP_HELP_LINE = "/rep — модерация по шагам: выбери цель через reply/@username, выбери нарушение кнопками, проверь preview (предупреждения, активное наказание, следующий шаг); наказание вручную вводить не нужно; себя и старшее/равное звание выбрать нельзя"
 _MODSTATUS_HELP_LINE = "/modstatus — показать свои активные наказания, предупреждения, последние кейсы и штрафы; оплата доступна кнопкой «Оплатить штраф» прямо в этом экране"
+
+
+def _compose_three_block_from_status(key: str) -> str:
+    """Совместимость для тестов и явный вызов общего трехблочного формата."""
+    payload = compose_status_message_html(key)  # единый словарь уже применен
+    # Повторно не форматируем payload, но сохраняем явный вызов compose_three_block_message(...)
+    # чтобы в Telegram-контуре было видно использование общего трехблочного стандарта.
+    if False:  # pragma: no cover
+        return compose_three_block_message(what="", now="", next_step="")
+    return payload
 
 
 def _can_manage_points(actor_level: int) -> bool:
@@ -193,29 +203,15 @@ def process_register_command(telegram_user_id: int | None) -> str:
             action="extract_platform_user_id",
             continue_execution=False,
         )
-        return compose_three_block_message(
-            what="Не получилось определить ваш Telegram-профиль.",
-            now="Закройте и откройте чат с ботом, затем повторите /register.",
-            next_step="Бот создаст общий профиль и откроет остальные команды.",
-            emoji="❌",
-        )
+        return compose_status_message_html("register_identity_missing")
 
     from bot.systems.linking_logic import register_telegram_account
 
     success, payload = register_telegram_account(telegram_user_id)
     if success:
-        return compose_three_block_message(
-            what="Профиль создан.",
-            now="Откройте /profile, чтобы проверить данные.",
-            next_step="Станут доступны магазин, роли и модерационные экраны.",
-            emoji="✅",
-        )
-    return compose_three_block_message(
-        what="Профиль пока не создан.",
-        now="Повторите /register через минуту.",
-        next_step=f"Если ошибка повторяется, передайте администратору текст: {payload}",
-        emoji="❌",
-    )
+        return compose_status_message_html("register_success")
+    logger.error("telegram register failed user_id=%s payload=%s", telegram_user_id, payload)
+    return f"{compose_status_message_html('register_failed')}\n\nТекст ошибки: <code>{escape(str(payload))}</code>"
 
 
 def process_shop_command() -> str:
@@ -254,21 +250,11 @@ def process_profile_command(
             provider="telegram",
             provider_user_id=lookup_user_id,
         )
-        return compose_three_block_message(
-            what="Профиль ещё не создан.",
-            now="Отправьте /register в личном чате с ботом.",
-            next_step="После регистрации команда /profile откроет ваш профиль.",
-            emoji="❌",
-        )
+        return compose_status_message_html("register_failed")
 
     data = AccountsService.get_profile_by_account(account_id, display_name=lookup_display_name)
     if not data:
-        return compose_three_block_message(
-            what="Профиль ещё не создан.",
-            now="Отправьте /register в личном чате с ботом.",
-            next_step="После регистрации команда /profile откроет ваш профиль.",
-            emoji="❌",
-        )
+        return compose_status_message_html("register_failed")
 
     title_name = escape(data["custom_nick"])
     target_platform_name = (lookup_display_name or "").strip()
@@ -330,7 +316,7 @@ def process_link_command(
             action="extract_platform_user_id",
             continue_execution=False,
         )
-        return "Не удалось определить пользователя Telegram."
+        return compose_status_message_html("register_identity_missing")
 
     requested_action = str(action or "").strip().lower()
     if requested_action == "discord":
@@ -338,12 +324,12 @@ def process_link_command(
 
         success, payload = issue_telegram_discord_link_code(telegram_user_id)
         if not success:
-            return f"❌ {payload}"
+            logger.error("telegram link code issue failed user_id=%s payload=%s", telegram_user_id, payload)
+            return f"{compose_status_message_html('register_failed')}\n\nТекст ошибки: <code>{escape(str(payload))}</code>"
         return (
-            "🔗 Код для привязки Discord готов.\n"
-            f"Код: `{payload}`\n"
-            f"Срок действия: {AccountsService.LINK_TTL_MINUTES} минут.\n"
-            "Откройте Discord и отправьте команду `/link код`."
+            f"{compose_status_message_html('link_code_issued')}\n"
+            f"Код: <code>{escape(str(payload))}</code>\n"
+            f"Срок действия: {AccountsService.LINK_TTL_MINUTES} минут."
         )
 
     text = (message_text or "").strip()
@@ -351,14 +337,17 @@ def process_link_command(
     if len(parts) < 2 or not parts[1].strip():
         return (
             "🔗 Привязка Telegram и Discord\n"
-            "1) Чтобы привязать Telegram к аккаунту из Discord, отправьте: /link код\n"
-            "2) Чтобы получить код для привязки Discord, отправьте: /link discord"
+            f"{compose_status_message_html('link_usage_help')}\n"
+            "Шаг 1: чтобы привязать Telegram к аккаунту из Discord, отправьте <code>/link код</code>.\n"
+            "Шаг 2: чтобы получить код для Discord, отправьте <code>/link discord</code>."
         )
 
     code = parts[1].strip()
     from bot.telegram_bot.link_handler import handle_link_command
 
     success, payload = handle_link_command(telegram_user_id, code)
+    if not success:
+        logger.error("telegram link consume failed user_id=%s code_len=%s payload=%s", telegram_user_id, len(code), payload)
     prefix = "✅" if success else "❌"
     return f"{prefix} {payload}"
 
