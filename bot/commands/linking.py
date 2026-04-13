@@ -309,6 +309,37 @@ class ProfileEditView(discord.ui.View):
                 await interaction.response.send_message("❌ Не удалось открыть выбор ролей.", ephemeral=True)
 
 
+class ProfileSettingsEntryView(discord.ui.View):
+    def __init__(self, user_id: int):
+        super().__init__(timeout=300)
+        self.user_id = user_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Настройки профиля доступны только владельцу профиля.", ephemeral=True)
+            return False
+        if interaction.guild is not None:
+            await interaction.response.send_message("❌ Настройки профиля доступны только в личных сообщениях с ботом.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="⚙️ Настройки профиля", style=discord.ButtonStyle.primary)
+    async def open_settings(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        try:
+            embed = discord.Embed(
+                title="⚙️ Настройки профиля",
+                description="Выберите, какое поле хотите изменить. Роли можно выбрать кнопками.",
+                color=discord.Color.blue(),
+            )
+            await interaction.response.send_message(embed=embed, view=ProfileEditView(self.user_id), ephemeral=True)
+        except Exception:
+            logger.exception("discord profile settings button failed user_id=%s", getattr(interaction.user, "id", None))
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Не удалось открыть настройки профиля.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Не удалось открыть настройки профиля.", ephemeral=True)
+
+
 @bot.hybrid_command(name="register_account", description="Зарегистрировать общий аккаунт")
 async def register_account(ctx):
     _persist_discord_identity(ctx.author)
@@ -446,7 +477,11 @@ async def profile(ctx):
     if thumbnail_url:
         embed.set_thumbnail(url=thumbnail_url)
 
-    await send_temp(ctx, embed=embed, delete_after=None)
+    view = None
+    if _is_private_context(ctx) and target_user.id == ctx.author.id:
+        view = ProfileSettingsEntryView(ctx.author.id)
+
+    await send_temp(ctx, embed=embed, view=view, delete_after=None)
 
 
 @bot.hybrid_command(name="profile_roles", description="Показать все роли профиля по категориям")
@@ -482,17 +517,3 @@ async def profile_roles(ctx):
 
     await send_temp(ctx, embed=embed, delete_after=None)
 
-
-@bot.hybrid_command(name="profile_edit", description="Настройки и редактирование своего профиля")
-async def profile_edit(ctx):
-    _persist_discord_identity(ctx.author)
-    if not _is_private_context(ctx):
-        await send_temp(ctx, "❌ Редактирование профиля доступно только в личных сообщениях с ботом.", delete_after=None)
-        return
-
-    embed = discord.Embed(
-        title="⚙️ Настройки профиля",
-        description="Выберите, какое поле хотите изменить. Роли можно выбрать кнопками.",
-        color=discord.Color.blue(),
-    )
-    await send_temp(ctx, embed=embed, view=ProfileEditView(ctx.author.id), delete_after=None)
