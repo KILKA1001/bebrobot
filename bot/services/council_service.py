@@ -4,20 +4,25 @@ import logging
 from dataclasses import dataclass
 
 from bot.domain.council_lifecycle import (
+    COUNCIL_MIN_VALID_BALLOTS,
     CANDIDATE_STATUS_VALUES,
     ELECTION_STATUS_VALUES,
     QUESTION_STATUS_VALUES,
     TERM_STATUS_VALUES,
+    BallotSubmissionDecision,
     CandidateReviewDecision,
     CouncilInviteSegment,
     LaunchConfirmationDecision,
     ManualCandidateAddDecision,
     build_election_invite_segments,
+    decide_ballot_submission,
     build_term_launch_notification_targets,
     decide_manual_candidate_addition,
     decide_candidate_review_action,
     decide_term_launch_confirmation,
     filter_confirmed_ballot_candidates,
+    get_ballot_limit_for_role,
+    is_election_valid_by_ballots,
     validate_council_text_length,
 )
 
@@ -138,6 +143,29 @@ class CouncilService:
             actor_profile_id=actor_profile_id,
             existing_candidates=existing_candidates,
         )
+
+    def get_ballot_limit_for_role(self, *, role_code: str) -> int | None:
+        return get_ballot_limit_for_role(role_code)
+
+    def decide_ballot_submission(
+        self,
+        *,
+        election_id: int | None,
+        voter_profile_id: str,
+        voter_role_code: str,
+        selected_candidate_ids: list[int] | tuple[int, ...],
+        already_submitted_ballots_count: int = 0,
+    ) -> BallotSubmissionDecision:
+        return decide_ballot_submission(
+            election_id=election_id,
+            voter_profile_id=voter_profile_id,
+            voter_role_code=voter_role_code,
+            selected_candidate_ids=selected_candidate_ids,
+            already_submitted_ballots_count=already_submitted_ballots_count,
+        )
+
+    def is_election_valid_by_ballots(self, *, total_ballots_count: int, min_valid_ballots: int = COUNCIL_MIN_VALID_BALLOTS) -> bool:
+        return is_election_valid_by_ballots(total_ballots_count, min_valid_ballots=min_valid_ballots)
 
 
 council_service = CouncilService()

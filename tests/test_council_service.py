@@ -93,3 +93,33 @@ def test_council_service_manual_candidate_addition_blocks_duplicates():
     )
     assert decision.accepted is False
     assert decision.reason == "duplicate_candidate_for_role_term"
+
+
+def test_council_service_ballot_submission_enforces_role_limits():
+    assert council_service.get_ballot_limit_for_role(role_code="vice_council_member") == 1
+    assert council_service.get_ballot_limit_for_role(role_code="council_member") == 2
+    assert council_service.get_ballot_limit_for_role(role_code="observer") == 1
+
+    denied = council_service.decide_ballot_submission(
+        election_id=44,
+        voter_profile_id="profile-900",
+        voter_role_code="observer",
+        selected_candidate_ids=[1, 2],
+    )
+    assert denied.accepted is False
+    assert denied.reason == "ballot_limit_exceeded"
+
+
+def test_council_service_ballot_submission_uses_shared_profile_id_and_threshold():
+    denied = council_service.decide_ballot_submission(
+        election_id=45,
+        voter_profile_id="profile-shared-tg-discord",
+        voter_role_code="vice_council_member",
+        selected_candidate_ids=[5],
+        already_submitted_ballots_count=1,
+    )
+    assert denied.accepted is False
+    assert denied.reason == "ballot_limit_exceeded"
+
+    assert council_service.is_election_valid_by_ballots(total_ballots_count=2) is False
+    assert council_service.is_election_valid_by_ballots(total_ballots_count=3) is True

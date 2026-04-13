@@ -72,6 +72,13 @@ CANDIDATE_STATUS_VALUES: tuple[str, ...] = (
     CANDIDATE_STATUS_WITHDRAWN,
 )
 
+COUNCIL_MIN_VALID_BALLOTS = 3
+COUNCIL_BALLOT_LIMITS_BY_ROLE: dict[str, int] = {
+    COUNCIL_ROLE_VICE_COUNCIL_MEMBER: 1,
+    COUNCIL_ROLE_COUNCIL_MEMBER: 2,
+    COUNCIL_ROLE_OBSERVER: 1,
+}
+
 
 @dataclass(frozen=True)
 class LaunchConfirmationDecision:
@@ -102,6 +109,14 @@ class ManualCandidateAddDecision:
     accepted: bool
     reason: str | None
     assignment_log: dict[str, object] | None = None
+
+
+@dataclass(frozen=True)
+class BallotSubmissionDecision:
+    accepted: bool
+    reason: str | None = None
+    allowed_limit: int | None = None
+    user_message: str | None = None
 
 
 def decide_term_launch_confirmation(
@@ -419,3 +434,87 @@ def validate_council_text_length(text: str | None, *, field_name: str) -> tuple[
         MAX_COUNCIL_TEXT_LEN,
     )
     return False, f"Текст поля «{field_name}» должен быть не длиннее {MAX_COUNCIL_TEXT_LEN} символов."
+
+
+def get_ballot_limit_for_role(role_code: str) -> int | None:
+    cleaned_role = (role_code or "").strip().lower()
+    return COUNCIL_BALLOT_LIMITS_BY_ROLE.get(cleaned_role)
+
+
+def decide_ballot_submission(
+    *,
+    election_id: int | None,
+    voter_profile_id: str,
+    voter_role_code: str,
+    selected_candidate_ids: list[int] | tuple[int, ...],
+    already_submitted_ballots_count: int = 0,
+) -> BallotSubmissionDecision:
+    cleaned_profile_id = (voter_profile_id or "").strip()
+    limit = get_ballot_limit_for_role(voter_role_code)
+    selected_ids = [candidate_id for candidate_id in selected_candidate_ids if isinstance(candidate_id, int) and candidate_id > 0]
+    unique_selected_ids = tuple(dict.fromkeys(selected_ids))
+
+    if not isinstance(election_id, int) or election_id <= 0:
+        logger.error("Council ballot rejected: invalid election id election_id=%s voter_profile_id=%s", election_id, cleaned_profile_id)
+        return BallotSubmissionDecision(accepted=False, reason="invalid_election_id")
+
+    if not cleaned_profile_id:
+        logger.error("Council ballot rejected: empty voter profile id election_id=%s", election_id)
+        return BallotSubmissionDecision(accepted=False, reason="empty_voter_profile_id")
+
+    if limit is None:
+        logger.error(
+            "Council ballot rejected: unsupported voter role election_id=%s voter_profile_id=%s voter_role_code=%s",
+            election_id,
+            cleaned_profile_id,
+            voter_role_code,
+        )
+        return BallotSubmissionDecision(accepted=False, reason="unsupported_voter_role")
+
+    if not unique_selected_ids:
+        logger.error(
+            "Council ballot rejected: empty candidate selection election_id=%s voter_profile_id=%s voter_role_code=%s",
+            election_id,
+            cleaned_profile_id,
+            voter_role_code,
+        )
+        return BallotSubmissionDecision(accepted=False, reason="empty_candidate_selection", allowed_limit=limit)
+
+    if len(unique_selected_ids) > limit:
+        logger.error(
+            "Council ballot rejected: limit exceeded election_id=%s voter_profile_id=%s voter_role_code=%s allowed_limit=%s selected_count=%s",
+            election_id,
+            cleaned_profile_id,
+            voter_role_code,
+            limit,
+            len(unique_selected_ids),
+        )
+        return BallotSubmissionDecision(
+            accepted=False,
+            reason="ballot_limit_exceeded",
+            allowed_limit=limit,
+            user_message=f"Можно выбрать не более {limit} кандидатов. Уменьшите выбор и отправьте бюллетень снова.",
+        )
+
+    if already_submitted_ballots_count + len(unique_selected_ids) > limit:
+        logger.error(
+            "Council ballot rejected: cumulative limit exceeded election_id=%s voter_profile_id=%s voter_role_code=%s allowed_limit=%s already_submitted=%s selected_count=%s",
+            election_id,
+            cleaned_profile_id,
+            voter_role_code,
+            limit,
+            already_submitted_ballots_count,
+            len(unique_selected_ids),
+        )
+        return BallotSubmissionDecision(
+            accepted=False,
+            reason="ballot_limit_exceeded",
+            allowed_limit=limit,
+            user_message=f"Лимит голосов уже достигнут ({limit}). Новые голоса нельзя отправить.",
+        )
+
+    return BallotSubmissionDecision(accepted=True, allowed_limit=limit)
+
+
+def is_election_valid_by_ballots(total_ballots_count: int, *, min_valid_ballots: int = COUNCIL_MIN_VALID_BALLOTS) -> bool:
+    return int(total_ballots_count or 0) >= int(min_valid_ballots or 0)
