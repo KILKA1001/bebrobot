@@ -17,6 +17,7 @@ from bot.commands.base import bot
 from bot.commands.fines import send_legacy_fines_for_discord_destination
 from bot.commands.roles_admin import _resolve_discord_target
 from bot.services import AccountsService, AuthorityService, ModerationNotificationsService, ModerationService
+from bot.utils.structured_logging import generate_request_id, log_critical_event
 from bot.utils import send_temp
 
 logger = logging.getLogger(__name__)
@@ -144,6 +145,7 @@ class _ModstatusActionView(discord.ui.View):
         chat_id: int | None,
         can_open_payment: bool,
         can_rollback: bool,
+        correlation_id: str,
         target_subject: dict[str, Any] | None = None,
         rollback_candidates: list[dict[str, Any]] | None = None,
     ):
@@ -153,6 +155,7 @@ class _ModstatusActionView(discord.ui.View):
         self.chat_id = chat_id
         self.can_open_payment = can_open_payment
         self.can_rollback = can_rollback
+        self.correlation_id = correlation_id
         self.target_subject = dict(target_subject or {})
         self.rollback_candidates = list(rollback_candidates or [])
         self.selected_case_id: str | None = None
@@ -180,9 +183,20 @@ class _OpenPaymentButton(discord.ui.Button):
             await interaction.response.send_message("❌ Эта кнопка открыта для другого пользователя.", ephemeral=True)
             return
         if not view.can_open_payment:
-            logger.warning("modstatus payment callback rejected provider=%s actor_id=%s reason=%s", "discord", interaction.user.id, "button_not_allowed")
+            log_critical_event(
+                logger,
+                level=logging.WARNING,
+                operation_code="modstatus.payment.open",
+                reason="button_not_allowed",
+                platform="discord",
+                user_id=interaction.user.id,
+                entity_type="moderation_status",
+                entity_id=view.actor_id,
+                correlation_id=view.correlation_id,
+            )
             await interaction.response.send_message("❌ Оплата сейчас недоступна для этого статуса.", ephemeral=True)
             return
+        request_id = generate_request_id()
         snapshot = ModerationService.get_user_moderation_snapshot(
             view.actor_id_text,
             view.actor_id_text,
@@ -198,13 +212,19 @@ class _OpenPaymentButton(discord.ui.Button):
             },
         )
         if (not snapshot.get("ok")) or (not snapshot.get("target_is_self")) or (not _snapshot_has_payable_manual_fines(snapshot)):
-            logger.warning(
-                "modstatus payment callback denied provider=%s actor_id=%s reason=%s snapshot_ok=%s target_is_self=%s",
-                "discord",
-                interaction.user.id,
-                "snapshot_not_payable",
-                snapshot.get("ok"),
-                snapshot.get("target_is_self"),
+            log_critical_event(
+                logger,
+                level=logging.WARNING,
+                operation_code="modstatus.payment.open",
+                reason="snapshot_not_payable",
+                platform="discord",
+                user_id=interaction.user.id,
+                entity_type="moderation_status",
+                entity_id=view.actor_id,
+                correlation_id=view.correlation_id,
+                request_id=request_id,
+                snapshot_ok=snapshot.get("ok"),
+                target_is_self=snapshot.get("target_is_self"),
             )
             await interaction.response.send_message("❌ Нет доступных штрафов для ручной оплаты.", ephemeral=True)
             return
@@ -215,6 +235,19 @@ class _OpenPaymentButton(discord.ui.Button):
                 send_embed=lambda **kwargs: interaction.followup.send(ephemeral=True, **kwargs),
             )
         except Exception:
+            log_critical_event(
+                logger,
+                level=logging.ERROR,
+                operation_code="modstatus.payment.open",
+                reason="legacy_fines_open_failed",
+                platform="discord",
+                user_id=interaction.user.id,
+                entity_type="moderation_status",
+                entity_id=view.actor_id,
+                correlation_id=view.correlation_id,
+                request_id=request_id,
+                error="exception_logged_with_stacktrace",
+            )
             logger.exception("modstatus legacy fines open failed actor_id=%s", interaction.user.id)
             await interaction.followup.send("❌ Не удалось открыть список штрафов. Подробности в консоли.", ephemeral=True)
             return
@@ -238,22 +271,63 @@ class _RollbackPunishmentButton(discord.ui.Button):
             await interaction.response.send_message("❌ Эта кнопка открыта для другого пользователя.", ephemeral=True)
             return
         if not view.can_rollback:
-            logger.warning("modstatus rollback callback rejected provider=%s actor_id=%s reason=%s", "discord", interaction.user.id, "button_not_allowed")
+            log_critical_event(
+                logger,
+                level=logging.WARNING,
+                operation_code="modstatus.rollback",
+                reason="button_not_allowed",
+                platform="discord",
+                user_id=interaction.user.id,
+                entity_type="moderation_case",
+                entity_id=view.selected_case_id or "latest",
+                correlation_id=view.correlation_id,
+            )
             await interaction.response.send_message("❌ Снятие наказания сейчас недоступно.", ephemeral=True)
             return
         if not AuthorityService.has_command_permission("discord", str(interaction.user.id), "moderation_mute"):
-            logger.warning("modstatus rollback callback denied provider=%s actor_id=%s reason=%s", "discord", interaction.user.id, "no_permission")
+            log_critical_event(
+                logger,
+                level=logging.WARNING,
+                operation_code="modstatus.rollback",
+                reason="no_permission",
+                platform="discord",
+                user_id=interaction.user.id,
+                entity_type="moderation_case",
+                entity_id=view.selected_case_id or "latest",
+                correlation_id=view.correlation_id,
+            )
             await interaction.response.send_message("❌ Недостаточно прав для снятия наказаний.", ephemeral=True)
             return
         target_provider_id = str((view.target_subject or {}).get("provider_user_id") or "").strip()
         if not target_provider_id or target_provider_id.lower() in {"none", "null"}:
-            logger.warning("modstatus rollback callback denied provider=%s actor_id=%s reason=%s", "discord", interaction.user.id, "target_missing")
+            log_critical_event(
+                logger,
+                level=logging.WARNING,
+                operation_code="modstatus.rollback",
+                reason="target_missing",
+                platform="discord",
+                user_id=interaction.user.id,
+                entity_type="moderation_target",
+                entity_id=None,
+                correlation_id=view.correlation_id,
+            )
             await interaction.response.send_message("❌ Не удалось определить цель для отката.", ephemeral=True)
             return
         if view.selected_case_id and view.selected_case_id not in {str((item.get("case") or {}).get("id") or "").strip() for item in view.rollback_candidates}:
-            logger.warning("modstatus rollback callback denied provider=%s actor_id=%s reason=%s case_id=%s", "discord", interaction.user.id, "invalid_case_selection", view.selected_case_id)
+            log_critical_event(
+                logger,
+                level=logging.WARNING,
+                operation_code="modstatus.rollback",
+                reason="invalid_case_selection",
+                platform="discord",
+                user_id=interaction.user.id,
+                entity_type="moderation_case",
+                entity_id=view.selected_case_id,
+                correlation_id=view.correlation_id,
+            )
             await interaction.response.send_message("❌ Выбранный кейс недоступен для отката.", ephemeral=True)
             return
+        request_id = generate_request_id()
         await interaction.response.defer(ephemeral=True)
         try:
             result = ModerationService.rollback_latest_case(
@@ -264,6 +338,19 @@ class _RollbackPunishmentButton(discord.ui.Button):
                 case_id=view.selected_case_id,
             )
         except Exception:
+            log_critical_event(
+                logger,
+                level=logging.ERROR,
+                operation_code="modstatus.rollback",
+                reason="rollback_failed",
+                platform="discord",
+                user_id=interaction.user.id,
+                entity_type="moderation_target",
+                entity_id=view.target_subject.get("provider_user_id"),
+                correlation_id=view.correlation_id,
+                request_id=request_id,
+                error="exception_logged_with_stacktrace",
+            )
             logger.exception("modstatus rollback failed provider=%s actor_id=%s target=%s", "discord", interaction.user.id, view.target_subject.get("provider_user_id"))
             await interaction.followup.send("❌ Не удалось снять наказание. Подробности в консоли.", ephemeral=True)
             return
@@ -357,6 +444,7 @@ async def _resolve_reply_message(ctx: commands.Context) -> discord.Message | Non
 async def modstatus(ctx: commands.Context, *, target: str | None = None) -> None:
     chat_id = ctx.channel.id if ctx.channel else (ctx.guild.id if ctx.guild else None)
     viewer_id = str(ctx.author.id)
+    correlation_id = generate_request_id()
     logger.info(
         "ux_screen_open event=ux_screen_open screen=modstatus provider=discord actor_user_id=%s chat_id=%s",
         viewer_id,
@@ -364,13 +452,17 @@ async def modstatus(ctx: commands.Context, *, target: str | None = None) -> None
     )
     viewer_account_id = AccountsService.resolve_account_id("discord", viewer_id)
     if not viewer_account_id:
-        logger.warning(
-            "modstatus viewer unresolved provider=%s chat_id=%s viewer_id=%s target_id=%s account_id=%s",
-            "discord",
-            chat_id,
-            viewer_id,
-            None,
-            None,
+        log_critical_event(
+            logger,
+            level=logging.WARNING,
+            operation_code="modstatus.open",
+            reason="viewer_account_unresolved",
+            platform="discord",
+            user_id=viewer_id,
+            entity_type="account",
+            entity_id=None,
+            correlation_id=correlation_id,
+            chat_id=chat_id,
         )
         await send_temp(
             ctx,
@@ -408,6 +500,18 @@ async def modstatus(ctx: commands.Context, *, target: str | None = None) -> None
                     target,
                     None,
                 )
+                log_critical_event(
+                    logger,
+                    level=logging.WARNING,
+                    operation_code="modstatus.open",
+                    reason="target_resolve_failed",
+                    platform="discord",
+                    user_id=viewer_id,
+                    entity_type="moderation_target",
+                    entity_id=target,
+                    correlation_id=correlation_id,
+                    chat_id=chat_id,
+                )
                 return
 
         target_account_id = str((target_subject or {}).get("account_id") or "").strip() or str(viewer_account_id)
@@ -426,14 +530,18 @@ async def modstatus(ctx: commands.Context, *, target: str | None = None) -> None
             },
         )
         if not snapshot.get("ok"):
-            logger.warning(
-                "modstatus snapshot denied provider=%s chat_id=%s viewer_id=%s target_id=%s account_id=%s error_code=%s",
-                "discord",
-                chat_id,
-                viewer_id,
-                (target_subject or {}).get("provider_user_id") or viewer_id,
-                target_account_id,
-                snapshot.get("error_code"),
+            log_critical_event(
+                logger,
+                level=logging.WARNING,
+                operation_code="modstatus.open",
+                reason="snapshot_denied",
+                platform="discord",
+                user_id=viewer_id,
+                entity_type="moderation_target",
+                entity_id=(target_subject or {}).get("provider_user_id") or viewer_id,
+                correlation_id=correlation_id,
+                error_code=snapshot.get("error_code"),
+                account_id=target_account_id,
             )
             await send_temp(ctx, f"❌ {snapshot.get('message') or 'Не удалось загрузить модерационный статус.'}")
             return
@@ -459,6 +567,7 @@ async def modstatus(ctx: commands.Context, *, target: str | None = None) -> None
                 chat_id=chat_id,
                 can_open_payment=can_open_payment,
                 can_rollback=can_rollback,
+                correlation_id=correlation_id,
                 target_subject=target_subject,
                 rollback_candidates=rollback_candidates,
             )
@@ -469,6 +578,18 @@ async def modstatus(ctx: commands.Context, *, target: str | None = None) -> None
             delete_after=None,
         )
     except Exception:
+        log_critical_event(
+            logger,
+            level=logging.ERROR,
+            operation_code="modstatus.open",
+            reason="command_failed",
+            platform="discord",
+            user_id=viewer_id,
+            entity_type="moderation_target",
+            entity_id=(target_subject or {}).get("provider_user_id") if target_subject else target,
+            correlation_id=correlation_id,
+            error="exception_logged_with_stacktrace",
+        )
         logger.exception(
             "modstatus command failed provider=%s chat_id=%s viewer_id=%s target_id=%s account_id=%s",
             "discord",
