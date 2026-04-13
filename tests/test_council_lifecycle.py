@@ -12,6 +12,9 @@ from bot.domain.council_lifecycle import (
     build_election_invite_segments,
     build_term_launch_notification_targets,
     decide_manual_candidate_addition,
+    decide_replacement_assignment,
+    decide_term_member_exit,
+    build_active_voting_quorum_snapshot,
     decide_question_moderation_approval,
     decide_question_start_voting,
     decide_question_vote_submission,
@@ -496,3 +499,77 @@ def test_question_vote_submission_allows_only_one_vote_change():
     assert blocked_change.accepted is False
     assert blocked_change.reason == "vote_change_limit_reached"
     assert "уже меняли голос" in (blocked_change.user_message or "").lower()
+
+
+def test_term_member_exit_marks_member_as_dropout_for_active_term():
+    decision = decide_term_member_exit(
+        term_id=31,
+        member_profile_id="member-31",
+        role_code="council_member",
+        was_active=True,
+        left_at=datetime(2026, 4, 13, 14, 0, tzinfo=timezone.utc),
+    )
+    assert decision.accepted is True
+    assert decision.member_patch is not None
+    assert decision.member_patch["is_active"] is False
+    assert decision.member_patch["role_code"] == "council_member"
+    assert "выбывш" in (decision.user_message or "").lower()
+
+
+def test_replacement_assignment_allows_vice_from_candidate_or_election_sources():
+    decision = decide_replacement_assignment(
+        term_id=32,
+        actor_profile_id="vice-32",
+        actor_role_code="vice_council_member",
+        replaced_role_code="council_member",
+        replacement_profile_id="replacement-32",
+        source_list_code="candidate_pool",
+        already_active_profile_ids=("member-1",),
+    )
+    assert decision.accepted is True
+    assert decision.assignment_payload is not None
+    assert decision.assignment_payload["role_code"] == "council_member"
+    assert decision.assignment_payload["source_list_code"] == "candidate_pool"
+
+    denied = decide_replacement_assignment(
+        term_id=32,
+        actor_profile_id="member-32",
+        actor_role_code="council_member",
+        replaced_role_code="council_member",
+        replacement_profile_id="replacement-33",
+        source_list_code="election_results",
+        already_active_profile_ids=(),
+    )
+    assert denied.accepted is False
+    assert denied.reason == "actor_not_vice"
+
+
+def test_active_voting_quorum_snapshot_recomputes_quorum_and_dropout_flag():
+    snapshot = build_active_voting_quorum_snapshot(
+        term_members=(
+            {"profile_id": "vice-1", "role_code": "vice_council_member", "is_active": True},
+            {"profile_id": "member-1", "role_code": "council_member", "is_active": True},
+            {"profile_id": "member-2", "role_code": "council_member", "is_active": False, "dropout_reason": "left_club"},
+            {"profile_id": "obs-1", "role_code": "observer", "is_active": True},
+        ),
+        votes=(
+            {"voter_profile_id": "vice-1", "vote_value": "yes"},
+            {"voter_profile_id": "member-1", "vote_value": "yes"},
+        ),
+    )
+    assert snapshot.accepted is True
+    assert snapshot.total_active_members == 3
+    assert snapshot.quorum_min_votes == 2
+    assert snapshot.has_quorum is True
+    assert snapshot.has_unreplaced_dropout is True
+
+    vice_vote = decide_question_vote_submission(
+        question_id=33,
+        current_status="voting",
+        voter_profile_id="vice-1",
+        voter_role_code="vice_council_member",
+        vote_value="yes",
+        has_unreplaced_dropout=snapshot.has_unreplaced_dropout,
+    )
+    assert vice_vote.accepted is True
+    assert vice_vote.vote_weight == 2

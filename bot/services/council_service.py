@@ -10,6 +10,7 @@ from bot.domain.council_lifecycle import (
     ElectionRoundResolution,
     ElectionSchedulerAction,
     ElectionStatusPublication,
+    ActiveVotingQuorumSnapshot,
     QuestionArchiveDecision,
     QuestionModerationDecision,
     QuestionVotingTransitionDecision,
@@ -22,6 +23,9 @@ from bot.domain.council_lifecycle import (
     CouncilInviteSegment,
     LaunchConfirmationDecision,
     ManualCandidateAddDecision,
+    ReplacementAssignmentDecision,
+    TermMemberExitDecision,
+    build_active_voting_quorum_snapshot,
     build_election_invite_segments,
     decide_ballot_submission,
     build_election_status_publication,
@@ -32,6 +36,8 @@ from bot.domain.council_lifecycle import (
     resolve_question_voting_for_archive,
     decide_manual_candidate_addition,
     decide_candidate_review_action,
+    decide_replacement_assignment,
+    decide_term_member_exit,
     decide_term_launch_confirmation,
     filter_confirmed_ballot_candidates,
     get_ballot_limit_for_role,
@@ -158,6 +164,52 @@ class CouncilService:
             actor_profile_id=actor_profile_id,
             existing_candidates=existing_candidates,
         )
+
+    def decide_term_member_exit(
+        self,
+        *,
+        term_id: int | None,
+        member_profile_id: str,
+        role_code: str,
+        was_active: bool,
+        left_at: datetime | None = None,
+    ) -> TermMemberExitDecision:
+        return decide_term_member_exit(
+            term_id=term_id,
+            member_profile_id=member_profile_id,
+            role_code=role_code,
+            was_active=was_active,
+            left_at=left_at,
+        )
+
+    def decide_replacement_assignment(
+        self,
+        *,
+        term_id: int | None,
+        actor_profile_id: str,
+        actor_role_code: str,
+        replaced_role_code: str,
+        replacement_profile_id: str,
+        source_list_code: str,
+        already_active_profile_ids: tuple[str, ...] | list[str],
+    ) -> ReplacementAssignmentDecision:
+        return decide_replacement_assignment(
+            term_id=term_id,
+            actor_profile_id=actor_profile_id,
+            actor_role_code=actor_role_code,
+            replaced_role_code=replaced_role_code,
+            replacement_profile_id=replacement_profile_id,
+            source_list_code=source_list_code,
+            already_active_profile_ids=already_active_profile_ids,
+        )
+
+    def build_active_voting_quorum_snapshot(
+        self,
+        *,
+        term_members: list[dict[str, object]] | tuple[dict[str, object], ...],
+        votes: list[dict[str, object]] | tuple[dict[str, object], ...],
+    ) -> ActiveVotingQuorumSnapshot:
+        return build_active_voting_quorum_snapshot(term_members=term_members, votes=votes)
 
     def get_ballot_limit_for_role(self, *, role_code: str) -> int | None:
         return get_ballot_limit_for_role(role_code)
