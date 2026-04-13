@@ -353,6 +353,227 @@ class QuestionArchiveDecision:
     archive_payload: dict[str, object] | None = None
 
 
+@dataclass(frozen=True)
+class TermMemberExitDecision:
+    accepted: bool
+    reason: str | None = None
+    member_patch: dict[str, object] | None = None
+    user_message: str | None = None
+
+
+@dataclass(frozen=True)
+class ReplacementAssignmentDecision:
+    accepted: bool
+    reason: str | None = None
+    assignment_payload: dict[str, object] | None = None
+    user_message: str | None = None
+
+
+@dataclass(frozen=True)
+class ActiveVotingQuorumSnapshot:
+    accepted: bool
+    reason: str | None = None
+    total_active_members: int = 0
+    quorum_min_votes: int = 0
+    votes_cast_count: int = 0
+    has_quorum: bool = False
+    has_unreplaced_dropout: bool = False
+
+
+def decide_term_member_exit(
+    *,
+    term_id: int | None,
+    member_profile_id: str,
+    role_code: str,
+    was_active: bool,
+    left_at: datetime | None = None,
+) -> TermMemberExitDecision:
+    cleaned_profile_id = (member_profile_id or "").strip()
+    cleaned_role_code = (role_code or "").strip().lower()
+    left_dt = left_at or datetime.now(timezone.utc)
+
+    if not isinstance(term_id, int) or term_id <= 0:
+        logger.error("Council member exit rejected: invalid term id term_id=%s member_profile_id=%s", term_id, cleaned_profile_id)
+        return TermMemberExitDecision(accepted=False, reason="invalid_term_id")
+    if not cleaned_profile_id:
+        logger.error("Council member exit rejected: empty member profile id term_id=%s", term_id)
+        return TermMemberExitDecision(accepted=False, reason="empty_member_profile_id")
+    if cleaned_role_code not in COUNCIL_SEATS_BY_ROLE:
+        logger.error(
+            "Council member exit rejected: unsupported role term_id=%s member_profile_id=%s role_code=%s",
+            term_id,
+            cleaned_profile_id,
+            cleaned_role_code,
+        )
+        return TermMemberExitDecision(accepted=False, reason="unsupported_role_code")
+    if not was_active:
+        logger.error(
+            "Council member exit rejected: member already inactive term_id=%s member_profile_id=%s role_code=%s",
+            term_id,
+            cleaned_profile_id,
+            cleaned_role_code,
+        )
+        return TermMemberExitDecision(accepted=False, reason="member_already_inactive")
+
+    member_patch = {
+        "term_id": term_id,
+        "profile_id": cleaned_profile_id,
+        "role_code": cleaned_role_code,
+        "is_active": False,
+        "left_at": left_dt.isoformat(),
+    }
+    logger.info(
+        "Council member marked as dropout term_id=%s member_profile_id=%s role_code=%s left_at=%s",
+        term_id,
+        cleaned_profile_id,
+        cleaned_role_code,
+        member_patch["left_at"],
+    )
+    return TermMemberExitDecision(
+        accepted=True,
+        reason=None,
+        member_patch=member_patch,
+        user_message="Участник отмечен как выбывший из текущего созыва.",
+    )
+
+
+def decide_replacement_assignment(
+    *,
+    term_id: int | None,
+    actor_profile_id: str,
+    actor_role_code: str,
+    replaced_role_code: str,
+    replacement_profile_id: str,
+    source_list_code: str,
+    already_active_profile_ids: tuple[str, ...] | list[str],
+) -> ReplacementAssignmentDecision:
+    cleaned_actor_id = (actor_profile_id or "").strip()
+    cleaned_actor_role = (actor_role_code or "").strip().lower()
+    cleaned_replaced_role = (replaced_role_code or "").strip().lower()
+    cleaned_replacement_id = (replacement_profile_id or "").strip()
+    cleaned_source_list = (source_list_code or "").strip().lower()
+    supported_source_lists = {"candidate_pool", "election_results"}
+    normalized_active_profile_ids = {str(profile_id or "").strip() for profile_id in already_active_profile_ids}
+
+    if not isinstance(term_id, int) or term_id <= 0:
+        logger.error("Council replacement assignment rejected: invalid term_id=%s actor_profile_id=%s", term_id, cleaned_actor_id)
+        return ReplacementAssignmentDecision(accepted=False, reason="invalid_term_id")
+    if cleaned_actor_role != COUNCIL_ROLE_VICE_COUNCIL_MEMBER:
+        logger.error(
+            "Council replacement assignment rejected: actor has no vice authority term_id=%s actor_profile_id=%s actor_role_code=%s",
+            term_id,
+            cleaned_actor_id,
+            cleaned_actor_role,
+        )
+        return ReplacementAssignmentDecision(accepted=False, reason="actor_not_vice")
+    if not cleaned_actor_id:
+        logger.error("Council replacement assignment rejected: empty actor profile id term_id=%s", term_id)
+        return ReplacementAssignmentDecision(accepted=False, reason="empty_actor_profile_id")
+    if cleaned_replaced_role not in COUNCIL_SEATS_BY_ROLE:
+        logger.error(
+            "Council replacement assignment rejected: unsupported replaced role term_id=%s replaced_role_code=%s actor_profile_id=%s",
+            term_id,
+            cleaned_replaced_role,
+            cleaned_actor_id,
+        )
+        return ReplacementAssignmentDecision(accepted=False, reason="unsupported_replaced_role")
+    if not cleaned_replacement_id:
+        logger.error("Council replacement assignment rejected: empty replacement profile id term_id=%s actor_profile_id=%s", term_id, cleaned_actor_id)
+        return ReplacementAssignmentDecision(accepted=False, reason="empty_replacement_profile_id")
+    if cleaned_source_list not in supported_source_lists:
+        logger.error(
+            "Council replacement assignment rejected: unsupported source list term_id=%s source_list_code=%s actor_profile_id=%s",
+            term_id,
+            cleaned_source_list,
+            cleaned_actor_id,
+        )
+        return ReplacementAssignmentDecision(accepted=False, reason="unsupported_source_list")
+    if cleaned_replacement_id in normalized_active_profile_ids:
+        logger.error(
+            "Council replacement assignment rejected: profile already active term_id=%s replacement_profile_id=%s actor_profile_id=%s",
+            term_id,
+            cleaned_replacement_id,
+            cleaned_actor_id,
+        )
+        return ReplacementAssignmentDecision(accepted=False, reason="replacement_already_active")
+
+    assignment_payload = {
+        "term_id": term_id,
+        "profile_id": cleaned_replacement_id,
+        "role_code": cleaned_replaced_role,
+        "source_list_code": cleaned_source_list,
+        "assigned_by_profile_id": cleaned_actor_id,
+        "joined_at": datetime.now(timezone.utc).isoformat(),
+    }
+    logger.info(
+        "Council replacement assignment accepted term_id=%s replacement_profile_id=%s role_code=%s source_list_code=%s assigned_by=%s",
+        term_id,
+        cleaned_replacement_id,
+        cleaned_replaced_role,
+        cleaned_source_list,
+        cleaned_actor_id,
+    )
+    return ReplacementAssignmentDecision(
+        accepted=True,
+        reason=None,
+        assignment_payload=assignment_payload,
+        user_message="Замена назначена и добавлена в текущий состав созыва.",
+    )
+
+
+def build_active_voting_quorum_snapshot(
+    *,
+    term_members: list[dict[str, object]] | tuple[dict[str, object], ...],
+    votes: list[dict[str, object]] | tuple[dict[str, object], ...],
+) -> ActiveVotingQuorumSnapshot:
+    active_members: list[dict[str, object]] = []
+    has_unreplaced_dropout = False
+
+    for row in term_members:
+        role_code = str((row or {}).get("role_code") or "").strip().lower()
+        if role_code not in COUNCIL_SEATS_BY_ROLE:
+            logger.error("Council quorum snapshot skipped member with unsupported role row=%s", row)
+            continue
+        is_active = bool((row or {}).get("is_active"))
+        if is_active:
+            active_members.append(row)
+            continue
+        if str((row or {}).get("dropout_reason") or "").strip().lower() == "left_club":
+            has_unreplaced_dropout = True
+
+    if not active_members:
+        logger.error("Council quorum snapshot rejected: no active members")
+        return ActiveVotingQuorumSnapshot(accepted=False, reason="no_active_members")
+
+    voted_profile_ids: set[str] = set()
+    for row in votes:
+        voter_id = str((row or {}).get("voter_profile_id") or "").strip()
+        if voter_id:
+            voted_profile_ids.add(voter_id)
+
+    total_active_members = len(active_members)
+    votes_cast_count = len(voted_profile_ids)
+    quorum_min_votes = max(1, (total_active_members // 2) + 1)
+
+    logger.info(
+        "Council quorum snapshot built total_active_members=%s quorum_min_votes=%s votes_cast_count=%s has_quorum=%s has_unreplaced_dropout=%s",
+        total_active_members,
+        quorum_min_votes,
+        votes_cast_count,
+        votes_cast_count >= quorum_min_votes,
+        has_unreplaced_dropout,
+    )
+    return ActiveVotingQuorumSnapshot(
+        accepted=True,
+        reason=None,
+        total_active_members=total_active_members,
+        quorum_min_votes=quorum_min_votes,
+        votes_cast_count=votes_cast_count,
+        has_quorum=votes_cast_count >= quorum_min_votes,
+        has_unreplaced_dropout=has_unreplaced_dropout,
+    )
+
+
 def decide_term_launch_confirmation(
     *,
     term_status: str,

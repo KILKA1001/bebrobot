@@ -232,3 +232,43 @@ def test_council_service_question_vote_submission_has_weight_and_change_limit():
     )
     assert blocked.accepted is False
     assert blocked.reason == "vote_change_limit_reached"
+
+
+def test_council_service_supports_member_dropout_replacement_and_quorum_snapshot():
+    exit_decision = council_service.decide_term_member_exit(
+        term_id=801,
+        member_profile_id="member-801",
+        role_code="council_member",
+        was_active=True,
+        left_at=datetime(2026, 4, 13, 14, 0, tzinfo=timezone.utc),
+    )
+    assert exit_decision.accepted is True
+    assert (exit_decision.member_patch or {}).get("is_active") is False
+
+    replacement = council_service.decide_replacement_assignment(
+        term_id=801,
+        actor_profile_id="vice-801",
+        actor_role_code="vice_council_member",
+        replaced_role_code="council_member",
+        replacement_profile_id="member-new-801",
+        source_list_code="election_results",
+        already_active_profile_ids=("vice-801", "observer-801"),
+    )
+    assert replacement.accepted is True
+    assert (replacement.assignment_payload or {}).get("source_list_code") == "election_results"
+
+    snapshot = council_service.build_active_voting_quorum_snapshot(
+        term_members=(
+            {"profile_id": "vice-801", "role_code": "vice_council_member", "is_active": True},
+            {"profile_id": "member-801", "role_code": "council_member", "is_active": False, "dropout_reason": "left_club"},
+            {"profile_id": "observer-801", "role_code": "observer", "is_active": True},
+        ),
+        votes=(
+            {"voter_profile_id": "vice-801", "vote_value": "yes"},
+            {"voter_profile_id": "observer-801", "vote_value": "no"},
+        ),
+    )
+    assert snapshot.accepted is True
+    assert snapshot.quorum_min_votes == 2
+    assert snapshot.has_quorum is True
+    assert snapshot.has_unreplaced_dropout is True
