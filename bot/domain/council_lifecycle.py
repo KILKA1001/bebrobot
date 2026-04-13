@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,13 @@ class CandidateReviewDecision:
     accepted: bool
     next_status: str | None
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ManualCandidateAddDecision:
+    accepted: bool
+    reason: str | None
+    assignment_log: dict[str, object] | None = None
 
 
 def decide_term_launch_confirmation(
@@ -282,6 +290,110 @@ def filter_confirmed_ballot_candidates(
             (row or {}).get("role_code"),
         )
     return approved
+
+
+def decide_manual_candidate_addition(
+    *,
+    term_id: int | None,
+    election_status: str,
+    candidate_profile_id: str,
+    election_role_code: str,
+    actor_profile_id: str,
+    existing_candidates: list[dict[str, object]] | tuple[dict[str, object], ...],
+    assigned_at: datetime | None = None,
+) -> ManualCandidateAddDecision:
+    cleaned_status = (election_status or "").strip().lower()
+    cleaned_candidate_id = (candidate_profile_id or "").strip()
+    cleaned_role_code = (election_role_code or "").strip().lower()
+    cleaned_actor_id = (actor_profile_id or "").strip()
+
+    if not isinstance(term_id, int) or term_id <= 0:
+        logger.error(
+            "Council manual candidate add rejected: invalid term_id=%s actor_profile_id=%s candidate_profile_id=%s role_code=%s",
+            term_id,
+            cleaned_actor_id,
+            cleaned_candidate_id,
+            cleaned_role_code,
+        )
+        return ManualCandidateAddDecision(accepted=False, reason="invalid_term_id")
+
+    if cleaned_status not in ELECTION_STATUS_VALUES:
+        logger.error(
+            "Council manual candidate add rejected: invalid election status value status=%s term_id=%s actor_profile_id=%s role_code=%s",
+            cleaned_status,
+            term_id,
+            cleaned_actor_id,
+            cleaned_role_code,
+        )
+        return ManualCandidateAddDecision(accepted=False, reason="invalid_election_status_value")
+
+    if cleaned_status not in (ELECTION_STATUS_NOMINATION, ELECTION_STATUS_VOTING):
+        logger.error(
+            "Council manual candidate add rejected: election status disallows manual add status=%s term_id=%s role_code=%s",
+            cleaned_status,
+            term_id,
+            cleaned_role_code,
+        )
+        return ManualCandidateAddDecision(accepted=False, reason="election_status_not_open_for_manual_add")
+
+    if not cleaned_candidate_id:
+        logger.error(
+            "Council manual candidate add rejected: empty candidate profile id term_id=%s role_code=%s actor_profile_id=%s",
+            term_id,
+            cleaned_role_code,
+            cleaned_actor_id,
+        )
+        return ManualCandidateAddDecision(accepted=False, reason="empty_candidate_profile_id")
+
+    if not cleaned_actor_id:
+        logger.error(
+            "Council manual candidate add rejected: empty actor profile id term_id=%s role_code=%s candidate_profile_id=%s",
+            term_id,
+            cleaned_role_code,
+            cleaned_candidate_id,
+        )
+        return ManualCandidateAddDecision(accepted=False, reason="empty_actor_profile_id")
+
+    if not cleaned_role_code:
+        logger.error(
+            "Council manual candidate add rejected: empty election role code term_id=%s actor_profile_id=%s candidate_profile_id=%s",
+            term_id,
+            cleaned_actor_id,
+            cleaned_candidate_id,
+        )
+        return ManualCandidateAddDecision(accepted=False, reason="empty_election_role_code")
+
+    for existing in existing_candidates:
+        existing_term_id = existing.get("term_id")
+        existing_role_code = str(existing.get("role_code") or "").strip().lower()
+        existing_candidate = str(existing.get("profile_id") or "").strip()
+        if existing_term_id == term_id and existing_role_code == cleaned_role_code and existing_candidate == cleaned_candidate_id:
+            logger.error(
+                "Council manual candidate add rejected: duplicate in term-role pool term_id=%s role_code=%s candidate_profile_id=%s actor_profile_id=%s",
+                term_id,
+                cleaned_role_code,
+                cleaned_candidate_id,
+                cleaned_actor_id,
+            )
+            return ManualCandidateAddDecision(accepted=False, reason="duplicate_candidate_for_role_term")
+
+    assignment_dt = assigned_at or datetime.now(timezone.utc)
+    assignment_log = {
+        "term_id": term_id,
+        "candidate_profile_id": cleaned_candidate_id,
+        "election_role_code": cleaned_role_code,
+        "assigned_by_profile_id": cleaned_actor_id,
+        "assigned_at": assignment_dt.isoformat(),
+    }
+    logger.info(
+        "Council manual candidate add accepted term_id=%s role_code=%s candidate_profile_id=%s assigned_by_profile_id=%s assigned_at=%s",
+        term_id,
+        cleaned_role_code,
+        cleaned_candidate_id,
+        cleaned_actor_id,
+        assignment_log["assigned_at"],
+    )
+    return ManualCandidateAddDecision(accepted=True, reason=None, assignment_log=assignment_log)
 
 
 def is_valid_lifecycle_status(status: str, *, lifecycle: str) -> bool:

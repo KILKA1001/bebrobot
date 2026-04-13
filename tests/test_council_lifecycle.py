@@ -7,6 +7,7 @@ from bot.domain.council_lifecycle import (
     TERM_STATUS_VALUES,
     build_election_invite_segments,
     build_term_launch_notification_targets,
+    decide_manual_candidate_addition,
     decide_candidate_review_action,
     decide_term_launch_confirmation,
     filter_confirmed_ballot_candidates,
@@ -171,3 +172,48 @@ def test_ballot_includes_only_confirmed_candidates():
     ]
     filtered = filter_confirmed_ballot_candidates(raw_candidates, election_id=88)
     assert [item["id"] for item in filtered] == [1]
+
+
+def test_manual_candidate_addition_rejects_duplicate_within_role_and_term():
+    decision = decide_manual_candidate_addition(
+        term_id=7,
+        election_status="nomination",
+        candidate_profile_id="cand-1",
+        election_role_code="council_member",
+        actor_profile_id="admin-1",
+        existing_candidates=(
+            {"term_id": 7, "role_code": "council_member", "profile_id": "cand-1"},
+            {"term_id": 7, "role_code": "observer", "profile_id": "cand-1"},
+        ),
+    )
+    assert decision.accepted is False
+    assert decision.reason == "duplicate_candidate_for_role_term"
+
+
+def test_manual_candidate_addition_rejects_closed_election_status():
+    decision = decide_manual_candidate_addition(
+        term_id=8,
+        election_status="completed",
+        candidate_profile_id="cand-2",
+        election_role_code="observer",
+        actor_profile_id="admin-2",
+        existing_candidates=(),
+    )
+    assert decision.accepted is False
+    assert decision.reason == "election_status_not_open_for_manual_add"
+
+
+def test_manual_candidate_addition_accepts_and_returns_assignment_audit_payload():
+    decision = decide_manual_candidate_addition(
+        term_id=11,
+        election_status="voting",
+        candidate_profile_id="cand-4",
+        election_role_code="vice_council_member",
+        actor_profile_id="head-7",
+        existing_candidates=({"term_id": 11, "role_code": "observer", "profile_id": "cand-4"},),
+    )
+    assert decision.accepted is True
+    assert decision.reason is None
+    assert decision.assignment_log is not None
+    assert decision.assignment_log["assigned_by_profile_id"] == "head-7"
+    assert decision.assignment_log["election_role_code"] == "vice_council_member"
