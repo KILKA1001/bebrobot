@@ -206,3 +206,29 @@ def test_council_service_question_flow_from_moderation_to_archive():
     assert archive.accepted is True
     assert archive.next_status == "decided"
     assert (archive.archive_payload or {}).get("result") == "accepted"
+
+
+def test_council_service_question_vote_submission_has_weight_and_change_limit():
+    weighted = council_service.decide_question_vote_submission(
+        question_id=700,
+        current_status="voting",
+        voter_profile_id="vice-700",
+        voter_role_code="vice_council_member",
+        vote_value="yes",
+        current_score_yes=2,
+        current_score_no=2,
+    )
+    assert weighted.accepted is True
+    assert weighted.vote_weight == 2
+
+    blocked = council_service.decide_question_vote_submission(
+        question_id=700,
+        current_status="voting",
+        voter_profile_id="member-700",
+        voter_role_code="council_member",
+        vote_value="no",
+        existing_vote_value="yes",
+        changed_once=True,
+    )
+    assert blocked.accepted is False
+    assert blocked.reason == "vote_change_limit_reached"

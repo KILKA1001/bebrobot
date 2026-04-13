@@ -337,6 +337,15 @@ class QuestionVotingTransitionDecision:
 
 
 @dataclass(frozen=True)
+class QuestionVoteSubmissionDecision:
+    accepted: bool
+    reason: str | None = None
+    vote_weight: int | None = None
+    changed_once: bool | None = None
+    user_message: str | None = None
+
+
+@dataclass(frozen=True)
 class QuestionArchiveDecision:
     accepted: bool
     next_status: str | None
@@ -513,6 +522,93 @@ def decide_question_start_voting(
         voting_starts_at=start_dt,
         voting_ends_at=end_dt,
         user_message="Голосование началось и закроется автоматически через 30 минут.",
+    )
+
+
+def decide_question_vote_submission(
+    *,
+    question_id: int | None,
+    current_status: str,
+    voter_profile_id: str,
+    voter_role_code: str,
+    vote_value: str,
+    existing_vote_value: str | None = None,
+    changed_once: bool = False,
+    current_score_yes: int = 0,
+    current_score_no: int = 0,
+    has_unreplaced_dropout: bool = False,
+) -> QuestionVoteSubmissionDecision:
+    cleaned_status = (current_status or "").strip().lower()
+    cleaned_voter_id = (voter_profile_id or "").strip()
+    cleaned_role = (voter_role_code or "").strip().lower()
+    cleaned_vote = (vote_value or "").strip().lower()
+    cleaned_existing_vote = (existing_vote_value or "").strip().lower()
+
+    if not isinstance(question_id, int) or question_id <= 0:
+        logger.error("Council question vote rejected: invalid question_id=%s voter_profile_id=%s", question_id, cleaned_voter_id)
+        return QuestionVoteSubmissionDecision(accepted=False, reason="invalid_question_id")
+    if cleaned_status != QUESTION_STATUS_VOTING:
+        logger.error(
+            "Council question vote rejected: invalid status question_id=%s current_status=%s voter_profile_id=%s",
+            question_id,
+            cleaned_status,
+            cleaned_voter_id,
+        )
+        return QuestionVoteSubmissionDecision(
+            accepted=False,
+            reason="question_not_in_voting",
+            user_message="Сейчас голосование по этому вопросу закрыто. Дождитесь этапа голосования.",
+        )
+    if not cleaned_voter_id:
+        logger.error("Council question vote rejected: empty voter profile id question_id=%s", question_id)
+        return QuestionVoteSubmissionDecision(accepted=False, reason="empty_voter_profile_id")
+    if cleaned_vote not in {"yes", "no", "abstain"}:
+        logger.error(
+            "Council question vote rejected: invalid vote value question_id=%s voter_profile_id=%s vote_value=%s",
+            question_id,
+            cleaned_voter_id,
+            cleaned_vote,
+        )
+        return QuestionVoteSubmissionDecision(accepted=False, reason="invalid_vote_value")
+
+    is_vote_update = bool(cleaned_existing_vote) and cleaned_existing_vote in {"yes", "no", "abstain"} and cleaned_existing_vote != cleaned_vote
+    if is_vote_update and changed_once:
+        logger.error(
+            "Council question vote rejected: second vote change blocked question_id=%s voter_profile_id=%s old_vote=%s new_vote=%s",
+            question_id,
+            cleaned_voter_id,
+            cleaned_existing_vote,
+            cleaned_vote,
+        )
+        return QuestionVoteSubmissionDecision(
+            accepted=False,
+            reason="vote_change_limit_reached",
+            changed_once=True,
+            user_message="Вы уже меняли голос один раз. Повторное изменение недоступно.",
+        )
+
+    weight = 1
+    if cleaned_role == COUNCIL_ROLE_VICE_COUNCIL_MEMBER and ((current_score_yes == 2 and current_score_no == 2) or has_unreplaced_dropout):
+        weight = 2
+
+    logger.info(
+        "Council question vote accepted question_id=%s voter_profile_id=%s voter_role_code=%s vote=%s weight=%s changed_once=%s score_yes=%s score_no=%s has_unreplaced_dropout=%s",
+        question_id,
+        cleaned_voter_id,
+        cleaned_role,
+        cleaned_vote,
+        weight,
+        changed_once or is_vote_update,
+        current_score_yes,
+        current_score_no,
+        has_unreplaced_dropout,
+    )
+    return QuestionVoteSubmissionDecision(
+        accepted=True,
+        reason=None,
+        vote_weight=weight,
+        changed_once=changed_once or is_vote_update,
+        user_message="Голос принят.",
     )
 
 

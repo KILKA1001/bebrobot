@@ -13,6 +13,7 @@ from bot.domain.council_lifecycle import (
     QuestionArchiveDecision,
     QuestionModerationDecision,
     QuestionVotingTransitionDecision,
+    QuestionVoteSubmissionDecision,
     ELECTION_STATUS_VALUES,
     QUESTION_STATUS_VALUES,
     TERM_STATUS_VALUES,
@@ -27,6 +28,7 @@ from bot.domain.council_lifecycle import (
     build_term_launch_notification_targets,
     decide_question_moderation_approval,
     decide_question_start_voting,
+    decide_question_vote_submission,
     resolve_question_voting_for_archive,
     decide_manual_candidate_addition,
     decide_candidate_review_action,
@@ -265,6 +267,33 @@ class CouncilService:
             required_comment=required_comment,
             closed_by_profile_id=closed_by_profile_id,
             closed_at=closed_at,
+        )
+
+    def decide_question_vote_submission(
+        self,
+        *,
+        question_id: int | None,
+        current_status: str,
+        voter_profile_id: str,
+        voter_role_code: str,
+        vote_value: str,
+        existing_vote_value: str | None = None,
+        changed_once: bool = False,
+        current_score_yes: int = 0,
+        current_score_no: int = 0,
+        has_unreplaced_dropout: bool = False,
+    ) -> QuestionVoteSubmissionDecision:
+        return decide_question_vote_submission(
+            question_id=question_id,
+            current_status=current_status,
+            voter_profile_id=voter_profile_id,
+            voter_role_code=voter_role_code,
+            vote_value=vote_value,
+            existing_vote_value=existing_vote_value,
+            changed_once=changed_once,
+            current_score_yes=current_score_yes,
+            current_score_no=current_score_no,
+            has_unreplaced_dropout=has_unreplaced_dropout,
         )
 
 

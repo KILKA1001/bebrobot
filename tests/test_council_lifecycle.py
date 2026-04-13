@@ -14,6 +14,7 @@ from bot.domain.council_lifecycle import (
     decide_manual_candidate_addition,
     decide_question_moderation_approval,
     decide_question_start_voting,
+    decide_question_vote_submission,
     decide_candidate_review_action,
     decide_ballot_submission,
     decide_term_launch_confirmation,
@@ -427,3 +428,71 @@ def test_question_archive_requires_comment_and_keeps_result_score_and_closed_at(
     )
     assert rejected.accepted is False
     assert rejected.reason == "required_comment_missing"
+
+
+def test_question_vote_submission_sets_vice_weight_to_two_on_two_to_two_or_unreplaced_dropout():
+    tie_decision = decide_question_vote_submission(
+        question_id=19,
+        current_status="voting",
+        voter_profile_id="vice-1",
+        voter_role_code="vice_council_member",
+        vote_value="yes",
+        current_score_yes=2,
+        current_score_no=2,
+        has_unreplaced_dropout=False,
+    )
+    assert tie_decision.accepted is True
+    assert tie_decision.vote_weight == 2
+
+    dropout_decision = decide_question_vote_submission(
+        question_id=19,
+        current_status="voting",
+        voter_profile_id="vice-1",
+        voter_role_code="vice_council_member",
+        vote_value="no",
+        current_score_yes=1,
+        current_score_no=0,
+        has_unreplaced_dropout=True,
+    )
+    assert dropout_decision.accepted is True
+    assert dropout_decision.vote_weight == 2
+
+    default_decision = decide_question_vote_submission(
+        question_id=19,
+        current_status="voting",
+        voter_profile_id="vice-1",
+        voter_role_code="vice_council_member",
+        vote_value="abstain",
+        current_score_yes=1,
+        current_score_no=1,
+        has_unreplaced_dropout=False,
+    )
+    assert default_decision.accepted is True
+    assert default_decision.vote_weight == 1
+
+
+def test_question_vote_submission_allows_only_one_vote_change():
+    first_change = decide_question_vote_submission(
+        question_id=20,
+        current_status="voting",
+        voter_profile_id="member-1",
+        voter_role_code="council_member",
+        vote_value="no",
+        existing_vote_value="yes",
+        changed_once=False,
+    )
+    assert first_change.accepted is True
+    assert first_change.changed_once is True
+
+    blocked_change = decide_question_vote_submission(
+        question_id=20,
+        current_status="voting",
+        voter_profile_id="member-1",
+        voter_role_code="council_member",
+        vote_value="yes",
+        existing_vote_value="no",
+        changed_once=True,
+    )
+    assert blocked_change.accepted is False
+    assert blocked_change.reason == "vote_change_limit_reached"
+    assert "уже меняли голос" in (blocked_change.user_message or "").lower()
