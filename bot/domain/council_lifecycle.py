@@ -91,6 +91,12 @@ COUNCIL_RUNOFF_ENABLED_ROLES: tuple[str, ...] = (
     COUNCIL_ROLE_VICE_COUNCIL_MEMBER,
     COUNCIL_ROLE_COUNCIL_MEMBER,
 )
+COUNCIL_VOTING_PLATFORM_TELEGRAM = "telegram"
+COUNCIL_VOTING_PLATFORM_DISCORD = "discord"
+COUNCIL_SUPPORTED_VOTING_PLATFORMS: tuple[str, ...] = (
+    COUNCIL_VOTING_PLATFORM_TELEGRAM,
+    COUNCIL_VOTING_PLATFORM_DISCORD,
+)
 
 
 @dataclass(frozen=True)
@@ -316,6 +322,7 @@ class BallotSubmissionDecision:
     allowed_limit: int | None = None
     user_message: str | None = None
     remaining_votes: int | None = None
+    source_platform: str | None = None
 
 
 @dataclass(frozen=True)
@@ -343,6 +350,7 @@ class QuestionVoteSubmissionDecision:
     vote_weight: int | None = None
     changed_once: bool | None = None
     user_message: str | None = None
+    source_platform: str | None = None
 
 
 @dataclass(frozen=True)
@@ -758,12 +766,16 @@ def decide_question_vote_submission(
     current_score_yes: int = 0,
     current_score_no: int = 0,
     has_unreplaced_dropout: bool = False,
+    source_platform: str | None = None,
+    existing_vote_platform: str | None = None,
 ) -> QuestionVoteSubmissionDecision:
     cleaned_status = (current_status or "").strip().lower()
     cleaned_voter_id = (voter_profile_id or "").strip()
     cleaned_role = (voter_role_code or "").strip().lower()
     cleaned_vote = (vote_value or "").strip().lower()
     cleaned_existing_vote = (existing_vote_value or "").strip().lower()
+    cleaned_source_platform = (source_platform or COUNCIL_VOTING_PLATFORM_TELEGRAM).strip().lower()
+    cleaned_existing_platform = (existing_vote_platform or "").strip().lower()
 
     if not isinstance(question_id, int) or question_id <= 0:
         logger.error("Council question vote rejected: invalid question_id=%s voter_profile_id=%s", question_id, cleaned_voter_id)
@@ -791,6 +803,40 @@ def decide_question_vote_submission(
             cleaned_vote,
         )
         return QuestionVoteSubmissionDecision(accepted=False, reason="invalid_vote_value")
+    if cleaned_source_platform not in COUNCIL_SUPPORTED_VOTING_PLATFORMS:
+        logger.error(
+            "Council question vote rejected: unsupported source platform question_id=%s voter_profile_id=%s source_platform=%s",
+            question_id,
+            cleaned_voter_id,
+            cleaned_source_platform,
+        )
+        return QuestionVoteSubmissionDecision(accepted=False, reason="unsupported_source_platform")
+    if cleaned_existing_platform and cleaned_existing_platform not in COUNCIL_SUPPORTED_VOTING_PLATFORMS:
+        logger.error(
+            "Council question vote rejected: invalid existing vote platform question_id=%s voter_profile_id=%s existing_vote_platform=%s",
+            question_id,
+            cleaned_voter_id,
+            cleaned_existing_platform,
+        )
+        return QuestionVoteSubmissionDecision(accepted=False, reason="invalid_existing_vote_platform")
+    if cleaned_existing_platform and cleaned_existing_platform != cleaned_source_platform:
+        first_platform_name = "Telegram" if cleaned_existing_platform == COUNCIL_VOTING_PLATFORM_TELEGRAM else "Discord"
+        logger.error(
+            "Council question vote rejected: cross-platform duplicate question_id=%s voter_profile_id=%s first_platform=%s attempted_platform=%s",
+            question_id,
+            cleaned_voter_id,
+            cleaned_existing_platform,
+            cleaned_source_platform,
+        )
+        return QuestionVoteSubmissionDecision(
+            accepted=False,
+            reason="cross_platform_duplicate_vote",
+            user_message=(
+                f"Голос уже учтён через {first_platform_name}. "
+                "Повторный голос по этому вопросу с другой платформы недоступен."
+            ),
+            source_platform=cleaned_source_platform,
+        )
 
     is_vote_update = bool(cleaned_existing_vote) and cleaned_existing_vote in {"yes", "no", "abstain"} and cleaned_existing_vote != cleaned_vote
     if is_vote_update and changed_once:
@@ -830,6 +876,7 @@ def decide_question_vote_submission(
         vote_weight=weight,
         changed_once=changed_once or is_vote_update,
         user_message="Голос принят.",
+        source_platform=cleaned_source_platform,
     )
 
 
@@ -1153,8 +1200,12 @@ def decide_ballot_submission(
     voter_role_code: str,
     selected_candidate_ids: list[int] | tuple[int, ...],
     already_submitted_ballots_count: int = 0,
+    source_platform: str | None = None,
+    existing_ballot_platform: str | None = None,
 ) -> BallotSubmissionDecision:
     cleaned_profile_id = (voter_profile_id or "").strip()
+    cleaned_source_platform = (source_platform or COUNCIL_VOTING_PLATFORM_TELEGRAM).strip().lower()
+    cleaned_existing_platform = (existing_ballot_platform or "").strip().lower()
     limit = get_ballot_limit_for_role(voter_role_code)
     selected_ids = [candidate_id for candidate_id in selected_candidate_ids if isinstance(candidate_id, int) and candidate_id > 0]
     unique_selected_ids = tuple(dict.fromkeys(selected_ids))
@@ -1176,6 +1227,44 @@ def decide_ballot_submission(
             voter_role_code,
         )
         return BallotSubmissionDecision(accepted=False, reason="unsupported_voter_role")
+    if cleaned_source_platform not in COUNCIL_SUPPORTED_VOTING_PLATFORMS:
+        logger.error(
+            "Council ballot rejected: unsupported source platform election_id=%s voter_profile_id=%s source_platform=%s",
+            election_id,
+            cleaned_profile_id,
+            cleaned_source_platform,
+        )
+        return BallotSubmissionDecision(accepted=False, reason="unsupported_source_platform")
+    if cleaned_existing_platform and cleaned_existing_platform not in COUNCIL_SUPPORTED_VOTING_PLATFORMS:
+        logger.error(
+            "Council ballot rejected: invalid existing ballot platform election_id=%s voter_profile_id=%s existing_ballot_platform=%s",
+            election_id,
+            cleaned_profile_id,
+            cleaned_existing_platform,
+        )
+        return BallotSubmissionDecision(accepted=False, reason="invalid_existing_ballot_platform")
+    if cleaned_existing_platform and cleaned_existing_platform != cleaned_source_platform:
+        first_platform_name = "Telegram" if cleaned_existing_platform == COUNCIL_VOTING_PLATFORM_TELEGRAM else "Discord"
+        attempted_platform_name = "Telegram" if cleaned_source_platform == COUNCIL_VOTING_PLATFORM_TELEGRAM else "Discord"
+        logger.error(
+            "Council ballot rejected: cross-platform duplicate election_id=%s voter_profile_id=%s first_platform=%s attempted_platform=%s",
+            election_id,
+            cleaned_profile_id,
+            cleaned_existing_platform,
+            cleaned_source_platform,
+        )
+        return BallotSubmissionDecision(
+            accepted=False,
+            reason="cross_platform_duplicate_vote",
+            allowed_limit=limit,
+            user_message=(
+                f"Ваш голос по этим выборам уже зарегистрирован через {first_platform_name}. "
+                f"Повторно голосовать через {attempted_platform_name} нельзя. "
+                "Приоритет проведения выборов остаётся за Telegram."
+            ),
+            remaining_votes=max(0, limit - already_submitted_ballots_count),
+            source_platform=cleaned_source_platform,
+        )
 
     if not isinstance(already_submitted_ballots_count, int) or already_submitted_ballots_count < 0:
         logger.error(
@@ -1189,6 +1278,7 @@ def decide_ballot_submission(
             accepted=False,
             reason="invalid_already_submitted_ballots_count",
             allowed_limit=limit,
+            source_platform=cleaned_source_platform,
         )
 
     if invalid_selected_items_count > 0:
@@ -1204,6 +1294,7 @@ def decide_ballot_submission(
             reason="invalid_candidate_ids",
             allowed_limit=limit,
             user_message="В списке выбора есть некорректные кандидаты. Обновите бюллетень и попробуйте снова.",
+            source_platform=cleaned_source_platform,
         )
 
     if not unique_selected_ids:
@@ -1213,7 +1304,12 @@ def decide_ballot_submission(
             cleaned_profile_id,
             voter_role_code,
         )
-        return BallotSubmissionDecision(accepted=False, reason="empty_candidate_selection", allowed_limit=limit)
+        return BallotSubmissionDecision(
+            accepted=False,
+            reason="empty_candidate_selection",
+            allowed_limit=limit,
+            source_platform=cleaned_source_platform,
+        )
 
     if len(unique_selected_ids) > limit:
         logger.error(
@@ -1229,6 +1325,7 @@ def decide_ballot_submission(
             reason="ballot_limit_exceeded",
             allowed_limit=limit,
             user_message=f"Можно выбрать не более {limit} кандидатов. Уменьшите выбор и отправьте бюллетень снова.",
+            source_platform=cleaned_source_platform,
         )
 
     if already_submitted_ballots_count + len(unique_selected_ids) > limit:
@@ -1247,6 +1344,7 @@ def decide_ballot_submission(
             allowed_limit=limit,
             user_message=f"Лимит голосов уже достигнут ({limit}). Новые голоса нельзя отправить.",
             remaining_votes=max(0, limit - already_submitted_ballots_count),
+            source_platform=cleaned_source_platform,
         )
 
     return BallotSubmissionDecision(
@@ -1254,6 +1352,7 @@ def decide_ballot_submission(
         allowed_limit=limit,
         remaining_votes=max(0, limit - already_submitted_ballots_count - len(unique_selected_ids)),
         user_message=f"Бюллетень принят. Осталось голосов: {max(0, limit - already_submitted_ballots_count - len(unique_selected_ids))}.",
+        source_platform=cleaned_source_platform,
     )
 
 
