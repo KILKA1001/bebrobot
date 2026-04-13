@@ -847,6 +847,25 @@ class AccountsServiceTests(unittest.TestCase):
         self.assertEqual(profile["roles"][0]["source"], "discord")
         self.assertEqual(profile["permissions"]["allow"], ["tickets.manage"])
 
+    def test_profile_hides_technical_link_roles_from_visible_sections(self):
+        AccountsService.register_identity("discord", "111")
+
+        with patch(
+            "bot.services.accounts_service.RoleResolver.resolve_for_account",
+            return_value=ResolvedAccess(
+                roles=[
+                    {"name": "Telegram linked", "source": "telegram"},
+                    {"name": "Ветеран города", "source": "discord", "category": "Клубные роли"},
+                ],
+                permissions={"allow": [], "deny": []},
+            ),
+        ):
+            profile = AccountsService.get_profile("discord", "111", "Nick")
+
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile["visible_roles"], ["Ветеран города"])
+        self.assertEqual(profile["roles_by_category"], {"Клубные роли": ["Ветеран города"]})
+
     def test_get_configured_title_roles_from_db(self):
         self.fake_db.tables["profile_title_roles"].extend(
             [
