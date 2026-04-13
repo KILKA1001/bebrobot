@@ -1,4 +1,6 @@
 from bot.domain.council_lifecycle import (
+    COUNCIL_BALLOT_LIMITS_BY_ROLE,
+    COUNCIL_MIN_VALID_BALLOTS,
     CANDIDATE_STATUS_VALUES,
     MAX_COUNCIL_TEXT_LEN,
     ELECTION_STATUS_VALUES,
@@ -9,8 +11,10 @@ from bot.domain.council_lifecycle import (
     build_term_launch_notification_targets,
     decide_manual_candidate_addition,
     decide_candidate_review_action,
+    decide_ballot_submission,
     decide_term_launch_confirmation,
     filter_confirmed_ballot_candidates,
+    is_election_valid_by_ballots,
     is_valid_lifecycle_status,
     validate_council_text_length,
 )
@@ -217,3 +221,76 @@ def test_manual_candidate_addition_accepts_and_returns_assignment_audit_payload(
     assert decision.assignment_log is not None
     assert decision.assignment_log["assigned_by_profile_id"] == "head-7"
     assert decision.assignment_log["election_role_code"] == "vice_council_member"
+
+
+def test_ballot_limits_by_role_are_stable():
+    assert COUNCIL_BALLOT_LIMITS_BY_ROLE == {
+        "vice_council_member": 1,
+        "council_member": 2,
+        "observer": 1,
+    }
+
+
+def test_ballot_submission_rejects_when_limit_exceeded():
+    decision = decide_ballot_submission(
+        election_id=15,
+        voter_profile_id="profile-101",
+        voter_role_code="council_member",
+        selected_candidate_ids=[11, 12, 13],
+    )
+    assert decision.accepted is False
+    assert decision.reason == "ballot_limit_exceeded"
+    assert decision.allowed_limit == 2
+
+
+def test_ballot_submission_uses_profile_id_and_blocks_cumulative_overflow():
+    decision = decide_ballot_submission(
+        election_id=16,
+        voter_profile_id="profile-shared-tg-discord",
+        voter_role_code="vice_council_member",
+        selected_candidate_ids=[21],
+        already_submitted_ballots_count=1,
+    )
+    assert decision.accepted is False
+    assert decision.reason == "ballot_limit_exceeded"
+    assert decision.allowed_limit == 1
+    assert decision.remaining_votes == 0
+
+
+def test_election_validity_requires_minimum_three_ballots():
+    assert COUNCIL_MIN_VALID_BALLOTS == 3
+    assert is_election_valid_by_ballots(2) is False
+    assert is_election_valid_by_ballots(3) is True
+
+
+def test_ballot_submission_rejects_invalid_candidate_ids_and_invalid_submitted_count():
+    invalid_ids = decide_ballot_submission(
+        election_id=17,
+        voter_profile_id="profile-501",
+        voter_role_code="observer",
+        selected_candidate_ids=[31, -1],
+    )
+    assert invalid_ids.accepted is False
+    assert invalid_ids.reason == "invalid_candidate_ids"
+
+    invalid_count = decide_ballot_submission(
+        election_id=18,
+        voter_profile_id="profile-502",
+        voter_role_code="observer",
+        selected_candidate_ids=[31],
+        already_submitted_ballots_count=-2,
+    )
+    assert invalid_count.accepted is False
+    assert invalid_count.reason == "invalid_already_submitted_ballots_count"
+
+
+def test_ballot_submission_success_reports_remaining_votes_for_ui():
+    accepted = decide_ballot_submission(
+        election_id=19,
+        voter_profile_id="profile-777",
+        voter_role_code="council_member",
+        selected_candidate_ids=[41],
+        already_submitted_ballots_count=0,
+    )
+    assert accepted.accepted is True
+    assert accepted.remaining_votes == 1
