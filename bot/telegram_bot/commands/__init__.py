@@ -14,6 +14,7 @@ from .modstatus import router as modstatus_router
 from .title import router as title_router
 from .shop import router as shop_router
 from .top import router as top_router
+from .proposal import router as proposal_router
 
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ def get_commands_router() -> Router:
     router.include_router(shop_router)
     router.include_router(top_router)
     router.include_router(fines_router)
+    router.include_router(proposal_router)
     router.include_router(ai_chat_router)
     _COMMANDS_ROUTER = router
     logger.info("telegram commands router initialized")
