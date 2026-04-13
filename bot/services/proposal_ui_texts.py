@@ -15,6 +15,25 @@ PROPOSAL_MENU_SECTIONS: tuple[str, ...] = (
     "Помощь",
 )
 
+ARCHIVE_PERIOD_LABELS: dict[str, str] = {
+    "30d": "30 дней",
+    "90d": "90 дней",
+    "365d": "1 год",
+    "all": "За всё время",
+}
+ARCHIVE_STATUS_LABELS: dict[str, str] = {
+    "all": "Все статусы",
+    "accepted": "Принято",
+    "rejected": "Отклонено",
+    "pending": "На рассмотрении",
+}
+ARCHIVE_TYPE_LABELS: dict[str, str] = {
+    "all": "Все типы",
+    "general": "Общие вопросы",
+    "election": "Выборы",
+    "other": "Другое",
+}
+
 PROPOSAL_HELP_STEPS: tuple[str, ...] = (
     "Нажмите «Подать предложение».",
     "Заполните заголовок и текст предложения.",
@@ -79,11 +98,22 @@ def build_status_parts(*, proposal_id: object, title: object, status_label: obje
 def render_archive_lines(rows: Iterable[dict[str, object]], *, text_limit: int) -> list[str]:
     lines: list[str] = []
     for row in rows:
+        final_comment = str(row.get("final_comment") or row.get("decision_text") or "Без комментария")[:text_limit]
         lines.append(
-            f"• #{row.get('id')} [{row.get('decision_code') or 'решение'}] {str(row.get('decision_text') or 'Без текста')[:text_limit]}"
+            f"• #{row.get('id')} [{row.get('decision_code') or 'решение'}]\n"
+            f"  Итоговый комментарий: {final_comment}"
         )
     return lines
 
 
 def render_archive_empty_text() -> str:
     return "📚 Архив пока пуст. Когда появятся решения, они будут доступны в этом разделе."
+
+
+def render_archive_filters_text(*, period_code: str, status_code: str, question_type_code: str) -> str:
+    return (
+        "Текущие фильтры:\n"
+        f"• Период: {ARCHIVE_PERIOD_LABELS.get(period_code, ARCHIVE_PERIOD_LABELS['90d'])}\n"
+        f"• Статус: {ARCHIVE_STATUS_LABELS.get(status_code, ARCHIVE_STATUS_LABELS['all'])}\n"
+        f"• Тип вопроса: {ARCHIVE_TYPE_LABELS.get(question_type_code, ARCHIVE_TYPE_LABELS['all'])}"
+    )

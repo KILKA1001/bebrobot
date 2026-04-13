@@ -16,7 +16,11 @@ from bot.commands.base import bot
 from bot.services.council_feedback_service import CouncilFeedbackService
 from bot.services.council_system_events_service import CouncilSystemEventsService
 from bot.services.proposal_ui_texts import (
+    ARCHIVE_PERIOD_LABELS,
+    ARCHIVE_STATUS_LABELS,
+    ARCHIVE_TYPE_LABELS,
     render_archive_empty_text,
+    render_archive_filters_text,
     render_archive_lines,
     render_confirmation_prompt,
     render_help_text,
@@ -115,6 +119,9 @@ class ProposalRootView(discord.ui.View):
         self.actor_id = actor_id
         self.pending_title: str = ""
         self.pending_text: str = ""
+        self.archive_period_code: str = "90d"
+        self.archive_status_code: str = "all"
+        self.archive_question_type_code: str = "all"
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.actor_id:
@@ -170,13 +177,37 @@ class ProposalRootView(discord.ui.View):
     @discord.ui.button(label="📚 Архив решений", style=discord.ButtonStyle.secondary)
     async def show_archive(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         try:
-            rows = CouncilFeedbackService.get_decisions_archive(limit=5)
+            rows = CouncilFeedbackService.get_decisions_archive(
+                limit=5,
+                period_code=self.archive_period_code,
+                status_code=self.archive_status_code,
+                question_type_code=self.archive_question_type_code,
+            )
             if not rows:
-                await interaction.response.send_message(render_archive_empty_text(), ephemeral=True)
+                await interaction.response.send_message(
+                    render_archive_empty_text() + "\n\n" + render_archive_filters_text(
+                        period_code=self.archive_period_code,
+                        status_code=self.archive_status_code,
+                        question_type_code=self.archive_question_type_code,
+                    ),
+                    view=ProposalArchiveFilterView(self),
+                    ephemeral=True,
+                )
                 return
             lines = render_archive_lines(rows, text_limit=160)
             await interaction.response.send_message(
-                embed=discord.Embed(title="📚 Архив решений", description="\n".join(lines), color=discord.Color.dark_teal()),
+                embed=discord.Embed(
+                    title="📚 Архив решений",
+                    description=render_archive_filters_text(
+                        period_code=self.archive_period_code,
+                        status_code=self.archive_status_code,
+                        question_type_code=self.archive_question_type_code,
+                    )
+                    + "\n\n"
+                    + "\n".join(lines),
+                    color=discord.Color.dark_teal(),
+                ),
+                view=ProposalArchiveFilterView(self),
                 ephemeral=True,
             )
         except Exception:
@@ -187,6 +218,81 @@ class ProposalRootView(discord.ui.View):
     async def show_help(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.send_message(render_help_text(), ephemeral=True)
 
+
+class ProposalArchiveFilterView(discord.ui.View):
+    def __init__(self, root_view: ProposalRootView):
+        super().__init__(timeout=600)
+        self.root_view = root_view
+        self._sync_labels()
+
+    def _sync_labels(self) -> None:
+        self.period_button.label = f"🗓 Период: {ARCHIVE_PERIOD_LABELS.get(self.root_view.archive_period_code, '90 дней')}"
+        self.status_button.label = f"📌 Статус: {ARCHIVE_STATUS_LABELS.get(self.root_view.archive_status_code, 'Все статусы')}"
+        self.type_button.label = f"🧩 Тип: {ARCHIVE_TYPE_LABELS.get(self.root_view.archive_question_type_code, 'Все типы')}"
+
+    async def _refresh_archive_message(self, interaction: discord.Interaction) -> None:
+        rows = CouncilFeedbackService.get_decisions_archive(
+            limit=5,
+            period_code=self.root_view.archive_period_code,
+            status_code=self.root_view.archive_status_code,
+            question_type_code=self.root_view.archive_question_type_code,
+        )
+        if not rows:
+            await interaction.response.edit_message(
+                content=render_archive_empty_text()
+                + "\n\n"
+                + render_archive_filters_text(
+                    period_code=self.root_view.archive_period_code,
+                    status_code=self.root_view.archive_status_code,
+                    question_type_code=self.root_view.archive_question_type_code,
+                ),
+                embed=None,
+                view=self,
+            )
+            return
+        lines = render_archive_lines(rows, text_limit=160)
+        await interaction.response.edit_message(
+            content=None,
+            embed=discord.Embed(
+                title="📚 Архив решений",
+                description=render_archive_filters_text(
+                    period_code=self.root_view.archive_period_code,
+                    status_code=self.root_view.archive_status_code,
+                    question_type_code=self.root_view.archive_question_type_code,
+                )
+                + "\n\n"
+                + "\n".join(lines),
+                color=discord.Color.dark_teal(),
+            ),
+            view=self,
+        )
+
+    @discord.ui.button(label="🗓 Период", style=discord.ButtonStyle.secondary)
+    async def period_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        chain = ["30d", "90d", "365d", "all"]
+        current = self.root_view.archive_period_code
+        next_index = (chain.index(current) + 1) % len(chain) if current in chain else 0
+        self.root_view.archive_period_code = chain[next_index]
+        self._sync_labels()
+        await self._refresh_archive_message(interaction)
+
+    @discord.ui.button(label="📌 Статус", style=discord.ButtonStyle.secondary)
+    async def status_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        chain = ["all", "accepted", "rejected", "pending"]
+        current = self.root_view.archive_status_code
+        next_index = (chain.index(current) + 1) % len(chain) if current in chain else 0
+        self.root_view.archive_status_code = chain[next_index]
+        self._sync_labels()
+        await self._refresh_archive_message(interaction)
+
+    @discord.ui.button(label="🧩 Тип", style=discord.ButtonStyle.secondary)
+    async def type_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        chain = ["all", "general", "election", "other"]
+        current = self.root_view.archive_question_type_code
+        next_index = (chain.index(current) + 1) % len(chain) if current in chain else 0
+        self.root_view.archive_question_type_code = chain[next_index]
+        self._sync_labels()
+        await self._refresh_archive_message(interaction)
 
 @bot.hybrid_command(name="proposal", description="Единое меню подачи предложений в Совет")
 async def proposal(ctx: commands.Context) -> None:
