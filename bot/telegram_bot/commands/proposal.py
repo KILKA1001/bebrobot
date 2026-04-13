@@ -105,7 +105,13 @@ async def proposal_command(message: Message) -> None:
             return
         _cleanup_pending(message.from_user.id)
         await message.answer(
-            "🗂 <b>Меню предложений</b>\n" + render_menu_overview(),
+            "🗂 <b>Меню предложений</b>\n"
+            + render_menu_overview()
+            + "\n\n"
+            + "📝 «Подать предложение» — начать новый вопрос для Совета.\n"
+            + "📍 «Статус» — проверить текущий этап по вашему последнему вопросу.\n"
+            + "📚 «Архив решений» — открыть уже завершённые решения Совета.\n"
+            + "❓ «Помощь» — посмотреть короткую пошаговую инструкцию.",
             reply_markup=_menu_keyboard(),
             parse_mode="HTML",
         )
@@ -170,7 +176,13 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
         if action == "menu":
             _cleanup_pending(actor_id)
             await callback.message.edit_text(
-                "🗂 <b>Меню предложений</b>\n" + render_menu_overview(),
+                "🗂 <b>Меню предложений</b>\n"
+                + render_menu_overview()
+                + "\n\n"
+                + "📝 «Подать предложение» — начать новый вопрос для Совета.\n"
+                + "📍 «Статус» — проверить текущий этап по вашему последнему вопросу.\n"
+                + "📚 «Архив решений» — открыть уже завершённые решения Совета.\n"
+                + "❓ «Помощь» — посмотреть короткую пошаговую инструкцию.",
                 reply_markup=_menu_keyboard(),
                 parse_mode="HTML",
             )
@@ -206,6 +218,11 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
                 proposal_text=pending.proposal_text,
             )
             if not result.get("ok"):
+                logger.error(
+                    "telegram proposal submit not ok actor_id=%s message=%s",
+                    actor_id,
+                    result.get("message"),
+                )
                 await callback.message.edit_text(str(result.get("message") or "Не удалось отправить предложение."))
                 await callback.answer()
                 return
@@ -239,7 +256,14 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
                     "📍 <b>Текущий статус</b>\n"
                     f"<b>{status_parts['proposal']}</b>\n"
                     f"{status_parts['status']}\n"
-                    f"<code>{status_parts['updated_at']}</code>"
+                    f"<code>{status_parts['updated_at']}</code>\n\n"
+                    f"{status_parts['next_step']}"
+                )
+            elif not payload.get("ok"):
+                logger.error(
+                    "telegram proposal status not ok actor_id=%s message=%s",
+                    actor_id,
+                    payload.get("message"),
                 )
             await callback.message.edit_text(text, parse_mode="HTML", reply_markup=_menu_keyboard())
             await callback.answer()

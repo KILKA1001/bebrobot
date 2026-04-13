@@ -35,11 +35,11 @@ ARCHIVE_TYPE_LABELS: dict[str, str] = {
 }
 
 PROPOSAL_HELP_STEPS: tuple[str, ...] = (
-    "Нажмите «Подать предложение».",
-    "Заполните заголовок и текст предложения.",
-    "Проверьте экран подтверждения.",
-    "Нажмите «Отправить».",
-    "Статус обработки смотрите кнопкой «Статус».",
+    "Нажмите «Подать предложение», чтобы открыть форму нового вопроса в Совет.",
+    "Заполните заголовок и текст: заголовок помогает быстро понять суть, а текст фиксирует детали для рассмотрения.",
+    "Проверьте экран подтверждения и, если нужно, нажмите «Изменить», чтобы исправить формулировку до отправки.",
+    "Нажмите «Отправить», чтобы передать вопрос в очередь Совета.",
+    "После отправки откройте «Статус», чтобы увидеть текущий этап, или «Архив решений», чтобы посмотреть предыдущие итоги.",
 )
 
 
@@ -48,12 +48,16 @@ def render_menu_overview() -> str:
     return (
         "В этом меню одна команда закрывает весь сценарий:\n"
         f"{sections}\n\n"
-        "Переходите кнопками ниже — дополнительные команды не нужны."
+        "Кнопки ниже ведут по шагам: сначала подайте вопрос, затем проверьте статус, после решения смотрите архив."
     )
 
 
 def render_confirmation_prompt() -> str:
-    return "Проверьте текст перед отправкой в Совет. Если нужно, нажмите «Изменить»."
+    return (
+        "Проверьте текст перед отправкой в Совет.\n"
+        "Если всё верно — нажмите «Отправить».\n"
+        "Если нужно уточнение — нажмите «Изменить», затем снова перейдите к подтверждению."
+    )
 
 
 def render_help_text() -> str:
@@ -67,7 +71,7 @@ def render_submit_success_text(*, proposal_id: object, status_label: object) -> 
     return (
         f"Номер: **#{proposal_id}**\n"
         f"Текущий статус: {status_label}\n\n"
-        "Что будет дальше: статус можно открыть кнопкой «Статус» в основном меню команды /proposal."
+        "Что будет дальше: откройте «Статус», чтобы следить за этапами, и вернитесь в «Архив решений», когда по вопросу появится итог."
     )
 
 
@@ -75,7 +79,7 @@ def build_submit_success_parts(*, proposal_id: object, status_label: object) -> 
     return {
         "proposal_number": f"Номер: #{proposal_id}",
         "status": f"Текущий статус: {status_label}",
-        "next_step": "Что будет дальше: статус можно открыть кнопкой «Статус» в основном меню команды /proposal.",
+        "next_step": "Что будет дальше: откройте «Статус», чтобы следить за этапами, и вернитесь в «Архив решений», когда по вопросу появится итог.",
     }
 
 
@@ -83,7 +87,8 @@ def render_status_text(*, proposal_id: object, title: object, status_label: obje
     return (
         f"Предложение: **#{proposal_id} — {title}**\n"
         f"Статус: {status_label}\n"
-        f"Последнее обновление: `{updated_at or '—'}`"
+        f"Последнее обновление: `{updated_at or '—'}`\n\n"
+        "Следующий шаг: если нужен итог по завершённым вопросам, откройте раздел «Архив решений»."
     )
 
 
@@ -92,6 +97,7 @@ def build_status_parts(*, proposal_id: object, title: object, status_label: obje
         "proposal": f"Предложение: #{proposal_id} — {title}",
         "status": f"Статус: {status_label}",
         "updated_at": f"Последнее обновление: {updated_at or '—'}",
+        "next_step": "Следующий шаг: если нужен итог по завершённым вопросам, откройте «Архив решений».",
     }
 
 
@@ -107,7 +113,7 @@ def render_archive_lines(rows: Iterable[dict[str, object]], *, text_limit: int) 
 
 
 def render_archive_empty_text() -> str:
-    return "📚 Архив пока пуст. Когда появятся решения, они будут доступны в этом разделе."
+    return "📚 Архив пока пуст. Когда появятся решения, они будут доступны в этом разделе. Пока можно проверить «Статус» по вашему текущему вопросу."
 
 
 def render_archive_filters_text(*, period_code: str, status_code: str, question_type_code: str) -> str:
@@ -115,5 +121,6 @@ def render_archive_filters_text(*, period_code: str, status_code: str, question_
         "Текущие фильтры:\n"
         f"• Период: {ARCHIVE_PERIOD_LABELS.get(period_code, ARCHIVE_PERIOD_LABELS['90d'])}\n"
         f"• Статус: {ARCHIVE_STATUS_LABELS.get(status_code, ARCHIVE_STATUS_LABELS['all'])}\n"
-        f"• Тип вопроса: {ARCHIVE_TYPE_LABELS.get(question_type_code, ARCHIVE_TYPE_LABELS['all'])}"
+        f"• Тип вопроса: {ARCHIVE_TYPE_LABELS.get(question_type_code, ARCHIVE_TYPE_LABELS['all'])}\n\n"
+        "Следующий шаг: при необходимости меняйте фильтры кнопками ниже, чтобы сузить список решений."
     )

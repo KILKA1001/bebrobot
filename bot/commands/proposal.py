@@ -132,7 +132,14 @@ class ProposalRootView(discord.ui.View):
     def build_root_embed(self) -> discord.Embed:
         return discord.Embed(
             title="🗂 Меню предложений",
-            description=render_menu_overview(),
+            description=(
+                render_menu_overview()
+                + "\n\n"
+                "📝 «Подать предложение» — начать новый вопрос для Совета.\n"
+                "📍 «Статус» — проверить текущий этап по вашему последнему вопросу.\n"
+                "📚 «Архив решений» — открыть уже завершённые решения Совета.\n"
+                "❓ «Помощь» — посмотреть короткую пошаговую инструкцию."
+            ),
             color=discord.Color.blurple(),
         )
 
@@ -152,6 +159,11 @@ class ProposalRootView(discord.ui.View):
         try:
             payload = CouncilFeedbackService.get_latest_status(provider="discord", provider_user_id=str(interaction.user.id))
             if not payload.get("ok"):
+                logger.error(
+                    "discord proposal status not ok actor_id=%s message=%s",
+                    getattr(interaction.user, "id", None),
+                    payload.get("message"),
+                )
                 await interaction.response.send_message(str(payload.get("message") or "Не удалось загрузить статус."), ephemeral=True)
                 return
             if not payload.get("has_data"):
