@@ -60,6 +60,14 @@ async def safe_send(destination, *args, delay: float | None = None, **kwargs):
         Optional delay override in seconds. If None, env defaults are used.
     """
     try:
+        if kwargs.get("view", None) is None and "view" in kwargs:
+            logger.debug(
+                "safe_send removed empty view before send operation_id=%s destination_type=%s",
+                _destination_operation_id(destination),
+                type(destination).__name__,
+            )
+            kwargs.pop("view")
+
         if isinstance(destination, commands.Context) and destination.interaction:
             delete_after = kwargs.pop("delete_after", None)
 
