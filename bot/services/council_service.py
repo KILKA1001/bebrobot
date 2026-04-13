@@ -51,6 +51,7 @@ from bot.domain.council_lifecycle import (
 )
 
 from bot.services.council_pause_service import CouncilPauseService
+from bot.services.role_management_service import RoleManagementService
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,81 @@ class CouncilService:
             head_club_profile_id=head_club_profile_id,
             main_vice_profile_id=main_vice_profile_id,
         )
+
+    def grant_project_roles_for_term_members(
+        self,
+        *,
+        term_members: list[dict[str, object]] | tuple[dict[str, object], ...],
+        observer_enabled: bool,
+        actor_provider: str = "system",
+        actor_user_id: str = "council_lifecycle",
+    ) -> dict[str, object]:
+        """Выдать проектные роли для сформированного состава созыва через существующий role-management механизм."""
+
+        role_mapping: dict[str, tuple[str, int]] = {
+            "vice_council": ("Вице Советчанин", 1),
+            "vice_council_member": ("Вице Советчанин", 1),
+            "council_member": ("Советчанин", 2),
+            "observer": ("Наблюдатель", 1 if observer_enabled else 0),
+        }
+        selected_by_role: dict[str, list[str]] = {role_code: [] for role_code in role_mapping}
+
+        for row in term_members:
+            role_code = str((row or {}).get("role_code") or "").strip().lower()
+            profile_id = str((row or {}).get("profile_id") or "").strip()
+            is_active = bool((row or {}).get("is_active", True))
+            if not role_code or not profile_id or not is_active:
+                continue
+            mapping = role_mapping.get(role_code)
+            if not mapping:
+                continue
+            _, limit = mapping
+            if limit <= 0:
+                continue
+            if profile_id in selected_by_role[role_code]:
+                continue
+            if len(selected_by_role[role_code]) >= limit:
+                continue
+            selected_by_role[role_code].append(profile_id)
+
+        attempts = 0
+        assigned = 0
+        failed = 0
+        for role_code, (project_role_name, _) in role_mapping.items():
+            for account_id in selected_by_role[role_code]:
+                attempts += 1
+                result = RoleManagementService.assign_user_role_by_account(
+                    account_id,
+                    project_role_name,
+                    actor_provider=actor_provider,
+                    actor_user_id=actor_user_id,
+                    source="council_term_formation",
+                )
+                if result.get("ok"):
+                    assigned += 1
+                    logger.info(
+                        "council term formation role grant success account_id=%s role_code=%s project_role=%s",
+                        account_id,
+                        role_code,
+                        project_role_name,
+                    )
+                    continue
+                failed += 1
+                logger.error(
+                    "council term formation role grant failed account_id=%s role_code=%s project_role=%s reason=%s message=%s",
+                    account_id,
+                    role_code,
+                    project_role_name,
+                    result.get("reason"),
+                    result.get("message"),
+                )
+
+        return {
+            "ok": failed == 0,
+            "attempts": attempts,
+            "assigned": assigned,
+            "failed": failed,
+        }
 
     def build_election_invite_segments(self) -> tuple[CouncilInviteSegment, ...]:
         return build_election_invite_segments()

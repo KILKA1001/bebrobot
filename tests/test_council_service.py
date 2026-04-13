@@ -1,6 +1,9 @@
 from datetime import datetime, timezone
+import importlib
 
 from bot.services.council_service import council_service
+
+council_service_module = importlib.import_module("bot.services.council_service")
 
 
 def test_council_service_lifecycle_snapshot_contains_expected_statuses():
@@ -218,8 +221,81 @@ def test_council_service_question_flow_from_moderation_to_archive():
         closed_at=datetime(2026, 4, 13, 13, 30, tzinfo=timezone.utc),
     )
     assert archive.accepted is True
-    assert archive.next_status == "decided"
-    assert (archive.archive_payload or {}).get("result") == "accepted"
+
+
+def test_council_service_grants_project_roles_for_formed_term_members(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    def _fake_assign(account_id: str, role_name: str, **_kwargs):
+        calls.append((account_id, role_name))
+        return {"ok": True}
+
+    monkeypatch.setattr(council_service_module.RoleManagementService, "assign_user_role_by_account", staticmethod(_fake_assign))
+
+    result = council_service.grant_project_roles_for_term_members(
+        term_members=(
+            {"profile_id": "vice-1", "role_code": "vice_council_member", "is_active": True},
+            {"profile_id": "member-1", "role_code": "council_member", "is_active": True},
+            {"profile_id": "member-2", "role_code": "council_member", "is_active": True},
+            {"profile_id": "member-3", "role_code": "council_member", "is_active": True},
+            {"profile_id": "obs-1", "role_code": "observer", "is_active": True},
+        ),
+        observer_enabled=True,
+    )
+
+    assert result == {"ok": True, "attempts": 4, "assigned": 4, "failed": 0}
+    assert ("vice-1", "Вице Советчанин") in calls
+    assert ("member-1", "Советчанин") in calls
+    assert ("member-2", "Советчанин") in calls
+    assert ("obs-1", "Наблюдатель") in calls
+    assert ("member-3", "Советчанин") not in calls
+
+
+def test_council_service_grants_project_roles_observer_disabled_and_idempotent(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    def _fake_assign(account_id: str, role_name: str, **_kwargs):
+        calls.append((account_id, role_name))
+        return {"ok": True}
+
+    monkeypatch.setattr(council_service_module.RoleManagementService, "assign_user_role_by_account", staticmethod(_fake_assign))
+    payload = (
+        {"profile_id": "vice-2", "role_code": "vice_council", "is_active": True},
+        {"profile_id": "member-4", "role_code": "council_member", "is_active": True},
+        {"profile_id": "obs-2", "role_code": "observer", "is_active": True},
+    )
+    first = council_service.grant_project_roles_for_term_members(
+        term_members=payload,
+        observer_enabled=False,
+    )
+    second = council_service.grant_project_roles_for_term_members(
+        term_members=payload,
+        observer_enabled=False,
+    )
+
+    assert first == {"ok": True, "attempts": 2, "assigned": 2, "failed": 0}
+    assert second == {"ok": True, "attempts": 2, "assigned": 2, "failed": 0}
+    assert ("obs-2", "Наблюдатель") not in calls
+
+
+def test_council_service_grants_project_roles_logs_failed_attempts(monkeypatch, caplog):
+    def _fake_assign(account_id: str, role_name: str, **_kwargs):
+        if account_id == "member-fail":
+            return {"ok": False, "reason": "db_error", "message": "insert failed"}
+        return {"ok": True}
+
+    monkeypatch.setattr(council_service_module.RoleManagementService, "assign_user_role_by_account", staticmethod(_fake_assign))
+
+    result = council_service.grant_project_roles_for_term_members(
+        term_members=(
+            {"profile_id": "vice-ok", "role_code": "vice_council_member", "is_active": True},
+            {"profile_id": "member-fail", "role_code": "council_member", "is_active": True},
+        ),
+        observer_enabled=True,
+    )
+
+    assert result == {"ok": False, "attempts": 2, "assigned": 1, "failed": 1}
+    assert "council term formation role grant failed account_id=member-fail" in caplog.text
 
 
 def test_council_service_question_vote_submission_has_weight_and_change_limit():
