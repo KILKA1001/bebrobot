@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,202 @@ COUNCIL_BALLOT_LIMITS_BY_ROLE: dict[str, int] = {
     COUNCIL_ROLE_COUNCIL_MEMBER: 2,
     COUNCIL_ROLE_OBSERVER: 1,
 }
+
+COUNCIL_RUNOFF_EXTENSION_DAYS = 1
+COUNCIL_SEATS_BY_ROLE: dict[str, int] = {
+    COUNCIL_ROLE_VICE_COUNCIL_MEMBER: 1,
+    COUNCIL_ROLE_COUNCIL_MEMBER: 2,
+    COUNCIL_ROLE_OBSERVER: 1,
+}
+COUNCIL_RUNOFF_ENABLED_ROLES: tuple[str, ...] = (
+    COUNCIL_ROLE_VICE_COUNCIL_MEMBER,
+    COUNCIL_ROLE_COUNCIL_MEMBER,
+)
+
+
+@dataclass(frozen=True)
+class ElectionRoundResolution:
+    accepted: bool
+    decision: str
+    reason: str | None = None
+    next_round_number: int | None = None
+    voting_ends_at: datetime | None = None
+    winner_candidate_ids: tuple[int, ...] = ()
+    runoff_candidate_ids: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class ElectionSchedulerAction:
+    election_id: int
+    action: str
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ElectionStatusPublication:
+    action: str
+    title: str
+    body: str
+
+
+def _normalize_candidate_votes(
+    candidate_votes: list[dict[str, object]] | tuple[dict[str, object], ...],
+) -> list[tuple[int, int]]:
+    normalized: list[tuple[int, int]] = []
+    for row in candidate_votes:
+        cid = row.get("candidate_id")
+        votes = row.get("votes")
+        if not isinstance(cid, int) or cid <= 0:
+            logger.error("Council election runoff resolver skipped invalid candidate id row=%s", row)
+            continue
+        try:
+            votes_value = int(votes or 0)
+        except Exception:
+            logger.error("Council election runoff resolver skipped invalid vote count candidate_id=%s votes=%s", cid, votes)
+            continue
+        normalized.append((cid, max(0, votes_value)))
+    return normalized
+
+
+def resolve_election_round_on_deadline(
+    *,
+    election_id: int | None,
+    election_role_code: str,
+    current_round_number: int,
+    voting_ends_at: datetime | None,
+    candidate_votes: list[dict[str, object]] | tuple[dict[str, object], ...],
+    now: datetime | None = None,
+) -> ElectionRoundResolution:
+    if not isinstance(election_id, int) or election_id <= 0:
+        logger.error("Council election deadline resolver rejected invalid election_id=%s", election_id)
+        return ElectionRoundResolution(accepted=False, decision="reject", reason="invalid_election_id")
+
+    role_code = (election_role_code or "").strip().lower()
+    seats = COUNCIL_SEATS_BY_ROLE.get(role_code)
+    if seats is None:
+        logger.error(
+            "Council election deadline resolver rejected unsupported role election_id=%s role_code=%s",
+            election_id,
+            role_code,
+        )
+        return ElectionRoundResolution(accepted=False, decision="reject", reason="unsupported_role")
+
+    if current_round_number <= 0:
+        logger.error(
+            "Council election deadline resolver rejected invalid round election_id=%s round=%s",
+            election_id,
+            current_round_number,
+        )
+        return ElectionRoundResolution(accepted=False, decision="reject", reason="invalid_round_number")
+
+    normalized = _normalize_candidate_votes(candidate_votes)
+    if not normalized:
+        logger.error("Council election deadline resolver rejected empty votes election_id=%s", election_id)
+        return ElectionRoundResolution(accepted=False, decision="reject", reason="empty_candidate_votes")
+
+    ranking = sorted(normalized, key=lambda item: (-item[1], item[0]))
+    winner_pool = ranking[:seats]
+    winners = tuple(candidate_id for candidate_id, _ in winner_pool)
+
+    if role_code not in COUNCIL_RUNOFF_ENABLED_ROLES:
+        return ElectionRoundResolution(
+            accepted=True,
+            decision="finalize",
+            winner_candidate_ids=winners,
+        )
+
+    cutoff_votes = winner_pool[-1][1]
+    tied_at_cutoff = [candidate_id for candidate_id, votes in ranking if votes == cutoff_votes]
+    if len(tied_at_cutoff) <= 1:
+        return ElectionRoundResolution(
+            accepted=True,
+            decision="finalize",
+            winner_candidate_ids=winners,
+        )
+
+    base_dt = voting_ends_at if isinstance(voting_ends_at, datetime) else (now or datetime.now(timezone.utc))
+    next_end = base_dt + timedelta(days=COUNCIL_RUNOFF_EXTENSION_DAYS)
+    runoff_ids = tuple(sorted(dict.fromkeys(tied_at_cutoff)))
+
+    logger.info(
+        "Council election tie detected; scheduling runoff election_id=%s role_code=%s current_round=%s runoff_ids=%s",
+        election_id,
+        role_code,
+        current_round_number,
+        runoff_ids,
+    )
+    return ElectionRoundResolution(
+        accepted=True,
+        decision="runoff",
+        next_round_number=current_round_number + 1,
+        voting_ends_at=next_end,
+        runoff_candidate_ids=runoff_ids,
+    )
+
+
+def plan_election_deadline_jobs(
+    elections: list[dict[str, object]] | tuple[dict[str, object], ...],
+    *,
+    now: datetime | None = None,
+) -> tuple[ElectionSchedulerAction, ...]:
+    current = now or datetime.now(timezone.utc)
+    actions: list[ElectionSchedulerAction] = []
+    for row in elections:
+        election_id = row.get("id")
+        status = str(row.get("status") or "").strip().lower()
+        ends_at = row.get("voting_ends_at")
+        if status != ELECTION_STATUS_VOTING:
+            continue
+        if not isinstance(election_id, int) or election_id <= 0:
+            logger.error("Council scheduler skipped invalid election row=%s", row)
+            continue
+        if not isinstance(ends_at, datetime):
+            logger.error("Council scheduler skipped election without datetime end election_id=%s", election_id)
+            continue
+        if ends_at <= current:
+            actions.append(ElectionSchedulerAction(election_id=election_id, action="close_and_resolve_tie"))
+    return tuple(actions)
+
+
+def build_election_status_publication(
+    *,
+    action: str,
+    role_name: str,
+    round_number: int,
+    winner_mentions: tuple[str, ...] = (),
+) -> ElectionStatusPublication:
+    cleaned_action = (action or "").strip().lower()
+    role = (role_name or "Совет").strip()
+
+    if cleaned_action == "start":
+        return ElectionStatusPublication(
+            action="start",
+            title=f"Старт голосования: {role}",
+            body=f"Раунд {round_number} открыт. Можно голосовать до завершения таймера.",
+        )
+    if cleaned_action == "runoff":
+        return ElectionStatusPublication(
+            action="runoff",
+            title=f"Переход ко 2 туру: {role}",
+            body=(
+                "По итогам раунда зафиксирована ничья. "
+                f"Запущен раунд {round_number} и срок голосования продлён на +1 день."
+            ),
+        )
+    if cleaned_action == "final":
+        winners = ", ".join(winner_mentions) if winner_mentions else "Победители определены"
+        return ElectionStatusPublication(
+            action="final",
+            title=f"Итоги голосования: {role}",
+            body=f"Раунд {round_number} завершён. {winners}.",
+        )
+
+    logger.error("Council publication builder got unsupported action=%s role=%s", action, role)
+    return ElectionStatusPublication(
+        action="unknown",
+        title=f"Обновление голосования: {role}",
+        body="Статус голосования обновлён.",
+    )
 
 
 @dataclass(frozen=True)

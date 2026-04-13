@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 
 from bot.domain.council_lifecycle import (
     COUNCIL_MIN_VALID_BALLOTS,
     CANDIDATE_STATUS_VALUES,
+    ElectionRoundResolution,
+    ElectionSchedulerAction,
+    ElectionStatusPublication,
     ELECTION_STATUS_VALUES,
     QUESTION_STATUS_VALUES,
     TERM_STATUS_VALUES,
@@ -16,6 +20,7 @@ from bot.domain.council_lifecycle import (
     ManualCandidateAddDecision,
     build_election_invite_segments,
     decide_ballot_submission,
+    build_election_status_publication,
     build_term_launch_notification_targets,
     decide_manual_candidate_addition,
     decide_candidate_review_action,
@@ -23,6 +28,8 @@ from bot.domain.council_lifecycle import (
     filter_confirmed_ballot_candidates,
     get_ballot_limit_for_role,
     is_election_valid_by_ballots,
+    plan_election_deadline_jobs,
+    resolve_election_round_on_deadline,
     validate_council_text_length,
 )
 
@@ -166,6 +173,44 @@ class CouncilService:
 
     def is_election_valid_by_ballots(self, *, total_ballots_count: int, min_valid_ballots: int = COUNCIL_MIN_VALID_BALLOTS) -> bool:
         return is_election_valid_by_ballots(total_ballots_count, min_valid_ballots=min_valid_ballots)
+
+    def resolve_election_round_on_deadline(
+        self,
+        *,
+        election_id: int | None,
+        election_role_code: str,
+        current_round_number: int,
+        voting_ends_at: datetime | None,
+        candidate_votes: list[dict[str, object]] | tuple[dict[str, object], ...],
+    ) -> ElectionRoundResolution:
+        return resolve_election_round_on_deadline(
+            election_id=election_id,
+            election_role_code=election_role_code,
+            current_round_number=current_round_number,
+            voting_ends_at=voting_ends_at,
+            candidate_votes=candidate_votes,
+        )
+
+    def plan_election_deadline_jobs(
+        self,
+        elections: list[dict[str, object]] | tuple[dict[str, object], ...],
+    ) -> tuple[ElectionSchedulerAction, ...]:
+        return plan_election_deadline_jobs(elections)
+
+    def build_election_status_publication(
+        self,
+        *,
+        action: str,
+        role_name: str,
+        round_number: int,
+        winner_mentions: tuple[str, ...] = (),
+    ) -> ElectionStatusPublication:
+        return build_election_status_publication(
+            action=action,
+            role_name=role_name,
+            round_number=round_number,
+            winner_mentions=winner_mentions,
+        )
 
 
 council_service = CouncilService()

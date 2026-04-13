@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from bot.services.council_service import council_service
 
 
@@ -136,3 +138,34 @@ def test_council_service_ballot_submission_success_exposes_ui_details():
     assert accepted.accepted is True
     assert accepted.remaining_votes == 1
     assert "Осталось голосов" in (accepted.user_message or "")
+
+
+def test_council_service_supports_tie_resolution_scheduler_and_publication():
+    resolution = council_service.resolve_election_round_on_deadline(
+        election_id=99,
+        election_role_code="vice_council_member",
+        current_round_number=1,
+        voting_ends_at=datetime(2026, 4, 13, 10, 0, tzinfo=timezone.utc),
+        candidate_votes=(
+            {"candidate_id": 1, "votes": 4},
+            {"candidate_id": 2, "votes": 4},
+        ),
+    )
+    assert resolution.accepted is True
+    assert resolution.decision == "runoff"
+    assert resolution.next_round_number == 2
+
+    jobs = council_service.plan_election_deadline_jobs(
+        (
+            {"id": 99, "status": "voting", "voting_ends_at": datetime(2026, 4, 13, 9, 0, tzinfo=timezone.utc)},
+        )
+    )
+    assert jobs[0].action == "close_and_resolve_tie"
+
+    publication = council_service.build_election_status_publication(
+        action="runoff",
+        role_name="Советчане",
+        round_number=2,
+    )
+    assert publication.action == "runoff"
+    assert "+1 день" in publication.body
