@@ -47,6 +47,8 @@ from bot.domain.council_lifecycle import (
     validate_council_text_length,
 )
 
+from bot.services.council_pause_service import CouncilPauseService
+
 logger = logging.getLogger(__name__)
 
 
@@ -298,7 +300,21 @@ class CouncilService:
         current_status: str,
         actor_profile_id: str,
         started_at: datetime | None = None,
+        source_platform: str = "system",
     ) -> QuestionVotingTransitionDecision:
+        pause_state = CouncilPauseService.sync_pause_state(platform=source_platform, user_id=actor_profile_id)
+        if pause_state.get("paused"):
+            logger.warning(
+                "CouncilService blocked question voting start by pause question_id=%s actor_profile_id=%s reason=%s",
+                question_id,
+                actor_profile_id,
+                pause_state.get("reason"),
+            )
+            return QuestionVotingTransitionDecision(
+                accepted=False,
+                next_status=None,
+                reason="council_paused",
+            )
         return decide_question_start_voting(
             question_id=question_id,
             current_status=current_status,
@@ -355,6 +371,10 @@ class CouncilService:
             source_platform=source_platform,
             existing_vote_platform=existing_vote_platform,
         )
+
+
+    def get_pause_status(self, *, source_platform: str = "system", actor_profile_id: str | None = None) -> dict[str, object]:
+        return CouncilPauseService.sync_pause_state(platform=source_platform, user_id=actor_profile_id)
 
 
 council_service = CouncilService()

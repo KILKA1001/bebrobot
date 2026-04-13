@@ -15,6 +15,7 @@ from flask import Blueprint, Flask, jsonify, render_template_string, request
 
 from bot.data import db
 from bot.services.accounts_service import AccountsService
+from bot.services.council_pause_service import CouncilPauseService
 from bot.services.auth.role_resolver import RoleResolver
 from bot.services.authority_service import AuthorityService
 from bot.services.role_management_service import RoleManagementService
@@ -272,6 +273,32 @@ def admin_user_custom_roles(provider: str, provider_user_id: str):
 
     payload = _build_user_payload(account_id)
     return jsonify({"ok": True, "account_id": account_id, "action": action, "custom_roles": payload["custom_roles"]})
+
+
+@admin_api_bp.get("/admin/api/council/pause")
+def admin_council_pause_status():
+    status = CouncilPauseService.get_pause_status_for_admin()
+    return jsonify({"ok": True, **status})
+
+
+@admin_api_bp.get("/admin/council/pause")
+def admin_council_pause_view():
+    status = CouncilPauseService.get_pause_status_for_admin()
+    return render_template_string(
+        """
+        <h1>Статус паузы Совета</h1>
+        <section>
+          <p><b>Пауза:</b> {{ 'Включена' if paused else 'Выключена' }}</p>
+          <p><b>Причина:</b> {{ reason or '—' }}</p>
+          <p><b>Время включения:</b> {{ paused_at or '—' }}</p>
+          <p>{{ message }}</p>
+        </section>
+        """,
+        paused=bool(status.get("paused")),
+        reason=status.get("reason"),
+        paused_at=status.get("paused_at"),
+        message=status.get("message"),
+    )
 
 
 @admin_api_bp.get("/admin/users/<provider>/<provider_user_id>/roles")

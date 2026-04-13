@@ -301,3 +301,25 @@ def test_council_service_supports_member_dropout_replacement_and_quorum_snapshot
     assert snapshot.quorum_min_votes == 2
     assert snapshot.has_quorum is True
     assert snapshot.has_unreplaced_dropout is True
+
+
+def test_council_service_blocks_question_voting_start_when_pause_enabled(monkeypatch):
+    import importlib
+
+    council_service_module = importlib.import_module("bot.services.council_service")
+
+    monkeypatch.setattr(
+        council_service_module.CouncilPauseService,
+        "sync_pause_state",
+        staticmethod(lambda **_kwargs: {"paused": True, "reason": "term_ended_without_launch_confirmation"}),
+    )
+
+    blocked = council_service.decide_question_start_voting(
+        question_id=900,
+        current_status="discussion",
+        actor_profile_id="mod-900",
+        source_platform="telegram",
+    )
+
+    assert blocked.accepted is False
+    assert blocked.reason == "council_paused"

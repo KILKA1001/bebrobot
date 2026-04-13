@@ -11,12 +11,14 @@ from datetime import datetime, timedelta, timezone
 
 from bot.data import db
 from bot.services.accounts_service import AccountsService
+from bot.services.council_pause_service import CouncilPauseService
 
 logger = logging.getLogger(__name__)
 
 
 class CouncilFeedbackService:
     STATUS_LABELS: dict[str, str] = {
+        "awaiting_term_launch": "⏳ Ожидает запуска созыва",
         "draft": "🕓 На первичной проверке",
         "discussion": "💬 Обсуждение",
         "voting": "🗳 Голосование",
@@ -56,6 +58,27 @@ class CouncilFeedbackService:
             logger.exception("council feedback failed to load active term")
         return None
 
+
+    @staticmethod
+    def _get_latest_term_id() -> int | None:
+        if not db.supabase:
+            return None
+        try:
+            response = (
+                db.supabase.table("council_terms")
+                .select("id")
+                .order("ends_at", desc=True)
+                .order("id", desc=True)
+                .limit(1)
+                .execute()
+            )
+            rows = response.data or []
+            if rows:
+                return int(rows[0]["id"])
+        except Exception:
+            logger.exception("council feedback failed to load latest term")
+        return None
+
     @staticmethod
     def submit_proposal(*, provider: str, provider_user_id: str, title: str, proposal_text: str) -> dict[str, object]:
         normalized_title = str(title or "").strip()
@@ -80,13 +103,19 @@ class CouncilFeedbackService:
         if not db.supabase:
             return {"ok": False, "error": "db_unavailable", "message": "База данных недоступна. Повторите попытку позже."}
 
+        pause_state = CouncilPauseService.sync_pause_state(platform=provider, user_id=str(provider_user_id))
         term_id = CouncilFeedbackService._get_active_term_id()
+        queued_by_pause = False
         if term_id is None:
-            return {
-                "ok": False,
-                "error": "term_not_active",
-                "message": "Сейчас нет активного созыва Совета. Отправка предложения временно недоступна.",
-            }
+            if pause_state.get("paused"):
+                term_id = CouncilFeedbackService._get_latest_term_id()
+                queued_by_pause = term_id is not None
+            if term_id is None:
+                return {
+                    "ok": False,
+                    "error": "term_not_active",
+                    "message": "Сейчас нет активного созыва Совета. Отправка предложения временно недоступна.",
+                }
 
         try:
             now_iso = datetime.now(timezone.utc).isoformat()
@@ -115,11 +144,12 @@ class CouncilFeedbackService:
                 term_id,
                 row.get("id"),
             )
+            status_code = "awaiting_term_launch" if queued_by_pause else str(row.get("status") or "draft")
             return {
                 "ok": True,
                 "proposal_id": row.get("id"),
-                "status": str(row.get("status") or "draft"),
-                "status_label": CouncilFeedbackService.render_status_label(str(row.get("status") or "draft")),
+                "status": status_code,
+                "status_label": CouncilFeedbackService.render_status_label(status_code),
             }
         except Exception:
             logger.exception(
@@ -163,13 +193,18 @@ class CouncilFeedbackService:
                     "message": "У вас пока нет предложений. Нажмите «Подать предложение», чтобы отправить первое.",
                 }
             row = rows[0]
+            status_code = str(row.get("status") or "draft")
+            if status_code == "draft":
+                pause_state = CouncilPauseService.sync_pause_state(platform=provider, user_id=str(provider_user_id))
+                if pause_state.get("paused"):
+                    status_code = "awaiting_term_launch"
             return {
                 "ok": True,
                 "has_data": True,
                 "proposal_id": row.get("id"),
                 "title": str(row.get("title") or "Без заголовка"),
-                "status": str(row.get("status") or "draft"),
-                "status_label": CouncilFeedbackService.render_status_label(str(row.get("status") or "draft")),
+                "status": status_code,
+                "status_label": CouncilFeedbackService.render_status_label(status_code),
                 "created_at": str(row.get("created_at") or ""),
                 "updated_at": str(row.get("updated_at") or ""),
             }
