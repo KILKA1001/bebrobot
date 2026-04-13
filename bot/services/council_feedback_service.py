@@ -17,7 +17,10 @@ from bot.services.council_pause_service import CouncilPauseService
 logger = logging.getLogger(__name__)
 
 _DECISION_ENTITY_TYPE = "council_decision"
-_FINAL_DECISION_FORBIDDEN_MESSAGE = "❌ Это действие доступно только суперадмину."
+_FINAL_DECISION_FORBIDDEN_MESSAGE = (
+    "❌ Недостаточно прав. Это действие доступно только суперадмину. "
+    "Если нужно, попросите суперадмина выполнить его."
+)
 
 
 class CouncilFeedbackService:
@@ -128,7 +131,13 @@ class CouncilFeedbackService:
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
             ).eq("id", int(decision_id)).execute()
-            return {"ok": True, "message": "✅ Итог обновлён."}
+            return {
+                "ok": True,
+                "message": (
+                    "✅ Данные обновлены в текущем сообщении. Итог решения сохранён. "
+                    "Если нужно, вы можете сразу внести ещё одно изменение."
+                ),
+            }
         except Exception:
             logger.exception(
                 "council edit final decision failed provider=%s actor_user_id=%s decision_id=%s",

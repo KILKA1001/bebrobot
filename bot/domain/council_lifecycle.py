@@ -1070,7 +1070,10 @@ def resolve_candidate_invite_deadline(
         next_status=CANDIDATE_STATUS_EXPIRED,
         reason="invite_expired_without_confirmation",
         notify_candidate=True,
-        notification_text="Срок приглашения завершён. Вы не были включены в бюллетень.",
+        notification_text=(
+            "Срок приглашения истёк, поэтому вы не включены в бюллетень. "
+            "Вы можете дождаться следующего приглашения или обратиться к организатору выборов."
+        ),
         status_transition_log=transition_log,
     )
 

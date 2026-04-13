@@ -187,3 +187,38 @@ def test_delete_final_decision_allows_superadmin_and_deletes_row(monkeypatch):
     assert audit_rows
     assert audit_rows[0]["status"] == "allowed"
     assert audit_rows[0]["details"]["reason"] == "superadmin"
+
+
+def test_edit_final_decision_success_message_contains_now_and_next(monkeypatch):
+    class _DecisionsTable:
+        def update(self, _payload: dict[str, object]):
+            return self
+
+        def eq(self, _field: str, _value: int):
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=[{"id": 5}])
+
+    class _Supabase:
+        def table(self, name: str):
+            if name == "council_decisions":
+                return _DecisionsTable()
+            if name == "council_audit_log":
+                return SimpleNamespace(insert=lambda _payload: SimpleNamespace(execute=lambda: SimpleNamespace(data=[{"ok": True}])))
+            raise AssertionError(name)
+
+    monkeypatch.setattr("bot.services.council_feedback_service.db.supabase", _Supabase())
+    monkeypatch.setattr("bot.services.council_feedback_service.AuthorityService.is_super_admin", staticmethod(lambda *_args: True))
+
+    result = CouncilFeedbackService.edit_final_decision(
+        provider="discord",
+        actor_user_id="42",
+        decision_id=5,
+        decision_text="Обновлённый итог",
+    )
+
+    assert result["ok"] is True
+    assert "Данные обновлены в текущем сообщении" in result["message"]
+    assert "Итог решения сохранён" in result["message"]
+    assert "можете сразу внести ещё одно изменение" in result["message"]

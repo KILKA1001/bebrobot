@@ -8,6 +8,13 @@ from __future__ import annotations
 
 from typing import Iterable
 
+_STATE_NOW_NEXT: dict[str, tuple[str, str]] = {
+    "Ожидает запуска созыва": (
+        "Созыв Совета ещё не запущен, поэтому вопрос временно находится в очереди.",
+        "Проверьте раздел «Статус» позже: после запуска созыва вопрос автоматически перейдёт к следующему этапу.",
+    ),
+}
+
 PROPOSAL_MENU_SECTIONS: tuple[str, ...] = (
     "Подать предложение",
     "Статус",
@@ -84,21 +91,30 @@ def build_submit_success_parts(*, proposal_id: object, status_label: object) -> 
 
 
 def render_status_text(*, proposal_id: object, title: object, status_label: object, updated_at: object) -> str:
+    status_line = _render_state_now_next(str(status_label or ""))
     return (
         f"Предложение: **#{proposal_id} — {title}**\n"
         f"Статус: {status_label}\n"
         f"Последнее обновление: `{updated_at or '—'}`\n\n"
-        "Следующий шаг: если нужен итог по завершённым вопросам, откройте раздел «Архив решений»."
+        + status_line
     )
 
 
 def build_status_parts(*, proposal_id: object, title: object, status_label: object, updated_at: object) -> dict[str, str]:
+    status_line = _render_state_now_next(str(status_label or ""))
     return {
         "proposal": f"Предложение: #{proposal_id} — {title}",
         "status": f"Статус: {status_label}",
         "updated_at": f"Последнее обновление: {updated_at or '—'}",
-        "next_step": "Следующий шаг: если нужен итог по завершённым вопросам, откройте «Архив решений».",
+        "next_step": status_line,
     }
+
+
+def _render_state_now_next(status_label: str) -> str:
+    for key, (what_now, what_next) in _STATE_NOW_NEXT.items():
+        if key in status_label:
+            return f"{what_now} {what_next}"
+    return "Если нужен итог по завершённым вопросам, откройте «Архив решений»."
 
 
 def render_archive_lines(rows: Iterable[dict[str, object]], *, text_limit: int) -> list[str]:
