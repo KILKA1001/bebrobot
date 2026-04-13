@@ -43,6 +43,9 @@ class AccountsService:
     _account_id_cache: dict[tuple[str, str], tuple[float, str | None]] = {}
     _title_roles_cache: dict[int, str] | None = None
     _account_identities_account_id_required_cache: bool | None = None
+    ACCOUNT_IDENTITIES_ACCOUNT_ID_REQUIRED = str(
+        os.getenv("ACCOUNT_IDENTITIES_ACCOUNT_ID_REQUIRED", "")
+    ).strip().lower()
     MAX_VISIBLE_PROFILE_ROLES = 3
     ACCOUNT_ID_CACHE_TTL_SEC = int(os.getenv("ACCOUNT_ID_CACHE_TTL_SEC", "300"))
     FALLBACK_CHAT_MEMBER_TITLE = "участник чата"
@@ -882,33 +885,21 @@ class AccountsService:
         cached = AccountsService._account_identities_account_id_required_cache
         if cached is not None:
             return bool(cached)
-        if not db.supabase:
+
+        flag = AccountsService.ACCOUNT_IDENTITIES_ACCOUNT_ID_REQUIRED
+        if flag in {"1", "true", "yes", "on"}:
+            AccountsService._account_identities_account_id_required_cache = True
+            logger.info(
+                "account_identities account_id requirement loaded from config is_required=true config=ACCOUNT_IDENTITIES_ACCOUNT_ID_REQUIRED"
+            )
+            return True
+        if flag in {"0", "false", "no", "off"}:
+            AccountsService._account_identities_account_id_required_cache = False
+            logger.info(
+                "account_identities account_id requirement loaded from config is_required=false config=ACCOUNT_IDENTITIES_ACCOUNT_ID_REQUIRED"
+            )
             return False
-        try:
-            rows = (
-                db.supabase.table("information_schema.columns")
-                .select("is_nullable")
-                .eq("table_schema", "public")
-                .eq("table_name", "account_identities")
-                .eq("column_name", "account_id")
-                .limit(1)
-                .execute()
-                .data
-                or []
-            )
-            if rows:
-                required = str(rows[0].get("is_nullable") or "").strip().upper() == "NO"
-                AccountsService._account_identities_account_id_required_cache = required
-                logger.info(
-                    "account_identities account_id nullability checked is_required=%s source=information_schema.columns",
-                    required,
-                )
-                return required
-        except Exception as error:
-            logger.warning(
-                "account_identities account_id nullability check failed error=%s",
-                AccountsService._format_db_error(error),
-            )
+
         return False
 
     @staticmethod
