@@ -44,8 +44,7 @@ _PUBLIC_HELP_COMMANDS: tuple[str, ...] = (
     "/profile — открыть профиль общего аккаунта: звания, баллы, статус привязки и видимые роли.",
     "/profile_roles — показать роли пользователя по категориям, чтобы быстро проверить текущий набор ролей.",
     "/profile_edit — открыть меню редактирования профиля (ник, описание и другие доступные поля).",
-    "/link <код> — привязать Telegram к аккаунту по коду из Discord (команда работает в личке).",
-    "/link_discord — получить код для обратной привязки Discord к текущему общему аккаунту.",
+    "/link — единая команда привязки: получить код для Discord или ввести код из Discord (работает в личке).",
     "/roles — открыть каталог ролей с описанием, способом получения и подсказкой «как получить».",
     "/balance [reply|id] — посмотреть баланс: свой или выбранного пользователя (через reply/id).",
     "/top — открыть рейтинг по баллам и выбрать период: все время, месяц или неделя.",
@@ -317,19 +316,10 @@ def process_link_command(
     message_text: str,
     telegram_user_id: int | None,
     is_private_chat: bool = True,
+    action: str | None = None,
 ) -> str:
     if not is_private_chat:
-        return compose_three_block_message(
-            what="Привязка работает только в личном чате.",
-            now="Откройте личные сообщения с ботом и повторите команду.",
-            next_step="Бот примет код и свяжет аккаунты Telegram и Discord.",
-            emoji="❌",
-        )
-
-    text = (message_text or "").strip()
-    parts = text.split(maxsplit=1)
-    if len(parts) < 2 or not parts[1].strip():
-        return "Использование: /link <код>"
+        return "❌ Команда привязки доступна только в личных сообщениях с ботом."
 
     if telegram_user_id is None:
         log_transport_identity_error(
@@ -341,6 +331,29 @@ def process_link_command(
             continue_execution=False,
         )
         return "Не удалось определить пользователя Telegram."
+
+    requested_action = str(action or "").strip().lower()
+    if requested_action == "discord":
+        from bot.systems.linking_logic import issue_telegram_discord_link_code
+
+        success, payload = issue_telegram_discord_link_code(telegram_user_id)
+        if not success:
+            return f"❌ {payload}"
+        return (
+            "🔗 Код для привязки Discord готов.\n"
+            f"Код: `{payload}`\n"
+            f"Срок действия: {AccountsService.LINK_TTL_MINUTES} минут.\n"
+            "Откройте Discord и отправьте команду `/link код`."
+        )
+
+    text = (message_text or "").strip()
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        return (
+            "🔗 Привязка Telegram и Discord\n"
+            "1) Чтобы привязать Telegram к аккаунту из Discord, отправьте: /link код\n"
+            "2) Чтобы получить код для привязки Discord, отправьте: /link discord"
+        )
 
     code = parts[1].strip()
     from bot.telegram_bot.link_handler import handle_link_command
@@ -354,32 +367,7 @@ def process_link_discord_command(
     telegram_user_id: int | None,
     is_private_chat: bool = True,
 ) -> str:
-    if not is_private_chat:
-        return "❌ Команда привязки доступна только в личных сообщениях с ботом."
-
-    if telegram_user_id is None:
-        log_transport_identity_error(
-            logger,
-            module=__name__,
-            handler="process_link_discord_command",
-            field="telegram_user_id",
-            action="extract_platform_user_id",
-            continue_execution=False,
-        )
-        return "Не удалось определить пользователя Telegram."
-
-    from bot.systems.linking_logic import issue_telegram_discord_link_code
-
-    success, payload = issue_telegram_discord_link_code(telegram_user_id)
-    if not success:
-        return f"❌ {payload}"
-
-    return (
-        "🔗 Код привязки Discord сгенерирован.\n"
-        f"Код: `{payload}`\n"
-        f"Срок действия: {AccountsService.LINK_TTL_MINUTES} минут.\n"
-        "Используйте в Discord: `/link <код>`"
-    )
+    return process_link_command("", telegram_user_id, is_private_chat=is_private_chat, action="discord")
 
 
 def process_profile_roles_command(

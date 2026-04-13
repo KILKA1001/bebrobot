@@ -19,7 +19,6 @@ from bot.telegram_bot.identity import persist_telegram_identity_from_user
 from bot.telegram_bot.systems.commands_logic import (
     get_helpy_text,
     process_link_command,
-    process_link_discord_command,
     process_profile_command,
     process_profile_roles_command,
     prepare_roles_catalog_pages,
@@ -806,6 +805,7 @@ async def link_command(message: Message) -> None:
         message.text or "",
         telegram_user_id,
         is_private_chat=is_private_chat,
+        action="discord" if (message.text or "").strip().lower() in {"/link discord", "/link_discord"} else None,
         logger=logger,
     )
     await message.answer(response)
@@ -818,9 +818,11 @@ async def link_discord_command(message: Message) -> None:
     is_private_chat = message.chat.type == "private"
     response = await run_blocking_io(
         "telegram.link_discord.process_command",
-        process_link_discord_command,
+        process_link_command,
+        message.text or "",
         telegram_user_id,
         is_private_chat=is_private_chat,
+        action="discord",
         logger=logger,
     )
     await message.answer(response)
