@@ -20,6 +20,7 @@ from bot.domain.council_lifecycle import (
     TERM_STATUS_VALUES,
     BallotSubmissionDecision,
     CandidateReviewDecision,
+    InviteDeadlineDecision,
     CouncilInviteSegment,
     LaunchConfirmationDecision,
     ManualCandidateAddDecision,
@@ -36,6 +37,8 @@ from bot.domain.council_lifecycle import (
     resolve_question_voting_for_archive,
     decide_manual_candidate_addition,
     decide_candidate_review_action,
+    compute_candidate_invite_expires_at,
+    resolve_candidate_invite_deadline,
     decide_replacement_assignment,
     decide_term_member_exit,
     decide_term_launch_confirmation,
@@ -138,6 +141,26 @@ class CouncilService:
             election_role_code=election_role_code,
             actor_profile_id=actor_profile_id,
             source_platform=source_platform,
+        )
+
+    def compute_candidate_invite_expires_at(self, *, created_at: datetime) -> datetime:
+        return compute_candidate_invite_expires_at(created_at=created_at)
+
+    def resolve_candidate_invite_deadline(
+        self,
+        *,
+        current_status: str,
+        created_at: datetime | None,
+        invite_expires_at: datetime | None = None,
+        confirmed_at: datetime | None = None,
+        now: datetime | None = None,
+    ) -> InviteDeadlineDecision:
+        return resolve_candidate_invite_deadline(
+            current_status=current_status,
+            created_at=created_at,
+            invite_expires_at=invite_expires_at,
+            confirmed_at=confirmed_at,
+            now=now,
         )
 
     def filter_confirmed_ballot_candidates(

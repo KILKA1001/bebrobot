@@ -10,6 +10,7 @@ from bot.domain.council_lifecycle import (
     TERM_LAUNCH_ALLOWED_CONFIRM_ROLES,
     TERM_STATUS_VALUES,
     build_election_invite_segments,
+    compute_candidate_invite_expires_at,
     build_term_launch_notification_targets,
     decide_manual_candidate_addition,
     decide_replacement_assignment,
@@ -19,6 +20,7 @@ from bot.domain.council_lifecycle import (
     decide_question_start_voting,
     decide_question_vote_submission,
     decide_candidate_review_action,
+    resolve_candidate_invite_deadline,
     decide_ballot_submission,
     decide_term_launch_confirmation,
     filter_confirmed_ballot_candidates,
@@ -54,7 +56,7 @@ def test_term_election_question_status_values_are_stable():
         "decided",
         "archived",
     )
-    assert CANDIDATE_STATUS_VALUES == ("pending", "confirmed", "rejected", "withdrawn")
+    assert CANDIDATE_STATUS_VALUES == ("pending", "confirmed", "rejected", "withdrawn", "expired")
 
 
 def test_status_validator_for_all_lifecycles():
@@ -178,6 +180,49 @@ def test_candidate_review_action_supports_confirm_and_reject_with_terminal_guard
     )
     assert unsupported.accepted is False
     assert unsupported.reason == "unsupported_action"
+
+
+def test_candidate_invite_expiry_defaults_to_24_hours_from_created_at():
+    created_at = datetime(2026, 4, 13, 10, 0, tzinfo=timezone.utc)
+    expires_at = compute_candidate_invite_expires_at(created_at=created_at)
+    assert expires_at == datetime(2026, 4, 14, 10, 0, tzinfo=timezone.utc)
+
+
+def test_candidate_invite_deadline_moves_pending_to_expired_and_returns_notification():
+    decision = resolve_candidate_invite_deadline(
+        current_status="pending",
+        created_at=datetime(2026, 4, 10, 9, 0, tzinfo=timezone.utc),
+        now=datetime(2026, 4, 11, 9, 1, tzinfo=timezone.utc),
+    )
+    assert decision.accepted is True
+    assert decision.next_status == "expired"
+    assert decision.reason == "invite_expired_without_confirmation"
+    assert decision.notify_candidate is True
+    assert decision.status_transition_log is not None
+
+
+def test_candidate_invite_deadline_keeps_confirmed_when_confirmation_is_in_time():
+    decision = resolve_candidate_invite_deadline(
+        current_status="pending",
+        created_at=datetime(2026, 4, 10, 9, 0, tzinfo=timezone.utc),
+        confirmed_at=datetime(2026, 4, 10, 16, 0, tzinfo=timezone.utc),
+        now=datetime(2026, 4, 10, 16, 1, tzinfo=timezone.utc),
+    )
+    assert decision.accepted is True
+    assert decision.next_status == "confirmed"
+    assert decision.reason == "confirmed_in_time"
+
+
+def test_candidate_invite_deadline_does_not_confirm_after_expiry():
+    decision = resolve_candidate_invite_deadline(
+        current_status="pending",
+        created_at=datetime(2026, 4, 10, 9, 0, tzinfo=timezone.utc),
+        confirmed_at=datetime(2026, 4, 11, 10, 0, tzinfo=timezone.utc),
+        now=datetime(2026, 4, 11, 10, 1, tzinfo=timezone.utc),
+    )
+    assert decision.accepted is True
+    assert decision.next_status == "expired"
+    assert decision.reason == "invite_expired_without_confirmation"
 
 
 def test_ballot_includes_only_confirmed_candidates():
