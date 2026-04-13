@@ -94,8 +94,10 @@ CREATE TABLE IF NOT EXISTS council_election_candidates (
     election_id BIGINT NOT NULL REFERENCES council_elections(id) ON DELETE CASCADE,
     profile_id UUID NOT NULL,
     nomination_text TEXT,
-    status TEXT NOT NULL DEFAULT 'active'
-        CHECK (status IN ('active', 'withdrawn', 'disqualified', 'elected', 'not_elected')),
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'confirmed', 'rejected', 'withdrawn', 'elected', 'not_elected')),
+    reviewed_by_profile_id UUID,
+    reviewed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (election_id, profile_id)
