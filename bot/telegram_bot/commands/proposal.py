@@ -29,6 +29,7 @@ from bot.services.proposal_ui_texts import (
     build_status_parts,
     build_submit_success_parts,
     render_admin_action_result,
+    render_admin_action_cancelled_text,
     render_admin_confirm_text,
     render_admin_root_text,
     render_admin_section_text,
@@ -590,7 +591,7 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
         if action == "events_cancel":
             _PENDING_EVENTS_DESTINATION_PICKER.pop(actor_id, None)
             await callback.message.edit_text(
-                render_admin_section_text("events"),
+                f"{render_admin_section_text('events')}\n\n{render_admin_action_cancelled_text()}",
                 parse_mode="HTML",
                 reply_markup=_admin_section_keyboard("events"),
             )

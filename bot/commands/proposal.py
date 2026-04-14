@@ -25,6 +25,7 @@ from bot.services.proposal_ui_texts import (
     PROPOSAL_ADMIN_SECTION_BY_CODE,
     PROPOSAL_ADMIN_SECTIONS,
     render_admin_action_result,
+    render_admin_action_cancelled_text,
     render_admin_confirm_text,
     render_admin_root_text,
     render_admin_section_text,
@@ -621,7 +622,10 @@ class _AdminEventsCancelButton(discord.ui.Button["ProposalAdminSettingsView"]):
     async def callback(self, interaction: discord.Interaction) -> None:
         self._owner_view.close_events_picker()
         self._owner_view.current_section_code = "events"
-        await interaction.response.edit_message(embed=self._owner_view.build_embed(), view=self._owner_view)
+        await interaction.response.edit_message(
+            embed=self._owner_view.build_embed(result_text=render_admin_action_cancelled_text()),
+            view=self._owner_view,
+        )
 
 
 class _AdminConfirmExecuteButton(discord.ui.Button["ProposalAdminSettingsView"]):
