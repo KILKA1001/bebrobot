@@ -70,7 +70,14 @@ class GuiyPublishDestinationsServiceTests(unittest.TestCase):
                         "chat_title": "Owners",
                         "chat_type": "supergroup",
                         "last_seen_at": "2026-03-20T00:00:00+00:00",
-                    }
+                    },
+                    {
+                        "provider": "telegram",
+                        "chat_id": "-1002",
+                        "chat_title": "News",
+                        "chat_type": "channel",
+                        "last_seen_at": "2026-03-21T00:00:00+00:00",
+                    },
                 ]
             ),
         )
@@ -79,9 +86,10 @@ class GuiyPublishDestinationsServiceTests(unittest.TestCase):
         with patch("bot.services.guiy_publish_destinations_service.db", SimpleNamespace(supabase=fake_supabase)):
             destinations = GuiyPublishDestinationsService.list_telegram_destinations()
 
-        self.assertEqual(len(destinations), 1)
-        self.assertEqual(destinations[0].destination_id, "-1001")
-        self.assertEqual(destinations[0].title, "Owners")
+        self.assertEqual(len(destinations), 2)
+        by_id = {item.destination_id: item for item in destinations}
+        self.assertEqual(by_id["-1002"].title, "News")
+        self.assertEqual(by_id["-1001"].title, "Owners")
 
 
 if __name__ == "__main__":
