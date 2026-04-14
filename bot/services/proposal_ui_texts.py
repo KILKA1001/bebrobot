@@ -42,6 +42,22 @@ ARCHIVE_TYPE_LABELS: dict[str, str] = {
     "other": "Другое",
 }
 
+
+
+MENU_ACTION_EXPLANATIONS: tuple[str, ...] = (
+    "📝 «Подать предложение» — начать новый вопрос для Совета.",
+    "📍 «Статус» — проверить текущий этап по вашему последнему вопросу.",
+    "📚 «Архив решений» — открыть уже завершённые решения Совета.",
+    "❓ «Помощь» — посмотреть короткую пошаговую инструкцию.",
+)
+
+
+PROPOSAL_ADMIN_SETTINGS_FLOW_STEPS: tuple[str, ...] = (
+    "1) Откройте «Настройки Совета».",
+    "2) Выберите раздел, затем действие.",
+    "3) Если бот запросил подтверждение, проверьте текст и нажмите «Подтвердить».",
+    "4) После выполнения действия проверьте блок «Следующий шаг» и выполните его.",
+)
 PROPOSAL_HELP_STEPS: tuple[str, ...] = (
     "Нажмите «Подать предложение», чтобы открыть форму нового вопроса в Совет.",
     "Заполните заголовок и текст: заголовок помогает быстро понять суть, а текст фиксирует детали для рассмотрения.",
@@ -252,6 +268,39 @@ def render_menu_overview() -> str:
     )
 
 
+def render_menu_action_explanations() -> str:
+    return "\n".join(MENU_ACTION_EXPLANATIONS)
+
+
+def render_submit_form_text() -> str:
+    return (
+        "📝 <b>Форма подачи</b>\n"
+        "Отправьте одним сообщением: заголовок и текст предложения.\n\n"
+        "Формат:\n"
+        "<code>Заголовок\n\nТекст предложения</code>"
+    )
+
+
+def render_submit_review_text(*, title: str, proposal_text: str) -> str:
+    return (
+        "📨 <b>Подтверждение отправки</b>\n"
+        f"<b>Заголовок:</b> {title}\n"
+        f"<b>Текст:</b> {proposal_text}\n\n"
+        + render_confirmation_prompt()
+    )
+
+
+def render_admin_settings_flow_text() -> str:
+    return "\n".join(PROPOSAL_ADMIN_SETTINGS_FLOW_STEPS)
+
+
+def render_events_pick_confirmation_text(*, destination_label: str) -> str:
+    return (
+        f"Вы выбрали: <b>{destination_label}</b>\n"
+        "После сохранения системные события Совета будут отправляться сюда."
+    )
+
+
 def render_confirmation_prompt() -> str:
     return (
         "Проверьте текст перед отправкой в Совет.\n"
@@ -268,7 +317,7 @@ def render_help_text() -> str:
 
 
 def render_admin_root_text() -> str:
-    lines = ["⚙️ <b>Админ-меню Совета</b>", "", "Выберите раздел. В каждом разделе кнопка сразу подсказывает, что произойдёт после нажатия."]
+    lines = ["⚙️ <b>Админ-меню Совета</b>", "", "Выберите раздел. В каждом разделе кнопка сразу подсказывает, что произойдёт после нажатия.", "", render_admin_settings_flow_text(), ""]
     for section in PROPOSAL_ADMIN_SECTIONS:
         lines.append(f"• <b>{section.title}</b> — {section.description}")
     return "\n".join(lines)

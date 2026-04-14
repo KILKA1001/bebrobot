@@ -36,7 +36,11 @@ from bot.services.proposal_ui_texts import (
     render_archive_filters_text,
     render_archive_lines,
     render_help_text,
+    render_menu_action_explanations,
     render_menu_overview,
+    render_submit_form_text,
+    render_submit_review_text,
+    render_events_pick_confirmation_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -105,11 +109,11 @@ def _admin_section_keyboard(section_code: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _admin_confirm_keyboard(action_code: str) -> InlineKeyboardMarkup:
+def _admin_confirm_keyboard(action_code: str, section_code: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"proposal:admin_confirm:{action_code}")],
-            [InlineKeyboardButton(text="↩️ Отмена", callback_data=f"proposal:admin_action:{action_code}")],
+            [InlineKeyboardButton(text="↩️ Отмена", callback_data=f"proposal:admin_section:{section_code}")],
             [InlineKeyboardButton(text="↩️ К разделам", callback_data="proposal:admin")],
         ]
     )
@@ -269,10 +273,7 @@ async def proposal_command(message: Message) -> None:
             "🗂 <b>Меню предложений</b>\n"
             + render_menu_overview()
             + "\n\n"
-            + "📝 «Подать предложение» — начать новый вопрос для Совета.\n"
-            + "📍 «Статус» — проверить текущий этап по вашему последнему вопросу.\n"
-            + "📚 «Архив решений» — открыть уже завершённые решения Совета.\n"
-            + "❓ «Помощь» — посмотреть короткую пошаговую инструкцию.",
+            + render_menu_action_explanations(),
             reply_markup=_menu_keyboard(is_superadmin=is_superadmin),
             parse_mode="HTML",
         )
@@ -297,10 +298,7 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
                 "🗂 <b>Меню предложений</b>\n"
                 + render_menu_overview()
                 + "\n\n"
-                + "📝 «Подать предложение» — начать новый вопрос для Совета.\n"
-                + "📍 «Статус» — проверить текущий этап по вашему последнему вопросу.\n"
-                + "📚 «Архив решений» — открыть уже завершённые решения Совета.\n"
-                + "❓ «Помощь» — посмотреть короткую пошаговую инструкцию.",
+                + render_menu_action_explanations(),
                 reply_markup=_menu_keyboard(is_superadmin=is_superadmin),
                 parse_mode="HTML",
             )
@@ -342,10 +340,12 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
                 return
             if admin_action.requires_confirmation:
                 _PENDING_ADMIN_CONFIRM[actor_id] = action_code
+                section = next((item for item in PROPOSAL_ADMIN_SECTIONS if any(action.code == action_code for action in item.actions)), None)
+                section_code = section.code if section else "events"
                 await callback.message.edit_text(
                     render_admin_confirm_text(action_code),
                     parse_mode="HTML",
-                    reply_markup=_admin_confirm_keyboard(action_code),
+                    reply_markup=_admin_confirm_keyboard(action_code, section_code),
                 )
                 await callback.answer()
                 return
@@ -439,9 +439,7 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
             pending["selected_destination_id"] = selected.destination_id
             _PENDING_EVENTS_DESTINATION_PICKER[actor_id] = pending
             await callback.message.edit_text(
-                "Вы выбрали: "
-                f"<b>{selected.display_label}</b>\n"
-                "После сохранения системные события Совета будут отправляться сюда.",
+                render_events_pick_confirmation_text(destination_label=selected.display_label),
                 parse_mode="HTML",
                 reply_markup=_events_pick_confirm_keyboard(),
             )
@@ -494,10 +492,7 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
             _PENDING_PROPOSAL_INPUT[actor_id] = time.time()
             _PENDING_PROPOSAL_CONFIRM.pop(actor_id, None)
             await callback.message.edit_text(
-                "📝 <b>Форма подачи</b>\n"
-                "Отправьте одним сообщением: заголовок и текст предложения.\n\n"
-                "Формат:\n"
-                "<code>Заголовок\n\nТекст предложения</code>",
+                render_submit_form_text(),
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(
                     inline_keyboard=[[InlineKeyboardButton(text="↩️ В меню", callback_data="proposal:menu")]]
@@ -699,10 +694,7 @@ async def proposal_pending_input(message: Message) -> None:
         _PENDING_PROPOSAL_INPUT.pop(actor_id, None)
 
         await message.answer(
-            "📨 <b>Подтверждение отправки</b>\n"
-            f"<b>Заголовок:</b> {pending.title}\n"
-            f"<b>Текст:</b> {pending.proposal_text}\n\n"
-            "Проверьте данные и выберите действие:",
+            render_submit_review_text(title=pending.title, proposal_text=pending.proposal_text),
             parse_mode="HTML",
             reply_markup=_confirm_keyboard(),
         )
