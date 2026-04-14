@@ -17,6 +17,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from bot.services.council_feedback_service import CouncilFeedbackService
 from bot.services.council_system_events_service import CouncilSystemEventsService
+from bot.services.authority_service import AuthorityService
 from bot.services.proposal_ui_texts import (
     ARCHIVE_PERIOD_LABELS,
     ARCHIVE_STATUS_LABELS,
@@ -65,13 +66,25 @@ def _archive_keyboard(user_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def _menu_keyboard() -> InlineKeyboardMarkup:
+def _menu_keyboard(*, is_superadmin: bool) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text="📝 Подать предложение", callback_data="proposal:submit")],
+        [InlineKeyboardButton(text="📍 Статус", callback_data="proposal:status")],
+        [InlineKeyboardButton(text="📚 Архив решений", callback_data="proposal:archive")],
+        [InlineKeyboardButton(text="❓ Помощь", callback_data="proposal:help")],
+    ]
+    if is_superadmin:
+        rows.append([InlineKeyboardButton(text="⚙️ Настройки Совета", callback_data="proposal:admin")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _admin_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📝 Подать предложение", callback_data="proposal:submit")],
-            [InlineKeyboardButton(text="📍 Статус", callback_data="proposal:status")],
-            [InlineKeyboardButton(text="📚 Архив решений", callback_data="proposal:archive")],
-            [InlineKeyboardButton(text="❓ Помощь", callback_data="proposal:help")],
+            [InlineKeyboardButton(text="📡 Показать канал событий", callback_data="proposal:admin_channel_show")],
+            [InlineKeyboardButton(text="📌 Назначить текущий чат", callback_data="proposal:admin_channel_set_here")],
+            [InlineKeyboardButton(text="🧹 Очистить канал", callback_data="proposal:admin_channel_clear")],
+            [InlineKeyboardButton(text="↩️ В меню", callback_data="proposal:menu")],
         ]
     )
 
@@ -103,6 +116,7 @@ async def proposal_command(message: Message) -> None:
         if not message.from_user:
             await message.answer("❌ Не удалось определить пользователя.")
             return
+        is_superadmin = AuthorityService.is_super_admin("telegram", str(message.from_user.id))
         _cleanup_pending(message.from_user.id)
         await message.answer(
             "🗂 <b>Меню предложений</b>\n"
@@ -112,56 +126,12 @@ async def proposal_command(message: Message) -> None:
             + "📍 «Статус» — проверить текущий этап по вашему последнему вопросу.\n"
             + "📚 «Архив решений» — открыть уже завершённые решения Совета.\n"
             + "❓ «Помощь» — посмотреть короткую пошаговую инструкцию.",
-            reply_markup=_menu_keyboard(),
+            reply_markup=_menu_keyboard(is_superadmin=is_superadmin),
             parse_mode="HTML",
         )
     except Exception:
         logger.exception("telegram proposal command failed actor_id=%s", getattr(message.from_user, "id", None))
         await message.answer("❌ Не удалось открыть меню предложений.")
-
-
-@router.message(Command("proposal_system_channel"))
-async def proposal_system_channel_command(message: Message) -> None:
-    try:
-        if not message.from_user:
-            await message.answer("❌ Не удалось определить пользователя.")
-            return
-        raw_text = str(getattr(message, "text", "") or "").strip()
-        parts = raw_text.split(maxsplit=1)
-        args = str(parts[1] if len(parts) > 1 else "show").strip().lower()
-        if args == "show":
-            current = CouncilSystemEventsService.get_channel("telegram")
-            if not current:
-                await message.answer(
-                    "ℹ️ Канал системных событий Совета пока не настроен.\n"
-                    "Суперадмин может выполнить `/proposal_system_channel set_here` в нужной группе.",
-                )
-                return
-            await message.answer(f"✅ Сейчас выбран чат `{current}` для системных событий Совета.", parse_mode="Markdown")
-            return
-        if args == "set_here":
-            result = CouncilSystemEventsService.set_channel(
-                provider="telegram",
-                actor_user_id=str(message.from_user.id),
-                destination_id=str(getattr(message.chat, "id", "") or ""),
-            )
-            await message.answer(str(result.get("message") or ("✅ Чат системных событий Совета сохранён." if result.get("ok") else "❌ Не удалось сохранить чат.")))
-            return
-        if args == "clear":
-            result = CouncilSystemEventsService.set_channel(
-                provider="telegram",
-                actor_user_id=str(message.from_user.id),
-                destination_id="",
-            )
-            await message.answer(str(result.get("message") or ("✅ Чат системных событий Совета очищен." if result.get("ok") else "❌ Не удалось очистить чат.")))
-            return
-        await message.answer(
-            "❌ Неизвестное действие. Доступно: show, set_here, clear.\n"
-            "Пример: /proposal_system_channel set_here"
-        )
-    except Exception:
-        logger.exception("telegram proposal system channel command failed actor_id=%s", getattr(message.from_user, "id", None))
-        await message.answer("❌ Ошибка настройки канала. Подробности в логах.")
 
 
 @router.callback_query(F.data.startswith("proposal:"))
@@ -175,6 +145,7 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
     try:
         if action == "menu":
             _cleanup_pending(actor_id)
+            is_superadmin = AuthorityService.is_super_admin("telegram", str(actor_id))
             await callback.message.edit_text(
                 "🗂 <b>Меню предложений</b>\n"
                 + render_menu_overview()
@@ -183,8 +154,58 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
                 + "📍 «Статус» — проверить текущий этап по вашему последнему вопросу.\n"
                 + "📚 «Архив решений» — открыть уже завершённые решения Совета.\n"
                 + "❓ «Помощь» — посмотреть короткую пошаговую инструкцию.",
-                reply_markup=_menu_keyboard(),
+                reply_markup=_menu_keyboard(is_superadmin=is_superadmin),
                 parse_mode="HTML",
+            )
+            await callback.answer()
+            return
+        if action == "admin":
+            if not AuthorityService.is_super_admin("telegram", str(actor_id)):
+                await callback.answer("Доступно только суперадмину.", show_alert=True)
+                return
+            await callback.message.edit_text(
+                "⚙️ <b>Настройки Совета</b>\n\n"
+                "Здесь можно настроить канал системных событий Совета.\n"
+                "Если выберете «Назначить текущий чат», события будут отправляться в этот чат.",
+                reply_markup=_admin_keyboard(),
+                parse_mode="HTML",
+            )
+            await callback.answer()
+            return
+        if action in {"admin_channel_show", "admin_channel_set_here", "admin_channel_clear"}:
+            if not AuthorityService.is_super_admin("telegram", str(actor_id)):
+                await callback.answer("Доступно только суперадмину.", show_alert=True)
+                return
+            if action == "admin_channel_show":
+                current = CouncilSystemEventsService.get_channel("telegram")
+                text = (
+                    f"✅ Сейчас выбран чат `{current}` для системных событий Совета."
+                    if current
+                    else "ℹ️ Канал системных событий Совета пока не настроен."
+                )
+                await callback.message.edit_text(text, reply_markup=_admin_keyboard(), parse_mode="Markdown")
+                await callback.answer()
+                return
+            if action == "admin_channel_set_here":
+                result = CouncilSystemEventsService.set_channel(
+                    provider="telegram",
+                    actor_user_id=str(actor_id),
+                    destination_id=str(getattr(callback.message.chat, "id", "") or ""),
+                )
+                await callback.message.edit_text(
+                    str(result.get("message") or ("✅ Чат системных событий Совета сохранён." if result.get("ok") else "❌ Не удалось сохранить чат.")),
+                    reply_markup=_admin_keyboard(),
+                )
+                await callback.answer()
+                return
+            result = CouncilSystemEventsService.set_channel(
+                provider="telegram",
+                actor_user_id=str(actor_id),
+                destination_id="",
+            )
+            await callback.message.edit_text(
+                str(result.get("message") or ("✅ Чат системных событий Совета очищен." if result.get("ok") else "❌ Не удалось очистить чат.")),
+                reply_markup=_admin_keyboard(),
             )
             await callback.answer()
             return

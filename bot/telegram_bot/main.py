@@ -88,6 +88,7 @@ BOT_COMMANDS = [
     BotCommand(command="balance", description="Показать баланс пользователя"),
     BotCommand(command="shop", description="Открыть магазин в личных сообщениях"),
     BotCommand(command="tickets", description="Меню управления билетами"),
+    BotCommand(command="proposal", description="Единое меню Совета с кнопками"),
     BotCommand(command="roles_admin", description="Управление ролями и категориями (/rolesadmin тоже работает)"),
     BotCommand(command="title", description="Повысить/понизить звание пользователя (суперадмины)"),
     BotCommand(command="helpy", description="Список команд"),

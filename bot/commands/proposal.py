@@ -13,6 +13,7 @@ import discord
 from discord.ext import commands
 
 from bot.commands.base import bot
+from bot.services.authority_service import AuthorityService
 from bot.services.council_feedback_service import CouncilFeedbackService
 from bot.services.council_system_events_service import CouncilSystemEventsService
 from bot.services.proposal_ui_texts import (
@@ -230,6 +231,88 @@ class ProposalRootView(discord.ui.View):
     async def show_help(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.send_message(render_help_text(), ephemeral=True)
 
+    @discord.ui.button(label="⚙️ Настройки Совета", style=discord.ButtonStyle.secondary)
+    async def admin_settings(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        try:
+            if not AuthorityService.is_super_admin("discord", str(interaction.user.id)):
+                await interaction.response.send_message("❌ Действие доступно только суперадмину.", ephemeral=True)
+                return
+            view = ProposalAdminSettingsView(actor_id=self.actor_id)
+            await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
+        except Exception:
+            logger.exception("discord proposal admin settings open failed actor_id=%s", getattr(interaction.user, "id", None))
+            await interaction.response.send_message("❌ Не удалось открыть настройки Совета.", ephemeral=True)
+
+
+class ProposalAdminSettingsView(discord.ui.View):
+    def __init__(self, actor_id: int):
+        super().__init__(timeout=300)
+        self.actor_id = actor_id
+
+    def build_embed(self) -> discord.Embed:
+        return discord.Embed(
+            title="⚙️ Настройки Совета",
+            description=(
+                "Управление каналом системных событий Совета.\n"
+                "Кнопка «Назначить текущий канал» сохранит этот канал для уведомлений."
+            ),
+            color=discord.Color.dark_gold(),
+        )
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.actor_id:
+            await interaction.response.send_message("❌ Это меню открыто для другого пользователя.", ephemeral=True)
+            return False
+        if not AuthorityService.is_super_admin("discord", str(interaction.user.id)):
+            await interaction.response.send_message("❌ Действие доступно только суперадмину.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="📡 Показать канал событий", style=discord.ButtonStyle.secondary)
+    async def show_channel(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        current = CouncilSystemEventsService.get_channel("discord")
+        message = (
+            f"✅ Сейчас выбран канал `{current}` для системных событий Совета."
+            if current
+            else "ℹ️ Канал системных событий Совета пока не настроен."
+        )
+        embed = self.build_embed()
+        embed.add_field(name="Текущая настройка", value=message, inline=False)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="📌 Назначить текущий канал", style=discord.ButtonStyle.primary)
+    async def set_channel_here(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        channel_id = str(getattr(interaction.channel, "id", "") or "").strip()
+        guild_id = str(getattr(getattr(interaction, "guild", None), "id", "") or "").strip()
+        destination_id = f"{guild_id}:{channel_id}" if guild_id and channel_id else ""
+        result = CouncilSystemEventsService.set_channel(
+            provider="discord",
+            actor_user_id=str(self.actor_id),
+            destination_id=destination_id,
+        )
+        embed = self.build_embed()
+        embed.add_field(
+            name="Результат",
+            value=str(result.get("message") or ("✅ Канал системных событий Совета сохранён." if result.get("ok") else "❌ Не удалось сохранить канал.")),
+            inline=False,
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="🧹 Очистить канал", style=discord.ButtonStyle.danger)
+    async def clear_channel(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        result = CouncilSystemEventsService.set_channel(
+            provider="discord",
+            actor_user_id=str(self.actor_id),
+            destination_id="",
+        )
+        embed = self.build_embed()
+        embed.add_field(
+            name="Результат",
+            value=str(result.get("message") or ("✅ Канал системных событий Совета очищен." if result.get("ok") else "❌ Не удалось очистить канал.")),
+            inline=False,
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+
 
 class ProposalArchiveFilterView(discord.ui.View):
     def __init__(self, root_view: ProposalRootView):
@@ -318,52 +401,3 @@ async def proposal(ctx: commands.Context) -> None:
         logger.exception("discord proposal command failed actor_id=%s", getattr(getattr(ctx, "author", None), "id", None))
         await ctx.reply("❌ Не удалось открыть меню предложений.", mention_author=False)
 
-
-@bot.hybrid_command(name="proposal_system_channel", description="Настройка канала системных событий Совета (только суперадмин)")
-async def proposal_system_channel(ctx: commands.Context, action: str = "show") -> None:
-    try:
-        if not ctx.author:
-            await ctx.reply("❌ Не удалось определить пользователя.", mention_author=False)
-            return
-        normalized_action = str(action or "show").strip().lower()
-        provider_user_id = str(ctx.author.id)
-        if normalized_action == "show":
-            current = CouncilSystemEventsService.get_channel("discord")
-            if not current:
-                await ctx.reply(
-                    "ℹ️ Канал системных событий Совета пока не настроен.\n"
-                    "Суперадмин может выполнить: `/proposal_system_channel set_here` в нужном канале.",
-                    mention_author=False,
-                )
-                return
-            await ctx.reply(f"✅ Сейчас выбран канал `{current}` для системных событий Совета.", mention_author=False)
-            return
-        if normalized_action == "set_here":
-            channel_id = str(getattr(ctx.channel, "id", "") or "").strip()
-            result = CouncilSystemEventsService.set_channel(
-                provider="discord",
-                actor_user_id=provider_user_id,
-                destination_id=f"{getattr(ctx.guild, 'id', '')}:{channel_id}" if channel_id else "",
-            )
-            await ctx.reply(str(result.get("message") or ("✅ Канал системных событий Совета сохранён." if result.get("ok") else "❌ Не удалось сохранить канал.")), mention_author=False)
-            return
-        if normalized_action == "clear":
-            result = CouncilSystemEventsService.set_channel(
-                provider="discord",
-                actor_user_id=provider_user_id,
-                destination_id="",
-            )
-            await ctx.reply(str(result.get("message") or ("✅ Канал системных событий Совета очищен." if result.get("ok") else "❌ Не удалось очистить канал.")), mention_author=False)
-            return
-        await ctx.reply(
-            "❌ Неизвестное действие. Доступно: `show`, `set_here`, `clear`.\n"
-            "Пример: `/proposal_system_channel set_here` в нужном канале.",
-            mention_author=False,
-        )
-    except Exception:
-        logger.exception(
-            "discord proposal system channel command failed actor_id=%s action=%s",
-            getattr(getattr(ctx, "author", None), "id", None),
-            action,
-        )
-        await ctx.reply("❌ Ошибка настройки канала. Подробности в логах.", mention_author=False)
