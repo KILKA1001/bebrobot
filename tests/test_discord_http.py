@@ -62,6 +62,25 @@ class DiscordHttpTests(unittest.TestCase):
         self.assertNotIn("<strong>", context["error_excerpt"])
         self.assertNotIn("var x=1", context["error_excerpt"])
 
+    def test_build_log_context_keeps_channel_fetch_metadata(self):
+        exc = discord.HTTPException(
+            _FakeResponse(status=403, headers={"server": "cloudflare"}),
+            "Access denied while fetching channel",
+        )
+
+        context = build_http_exception_log_context(
+            exc,
+            stage="proposal-events-load",
+            operation_id="fetch-discord-channels",
+            guild_id="1",
+            channel_id="2",
+        )
+
+        self.assertEqual(context["operation_id"], "fetch-discord-channels")
+        self.assertEqual(context["guild_id"], "1")
+        self.assertEqual(context["channel_id"], "2")
+        self.assertEqual(context["status"], 403)
+
 
 if __name__ == "__main__":
     unittest.main()
