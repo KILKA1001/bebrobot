@@ -18,7 +18,7 @@ from bot.data import db
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_REGISTRY_TABLE = "bot_chat_registry"
-_TELEGRAM_GROUP_TYPES = {"group", "supergroup"}
+_TELEGRAM_TRACKED_TYPES = {"group", "supergroup", "channel"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,7 +169,7 @@ class GuiyPublishDestinationsService:
                 .select("provider,chat_id,chat_title,chat_type,last_seen_at")
                 .eq("provider", "telegram")
                 .eq("is_active", True)
-                .in_("chat_type", list(_TELEGRAM_GROUP_TYPES))
+                .in_("chat_type", list(_TELEGRAM_TRACKED_TYPES))
                 .order("last_seen_at", desc=True)
                 .limit(100)
                 .execute()

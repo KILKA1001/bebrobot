@@ -11,6 +11,8 @@ from unittest.mock import patch
 from aiogram.dispatcher.event.bases import SkipHandler
 
 from bot.telegram_bot.chat_registry_router import (
+    remember_channel_edited_post,
+    remember_channel_post,
     remember_bot_membership,
     remember_group_callback,
     remember_group_edited_message,
@@ -52,6 +54,29 @@ class TelegramChatRegistryRouterTests(unittest.IsolatedAsyncioTestCase):
 
         register_mock.assert_called_once()
 
+    async def test_channel_post_registers_channel_and_skips_for_next_handlers(self):
+        message = SimpleNamespace(chat=SimpleNamespace(id=-2222, title="Канал", type="channel"))
+
+        with patch("bot.telegram_bot.chat_registry_router.GuiyPublishDestinationsService.register_telegram_chat") as register_mock:
+            with self.assertRaises(SkipHandler):
+                await remember_channel_post(message)
+
+        register_mock.assert_called_once_with(
+            chat_id=-2222,
+            chat_title="Канал",
+            chat_type="channel",
+            is_active=True,
+        )
+
+    async def test_channel_edited_post_registers_channel_and_skips_for_next_handlers(self):
+        message = SimpleNamespace(chat=SimpleNamespace(id=-2222, title="Канал", type="channel"))
+
+        with patch("bot.telegram_bot.chat_registry_router.GuiyPublishDestinationsService.register_telegram_chat") as register_mock:
+            with self.assertRaises(SkipHandler):
+                await remember_channel_edited_post(message)
+
+        register_mock.assert_called_once()
+
     async def test_chat_member_left_triggers_purge_for_regular_user(self):
         update = SimpleNamespace(
             chat=SimpleNamespace(id=-1001, title="Группа", type="supergroup"),
@@ -84,6 +109,22 @@ class TelegramChatRegistryRouterTests(unittest.IsolatedAsyncioTestCase):
             chat_id=-1001,
             chat_title="Группа",
             chat_type="supergroup",
+            is_active=False,
+        )
+
+    async def test_bot_membership_marks_channel_inactive_when_bot_removed(self):
+        update = SimpleNamespace(
+            chat=SimpleNamespace(id=-3333, title="Канал", type="channel"),
+            new_chat_member=SimpleNamespace(status="left"),
+        )
+
+        with patch("bot.telegram_bot.chat_registry_router.GuiyPublishDestinationsService.register_telegram_chat") as register_mock:
+            await remember_bot_membership(update)
+
+        register_mock.assert_called_once_with(
+            chat_id=-3333,
+            chat_title="Канал",
+            chat_type="channel",
             is_active=False,
         )
 

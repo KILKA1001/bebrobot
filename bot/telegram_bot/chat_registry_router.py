@@ -19,20 +19,29 @@ from bot.telegram_bot.identity import persist_telegram_identity_from_user
 logger = logging.getLogger(__name__)
 router = Router(name="telegram_chat_registry")
 _GROUP_CHAT_TYPES = {"group", "supergroup"}
+_TRACKED_CHAT_TYPES = _GROUP_CHAT_TYPES | {"channel"}
 
 
 def _remember_chat(chat) -> None:
     if chat is None:
         return
     chat_type = str(getattr(chat, "type", "") or "").strip()
-    if chat_type not in _GROUP_CHAT_TYPES:
+    if chat_type not in _TRACKED_CHAT_TYPES:
         return
-    GuiyPublishDestinationsService.register_telegram_chat(
-        chat_id=getattr(chat, "id", None),
-        chat_title=getattr(chat, "title", None),
-        chat_type=chat_type,
-        is_active=True,
-    )
+    try:
+        GuiyPublishDestinationsService.register_telegram_chat(
+            chat_id=getattr(chat, "id", None),
+            chat_title=getattr(chat, "title", None),
+            chat_type=chat_type,
+            is_active=True,
+        )
+    except Exception:
+        logger.exception(
+            "telegram bot chat registry remember chat failed chat_id=%s chat_title=%s chat_type=%s",
+            getattr(chat, "id", None),
+            getattr(chat, "title", None),
+            chat_type,
+        )
 
 
 @router.message(F.chat.type.in_(_GROUP_CHAT_TYPES))
@@ -47,13 +56,25 @@ async def remember_group_edited_message(message: Message) -> None:
     raise SkipHandler()
 
 
+@router.channel_post(F.chat.type == "channel")
+async def remember_channel_post(message: Message) -> None:
+    _remember_chat(message.chat)
+    raise SkipHandler()
+
+
+@router.edited_channel_post(F.chat.type == "channel")
+async def remember_channel_edited_post(message: Message) -> None:
+    _remember_chat(message.chat)
+    raise SkipHandler()
+
+
 @router.callback_query(F.message, F.message.chat.type.in_(_GROUP_CHAT_TYPES))
 async def remember_group_callback(callback: CallbackQuery) -> None:
     _remember_chat(callback.message.chat if callback.message else None)
     raise SkipHandler()
 
 
-@router.my_chat_member(F.chat.type.in_(_GROUP_CHAT_TYPES))
+@router.my_chat_member(F.chat.type.in_(_TRACKED_CHAT_TYPES))
 async def remember_bot_membership(update: ChatMemberUpdated) -> None:
     chat = update.chat
     status = str(getattr(getattr(update, "new_chat_member", None), "status", "") or "").strip()
