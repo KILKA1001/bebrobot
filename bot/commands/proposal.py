@@ -361,6 +361,15 @@ class ProposalAdminSettingsView(discord.ui.View):
     async def run_action(self, interaction: discord.Interaction, action_code: str) -> str:
         if action_code == "events_show_channel":
             current = CouncilSystemEventsService.get_channel("discord")
+            CouncilSystemEventsService.record_admin_action(
+                provider="discord",
+                actor_user_id=str(self.actor_id),
+                action=action_code,
+                destination_id=str(getattr(interaction.channel, "id", "") or "") or None,
+                target_object=current or None,
+                status="success",
+                reason="channel_shown",
+            )
             status_text = (
                 f"✅ Сейчас выбран канал `{current}` для системных уведомлений Совета."
                 if current
@@ -376,18 +385,53 @@ class ProposalAdminSettingsView(discord.ui.View):
                 actor_user_id=str(self.actor_id),
                 destination_id="",
             )
+            CouncilSystemEventsService.record_admin_action(
+                provider="discord",
+                actor_user_id=str(self.actor_id),
+                action=action_code,
+                destination_id=None,
+                target_object="system_event_channel",
+                status="success" if result.get("ok") else "failed",
+                reason=str(result.get("reason") or ("channel_cleared" if result.get("ok") else "clear_channel_failed")),
+            )
             return render_admin_action_result(
                 action_code,
                 custom_result=str(result.get("message") or ("✅ Канал уведомлений очищен." if result.get("ok") else "❌ Не удалось очистить канал уведомлений.")),
             )
-        logger.info("discord proposal admin lifecycle action selected actor_id=%s action=%s", self.actor_id, action_code)
+        CouncilSystemEventsService.record_admin_action(
+            provider="discord",
+            actor_user_id=str(self.actor_id),
+            action=action_code,
+            destination_id=str(getattr(interaction.channel, "id", "") or "") or None,
+            target_object="proposal_admin_action",
+            status="success",
+            reason="executed",
+        )
         return render_admin_action_result(action_code)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.actor_id:
+            CouncilSystemEventsService.record_admin_action(
+                provider="discord",
+                actor_user_id=str(getattr(interaction.user, "id", "") or ""),
+                action="admin_settings_interaction_check",
+                destination_id=str(getattr(interaction.channel, "id", "") or "") or None,
+                target_object="proposal_admin_menu",
+                status="denied",
+                reason="forbidden_not_owner",
+            )
             await interaction.response.send_message("❌ Это меню открыто для другого пользователя.", ephemeral=True)
             return False
         if not AuthorityService.is_super_admin("discord", str(interaction.user.id)):
+            CouncilSystemEventsService.record_admin_action(
+                provider="discord",
+                actor_user_id=str(getattr(interaction.user, "id", "") or ""),
+                action="admin_settings_interaction_check",
+                destination_id=str(getattr(interaction.channel, "id", "") or "") or None,
+                target_object="proposal_admin_menu",
+                status="denied",
+                reason="forbidden",
+            )
             await interaction.response.send_message("❌ Действие доступно только суперадмину.", ephemeral=True)
             return False
         return True
@@ -415,6 +459,15 @@ class _AdminActionButton(discord.ui.Button["ProposalAdminSettingsView"]):
     async def callback(self, interaction: discord.Interaction) -> None:
         action = PROPOSAL_ADMIN_ACTION_BY_CODE.get(self._action_code)
         if not action:
+            CouncilSystemEventsService.record_admin_action(
+                provider="discord",
+                actor_user_id=str(getattr(interaction.user, "id", "") or ""),
+                action=self._action_code,
+                destination_id=str(getattr(interaction.channel, "id", "") or "") or None,
+                target_object="proposal_admin_action",
+                status="denied",
+                reason="validation_action_not_found",
+            )
             await interaction.response.send_message("❌ Действие не найдено.", ephemeral=True)
             return
         if action.requires_confirmation:
@@ -431,6 +484,15 @@ class _AdminActionButton(discord.ui.Button["ProposalAdminSettingsView"]):
                 view=self._owner_view,
             )
         except Exception:
+            CouncilSystemEventsService.record_admin_action(
+                provider="discord",
+                actor_user_id=str(getattr(interaction.user, "id", "") or ""),
+                action=self._action_code,
+                destination_id=str(getattr(interaction.channel, "id", "") or "") or None,
+                target_object="proposal_admin_action",
+                status="failed",
+                reason="unexpected_error",
+            )
             logger.exception(
                 "discord proposal admin action failed actor_id=%s action=%s",
                 getattr(interaction.user, "id", None),
@@ -459,6 +521,15 @@ class _AdminEventsDestinationSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction) -> None:
         selected_id = str(self.values[0] if self.values else "").strip()
         if selected_id == "__empty__":
+            CouncilSystemEventsService.record_admin_action(
+                provider="discord",
+                actor_user_id=str(getattr(interaction.user, "id", "") or ""),
+                action="events_choose",
+                destination_id=None,
+                target_object="system_event_channel",
+                status="denied",
+                reason="validation_no_destinations",
+            )
             await interaction.response.send_message("❌ Сейчас нет доступных каналов для выбора.", ephemeral=True)
             return
         selected = next((item for item in self._owner_view.events_destinations if item.destination_id == selected_id), None)
@@ -498,12 +569,30 @@ class _AdminEventsSaveButton(discord.ui.Button["ProposalAdminSettingsView"]):
     async def callback(self, interaction: discord.Interaction) -> None:
         destination_id = str(self._owner_view.events_selected_destination_id or "").strip()
         if not destination_id:
+            CouncilSystemEventsService.record_admin_action(
+                provider="discord",
+                actor_user_id=str(getattr(interaction.user, "id", "") or ""),
+                action="events_save",
+                destination_id=None,
+                target_object="system_event_channel",
+                status="denied",
+                reason="validation_destination_not_selected",
+            )
             await interaction.response.send_message("❌ Сначала выберите канал.", ephemeral=True)
             return
         result = CouncilSystemEventsService.set_channel(
             provider="discord",
             actor_user_id=str(self._owner_view.actor_id),
             destination_id=destination_id,
+        )
+        CouncilSystemEventsService.record_admin_action(
+            provider="discord",
+            actor_user_id=str(self._owner_view.actor_id),
+            action="events_set_channel_here",
+            destination_id=destination_id,
+            target_object="system_event_channel",
+            status="success" if result.get("ok") else "failed",
+            reason=str(result.get("reason") or ("channel_saved" if result.get("ok") else "set_channel_failed")),
         )
         if not result.get("ok"):
             logger.error(
@@ -543,6 +632,15 @@ class _AdminConfirmExecuteButton(discord.ui.Button["ProposalAdminSettingsView"])
     async def callback(self, interaction: discord.Interaction) -> None:
         action_code = self._owner_view.pending_confirm_action_code
         if not action_code:
+            CouncilSystemEventsService.record_admin_action(
+                provider="discord",
+                actor_user_id=str(getattr(interaction.user, "id", "") or ""),
+                action="admin_confirm",
+                destination_id=str(getattr(interaction.channel, "id", "") or "") or None,
+                target_object="proposal_admin_confirm",
+                status="denied",
+                reason="validation_confirmation_expired",
+            )
             await interaction.response.send_message("❌ Подтверждение устарело.", ephemeral=True)
             return
         try:
@@ -554,6 +652,15 @@ class _AdminConfirmExecuteButton(discord.ui.Button["ProposalAdminSettingsView"])
                 view=self._owner_view,
             )
         except Exception:
+            CouncilSystemEventsService.record_admin_action(
+                provider="discord",
+                actor_user_id=str(getattr(interaction.user, "id", "") or ""),
+                action=action_code,
+                destination_id=str(getattr(interaction.channel, "id", "") or "") or None,
+                target_object="proposal_admin_confirm",
+                status="failed",
+                reason="unexpected_error",
+            )
             logger.exception(
                 "discord proposal admin confirm failed actor_id=%s action=%s",
                 getattr(interaction.user, "id", None),
