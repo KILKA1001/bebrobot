@@ -83,6 +83,37 @@ def _is_chat_send_permissions_error(error: TelegramBadRequest) -> bool:
     return "not enough rights to send" in str(error).lower()
 
 
+def _extract_profile_lookup_token(message_text: str | None) -> str | None:
+    text = str(message_text or "").strip()
+    if not text:
+        return None
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2:
+        return None
+    token = str(parts[1] or "").strip()
+    return token or None
+
+
+def _format_profile_lookup_candidate(candidate: dict[str, object]) -> str:
+    provider = str(candidate.get("provider") or "").strip()
+    username = str(candidate.get("username") or "").strip()
+    display_name = str(candidate.get("display_name") or "").strip()
+    provider_user_id = str(candidate.get("provider_user_id") or "").strip()
+    matched_by = str(candidate.get("matched_by") or "").strip()
+    parts: list[str] = []
+    if provider:
+        parts.append(provider)
+    if username:
+        parts.append(f"@{username.lstrip('@')}")
+    if display_name:
+        parts.append(display_name)
+    if provider_user_id:
+        parts.append(f"id={provider_user_id}")
+    if matched_by:
+        parts.append(f"via={matched_by}")
+    return " | ".join(parts) or "неизвестный пользователь"
+
+
 def _split_telegram_text(text: str, limit: int = _TELEGRAM_MESSAGE_LIMIT) -> list[str]:
     normalized_text = text or ""
     if len(normalized_text) <= limit:
@@ -366,10 +397,91 @@ async def profile_command(message: Message) -> None:
     telegram_user_id = message.from_user.id if message.from_user is not None else None
     display_name = message.from_user.full_name if message.from_user is not None else None
 
+    lookup_token = _extract_profile_lookup_token(getattr(message, "text", None))
     target_user = message.reply_to_message.from_user if message.reply_to_message else None
-    persist_telegram_identity_from_user(target_user)
-    target_user_id = target_user.id if target_user is not None else telegram_user_id
-    target_display_name = target_user.full_name if target_user is not None else display_name
+    target_user_id = telegram_user_id
+    target_display_name = display_name
+
+    if lookup_token:
+        lookup = await run_blocking_io(
+            "telegram.profile.resolve_user_lookup",
+            AccountsService.resolve_user_lookup,
+            lookup_token,
+            default_provider="telegram",
+            logger=logger,
+        )
+        lookup_status = str((lookup or {}).get("status") or "").strip()
+        candidates = list((lookup or {}).get("candidates") or [])
+        if lookup_status == "ok":
+            resolved = dict((lookup or {}).get("result") or {})
+            resolved_provider = str(resolved.get("provider") or "").strip()
+            if resolved_provider and resolved_provider != "telegram":
+                logger.warning(
+                    "telegram profile lookup resolved non-telegram provider actor_user_id=%s token=%s provider=%s",
+                    telegram_user_id,
+                    lookup_token,
+                    resolved_provider,
+                )
+                await _safe_answer(
+                    message,
+                    "❌ В этой команде можно указать только Telegram пользователя. Укажите @username из Telegram.",
+                )
+                return
+
+            resolved_user_id = str(resolved.get("provider_user_id") or "").strip()
+            if not resolved_user_id.isdigit():
+                logger.error(
+                    "telegram profile lookup returned invalid provider_user_id actor_user_id=%s token=%s resolved=%s",
+                    telegram_user_id,
+                    lookup_token,
+                    resolved,
+                )
+                await _safe_answer(
+                    message,
+                    "❌ Не удалось определить пользователя по указанному username. Проверьте написание и повторите команду.",
+                )
+                return
+            target_user_id = int(resolved_user_id)
+            target_display_name = (
+                str(resolved.get("display_name") or "").strip()
+                or f"@{str(resolved.get('username') or '').strip().lstrip('@')}"
+                or display_name
+            )
+        elif lookup_status == "multiple":
+            logger.warning(
+                "telegram profile lookup returned multiple candidates actor_user_id=%s token=%s candidates_count=%s",
+                telegram_user_id,
+                lookup_token,
+                len(candidates),
+            )
+            candidates_text = "\n".join(
+                f"• {_format_profile_lookup_candidate(candidate)}"
+                for candidate in candidates[:5]
+            )
+            await _safe_answer(
+                message,
+                "❌ Найдено несколько совпадений. Уточните username и повторите команду:\n"
+                f"{candidates_text}\n\n"
+                "Подсказка: введите точный Telegram username с символом @.",
+            )
+            return
+        else:
+            logger.warning(
+                "telegram profile lookup not found actor_user_id=%s token=%s status=%s",
+                telegram_user_id,
+                lookup_token,
+                lookup_status or "unknown",
+            )
+            await _safe_answer(
+                message,
+                "❌ Пользователь не найден в локальном списке. "
+                "Попросите пользователя один раз написать боту или выполнить /register, /link или /profile.",
+            )
+            return
+    elif target_user is not None:
+        persist_telegram_identity_from_user(target_user)
+        target_user_id = target_user.id
+        target_display_name = target_user.full_name
 
     response = await run_blocking_io(
         "telegram.profile.process_command",

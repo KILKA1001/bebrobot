@@ -9,7 +9,7 @@ from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, patch
 
 from bot.telegram_bot.commands import get_commands_router
-from bot.telegram_bot.commands.linking import roles_catalog_callback, roles_catalog_command
+from bot.telegram_bot.commands.linking import profile_command, roles_catalog_callback, roles_catalog_command
 from bot.telegram_bot.main import BOT_COMMANDS
 from bot.telegram_bot.commands import proposal as telegram_proposal
 
@@ -22,6 +22,71 @@ def test_get_commands_router_is_singleton_instance() -> None:
 
 
 class TelegramCommandsRouterTests(IsolatedAsyncioTestCase):
+    async def test_profile_command_resolves_target_from_username_argument(self) -> None:
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=123, full_name="Caller"),
+            text="/profile @target_user",
+            reply_to_message=None,
+            chat=SimpleNamespace(type="private", id=777),
+            answer=AsyncMock(),
+            bot=SimpleNamespace(
+                get_user_profile_photos=AsyncMock(return_value=SimpleNamespace(total_count=0, photos=[])),
+                get_me=AsyncMock(return_value=SimpleNamespace(id=999)),
+            ),
+        )
+
+        with (
+            patch("bot.telegram_bot.commands.linking.persist_telegram_identity_from_user"),
+            patch(
+                "bot.telegram_bot.commands.linking.run_blocking_io",
+                side_effect=[
+                    {
+                        "status": "ok",
+                        "result": {
+                            "provider": "telegram",
+                            "provider_user_id": "777000",
+                            "display_name": "Target User",
+                            "username": "target_user",
+                        },
+                    },
+                    "profile text",
+                ],
+            ) as run_blocking_io_mock,
+            patch("bot.telegram_bot.commands.linking._safe_answer", AsyncMock(return_value=True)) as safe_answer_mock,
+        ):
+            await profile_command(message)
+
+        self.assertEqual(run_blocking_io_mock.await_count, 2)
+        self.assertEqual(run_blocking_io_mock.await_args_list[0].args[0], "telegram.profile.resolve_user_lookup")
+        self.assertEqual(run_blocking_io_mock.await_args_list[1].args[0], "telegram.profile.process_command")
+        self.assertEqual(run_blocking_io_mock.await_args_list[1].kwargs["target_telegram_user_id"], 777000)
+        self.assertEqual(run_blocking_io_mock.await_args_list[1].kwargs["target_display_name"], "Target User")
+        safe_answer_mock.assert_awaited_once()
+
+    async def test_profile_command_shows_not_found_message_for_unknown_username(self) -> None:
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=123, full_name="Caller"),
+            text="/profile @missing_user",
+            reply_to_message=None,
+            chat=SimpleNamespace(type="private", id=777),
+            answer=AsyncMock(),
+        )
+
+        with (
+            patch("bot.telegram_bot.commands.linking.persist_telegram_identity_from_user"),
+            patch(
+                "bot.telegram_bot.commands.linking.run_blocking_io",
+                return_value={"status": "not_found", "candidates": []},
+            ) as run_blocking_io_mock,
+            patch("bot.telegram_bot.commands.linking._safe_answer", AsyncMock(return_value=True)) as safe_answer_mock,
+        ):
+            await profile_command(message)
+
+        run_blocking_io_mock.assert_awaited_once()
+        safe_answer_mock.assert_awaited_once()
+        text = safe_answer_mock.await_args.args[1]
+        assert "Пользователь не найден" in text
+
     async def test_proposal_menu_shows_admin_button_only_for_superadmin(self) -> None:
         superadmin_message = SimpleNamespace(
             from_user=SimpleNamespace(id=900),
