@@ -18,6 +18,7 @@ from bot.telegram_bot.systems.commands_logic import (
     render_roles_catalog_page,
 )
 from bot.systems.roles_catalog_shared import prepare_public_roles_catalog_pages
+from bot.services.proposal_ui_texts import PROPOSAL_ADMIN_SECTION_BY_CODE, PROPOSAL_ADMIN_ACTION_BY_CODE
 
 
 class TelegramCommandsLogicTests(unittest.TestCase):
@@ -234,7 +235,28 @@ class TelegramCommandsLogicTests(unittest.TestCase):
     def test_shop_command_contains_open_shop_hint(self):
         result = process_shop_command()
         self.assertIn("Магазин", result)
-        self.assertIn("Нажмите на товар", result)
+        self.assertIn("Выберите роль кнопкой ниже", result)
+
+    def test_proposal_admin_catalog_contains_election_stage_and_candidates_actions(self):
+        election = PROPOSAL_ADMIN_SECTION_BY_CODE["election"]
+        candidates = PROPOSAL_ADMIN_SECTION_BY_CODE["candidates"]
+
+        election_action_codes = {action.code for action in election.actions}
+        candidates_action_codes = {action.code for action in candidates.actions}
+
+        self.assertIn("election_open_candidates", election_action_codes)
+        self.assertIn("election_close_candidates", election_action_codes)
+        self.assertIn("election_start_voting", election_action_codes)
+        self.assertIn("election_finish_voting", election_action_codes)
+        self.assertIn("candidates_list", candidates_action_codes)
+        self.assertIn("candidates_approve", candidates_action_codes)
+        self.assertIn("candidates_reject", candidates_action_codes)
+        self.assertIn("candidates_manual_add", candidates_action_codes)
+
+    def test_proposal_admin_critical_actions_require_confirmation(self):
+        self.assertTrue(PROPOSAL_ADMIN_ACTION_BY_CODE["term_finish"].requires_confirmation)
+        self.assertTrue(PROPOSAL_ADMIN_ACTION_BY_CODE["election_start_voting"].requires_confirmation)
+        self.assertTrue(PROPOSAL_ADMIN_ACTION_BY_CODE["election_finish_voting"].requires_confirmation)
 
 
 if __name__ == "__main__":
