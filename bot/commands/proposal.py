@@ -33,6 +33,7 @@ from bot.services.proposal_ui_texts import (
     render_archive_lines,
     render_confirmation_prompt,
     render_help_text,
+    render_menu_action_explanations,
     render_menu_overview,
     render_status_text,
     render_submit_success_text,
@@ -145,10 +146,7 @@ class ProposalRootView(discord.ui.View):
             description=(
                 render_menu_overview()
                 + "\n\n"
-                "📝 «Подать предложение» — начать новый вопрос для Совета.\n"
-                "📍 «Статус» — проверить текущий этап по вашему последнему вопросу.\n"
-                "📚 «Архив решений» — открыть уже завершённые решения Совета.\n"
-                "❓ «Помощь» — посмотреть короткую пошаговую инструкцию."
+                + render_menu_action_explanations()
             ),
             color=discord.Color.blurple(),
         )
