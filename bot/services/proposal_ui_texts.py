@@ -221,10 +221,10 @@ PROPOSAL_ADMIN_SECTIONS: tuple[ProposalAdminSection, ...] = (
             ),
             ProposalAdminAction(
                 code="events_set_channel_here",
-                title="Назначить текущий канал",
-                hint="Сохранит этот чат или канал для служебных уведомлений Совета.",
+                title="Выбрать из доступных",
+                hint="Откроет список чатов и каналов, куда бот может отправлять служебные уведомления Совета.",
                 success_text="Канал уведомлений сохранён.",
-                next_step="Следующий шаг: проверьте, что служебные сообщения приходят в этот канал.",
+                next_step="Следующий шаг: выберите чат или канал, затем подтвердите сохранение.",
             ),
             ProposalAdminAction(
                 code="events_clear_channel",

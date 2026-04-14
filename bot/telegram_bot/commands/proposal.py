@@ -18,6 +18,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from bot.services.council_feedback_service import CouncilFeedbackService
 from bot.services.council_system_events_service import CouncilSystemEventsService
 from bot.services.authority_service import AuthorityService
+from bot.services.guiy_publish_destinations_service import GuiyPublishDestination, GuiyPublishDestinationsService
 from bot.services.proposal_ui_texts import (
     ARCHIVE_PERIOD_LABELS,
     ARCHIVE_STATUS_LABELS,
@@ -52,8 +53,10 @@ class PendingProposal:
 _PENDING_PROPOSAL_INPUT: dict[int, float] = {}
 _PENDING_PROPOSAL_CONFIRM: dict[int, PendingProposal] = {}
 _PENDING_ADMIN_CONFIRM: dict[int, str] = {}
+_PENDING_EVENTS_DESTINATION_PICKER: dict[int, dict[str, object]] = {}
 _PENDING_TTL_SECONDS = 900
 _ARCHIVE_FILTERS_BY_USER: dict[int, dict[str, str]] = {}
+_TELEGRAM_EVENTS_DESTINATIONS_PAGE_SIZE = 6
 
 
 def _archive_filters(user_id: int) -> dict[str, str]:
@@ -126,6 +129,7 @@ def _cleanup_pending(user_id: int) -> None:
     _PENDING_PROPOSAL_INPUT.pop(user_id, None)
     _PENDING_PROPOSAL_CONFIRM.pop(user_id, None)
     _PENDING_ADMIN_CONFIRM.pop(user_id, None)
+    _PENDING_EVENTS_DESTINATION_PICKER.pop(user_id, None)
 
 
 def _is_alive(created_at: float | None) -> bool:
@@ -165,6 +169,92 @@ def _execute_admin_action(actor_id: int, action_code: str, *, current_chat_id: s
         )
     logger.info("telegram proposal admin lifecycle action selected actor_id=%s action=%s", actor_id, action_code)
     return render_admin_action_result(action_code)
+
+
+async def _collect_writable_telegram_destinations(bot) -> list[GuiyPublishDestination]:
+    destinations = GuiyPublishDestinationsService.list_telegram_destinations()
+    if not destinations:
+        return []
+    try:
+        bot_user = await bot.get_me()
+    except Exception:
+        logger.exception("telegram proposal events failed to resolve bot identity")
+        return []
+
+    writable: list[GuiyPublishDestination] = []
+    for destination in destinations:
+        destination_id = str(destination.destination_id or "").strip()
+        if not destination_id:
+            continue
+        try:
+            member = await bot.get_chat_member(int(destination_id), bot_user.id)
+        except Exception:
+            logger.exception("telegram proposal events destination access lookup failed destination_id=%s", destination_id)
+            continue
+        status = str(getattr(member, "status", "") or "").strip()
+        if status in {"left", "kicked"}:
+            GuiyPublishDestinationsService.mark_telegram_chat_inactive(destination_id, reason=f"status={status}")
+            logger.warning("telegram proposal events destination skipped: bot not in chat destination_id=%s", destination_id)
+            continue
+        if getattr(member, "can_send_messages", None) is False:
+            logger.warning("telegram proposal events destination skipped: missing send permission destination_id=%s", destination_id)
+            continue
+        writable.append(destination)
+    return writable
+
+
+def _events_picker_page(destinations: list[GuiyPublishDestination], page: int) -> tuple[int, int, list[GuiyPublishDestination]]:
+    total_pages = max((len(destinations) - 1) // _TELEGRAM_EVENTS_DESTINATIONS_PAGE_SIZE + 1, 1)
+    safe_page = min(max(page, 0), total_pages - 1)
+    start = safe_page * _TELEGRAM_EVENTS_DESTINATIONS_PAGE_SIZE
+    return safe_page, total_pages, destinations[start : start + _TELEGRAM_EVENTS_DESTINATIONS_PAGE_SIZE]
+
+
+def _events_picker_text(destinations: list[GuiyPublishDestination], page: int) -> str:
+    if not destinations:
+        return (
+            "⚠️ <b>Нет доступных чатов и каналов</b>\n"
+            "Бот пока не нашёл чаты, где он может отправлять сообщения.\n"
+            "Проверьте, что бот добавлен в нужный чат и ему разрешено писать."
+        )
+    safe_page, total_pages, _items = _events_picker_page(destinations, page)
+    return (
+        "⚙️ <b>Канал и чат уведомлений</b>\n\n"
+        "Выберите чат или канал из списка, куда бот будет отправлять системные события Совета.\n"
+        f"Страница: <b>{safe_page + 1}/{total_pages}</b>"
+    )
+
+
+def _events_picker_keyboard(destinations: list[GuiyPublishDestination], page: int) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    safe_page, total_pages, items = _events_picker_page(destinations, page)
+    for item in items:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"📍 {item.display_label[:48]}",
+                    callback_data=f"proposal:events_choose:{item.destination_id}",
+                )
+            ]
+        )
+    navigation: list[InlineKeyboardButton] = []
+    if safe_page > 0:
+        navigation.append(InlineKeyboardButton(text="⬅️", callback_data=f"proposal:events_page:{safe_page - 1}"))
+    if safe_page + 1 < total_pages:
+        navigation.append(InlineKeyboardButton(text="➡️", callback_data=f"proposal:events_page:{safe_page + 1}"))
+    if navigation:
+        rows.append(navigation)
+    rows.append([InlineKeyboardButton(text="↩️ Отмена", callback_data="proposal:events_cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _events_pick_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Сохранить", callback_data="proposal:events_save")],
+            [InlineKeyboardButton(text="↩️ Отмена", callback_data="proposal:events_cancel")],
+        ]
+    )
 
 
 @router.message(Command("proposal"))
@@ -259,6 +349,20 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
                 )
                 await callback.answer()
                 return
+            if action_code == "events_set_channel_here":
+                destinations = await _collect_writable_telegram_destinations(callback.message.bot)
+                _PENDING_EVENTS_DESTINATION_PICKER[actor_id] = {
+                    "destinations": destinations,
+                    "page": 0,
+                    "selected_destination_id": None,
+                }
+                await callback.message.edit_text(
+                    _events_picker_text(destinations, 0),
+                    parse_mode="HTML",
+                    reply_markup=_events_picker_keyboard(destinations, 0),
+                )
+                await callback.answer()
+                return
             result_text = _execute_admin_action(
                 actor_id,
                 action_code,
@@ -294,6 +398,94 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
                 result_text,
                 parse_mode="HTML",
                 reply_markup=_admin_section_keyboard(section_code),
+            )
+            await callback.answer()
+            return
+        if action.startswith("events_page:"):
+            if not AuthorityService.is_super_admin("telegram", str(actor_id)):
+                await callback.answer("Доступно только суперадмину.", show_alert=True)
+                return
+            pending = _PENDING_EVENTS_DESTINATION_PICKER.get(actor_id) or {}
+            destinations = list(pending.get("destinations") or [])
+            page_raw = action.split(":", 1)[1]
+            try:
+                page = int(page_raw)
+            except ValueError:
+                page = 0
+            pending["page"] = page
+            _PENDING_EVENTS_DESTINATION_PICKER[actor_id] = pending
+            await callback.message.edit_text(
+                _events_picker_text(destinations, page),
+                parse_mode="HTML",
+                reply_markup=_events_picker_keyboard(destinations, page),
+            )
+            await callback.answer()
+            return
+        if action.startswith("events_choose:"):
+            if not AuthorityService.is_super_admin("telegram", str(actor_id)):
+                await callback.answer("Доступно только суперадмину.", show_alert=True)
+                return
+            pending = _PENDING_EVENTS_DESTINATION_PICKER.get(actor_id)
+            if not pending:
+                await callback.answer("Список устарел. Откройте выбор заново.", show_alert=True)
+                return
+            destination_id = action.split(":", 1)[1]
+            destinations = list(pending.get("destinations") or [])
+            selected = next((item for item in destinations if item.destination_id == destination_id), None)
+            if not selected:
+                logger.warning("telegram proposal events destination no longer available actor_id=%s destination_id=%s", actor_id, destination_id)
+                await callback.answer("Этот чат больше недоступен. Выберите другой.", show_alert=True)
+                return
+            pending["selected_destination_id"] = selected.destination_id
+            _PENDING_EVENTS_DESTINATION_PICKER[actor_id] = pending
+            await callback.message.edit_text(
+                "Вы выбрали: "
+                f"<b>{selected.display_label}</b>\n"
+                "После сохранения системные события Совета будут отправляться сюда.",
+                parse_mode="HTML",
+                reply_markup=_events_pick_confirm_keyboard(),
+            )
+            await callback.answer()
+            return
+        if action == "events_save":
+            if not AuthorityService.is_super_admin("telegram", str(actor_id)):
+                await callback.answer("Доступно только суперадмину.", show_alert=True)
+                return
+            pending = _PENDING_EVENTS_DESTINATION_PICKER.get(actor_id)
+            destination_id = str((pending or {}).get("selected_destination_id") or "").strip()
+            if not destination_id:
+                await callback.answer("Сначала выберите чат или канал.", show_alert=True)
+                return
+            result = CouncilSystemEventsService.set_channel(
+                provider="telegram",
+                actor_user_id=str(actor_id),
+                destination_id=destination_id,
+            )
+            if not result.get("ok"):
+                logger.error(
+                    "telegram proposal events save failed actor_id=%s destination_id=%s message=%s",
+                    actor_id,
+                    destination_id,
+                    result.get("message"),
+                )
+            _PENDING_EVENTS_DESTINATION_PICKER.pop(actor_id, None)
+            result_text = render_admin_action_result(
+                "events_set_channel_here",
+                custom_result=str(result.get("message") or ("✅ Канал уведомлений сохранён." if result.get("ok") else "❌ Не удалось сохранить канал уведомлений.")),
+            )
+            await callback.message.edit_text(
+                result_text,
+                parse_mode="HTML",
+                reply_markup=_admin_section_keyboard("events"),
+            )
+            await callback.answer()
+            return
+        if action == "events_cancel":
+            _PENDING_EVENTS_DESTINATION_PICKER.pop(actor_id, None)
+            await callback.message.edit_text(
+                render_admin_section_text("events"),
+                parse_mode="HTML",
+                reply_markup=_admin_section_keyboard("events"),
             )
             await callback.answer()
             return
