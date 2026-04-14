@@ -20,6 +20,13 @@ from bot.services.proposal_ui_texts import (
     ARCHIVE_PERIOD_LABELS,
     ARCHIVE_STATUS_LABELS,
     ARCHIVE_TYPE_LABELS,
+    PROPOSAL_ADMIN_ACTION_BY_CODE,
+    PROPOSAL_ADMIN_SECTION_BY_CODE,
+    PROPOSAL_ADMIN_SECTIONS,
+    render_admin_action_result,
+    render_admin_confirm_text,
+    render_admin_root_text,
+    render_admin_section_text,
     render_archive_empty_text,
     render_archive_filters_text,
     render_archive_lines,
@@ -248,16 +255,77 @@ class ProposalAdminSettingsView(discord.ui.View):
     def __init__(self, actor_id: int):
         super().__init__(timeout=300)
         self.actor_id = actor_id
+        self.current_section_code: str | None = None
+        self.pending_confirm_action_code: str | None = None
+        self._rebuild_items()
 
-    def build_embed(self) -> discord.Embed:
-        return discord.Embed(
-            title="⚙️ Настройки Совета",
-            description=(
-                "Управление каналом системных событий Совета.\n"
-                "Кнопка «Назначить текущий канал» сохранит этот канал для уведомлений."
-            ),
-            color=discord.Color.dark_gold(),
-        )
+    def _rebuild_items(self) -> None:
+        self.clear_items()
+        if self.pending_confirm_action_code:
+            self.add_item(_AdminConfirmExecuteButton(self))
+            self.add_item(_AdminConfirmCancelButton(self))
+            self.add_item(_AdminBackToRootButton(self))
+            return
+        if self.current_section_code:
+            section = PROPOSAL_ADMIN_SECTION_BY_CODE.get(self.current_section_code)
+            if section:
+                for action in section.actions[:5]:
+                    self.add_item(_AdminActionButton(self, action.code, action.title))
+            self.add_item(_AdminBackToRootButton(self))
+            return
+        for section in PROPOSAL_ADMIN_SECTIONS[:5]:
+            self.add_item(_AdminSectionButton(self, section.code, section.title))
+
+    def build_embed(self, *, result_text: str | None = None) -> discord.Embed:
+        if self.pending_confirm_action_code:
+            description = render_admin_confirm_text(self.pending_confirm_action_code).replace("<b>", "**").replace("</b>", "**")
+            return discord.Embed(title="⚠️ Подтверждение", description=description, color=discord.Color.orange())
+        if self.current_section_code:
+            section = PROPOSAL_ADMIN_SECTION_BY_CODE.get(self.current_section_code)
+            title = f"⚙️ {section.title}" if section else "⚙️ Админ-меню Совета"
+            description = render_admin_section_text(self.current_section_code).replace("<b>", "**").replace("</b>", "**")
+            if result_text:
+                description += f"\n\n{result_text}"
+            return discord.Embed(title=title, description=description, color=discord.Color.dark_gold())
+        description = render_admin_root_text().replace("<b>", "**").replace("</b>", "**")
+        if result_text:
+            description += f"\n\n{result_text}"
+        return discord.Embed(title="⚙️ Админ-меню Совета", description=description, color=discord.Color.dark_gold())
+
+    async def run_action(self, interaction: discord.Interaction, action_code: str) -> str:
+        if action_code == "events_show_channel":
+            current = CouncilSystemEventsService.get_channel("discord")
+            status_text = (
+                f"✅ Сейчас выбран канал `{current}` для системных уведомлений Совета."
+                if current
+                else "ℹ️ Канал системных уведомлений Совета пока не настроен."
+            )
+            return render_admin_action_result(action_code, custom_result=status_text)
+        if action_code == "events_set_channel_here":
+            channel_id = str(getattr(interaction.channel, "id", "") or "").strip()
+            guild_id = str(getattr(getattr(interaction, "guild", None), "id", "") or "").strip()
+            destination_id = f"{guild_id}:{channel_id}" if guild_id and channel_id else ""
+            result = CouncilSystemEventsService.set_channel(
+                provider="discord",
+                actor_user_id=str(self.actor_id),
+                destination_id=destination_id,
+            )
+            return render_admin_action_result(
+                action_code,
+                custom_result=str(result.get("message") or ("✅ Канал уведомлений сохранён." if result.get("ok") else "❌ Не удалось сохранить канал уведомлений.")),
+            )
+        if action_code == "events_clear_channel":
+            result = CouncilSystemEventsService.set_channel(
+                provider="discord",
+                actor_user_id=str(self.actor_id),
+                destination_id="",
+            )
+            return render_admin_action_result(
+                action_code,
+                custom_result=str(result.get("message") or ("✅ Канал уведомлений очищен." if result.get("ok") else "❌ Не удалось очистить канал уведомлений.")),
+            )
+        logger.info("discord proposal admin lifecycle action selected actor_id=%s action=%s", self.actor_id, action_code)
+        return render_admin_action_result(action_code)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.actor_id:
@@ -268,50 +336,101 @@ class ProposalAdminSettingsView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="📡 Показать канал событий", style=discord.ButtonStyle.secondary)
-    async def show_channel(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        current = CouncilSystemEventsService.get_channel("discord")
-        message = (
-            f"✅ Сейчас выбран канал `{current}` для системных событий Совета."
-            if current
-            else "ℹ️ Канал системных событий Совета пока не настроен."
-        )
-        embed = self.build_embed()
-        embed.add_field(name="Текущая настройка", value=message, inline=False)
-        await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="📌 Назначить текущий канал", style=discord.ButtonStyle.primary)
-    async def set_channel_here(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        channel_id = str(getattr(interaction.channel, "id", "") or "").strip()
-        guild_id = str(getattr(getattr(interaction, "guild", None), "id", "") or "").strip()
-        destination_id = f"{guild_id}:{channel_id}" if guild_id and channel_id else ""
-        result = CouncilSystemEventsService.set_channel(
-            provider="discord",
-            actor_user_id=str(self.actor_id),
-            destination_id=destination_id,
-        )
-        embed = self.build_embed()
-        embed.add_field(
-            name="Результат",
-            value=str(result.get("message") or ("✅ Канал системных событий Совета сохранён." if result.get("ok") else "❌ Не удалось сохранить канал.")),
-            inline=False,
-        )
-        await interaction.response.edit_message(embed=embed, view=self)
+class _AdminSectionButton(discord.ui.Button["ProposalAdminSettingsView"]):
+    def __init__(self, view: ProposalAdminSettingsView, section_code: str, title: str):
+        super().__init__(label=f"📂 {title}", style=discord.ButtonStyle.secondary)
+        self._owner_view = view
+        self._section_code = section_code
 
-    @discord.ui.button(label="🧹 Очистить канал", style=discord.ButtonStyle.danger)
-    async def clear_channel(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        result = CouncilSystemEventsService.set_channel(
-            provider="discord",
-            actor_user_id=str(self.actor_id),
-            destination_id="",
-        )
-        embed = self.build_embed()
-        embed.add_field(
-            name="Результат",
-            value=str(result.get("message") or ("✅ Канал системных событий Совета очищен." if result.get("ok") else "❌ Не удалось очистить канал.")),
-            inline=False,
-        )
-        await interaction.response.edit_message(embed=embed, view=self)
+    async def callback(self, interaction: discord.Interaction) -> None:
+        self._owner_view.current_section_code = self._section_code
+        self._owner_view.pending_confirm_action_code = None
+        self._owner_view._rebuild_items()
+        await interaction.response.edit_message(embed=self._owner_view.build_embed(), view=self._owner_view)
+
+
+class _AdminActionButton(discord.ui.Button["ProposalAdminSettingsView"]):
+    def __init__(self, view: ProposalAdminSettingsView, action_code: str, title: str):
+        super().__init__(label=f"➡️ {title}", style=discord.ButtonStyle.primary)
+        self._owner_view = view
+        self._action_code = action_code
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        action = PROPOSAL_ADMIN_ACTION_BY_CODE.get(self._action_code)
+        if not action:
+            await interaction.response.send_message("❌ Действие не найдено.", ephemeral=True)
+            return
+        if action.requires_confirmation:
+            self._owner_view.pending_confirm_action_code = self._action_code
+            self._owner_view._rebuild_items()
+            await interaction.response.edit_message(embed=self._owner_view.build_embed(), view=self._owner_view)
+            return
+        try:
+            result_text = await self._owner_view.run_action(interaction, self._action_code)
+            self._owner_view.pending_confirm_action_code = None
+            self._owner_view._rebuild_items()
+            await interaction.response.edit_message(
+                embed=self._owner_view.build_embed(result_text=result_text),
+                view=self._owner_view,
+            )
+        except Exception:
+            logger.exception(
+                "discord proposal admin action failed actor_id=%s action=%s",
+                getattr(interaction.user, "id", None),
+                self._action_code,
+            )
+            await interaction.response.send_message("❌ Не удалось выполнить действие. Попробуйте снова.", ephemeral=True)
+
+
+class _AdminConfirmExecuteButton(discord.ui.Button["ProposalAdminSettingsView"]):
+    def __init__(self, view: ProposalAdminSettingsView):
+        super().__init__(label="✅ Подтвердить", style=discord.ButtonStyle.danger)
+        self._owner_view = view
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        action_code = self._owner_view.pending_confirm_action_code
+        if not action_code:
+            await interaction.response.send_message("❌ Подтверждение устарело.", ephemeral=True)
+            return
+        try:
+            result_text = await self._owner_view.run_action(interaction, action_code)
+            self._owner_view.pending_confirm_action_code = None
+            self._owner_view._rebuild_items()
+            await interaction.response.edit_message(
+                embed=self._owner_view.build_embed(result_text=result_text),
+                view=self._owner_view,
+            )
+        except Exception:
+            logger.exception(
+                "discord proposal admin confirm failed actor_id=%s action=%s",
+                getattr(interaction.user, "id", None),
+                action_code,
+            )
+            await interaction.response.send_message("❌ Не удалось подтвердить действие. Попробуйте снова.", ephemeral=True)
+
+
+class _AdminConfirmCancelButton(discord.ui.Button["ProposalAdminSettingsView"]):
+    def __init__(self, view: ProposalAdminSettingsView):
+        super().__init__(label="↩️ Отмена", style=discord.ButtonStyle.secondary)
+        self._owner_view = view
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        self._owner_view.pending_confirm_action_code = None
+        self._owner_view._rebuild_items()
+        await interaction.response.edit_message(embed=self._owner_view.build_embed(), view=self._owner_view)
+
+
+class _AdminBackToRootButton(discord.ui.Button["ProposalAdminSettingsView"]):
+    def __init__(self, view: ProposalAdminSettingsView):
+        super().__init__(label="↩️ К разделам", style=discord.ButtonStyle.secondary)
+        self._owner_view = view
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        self._owner_view.current_section_code = None
+        self._owner_view.pending_confirm_action_code = None
+        self._owner_view._rebuild_items()
+        await interaction.response.edit_message(embed=self._owner_view.build_embed(), view=self._owner_view)
 
 
 class ProposalArchiveFilterView(discord.ui.View):
@@ -400,4 +519,3 @@ async def proposal(ctx: commands.Context) -> None:
     except Exception:
         logger.exception("discord proposal command failed actor_id=%s", getattr(getattr(ctx, "author", None), "id", None))
         await ctx.reply("❌ Не удалось открыть меню предложений.", mention_author=False)
-

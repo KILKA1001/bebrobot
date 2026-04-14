@@ -22,8 +22,15 @@ from bot.services.proposal_ui_texts import (
     ARCHIVE_PERIOD_LABELS,
     ARCHIVE_STATUS_LABELS,
     ARCHIVE_TYPE_LABELS,
+    PROPOSAL_ADMIN_ACTION_BY_CODE,
+    PROPOSAL_ADMIN_SECTION_BY_CODE,
+    PROPOSAL_ADMIN_SECTIONS,
     build_status_parts,
     build_submit_success_parts,
+    render_admin_action_result,
+    render_admin_confirm_text,
+    render_admin_root_text,
+    render_admin_section_text,
     render_archive_empty_text,
     render_archive_filters_text,
     render_archive_lines,
@@ -44,6 +51,7 @@ class PendingProposal:
 
 _PENDING_PROPOSAL_INPUT: dict[int, float] = {}
 _PENDING_PROPOSAL_CONFIRM: dict[int, PendingProposal] = {}
+_PENDING_ADMIN_CONFIRM: dict[int, str] = {}
 _PENDING_TTL_SECONDS = 900
 _ARCHIVE_FILTERS_BY_USER: dict[int, dict[str, str]] = {}
 
@@ -78,13 +86,28 @@ def _menu_keyboard(*, is_superadmin: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _admin_keyboard() -> InlineKeyboardMarkup:
+def _admin_root_keyboard() -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text=f"📂 {section.title}", callback_data=f"proposal:admin_section:{section.code}")] for section in PROPOSAL_ADMIN_SECTIONS]
+    rows.append([InlineKeyboardButton(text="↩️ В меню", callback_data="proposal:menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _admin_section_keyboard(section_code: str) -> InlineKeyboardMarkup:
+    section = PROPOSAL_ADMIN_SECTION_BY_CODE.get(section_code)
+    if not section:
+        return _admin_root_keyboard()
+    rows = [[InlineKeyboardButton(text=f"➡️ {action.title}", callback_data=f"proposal:admin_action:{action.code}")] for action in section.actions]
+    rows.append([InlineKeyboardButton(text="↩️ К разделам", callback_data="proposal:admin")])
+    rows.append([InlineKeyboardButton(text="↩️ В меню", callback_data="proposal:menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _admin_confirm_keyboard(action_code: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📡 Показать канал событий", callback_data="proposal:admin_channel_show")],
-            [InlineKeyboardButton(text="📌 Назначить текущий чат", callback_data="proposal:admin_channel_set_here")],
-            [InlineKeyboardButton(text="🧹 Очистить канал", callback_data="proposal:admin_channel_clear")],
-            [InlineKeyboardButton(text="↩️ В меню", callback_data="proposal:menu")],
+            [InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"proposal:admin_confirm:{action_code}")],
+            [InlineKeyboardButton(text="↩️ Отмена", callback_data=f"proposal:admin_action:{action_code}")],
+            [InlineKeyboardButton(text="↩️ К разделам", callback_data="proposal:admin")],
         ]
     )
 
@@ -102,12 +125,46 @@ def _confirm_keyboard() -> InlineKeyboardMarkup:
 def _cleanup_pending(user_id: int) -> None:
     _PENDING_PROPOSAL_INPUT.pop(user_id, None)
     _PENDING_PROPOSAL_CONFIRM.pop(user_id, None)
+    _PENDING_ADMIN_CONFIRM.pop(user_id, None)
 
 
 def _is_alive(created_at: float | None) -> bool:
     if not created_at:
         return False
     return (time.time() - created_at) <= _PENDING_TTL_SECONDS
+
+
+def _execute_admin_action(actor_id: int, action_code: str, *, current_chat_id: str) -> str:
+    if action_code == "events_show_channel":
+        current = CouncilSystemEventsService.get_channel("telegram")
+        status_text = (
+            f"✅ Сейчас выбран чат `{current}` для системных уведомлений Совета."
+            if current
+            else "ℹ️ Канал системных уведомлений Совета пока не настроен."
+        )
+        return render_admin_action_result(action_code, custom_result=status_text)
+    if action_code == "events_set_channel_here":
+        result = CouncilSystemEventsService.set_channel(
+            provider="telegram",
+            actor_user_id=str(actor_id),
+            destination_id=current_chat_id,
+        )
+        return render_admin_action_result(
+            action_code,
+            custom_result=str(result.get("message") or ("✅ Канал уведомлений сохранён." if result.get("ok") else "❌ Не удалось сохранить канал уведомлений.")),
+        )
+    if action_code == "events_clear_channel":
+        result = CouncilSystemEventsService.set_channel(
+            provider="telegram",
+            actor_user_id=str(actor_id),
+            destination_id="",
+        )
+        return render_admin_action_result(
+            action_code,
+            custom_result=str(result.get("message") or ("✅ Канал уведомлений очищен." if result.get("ok") else "❌ Не удалось очистить канал уведомлений.")),
+        )
+    logger.info("telegram proposal admin lifecycle action selected actor_id=%s action=%s", actor_id, action_code)
+    return render_admin_action_result(action_code)
 
 
 @router.message(Command("proposal"))
@@ -163,49 +220,80 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
             if not AuthorityService.is_super_admin("telegram", str(actor_id)):
                 await callback.answer("Доступно только суперадмину.", show_alert=True)
                 return
+            _PENDING_ADMIN_CONFIRM.pop(actor_id, None)
             await callback.message.edit_text(
-                "⚙️ <b>Настройки Совета</b>\n\n"
-                "Здесь можно настроить канал системных событий Совета.\n"
-                "Если выберете «Назначить текущий чат», события будут отправляться в этот чат.",
-                reply_markup=_admin_keyboard(),
+                render_admin_root_text(),
+                reply_markup=_admin_root_keyboard(),
                 parse_mode="HTML",
             )
             await callback.answer()
             return
-        if action in {"admin_channel_show", "admin_channel_set_here", "admin_channel_clear"}:
+        if action.startswith("admin_section:"):
             if not AuthorityService.is_super_admin("telegram", str(actor_id)):
                 await callback.answer("Доступно только суперадмину.", show_alert=True)
                 return
-            if action == "admin_channel_show":
-                current = CouncilSystemEventsService.get_channel("telegram")
-                text = (
-                    f"✅ Сейчас выбран чат `{current}` для системных событий Совета."
-                    if current
-                    else "ℹ️ Канал системных событий Совета пока не настроен."
-                )
-                await callback.message.edit_text(text, reply_markup=_admin_keyboard(), parse_mode="Markdown")
-                await callback.answer()
-                return
-            if action == "admin_channel_set_here":
-                result = CouncilSystemEventsService.set_channel(
-                    provider="telegram",
-                    actor_user_id=str(actor_id),
-                    destination_id=str(getattr(callback.message.chat, "id", "") or ""),
-                )
-                await callback.message.edit_text(
-                    str(result.get("message") or ("✅ Чат системных событий Совета сохранён." if result.get("ok") else "❌ Не удалось сохранить чат.")),
-                    reply_markup=_admin_keyboard(),
-                )
-                await callback.answer()
-                return
-            result = CouncilSystemEventsService.set_channel(
-                provider="telegram",
-                actor_user_id=str(actor_id),
-                destination_id="",
-            )
+            section_code = action.split(":", 1)[1]
+            _PENDING_ADMIN_CONFIRM.pop(actor_id, None)
             await callback.message.edit_text(
-                str(result.get("message") or ("✅ Чат системных событий Совета очищен." if result.get("ok") else "❌ Не удалось очистить чат.")),
-                reply_markup=_admin_keyboard(),
+                render_admin_section_text(section_code),
+                reply_markup=_admin_section_keyboard(section_code),
+                parse_mode="HTML",
+            )
+            await callback.answer()
+            return
+        if action.startswith("admin_action:"):
+            if not AuthorityService.is_super_admin("telegram", str(actor_id)):
+                await callback.answer("Доступно только суперадмину.", show_alert=True)
+                return
+            action_code = action.split(":", 1)[1]
+            admin_action = PROPOSAL_ADMIN_ACTION_BY_CODE.get(action_code)
+            if not admin_action:
+                await callback.answer("Действие не найдено.", show_alert=True)
+                return
+            if admin_action.requires_confirmation:
+                _PENDING_ADMIN_CONFIRM[actor_id] = action_code
+                await callback.message.edit_text(
+                    render_admin_confirm_text(action_code),
+                    parse_mode="HTML",
+                    reply_markup=_admin_confirm_keyboard(action_code),
+                )
+                await callback.answer()
+                return
+            result_text = _execute_admin_action(
+                actor_id,
+                action_code,
+                current_chat_id=str(getattr(callback.message.chat, "id", "") or ""),
+            )
+            section = next((item for item in PROPOSAL_ADMIN_SECTIONS if any(action.code == action_code for action in item.actions)), None)
+            section_code = section.code if section else "events"
+            await callback.message.edit_text(
+                result_text,
+                parse_mode="HTML",
+                reply_markup=_admin_section_keyboard(section_code),
+            )
+            await callback.answer()
+            return
+        if action.startswith("admin_confirm:"):
+            if not AuthorityService.is_super_admin("telegram", str(actor_id)):
+                await callback.answer("Доступно только суперадмину.", show_alert=True)
+                return
+            action_code = action.split(":", 1)[1]
+            pending = _PENDING_ADMIN_CONFIRM.get(actor_id)
+            if pending != action_code:
+                await callback.answer("Подтверждение устарело. Откройте действие снова.", show_alert=True)
+                return
+            _PENDING_ADMIN_CONFIRM.pop(actor_id, None)
+            result_text = _execute_admin_action(
+                actor_id,
+                action_code,
+                current_chat_id=str(getattr(callback.message.chat, "id", "") or ""),
+            )
+            section = next((item for item in PROPOSAL_ADMIN_SECTIONS if any(action.code == action_code for action in item.actions)), None)
+            section_code = section.code if section else "events"
+            await callback.message.edit_text(
+                result_text,
+                parse_mode="HTML",
+                reply_markup=_admin_section_keyboard(section_code),
             )
             await callback.answer()
             return
@@ -258,7 +346,7 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
                 f"{success_parts['status']}\n\n"
                 f"{success_parts['next_step']}",
                 parse_mode="HTML",
-                reply_markup=_menu_keyboard(),
+                reply_markup=_menu_keyboard(is_superadmin=AuthorityService.is_super_admin("telegram", str(actor_id))),
             )
             await callback.answer()
             return
@@ -286,7 +374,11 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
                     actor_id,
                     payload.get("message"),
                 )
-            await callback.message.edit_text(text, parse_mode="HTML", reply_markup=_menu_keyboard())
+            await callback.message.edit_text(
+                text,
+                parse_mode="HTML",
+                reply_markup=_menu_keyboard(is_superadmin=AuthorityService.is_super_admin("telegram", str(actor_id))),
+            )
             await callback.answer()
             return
 
@@ -375,7 +467,7 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
             await callback.message.edit_text(
                 render_help_text().replace("❓ Как пользоваться:", "❓ <b>Помощь</b>"),
                 parse_mode="HTML",
-                reply_markup=_menu_keyboard(),
+                reply_markup=_menu_keyboard(is_superadmin=AuthorityService.is_super_admin("telegram", str(actor_id))),
             )
             await callback.answer()
             return
