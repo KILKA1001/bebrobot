@@ -72,6 +72,9 @@ def test_superadmin_can_save_and_clear_channel(monkeypatch):
     assert clear_result["ok"] is True
     assert "telegram" in deleted_providers
     assert len(audit_rows) >= 2
+    assert all("details" in row for row in audit_rows)
+    assert any(row.get("details", {}).get("action") == row.get("action") for row in audit_rows)
+    assert any(row.get("details", {}).get("actor_user_id") == "101" for row in audit_rows)
     assert any(row.get("action") == "set_channel" and row.get("status") == "success" for row in audit_rows)
     assert any(row.get("action") == "clear_channel" and row.get("status") == "success" for row in audit_rows)
 

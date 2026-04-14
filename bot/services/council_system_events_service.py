@@ -112,6 +112,7 @@ class CouncilSystemEventsService:
                     "source_platform": provider,
                     "details": {
                         "actor_user_id": actor_user_id,
+                        "action": action,
                         "destination_id": destination_id,
                         "target_object": target_object,
                         "reason": reason,
