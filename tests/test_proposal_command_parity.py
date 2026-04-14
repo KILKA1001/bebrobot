@@ -18,12 +18,14 @@ def test_proposal_command_registered_on_both_platforms() -> None:
     assert "proposal_router" in telegram_init
 
 
-def test_proposal_system_channel_command_exists_on_both_platforms() -> None:
+def test_proposal_channel_settings_are_inside_single_proposal_command() -> None:
     discord_source = Path("bot/commands/proposal.py").read_text(encoding="utf-8")
     telegram_source = Path("bot/telegram_bot/commands/proposal.py").read_text(encoding="utf-8")
 
-    assert "proposal_system_channel" in discord_source
-    assert "proposal_system_channel" in telegram_source
+    assert "proposal_system_channel" not in discord_source
+    assert "proposal_system_channel" not in telegram_source
+    assert "Настройки Совета" in discord_source
+    assert "Настройки Совета" in telegram_source
 
 
 def test_proposal_commands_use_shared_status_and_steps_layer() -> None:
