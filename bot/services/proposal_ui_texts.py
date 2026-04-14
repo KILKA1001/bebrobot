@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Iterable
 
 _STATE_NOW_NEXT: dict[str, tuple[str, str]] = {
@@ -50,6 +51,198 @@ PROPOSAL_HELP_STEPS: tuple[str, ...] = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class ProposalAdminAction:
+    code: str
+    title: str
+    hint: str
+    success_text: str
+    next_step: str
+    requires_confirmation: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ProposalAdminSection:
+    code: str
+    title: str
+    description: str
+    actions: tuple[ProposalAdminAction, ...]
+
+
+PROPOSAL_ADMIN_SECTIONS: tuple[ProposalAdminSection, ...] = (
+    ProposalAdminSection(
+        code="term",
+        title="Созыв",
+        description="Проверяйте текущий созыв, запускайте новый и завершайте действующий.",
+        actions=(
+            ProposalAdminAction(
+                code="term_show_current",
+                title="Показать текущий созыв",
+                hint="Покажет активный созыв и его состояние на сейчас.",
+                success_text="Информация о текущем созыве обновлена.",
+                next_step="Проверьте, нужен ли запуск нового созыва или завершение текущего.",
+            ),
+            ProposalAdminAction(
+                code="term_start",
+                title="Запустить созыв",
+                hint="Запустит новый созыв Совета и откроет рабочий цикл.",
+                success_text="Созыв запущен.",
+                next_step="Следующий шаг: подготовьте выборы и откройте приём кандидатов.",
+            ),
+            ProposalAdminAction(
+                code="term_finish",
+                title="Завершить созыв",
+                hint="Остановит текущий созыв и завершит его этапы.",
+                success_text="Созыв завершён.",
+                next_step="Следующий шаг: зафиксируйте итоги и при необходимости начните подготовку нового созыва.",
+                requires_confirmation=True,
+            ),
+        ),
+    ),
+    ProposalAdminSection(
+        code="election",
+        title="Выборы",
+        description="Создавайте выборы по роли и управляйте этапами кандидатов и голосования.",
+        actions=(
+            ProposalAdminAction(
+                code="election_create_by_role",
+                title="Создать по роли",
+                hint="Создаст выборы для выбранной роли Совета.",
+                success_text="Выборы созданы по роли.",
+                next_step="Следующий шаг: откройте приём кандидатов и сообщите участникам о старте.",
+            ),
+            ProposalAdminAction(
+                code="election_open_candidates",
+                title="Открыть приём кандидатов",
+                hint="Откроет подачу заявок для участия в выборах.",
+                success_text="Приём кандидатов открыт.",
+                next_step="Следующий шаг: следите за списком кандидатов и подтверждайте заявки.",
+            ),
+            ProposalAdminAction(
+                code="election_close_candidates",
+                title="Закрыть приём кандидатов",
+                hint="Закроет подачу новых заявок в текущих выборах.",
+                success_text="Приём кандидатов закрыт.",
+                next_step="Следующий шаг: проверьте финальный список кандидатов и подготовьте запуск голосования.",
+            ),
+            ProposalAdminAction(
+                code="election_start_voting",
+                title="Запустить голосование",
+                hint="Откроет голосование по текущим выборам.",
+                success_text="Голосование запущено.",
+                next_step="Следующий шаг: контролируйте участие и затем завершите голосование.",
+                requires_confirmation=True,
+            ),
+            ProposalAdminAction(
+                code="election_finish_voting",
+                title="Завершить голосование",
+                hint="Закроет голосование и перейдёт к этапу итогов.",
+                success_text="Голосование завершено.",
+                next_step="Следующий шаг: сформируйте предварительные и финальные итоги.",
+                requires_confirmation=True,
+            ),
+        ),
+    ),
+    ProposalAdminSection(
+        code="candidates",
+        title="Кандидаты",
+        description="Просматривайте список, подтверждайте или отклоняйте заявки и добавляйте кандидатов вручную.",
+        actions=(
+            ProposalAdminAction(
+                code="candidates_list",
+                title="Список кандидатов",
+                hint="Покажет всех кандидатов в текущих выборах.",
+                success_text="Список кандидатов обновлён.",
+                next_step="Следующий шаг: подтвердите или отклоните заявки по списку.",
+            ),
+            ProposalAdminAction(
+                code="candidates_approve",
+                title="Подтвердить кандидата",
+                hint="Подтвердит выбранную заявку кандидата.",
+                success_text="Кандидат подтверждён.",
+                next_step="Следующий шаг: проверьте, что кандидат появился в подтверждённом списке.",
+            ),
+            ProposalAdminAction(
+                code="candidates_reject",
+                title="Отклонить кандидата",
+                hint="Отклонит выбранную заявку кандидата.",
+                success_text="Заявка кандидата отклонена.",
+                next_step="Следующий шаг: при необходимости сообщите кандидату причину и проверьте остальные заявки.",
+            ),
+            ProposalAdminAction(
+                code="candidates_manual_add",
+                title="Добавить вручную",
+                hint="Добавит кандидата вручную, если текущий статус выборов это позволяет.",
+                success_text="Кандидат добавлен вручную.",
+                next_step="Следующий шаг: убедитесь, что кандидат есть в списке и может участвовать в выборах.",
+            ),
+        ),
+    ),
+    ProposalAdminSection(
+        code="results",
+        title="Итоги",
+        description="Публикуйте предварительные и финальные итоги и фиксируйте итоговое решение.",
+        actions=(
+            ProposalAdminAction(
+                code="results_preliminary",
+                title="Предварительные итоги",
+                hint="Покажет предварительные итоги по текущему голосованию.",
+                success_text="Предварительные итоги подготовлены.",
+                next_step="Следующий шаг: проверьте корректность данных перед публикацией финального итога.",
+            ),
+            ProposalAdminAction(
+                code="results_final",
+                title="Финальные итоги",
+                hint="Подготовит финальные итоги для публикации.",
+                success_text="Финальные итоги подготовлены.",
+                next_step="Следующий шаг: зафиксируйте решение, чтобы завершить процесс.",
+            ),
+            ProposalAdminAction(
+                code="results_lock_decision",
+                title="Зафиксировать решение",
+                hint="Зафиксирует итоговое решение и завершит цикл по текущему вопросу.",
+                success_text="Решение зафиксировано.",
+                next_step="Следующий шаг: уведомьте участников и перейдите к следующему вопросу.",
+                requires_confirmation=True,
+            ),
+        ),
+    ),
+    ProposalAdminSection(
+        code="events",
+        title="Системные уведомления",
+        description="Настройка канала, куда бот отправляет служебные сообщения Совета.",
+        actions=(
+            ProposalAdminAction(
+                code="events_show_channel",
+                title="Показать канал событий",
+                hint="Покажет, куда сейчас отправляются служебные сообщения.",
+                success_text="Текущий канал уведомлений показан.",
+                next_step="Следующий шаг: при необходимости назначьте текущий канал или очистите настройку.",
+            ),
+            ProposalAdminAction(
+                code="events_set_channel_here",
+                title="Назначить текущий канал",
+                hint="Сохранит этот чат или канал для служебных уведомлений Совета.",
+                success_text="Канал уведомлений сохранён.",
+                next_step="Следующий шаг: проверьте, что служебные сообщения приходят в этот канал.",
+            ),
+            ProposalAdminAction(
+                code="events_clear_channel",
+                title="Очистить канал",
+                hint="Отключит отправку служебных уведомлений в текущий канал.",
+                success_text="Канал уведомлений очищен.",
+                next_step="Следующий шаг: назначьте новый канал, если уведомления нужно вернуть.",
+            ),
+        ),
+    ),
+)
+
+PROPOSAL_ADMIN_SECTION_BY_CODE: dict[str, ProposalAdminSection] = {section.code: section for section in PROPOSAL_ADMIN_SECTIONS}
+PROPOSAL_ADMIN_ACTION_BY_CODE: dict[str, ProposalAdminAction] = {
+    action.code: action for section in PROPOSAL_ADMIN_SECTIONS for action in section.actions
+}
+
+
 def render_menu_overview() -> str:
     sections = "\n".join(f"• {section}" for section in PROPOSAL_MENU_SECTIONS)
     return (
@@ -72,6 +265,42 @@ def render_help_text() -> str:
     for index, step in enumerate(PROPOSAL_HELP_STEPS, start=1):
         lines.append(f"{index}) {step}")
     return "\n".join(lines)
+
+
+def render_admin_root_text() -> str:
+    lines = ["⚙️ <b>Админ-меню Совета</b>", "", "Выберите раздел. В каждом разделе кнопка сразу подсказывает, что произойдёт после нажатия."]
+    for section in PROPOSAL_ADMIN_SECTIONS:
+        lines.append(f"• <b>{section.title}</b> — {section.description}")
+    return "\n".join(lines)
+
+
+def render_admin_section_text(section_code: str) -> str:
+    section = PROPOSAL_ADMIN_SECTION_BY_CODE.get(section_code)
+    if not section:
+        return "⚙️ <b>Админ-меню Совета</b>\n\nРаздел не найден. Выберите другой раздел."
+    lines = [f"⚙️ <b>{section.title}</b>", "", section.description, "", "Доступные действия:"]
+    for action in section.actions:
+        lines.append(f"• <b>{action.title}</b> — {action.hint}")
+    return "\n".join(lines)
+
+
+def render_admin_confirm_text(action_code: str) -> str:
+    action = PROPOSAL_ADMIN_ACTION_BY_CODE.get(action_code)
+    if not action:
+        return "❌ Действие не найдено."
+    return (
+        f"⚠️ <b>Подтверждение действия</b>\n\n"
+        f"Вы выбрали: <b>{action.title}</b>.\n"
+        f"После нажатия «Подтвердить» бот выполнит действие: {action.hint.lower()}"
+    )
+
+
+def render_admin_action_result(action_code: str, *, custom_result: str | None = None) -> str:
+    action = PROPOSAL_ADMIN_ACTION_BY_CODE.get(action_code)
+    if not action:
+        return "❌ Действие не найдено."
+    result_line = custom_result or f"✅ {action.success_text}"
+    return f"{result_line}\nСледующий шаг: {action.next_step}"
 
 
 def render_submit_success_text(*, proposal_id: object, status_label: object) -> str:
