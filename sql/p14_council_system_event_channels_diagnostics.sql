@@ -1,4 +1,12 @@
 -- P14: расширение диагностики каналов системных событий и нормализация audit details.
+-- Миграция самодостаточная: если P13 не был применён, базовая таблица создаётся здесь.
+
+CREATE TABLE IF NOT EXISTS council_system_event_channels (
+    provider TEXT PRIMARY KEY CHECK (provider IN ('telegram', 'discord')),
+    destination_id TEXT NOT NULL,
+    updated_by_user_id TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
 ALTER TABLE council_system_event_channels
     ADD COLUMN IF NOT EXISTS destination_title TEXT,
@@ -20,6 +28,9 @@ BEGIN
     END IF;
 END
 $$;
+
+CREATE INDEX IF NOT EXISTS idx_council_system_event_channels_updated_at
+    ON council_system_event_channels (updated_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_council_system_event_channels_provider_updated_at
     ON council_system_event_channels(provider, updated_at DESC);
