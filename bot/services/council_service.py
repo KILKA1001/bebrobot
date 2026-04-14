@@ -7,6 +7,11 @@ from datetime import datetime
 from bot.domain.council_lifecycle import (
     COUNCIL_MIN_VALID_BALLOTS,
     CANDIDATE_STATUS_VALUES,
+    ELECTION_STATUS_CANCELLED,
+    ELECTION_STATUS_COMPLETED,
+    ELECTION_STATUS_DRAFT,
+    ELECTION_STATUS_NOMINATION,
+    ELECTION_STATUS_VOTING,
     ElectionRoundResolution,
     ElectionSchedulerAction,
     ElectionStatusPublication,
@@ -17,6 +22,11 @@ from bot.domain.council_lifecycle import (
     QuestionVoteSubmissionDecision,
     ELECTION_STATUS_VALUES,
     QUESTION_STATUS_VALUES,
+    TERM_STATUS_ACTIVE,
+    TERM_STATUS_ARCHIVED,
+    TERM_STATUS_CANCELLED,
+    TERM_STATUS_DRAFT,
+    TERM_STATUS_PENDING_LAUNCH_CONFIRMATION,
     TERM_STATUS_VALUES,
     BallotSubmissionDecision,
     CandidateReviewDecision,
@@ -177,6 +187,349 @@ class CouncilService:
             election_statuses=ELECTION_STATUS_VALUES,
             question_statuses=QUESTION_STATUS_VALUES,
             candidate_statuses=CANDIDATE_STATUS_VALUES,
+        )
+
+    @staticmethod
+    def _service_result(
+        *,
+        ok: bool,
+        reason: str | None = None,
+        message: str | None = None,
+        payload: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        return {
+            "ok": ok,
+            "reason": reason,
+            "message": message,
+            "payload": payload or {},
+        }
+
+    def start_term(self, *, current_status: str) -> dict[str, object]:
+        status = (current_status or "").strip().lower()
+        if status != TERM_STATUS_DRAFT:
+            logger.error("Council start_term rejected current_status=%s", status)
+            return self._service_result(
+                ok=False,
+                reason="term_not_in_draft",
+                message="Созыв можно запустить только из статуса «Черновик».",
+            )
+        return self._service_result(
+            ok=True,
+            reason="ok",
+            message="Созыв запущен.",
+            payload={"next_status": TERM_STATUS_PENDING_LAUNCH_CONFIRMATION},
+        )
+
+    def close_term(self, *, current_status: str) -> dict[str, object]:
+        status = (current_status or "").strip().lower()
+        if status not in (TERM_STATUS_ACTIVE, TERM_STATUS_CANCELLED):
+            logger.error("Council close_term rejected current_status=%s", status)
+            return self._service_result(
+                ok=False,
+                reason="term_not_ready_to_close",
+                message="Созыв можно закрыть только после завершения или отмены всех выборов.",
+            )
+        return self._service_result(
+            ok=True,
+            reason="ok",
+            message="Созыв закрыт.",
+            payload={"next_status": TERM_STATUS_ARCHIVED},
+        )
+
+    def create_election_for_role(self, *, term_status: str, role_code: str) -> dict[str, object]:
+        cleaned_term_status = (term_status or "").strip().lower()
+        cleaned_role_code = (role_code or "").strip().lower()
+        if cleaned_term_status not in TERM_STATUS_VALUES:
+            logger.error("Council create_election_for_role rejected invalid term_status=%s role_code=%s", cleaned_term_status, cleaned_role_code)
+            return self._service_result(
+                ok=False,
+                reason="invalid_term_status",
+                message="Невозможно создать выборы: некорректный статус созыва.",
+            )
+        if not cleaned_role_code:
+            logger.error("Council create_election_for_role rejected empty role_code term_status=%s", cleaned_term_status)
+            return self._service_result(
+                ok=False,
+                reason="empty_role_code",
+                message="Укажите роль, для которой нужно открыть выборы.",
+            )
+        if cleaned_term_status not in (TERM_STATUS_ACTIVE, TERM_STATUS_PENDING_LAUNCH_CONFIRMATION):
+            logger.error("Council create_election_for_role rejected term_status=%s role_code=%s", cleaned_term_status, cleaned_role_code)
+            return self._service_result(
+                ok=False,
+                reason="term_not_open_for_election_creation",
+                message="Выборы можно создавать только в активном созыве.",
+            )
+        return self._service_result(
+            ok=True,
+            reason="ok",
+            message="Выборы для роли созданы.",
+            payload={"role_code": cleaned_role_code, "next_status": ELECTION_STATUS_DRAFT},
+        )
+
+    def open_nomination(self, *, current_status: str) -> dict[str, object]:
+        status = (current_status or "").strip().lower()
+        if status != ELECTION_STATUS_DRAFT:
+            logger.error("Council open_nomination rejected current_status=%s", status)
+            return self._service_result(
+                ok=False,
+                reason="nomination_not_openable",
+                message="Открыть выдвижение можно только для выборов в статусе «Черновик».",
+            )
+        return self._service_result(
+            ok=True,
+            reason="ok",
+            message="Этап выдвижения открыт.",
+            payload={"next_status": ELECTION_STATUS_NOMINATION},
+        )
+
+    def close_nomination(self, *, current_status: str) -> dict[str, object]:
+        status = (current_status or "").strip().lower()
+        if status != ELECTION_STATUS_NOMINATION:
+            logger.error("Council close_nomination rejected current_status=%s", status)
+            return self._service_result(
+                ok=False,
+                reason="nomination_not_active",
+                message="Закрыть выдвижение можно только если оно сейчас открыто.",
+            )
+        return self._service_result(
+            ok=True,
+            reason="ok",
+            message="Этап выдвижения закрыт.",
+            payload={"next_status": ELECTION_STATUS_DRAFT},
+        )
+
+    def start_voting(self, *, current_status: str) -> dict[str, object]:
+        status = (current_status or "").strip().lower()
+        if status != ELECTION_STATUS_NOMINATION:
+            logger.error("Council start_voting rejected current_status=%s", status)
+            return self._service_result(
+                ok=False,
+                reason="voting_not_startable",
+                message="Голосование можно запустить только после этапа выдвижения.",
+            )
+        return self._service_result(
+            ok=True,
+            reason="ok",
+            message="Голосование запущено.",
+            payload={"next_status": ELECTION_STATUS_VOTING},
+        )
+
+    def finish_voting(self, *, current_status: str) -> dict[str, object]:
+        status = (current_status or "").strip().lower()
+        if status != ELECTION_STATUS_VOTING:
+            logger.error("Council finish_voting rejected current_status=%s", status)
+            return self._service_result(
+                ok=False,
+                reason="voting_not_active",
+                message="Завершить можно только активное голосование.",
+            )
+        return self._service_result(
+            ok=True,
+            reason="ok",
+            message="Голосование завершено.",
+            payload={"next_status": ELECTION_STATUS_COMPLETED},
+        )
+
+    def list_candidates(
+        self,
+        *,
+        candidates: list[dict[str, object]] | tuple[dict[str, object], ...],
+    ) -> dict[str, object]:
+        normalized: list[dict[str, object]] = []
+        for row in candidates:
+            status = str((row or {}).get("status") or "").strip().lower()
+            if status not in CANDIDATE_STATUS_VALUES:
+                logger.error("Council list_candidates skipped invalid status row=%s", row)
+                continue
+            normalized.append(dict(row))
+        return self._service_result(
+            ok=True,
+            reason="ok",
+            message="Список кандидатов подготовлен.",
+            payload={"items": normalized, "total": len(normalized)},
+        )
+
+    def approve_candidate(
+        self,
+        *,
+        current_status: str,
+        candidate_profile_id: str,
+        election_role_code: str,
+        actor_profile_id: str,
+        source_platform: str,
+    ) -> dict[str, object]:
+        decision = self.decide_candidate_review_action(
+            current_status=current_status,
+            action="confirm",
+            candidate_profile_id=candidate_profile_id,
+            election_role_code=election_role_code,
+            actor_profile_id=actor_profile_id,
+            source_platform=source_platform,
+        )
+        if not decision.accepted:
+            logger.error("Council approve_candidate rejected candidate_profile_id=%s reason=%s", candidate_profile_id, decision.reason)
+            return self._service_result(
+                ok=False,
+                reason=decision.reason or "candidate_approval_rejected",
+                message="Не удалось подтвердить кандидата. Проверьте текущий статус кандидата.",
+            )
+        return self._service_result(
+            ok=True,
+            reason="ok",
+            message="Кандидат подтверждён.",
+            payload={"next_status": decision.next_status},
+        )
+
+    def reject_candidate(
+        self,
+        *,
+        current_status: str,
+        candidate_profile_id: str,
+        election_role_code: str,
+        actor_profile_id: str,
+        source_platform: str,
+    ) -> dict[str, object]:
+        decision = self.decide_candidate_review_action(
+            current_status=current_status,
+            action="reject",
+            candidate_profile_id=candidate_profile_id,
+            election_role_code=election_role_code,
+            actor_profile_id=actor_profile_id,
+            source_platform=source_platform,
+        )
+        if not decision.accepted:
+            logger.error("Council reject_candidate rejected candidate_profile_id=%s reason=%s", candidate_profile_id, decision.reason)
+            return self._service_result(
+                ok=False,
+                reason=decision.reason or "candidate_rejection_rejected",
+                message="Не удалось отклонить кандидата. Проверьте текущий статус кандидата.",
+            )
+        return self._service_result(
+            ok=True,
+            reason="ok",
+            message="Кандидат отклонён.",
+            payload={"next_status": decision.next_status},
+        )
+
+    def add_candidate_manually(
+        self,
+        *,
+        term_id: int | None,
+        election_status: str,
+        candidate_profile_id: str,
+        election_role_code: str,
+        actor_profile_id: str,
+        existing_candidates: list[dict[str, object]] | tuple[dict[str, object], ...],
+    ) -> dict[str, object]:
+        cleaned_status = (election_status or "").strip().lower()
+        allowed_statuses = (ELECTION_STATUS_NOMINATION,)
+        if cleaned_status not in allowed_statuses:
+            logger.error(
+                "Council add_candidate_manually rejected by status election_status=%s allowed_statuses=%s term_id=%s candidate_profile_id=%s",
+                cleaned_status,
+                allowed_statuses,
+                term_id,
+                candidate_profile_id,
+            )
+            return self._service_result(
+                ok=False,
+                reason="manual_add_not_allowed_for_status",
+                message="Кандидата можно добавить вручную только во время этапа выдвижения.",
+                payload={"allowed_statuses": list(allowed_statuses)},
+            )
+
+        decision = self.decide_manual_candidate_addition(
+            term_id=term_id,
+            election_status=cleaned_status,
+            candidate_profile_id=candidate_profile_id,
+            election_role_code=election_role_code,
+            actor_profile_id=actor_profile_id,
+            existing_candidates=existing_candidates,
+        )
+        if not decision.accepted:
+            logger.error(
+                "Council add_candidate_manually rejected term_id=%s candidate_profile_id=%s role_code=%s reason=%s",
+                term_id,
+                candidate_profile_id,
+                election_role_code,
+                decision.reason,
+            )
+            return self._service_result(
+                ok=False,
+                reason=decision.reason or "manual_add_rejected",
+                message="Не удалось добавить кандидата вручную. Проверьте данные и попробуйте ещё раз.",
+            )
+        return self._service_result(
+            ok=True,
+            reason="ok",
+            message="Кандидат добавлен вручную.",
+            payload=decision.assignment_log or {},
+        )
+
+    def get_results_preview(
+        self,
+        *,
+        election_id: int | None,
+        election_role_code: str,
+        current_round_number: int,
+        voting_ends_at: datetime | None,
+        candidate_votes: list[dict[str, object]] | tuple[dict[str, object], ...],
+    ) -> dict[str, object]:
+        resolution = self.resolve_election_round_on_deadline(
+            election_id=election_id,
+            election_role_code=election_role_code,
+            current_round_number=current_round_number,
+            voting_ends_at=voting_ends_at,
+            candidate_votes=candidate_votes,
+        )
+        if not resolution.accepted:
+            logger.error("Council get_results_preview rejected election_id=%s reason=%s", election_id, resolution.reason)
+            return self._service_result(
+                ok=False,
+                reason=resolution.reason or "preview_unavailable",
+                message="Предпросмотр результатов сейчас недоступен.",
+            )
+        return self._service_result(
+            ok=True,
+            reason="ok",
+            message="Предпросмотр результатов сформирован.",
+            payload={
+                "decision": resolution.decision,
+                "next_round_number": resolution.next_round_number,
+                "voting_ends_at": resolution.voting_ends_at.isoformat() if resolution.voting_ends_at else None,
+                "winner_candidate_ids": list(resolution.winner_candidate_ids),
+                "runoff_candidate_ids": list(resolution.runoff_candidate_ids),
+            },
+        )
+
+    def finalize_results(
+        self,
+        *,
+        current_status: str,
+        winner_candidate_ids: list[int] | tuple[int, ...],
+    ) -> dict[str, object]:
+        status = (current_status or "").strip().lower()
+        if status not in (ELECTION_STATUS_VOTING, ELECTION_STATUS_COMPLETED):
+            logger.error("Council finalize_results rejected current_status=%s winner_candidate_ids=%s", status, winner_candidate_ids)
+            return self._service_result(
+                ok=False,
+                reason="results_not_finalizable",
+                message="Итоги можно подвести только после завершения голосования.",
+            )
+        normalized_winners = [cid for cid in winner_candidate_ids if isinstance(cid, int) and cid > 0]
+        if not normalized_winners:
+            logger.error("Council finalize_results rejected empty winners current_status=%s winner_candidate_ids=%s", status, winner_candidate_ids)
+            return self._service_result(
+                ok=False,
+                reason="empty_winners",
+                message="Невозможно утвердить итоги без победителей.",
+            )
+        return self._service_result(
+            ok=True,
+            reason="ok",
+            message="Итоги выборов утверждены.",
+            payload={"next_status": ELECTION_STATUS_COMPLETED, "winner_candidate_ids": normalized_winners},
         )
 
     def is_valid_status(self, *, lifecycle: str, status: str) -> bool:
