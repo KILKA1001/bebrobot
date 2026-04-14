@@ -52,16 +52,53 @@ class CouncilSystemEventsService:
         destination_id: str | None,
         status: str,
         reason: str | None = None,
+        target_object: str | None = None,
     ) -> None:
-        logger.info(
-            "council_admin_action provider=%s actor_user_id=%s action=%s destination_id=%s status=%s reason=%s",
+        CouncilSystemEventsService.record_admin_action(
+            provider=provider,
+            actor_user_id=actor_user_id,
+            action=action,
+            destination_id=destination_id,
+            status=status,
+            reason=reason,
+            target_object=target_object,
+        )
+
+    @staticmethod
+    def record_admin_action(
+        *,
+        provider: str,
+        actor_user_id: str,
+        action: str,
+        destination_id: str | None,
+        status: str,
+        reason: str | None = None,
+        target_object: str | None = None,
+    ) -> None:
+        log_message = (
+            "council_admin_action provider=%s actor_user_id=%s action=%s destination_id=%s "
+            "target_object=%s status=%s reason=%s"
+        )
+        log_args = (
             provider,
             actor_user_id,
             action,
             destination_id or None,
+            target_object or None,
             status,
             reason or None,
         )
+        exception_reasons = {"db_error", "external_error", "unexpected_error"}
+        if status == "success":
+            logger.info(log_message, *log_args)
+        elif status == "denied":
+            logger.warning(log_message, *log_args)
+        elif status == "failed" and str(reason or "").strip().lower() in exception_reasons:
+            logger.exception(log_message, *log_args)
+        elif status == "failed":
+            logger.warning(log_message, *log_args)
+        else:
+            logger.info(log_message, *log_args)
         if not db.supabase:
             return
         try:
@@ -76,6 +113,7 @@ class CouncilSystemEventsService:
                     "details": {
                         "actor_user_id": actor_user_id,
                         "destination_id": destination_id,
+                        "target_object": target_object,
                         "reason": reason,
                     },
                     "created_at": datetime.now(timezone.utc).isoformat(),

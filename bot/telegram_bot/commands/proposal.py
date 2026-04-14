@@ -145,6 +145,15 @@ def _is_alive(created_at: float | None) -> bool:
 def _execute_admin_action(actor_id: int, action_code: str, *, current_chat_id: str) -> str:
     if action_code == "events_show_channel":
         current = CouncilSystemEventsService.get_channel("telegram")
+        CouncilSystemEventsService.record_admin_action(
+            provider="telegram",
+            actor_user_id=str(actor_id),
+            action=action_code,
+            destination_id=current_chat_id or None,
+            target_object=current or None,
+            status="success",
+            reason="channel_shown",
+        )
         status_text = (
             f"✅ Сейчас выбран чат `{current}` для системных уведомлений Совета."
             if current
@@ -157,6 +166,15 @@ def _execute_admin_action(actor_id: int, action_code: str, *, current_chat_id: s
             actor_user_id=str(actor_id),
             destination_id=current_chat_id,
         )
+        CouncilSystemEventsService.record_admin_action(
+            provider="telegram",
+            actor_user_id=str(actor_id),
+            action=action_code,
+            destination_id=current_chat_id or None,
+            target_object="system_event_channel",
+            status="success" if result.get("ok") else "failed",
+            reason=str(result.get("reason") or ("channel_saved" if result.get("ok") else "set_channel_failed")),
+        )
         return render_admin_action_result(
             action_code,
             custom_result=str(result.get("message") or ("✅ Канал уведомлений сохранён." if result.get("ok") else "❌ Не удалось сохранить канал уведомлений.")),
@@ -167,11 +185,28 @@ def _execute_admin_action(actor_id: int, action_code: str, *, current_chat_id: s
             actor_user_id=str(actor_id),
             destination_id="",
         )
+        CouncilSystemEventsService.record_admin_action(
+            provider="telegram",
+            actor_user_id=str(actor_id),
+            action=action_code,
+            destination_id=None,
+            target_object="system_event_channel",
+            status="success" if result.get("ok") else "failed",
+            reason=str(result.get("reason") or ("channel_cleared" if result.get("ok") else "clear_channel_failed")),
+        )
         return render_admin_action_result(
             action_code,
             custom_result=str(result.get("message") or ("✅ Канал уведомлений очищен." if result.get("ok") else "❌ Не удалось очистить канал уведомлений.")),
         )
-    logger.info("telegram proposal admin lifecycle action selected actor_id=%s action=%s", actor_id, action_code)
+    CouncilSystemEventsService.record_admin_action(
+        provider="telegram",
+        actor_user_id=str(actor_id),
+        action=action_code,
+        destination_id=current_chat_id or None,
+        target_object="proposal_admin_action",
+        status="success",
+        reason="executed",
+    )
     return render_admin_action_result(action_code)
 
 
@@ -286,6 +321,8 @@ async def proposal_command(message: Message) -> None:
 async def proposal_callbacks(callback: CallbackQuery) -> None:
     actor_id = callback.from_user.id if callback.from_user else None
     action = str(callback.data or "").split(":", 1)[1] if callback.data else ""
+    chat = getattr(getattr(callback, "message", None), "chat", None)
+    current_chat_id = str(getattr(chat, "id", "") or "")
     if actor_id is None:
         await callback.answer("Ошибка пользователя", show_alert=True)
         return
@@ -306,6 +343,15 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
             return
         if action == "admin":
             if not AuthorityService.is_super_admin("telegram", str(actor_id)):
+                CouncilSystemEventsService.record_admin_action(
+                    provider="telegram",
+                    actor_user_id=str(actor_id),
+                    action="admin_open",
+                    destination_id=current_chat_id or None,
+                    target_object="proposal_admin_menu",
+                    status="denied",
+                    reason="forbidden",
+                )
                 await callback.answer("Доступно только суперадмину.", show_alert=True)
                 return
             _PENDING_ADMIN_CONFIRM.pop(actor_id, None)
@@ -318,6 +364,15 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
             return
         if action.startswith("admin_section:"):
             if not AuthorityService.is_super_admin("telegram", str(actor_id)):
+                CouncilSystemEventsService.record_admin_action(
+                    provider="telegram",
+                    actor_user_id=str(actor_id),
+                    action=action,
+                    destination_id=current_chat_id or None,
+                    target_object="proposal_admin_section",
+                    status="denied",
+                    reason="forbidden",
+                )
                 await callback.answer("Доступно только суперадмину.", show_alert=True)
                 return
             section_code = action.split(":", 1)[1]
@@ -331,11 +386,29 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
             return
         if action.startswith("admin_action:"):
             if not AuthorityService.is_super_admin("telegram", str(actor_id)):
+                CouncilSystemEventsService.record_admin_action(
+                    provider="telegram",
+                    actor_user_id=str(actor_id),
+                    action=action,
+                    destination_id=current_chat_id or None,
+                    target_object="proposal_admin_action",
+                    status="denied",
+                    reason="forbidden",
+                )
                 await callback.answer("Доступно только суперадмину.", show_alert=True)
                 return
             action_code = action.split(":", 1)[1]
             admin_action = PROPOSAL_ADMIN_ACTION_BY_CODE.get(action_code)
             if not admin_action:
+                CouncilSystemEventsService.record_admin_action(
+                    provider="telegram",
+                    actor_user_id=str(actor_id),
+                    action=action_code,
+                    destination_id=current_chat_id or None,
+                    target_object="proposal_admin_action",
+                    status="denied",
+                    reason="validation_action_not_found",
+                )
                 await callback.answer("Действие не найдено.", show_alert=True)
                 return
             if admin_action.requires_confirmation:
@@ -379,11 +452,29 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
             return
         if action.startswith("admin_confirm:"):
             if not AuthorityService.is_super_admin("telegram", str(actor_id)):
+                CouncilSystemEventsService.record_admin_action(
+                    provider="telegram",
+                    actor_user_id=str(actor_id),
+                    action=action,
+                    destination_id=current_chat_id or None,
+                    target_object="proposal_admin_confirm",
+                    status="denied",
+                    reason="forbidden",
+                )
                 await callback.answer("Доступно только суперадмину.", show_alert=True)
                 return
             action_code = action.split(":", 1)[1]
             pending = _PENDING_ADMIN_CONFIRM.get(actor_id)
             if pending != action_code:
+                CouncilSystemEventsService.record_admin_action(
+                    provider="telegram",
+                    actor_user_id=str(actor_id),
+                    action=action_code,
+                    destination_id=current_chat_id or None,
+                    target_object="proposal_admin_confirm",
+                    status="denied",
+                    reason="validation_confirmation_expired",
+                )
                 await callback.answer("Подтверждение устарело. Откройте действие снова.", show_alert=True)
                 return
             _PENDING_ADMIN_CONFIRM.pop(actor_id, None)
@@ -447,11 +538,29 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
             return
         if action == "events_save":
             if not AuthorityService.is_super_admin("telegram", str(actor_id)):
+                CouncilSystemEventsService.record_admin_action(
+                    provider="telegram",
+                    actor_user_id=str(actor_id),
+                    action=action,
+                    destination_id=current_chat_id or None,
+                    target_object="system_event_channel",
+                    status="denied",
+                    reason="forbidden",
+                )
                 await callback.answer("Доступно только суперадмину.", show_alert=True)
                 return
             pending = _PENDING_EVENTS_DESTINATION_PICKER.get(actor_id)
             destination_id = str((pending or {}).get("selected_destination_id") or "").strip()
             if not destination_id:
+                CouncilSystemEventsService.record_admin_action(
+                    provider="telegram",
+                    actor_user_id=str(actor_id),
+                    action=action,
+                    destination_id=None,
+                    target_object="system_event_channel",
+                    status="denied",
+                    reason="validation_destination_not_selected",
+                )
                 await callback.answer("Сначала выберите чат или канал.", show_alert=True)
                 return
             result = CouncilSystemEventsService.set_channel(
@@ -661,6 +770,15 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
 
         await callback.answer("Неизвестное действие", show_alert=True)
     except Exception:
+        CouncilSystemEventsService.record_admin_action(
+            provider="telegram",
+            actor_user_id=str(actor_id),
+            action=action or "unknown",
+            destination_id=current_chat_id or None,
+            target_object="proposal_admin_callback",
+            status="failed",
+            reason="unexpected_error",
+        )
         logger.exception("telegram proposal callback failed actor_id=%s action=%s", actor_id, action)
         await callback.answer("❌ Ошибка выполнения. Попробуйте ещё раз.", show_alert=True)
 
