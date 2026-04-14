@@ -16,6 +16,7 @@ from bot.commands.base import bot
 from bot.services.authority_service import AuthorityService
 from bot.services.council_feedback_service import CouncilFeedbackService
 from bot.services.council_system_events_service import CouncilSystemEventsService
+from bot.services.guiy_publish_destinations_service import GuiyPublishDestination, GuiyPublishDestinationsService
 from bot.services.proposal_ui_texts import (
     ARCHIVE_PERIOD_LABELS,
     ARCHIVE_STATUS_LABELS,
@@ -38,6 +39,7 @@ from bot.services.proposal_ui_texts import (
 )
 
 logger = logging.getLogger(__name__)
+_DISCORD_EVENTS_DESTINATIONS_PAGE_SIZE = 20
 
 
 class ProposalSubmitModal(discord.ui.Modal, title="Подать предложение"):
@@ -257,10 +259,32 @@ class ProposalAdminSettingsView(discord.ui.View):
         self.actor_id = actor_id
         self.current_section_code: str | None = None
         self.pending_confirm_action_code: str | None = None
+        self.events_picker_active: bool = False
+        self.events_confirm_active: bool = False
+        self.events_page: int = 0
+        self.events_destinations: list[GuiyPublishDestination] = []
+        self.events_selected_destination_id: str | None = None
+        self.events_selected_label: str | None = None
         self._rebuild_items()
 
     def _rebuild_items(self) -> None:
         self.clear_items()
+        if self.events_picker_active:
+            select = _AdminEventsDestinationSelect(self)
+            if not self.events_destinations:
+                select.disabled = True
+            self.add_item(select)
+            page, total_pages, _items = self._events_page_items()
+            if page > 0:
+                self.add_item(_AdminEventsPageButton(self, label="⬅️", page_delta=-1))
+            if page + 1 < total_pages:
+                self.add_item(_AdminEventsPageButton(self, label="➡️", page_delta=1))
+            self.add_item(_AdminEventsCancelButton(self))
+            return
+        if self.events_confirm_active:
+            self.add_item(_AdminEventsSaveButton(self))
+            self.add_item(_AdminEventsCancelButton(self))
+            return
         if self.pending_confirm_action_code:
             self.add_item(_AdminConfirmExecuteButton(self))
             self.add_item(_AdminConfirmCancelButton(self))
@@ -276,7 +300,51 @@ class ProposalAdminSettingsView(discord.ui.View):
         for section in PROPOSAL_ADMIN_SECTIONS[:5]:
             self.add_item(_AdminSectionButton(self, section.code, section.title))
 
+    def _events_page_items(self) -> tuple[int, int, list[GuiyPublishDestination]]:
+        total_pages = max((len(self.events_destinations) - 1) // _DISCORD_EVENTS_DESTINATIONS_PAGE_SIZE + 1, 1)
+        self.events_page = min(max(self.events_page, 0), total_pages - 1)
+        start = self.events_page * _DISCORD_EVENTS_DESTINATIONS_PAGE_SIZE
+        return self.events_page, total_pages, self.events_destinations[start : start + _DISCORD_EVENTS_DESTINATIONS_PAGE_SIZE]
+
+    def open_events_picker(self) -> None:
+        self.events_destinations = GuiyPublishDestinationsService.list_discord_destinations(bot)
+        self.events_picker_active = True
+        self.events_confirm_active = False
+        self.events_page = 0
+        self.events_selected_destination_id = None
+        self.events_selected_label = None
+        self.pending_confirm_action_code = None
+        self._rebuild_items()
+
+    def close_events_picker(self) -> None:
+        self.events_picker_active = False
+        self.events_confirm_active = False
+        self.events_page = 0
+        self.events_destinations = []
+        self.events_selected_destination_id = None
+        self.events_selected_label = None
+        self._rebuild_items()
+
     def build_embed(self, *, result_text: str | None = None) -> discord.Embed:
+        if self.events_picker_active:
+            page, total_pages, _items = self._events_page_items()
+            if not self.events_destinations:
+                description = (
+                    "Сейчас нет доступных текстовых каналов, куда бот может отправлять сообщения.\n"
+                    "Проверьте, что бот добавлен на сервер и имеет право отправки."
+                )
+            else:
+                description = (
+                    "Выберите канал из списка, куда бот будет отправлять системные события Совета.\n"
+                    f"Страница: **{page + 1}/{total_pages}**"
+                )
+            return discord.Embed(title="⚙️ Канал и чат уведомлений", description=description, color=discord.Color.dark_gold())
+        if self.events_confirm_active:
+            description = (
+                f"Вы выбрали: **{self.events_selected_label or '—'}**\n"
+                "После сохранения системные события Совета будут отправляться сюда."
+            )
+            return discord.Embed(title="⚙️ Подтверждение канала", description=description, color=discord.Color.orange())
         if self.pending_confirm_action_code:
             description = render_admin_confirm_text(self.pending_confirm_action_code).replace("<b>", "**").replace("</b>", "**")
             return discord.Embed(title="⚠️ Подтверждение", description=description, color=discord.Color.orange())
@@ -302,18 +370,8 @@ class ProposalAdminSettingsView(discord.ui.View):
             )
             return render_admin_action_result(action_code, custom_result=status_text)
         if action_code == "events_set_channel_here":
-            channel_id = str(getattr(interaction.channel, "id", "") or "").strip()
-            guild_id = str(getattr(getattr(interaction, "guild", None), "id", "") or "").strip()
-            destination_id = f"{guild_id}:{channel_id}" if guild_id and channel_id else ""
-            result = CouncilSystemEventsService.set_channel(
-                provider="discord",
-                actor_user_id=str(self.actor_id),
-                destination_id=destination_id,
-            )
-            return render_admin_action_result(
-                action_code,
-                custom_result=str(result.get("message") or ("✅ Канал уведомлений сохранён." if result.get("ok") else "❌ Не удалось сохранить канал уведомлений.")),
-            )
+            self.open_events_picker()
+            return ""
         if action_code == "events_clear_channel":
             result = CouncilSystemEventsService.set_channel(
                 provider="discord",
@@ -381,6 +439,102 @@ class _AdminActionButton(discord.ui.Button["ProposalAdminSettingsView"]):
                 self._action_code,
             )
             await interaction.response.send_message("❌ Не удалось выполнить действие. Попробуйте снова.", ephemeral=True)
+
+
+class _AdminEventsDestinationSelect(discord.ui.Select):
+    def __init__(self, view: ProposalAdminSettingsView):
+        self._owner_view = view
+        _page, _total_pages, items = view._events_page_items()
+        options: list[discord.SelectOption] = []
+        for item in items:
+            options.append(
+                discord.SelectOption(
+                    label=item.title[:100],
+                    description=item.subtitle[:100] if item.subtitle else None,
+                    value=item.destination_id,
+                )
+            )
+        if not options:
+            options = [discord.SelectOption(label="Нет доступных каналов", value="__empty__", description="Проверьте права бота")]
+        super().__init__(placeholder="Выберите канал", min_values=1, max_values=1, options=options, row=0)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        selected_id = str(self.values[0] if self.values else "").strip()
+        if selected_id == "__empty__":
+            await interaction.response.send_message("❌ Сейчас нет доступных каналов для выбора.", ephemeral=True)
+            return
+        selected = next((item for item in self._owner_view.events_destinations if item.destination_id == selected_id), None)
+        if selected is None:
+            logger.warning(
+                "discord proposal events destination no longer available actor_id=%s destination_id=%s",
+                getattr(interaction.user, "id", None),
+                selected_id,
+            )
+            await interaction.response.send_message("❌ Этот канал больше недоступен. Выберите другой.", ephemeral=True)
+            return
+        self._owner_view.events_selected_destination_id = selected.destination_id
+        self._owner_view.events_selected_label = selected.display_label
+        self._owner_view.events_picker_active = False
+        self._owner_view.events_confirm_active = True
+        self._owner_view._rebuild_items()
+        await interaction.response.edit_message(embed=self._owner_view.build_embed(), view=self._owner_view)
+
+
+class _AdminEventsPageButton(discord.ui.Button["ProposalAdminSettingsView"]):
+    def __init__(self, view: ProposalAdminSettingsView, *, label: str, page_delta: int):
+        super().__init__(label=label, style=discord.ButtonStyle.secondary, row=1)
+        self._owner_view = view
+        self._page_delta = page_delta
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        self._owner_view.events_page += self._page_delta
+        self._owner_view._rebuild_items()
+        await interaction.response.edit_message(embed=self._owner_view.build_embed(), view=self._owner_view)
+
+
+class _AdminEventsSaveButton(discord.ui.Button["ProposalAdminSettingsView"]):
+    def __init__(self, view: ProposalAdminSettingsView):
+        super().__init__(label="✅ Сохранить", style=discord.ButtonStyle.success)
+        self._owner_view = view
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        destination_id = str(self._owner_view.events_selected_destination_id or "").strip()
+        if not destination_id:
+            await interaction.response.send_message("❌ Сначала выберите канал.", ephemeral=True)
+            return
+        result = CouncilSystemEventsService.set_channel(
+            provider="discord",
+            actor_user_id=str(self._owner_view.actor_id),
+            destination_id=destination_id,
+        )
+        if not result.get("ok"):
+            logger.error(
+                "discord proposal events save failed actor_id=%s destination_id=%s message=%s",
+                self._owner_view.actor_id,
+                destination_id,
+                result.get("message"),
+            )
+        self._owner_view.close_events_picker()
+        await interaction.response.edit_message(
+            embed=self._owner_view.build_embed(
+                result_text=render_admin_action_result(
+                    "events_set_channel_here",
+                    custom_result=str(result.get("message") or ("✅ Канал уведомлений сохранён." if result.get("ok") else "❌ Не удалось сохранить канал уведомлений.")),
+                )
+            ),
+            view=self._owner_view,
+        )
+
+
+class _AdminEventsCancelButton(discord.ui.Button["ProposalAdminSettingsView"]):
+    def __init__(self, view: ProposalAdminSettingsView):
+        super().__init__(label="↩️ Отмена", style=discord.ButtonStyle.secondary, row=1)
+        self._owner_view = view
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        self._owner_view.close_events_picker()
+        self._owner_view.current_section_code = "events"
+        await interaction.response.edit_message(embed=self._owner_view.build_embed(), view=self._owner_view)
 
 
 class _AdminConfirmExecuteButton(discord.ui.Button["ProposalAdminSettingsView"]):
