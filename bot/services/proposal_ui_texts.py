@@ -74,6 +74,7 @@ class ProposalAdminAction:
     hint: str
     success_text: str
     next_step: str
+    critical_confirmation_text: str | None = None
     requires_confirmation: bool = False
 
 
@@ -111,6 +112,7 @@ PROPOSAL_ADMIN_SECTIONS: tuple[ProposalAdminSection, ...] = (
                 hint="Остановит текущий созыв и завершит его этапы.",
                 success_text="Созыв завершён.",
                 next_step="Следующий шаг: зафиксируйте итоги и при необходимости начните подготовку нового созыва.",
+                critical_confirmation_text="Это действие завершит текущий созыв. Проверьте, что все текущие этапы уже закрыты.",
                 requires_confirmation=True,
             ),
         ),
@@ -147,6 +149,7 @@ PROPOSAL_ADMIN_SECTIONS: tuple[ProposalAdminSection, ...] = (
                 hint="Откроет голосование по текущим выборам.",
                 success_text="Голосование запущено.",
                 next_step="Следующий шаг: контролируйте участие и затем завершите голосование.",
+                critical_confirmation_text="После запуска голосование станет доступно участникам. Убедитесь, что список кандидатов уже финальный.",
                 requires_confirmation=True,
             ),
             ProposalAdminAction(
@@ -155,6 +158,7 @@ PROPOSAL_ADMIN_SECTIONS: tuple[ProposalAdminSection, ...] = (
                 hint="Закроет голосование и перейдёт к этапу итогов.",
                 success_text="Голосование завершено.",
                 next_step="Следующий шаг: сформируйте предварительные и финальные итоги.",
+                critical_confirmation_text="После завершения новые голоса не принимаются. Проверьте, что срок голосования действительно истёк.",
                 requires_confirmation=True,
             ),
         ),
@@ -219,6 +223,7 @@ PROPOSAL_ADMIN_SECTIONS: tuple[ProposalAdminSection, ...] = (
                 hint="Зафиксирует итоговое решение и завершит цикл по текущему вопросу.",
                 success_text="Решение зафиксировано.",
                 next_step="Следующий шаг: уведомьте участников и перейдите к следующему вопросу.",
+                critical_confirmation_text="После фиксации решение считается итоговым. Убедитесь, что финальные итоги уже проверены.",
                 requires_confirmation=True,
             ),
         ),
@@ -257,6 +262,7 @@ PROPOSAL_ADMIN_SECTION_BY_CODE: dict[str, ProposalAdminSection] = {section.code:
 PROPOSAL_ADMIN_ACTION_BY_CODE: dict[str, ProposalAdminAction] = {
     action.code: action for section in PROPOSAL_ADMIN_SECTIONS for action in section.actions
 }
+PROPOSAL_ADMIN_CANCEL_TEXT = "Изменения не внесены. Вы можете выбрать другое действие."
 
 
 def render_menu_overview() -> str:
@@ -337,10 +343,14 @@ def render_admin_confirm_text(action_code: str) -> str:
     action = PROPOSAL_ADMIN_ACTION_BY_CODE.get(action_code)
     if not action:
         return "❌ Действие не найдено."
+    confirmation_details = action.critical_confirmation_text or "Проверьте, что вы выбрали правильное действие."
     return (
         f"⚠️ <b>Подтверждение действия</b>\n\n"
         f"Вы выбрали: <b>{action.title}</b>.\n"
-        f"После нажатия «Подтвердить» бот выполнит действие: {action.hint.lower()}"
+        f"После нажатия «Подтвердить» бот выполнит действие: {action.hint.lower()}\n\n"
+        f"{confirmation_details}\n"
+        "«Подтвердить» — выполнить действие.\n"
+        "«Отмена» — вернуться без изменений."
     )
 
 
@@ -350,6 +360,10 @@ def render_admin_action_result(action_code: str, *, custom_result: str | None = 
         return "❌ Действие не найдено."
     result_line = custom_result or f"✅ {action.success_text}"
     return f"{result_line}\nСледующий шаг: {action.next_step}"
+
+
+def render_admin_action_cancelled_text() -> str:
+    return f"↩️ {PROPOSAL_ADMIN_CANCEL_TEXT}"
 
 
 def render_submit_success_text(*, proposal_id: object, status_label: object) -> str:
