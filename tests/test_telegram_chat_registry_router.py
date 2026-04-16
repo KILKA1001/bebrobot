@@ -8,8 +8,6 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from aiogram.dispatcher.event.bases import SkipHandler
-
 from bot.telegram_bot.chat_registry_router import (
     remember_channel_edited_post,
     remember_channel_post,
@@ -22,12 +20,11 @@ from bot.telegram_bot.chat_registry_router import (
 
 
 class TelegramChatRegistryRouterTests(unittest.IsolatedAsyncioTestCase):
-    async def test_group_message_registers_chat_and_skips_for_next_handlers(self):
+    async def test_group_message_registers_chat_without_blocking_next_handlers(self):
         message = SimpleNamespace(chat=SimpleNamespace(id=-1001, title="Группа", type="supergroup"))
 
         with patch("bot.telegram_bot.chat_registry_router.GuiyPublishDestinationsService.register_telegram_chat") as register_mock:
-            with self.assertRaises(SkipHandler):
-                await remember_group_message(message)
+            await remember_group_message(message)
 
         register_mock.assert_called_once_with(
             chat_id=-1001,
@@ -36,30 +33,27 @@ class TelegramChatRegistryRouterTests(unittest.IsolatedAsyncioTestCase):
             is_active=True,
         )
 
-    async def test_group_edited_message_registers_chat_and_skips_for_next_handlers(self):
+    async def test_group_edited_message_registers_chat_without_blocking_next_handlers(self):
         message = SimpleNamespace(chat=SimpleNamespace(id=-1001, title="Группа", type="supergroup"))
 
         with patch("bot.telegram_bot.chat_registry_router.GuiyPublishDestinationsService.register_telegram_chat") as register_mock:
-            with self.assertRaises(SkipHandler):
-                await remember_group_edited_message(message)
+            await remember_group_edited_message(message)
 
         register_mock.assert_called_once()
 
-    async def test_group_callback_registers_chat_and_skips_for_next_handlers(self):
+    async def test_group_callback_registers_chat_without_blocking_next_handlers(self):
         callback = SimpleNamespace(message=SimpleNamespace(chat=SimpleNamespace(id=-1001, title="Группа", type="supergroup")))
 
         with patch("bot.telegram_bot.chat_registry_router.GuiyPublishDestinationsService.register_telegram_chat") as register_mock:
-            with self.assertRaises(SkipHandler):
-                await remember_group_callback(callback)
+            await remember_group_callback(callback)
 
         register_mock.assert_called_once()
 
-    async def test_channel_post_registers_channel_and_skips_for_next_handlers(self):
+    async def test_channel_post_registers_channel_without_blocking_next_handlers(self):
         message = SimpleNamespace(chat=SimpleNamespace(id=-2222, title="Канал", type="channel"))
 
         with patch("bot.telegram_bot.chat_registry_router.GuiyPublishDestinationsService.register_telegram_chat") as register_mock:
-            with self.assertRaises(SkipHandler):
-                await remember_channel_post(message)
+            await remember_channel_post(message)
 
         register_mock.assert_called_once_with(
             chat_id=-2222,
@@ -68,12 +62,11 @@ class TelegramChatRegistryRouterTests(unittest.IsolatedAsyncioTestCase):
             is_active=True,
         )
 
-    async def test_channel_edited_post_registers_channel_and_skips_for_next_handlers(self):
+    async def test_channel_edited_post_registers_channel_without_blocking_next_handlers(self):
         message = SimpleNamespace(chat=SimpleNamespace(id=-2222, title="Канал", type="channel"))
 
         with patch("bot.telegram_bot.chat_registry_router.GuiyPublishDestinationsService.register_telegram_chat") as register_mock:
-            with self.assertRaises(SkipHandler):
-                await remember_channel_edited_post(message)
+            await remember_channel_edited_post(message)
 
         register_mock.assert_called_once()
 
@@ -91,8 +84,7 @@ class TelegramChatRegistryRouterTests(unittest.IsolatedAsyncioTestCase):
             patch("bot.telegram_bot.chat_registry_router.GuiyPublishDestinationsService.register_telegram_chat"),
             patch("bot.telegram_bot.chat_registry_router.AccountsService.purge_unlinked_identity", return_value=(True, "purged")) as purge_mock,
         ):
-            with self.assertRaises(SkipHandler):
-                await remember_user_membership(update)
+            await remember_user_membership(update)
 
         purge_mock.assert_called_once_with("telegram", "777")
 
@@ -142,8 +134,7 @@ class TelegramChatRegistryRouterTests(unittest.IsolatedAsyncioTestCase):
             patch("bot.telegram_bot.chat_registry_router.GuiyPublishDestinationsService.register_telegram_chat"),
             patch("bot.telegram_bot.chat_registry_router.AccountsService.purge_unlinked_identity") as purge_mock,
         ):
-            with self.assertRaises(SkipHandler):
-                await remember_user_membership(update)
+            await remember_user_membership(update)
 
         purge_mock.assert_not_called()
 
