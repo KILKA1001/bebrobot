@@ -17,7 +17,7 @@ from bot.telegram_bot.commands.engagement import has_pending_action
 from bot.telegram_bot.commands.linking import has_pending_profile_edit
 from bot.telegram_bot.identity import persist_telegram_identity_from_user
 from bot.utils.guiy_trigger import is_guiy_name_trigger
-from bot.utils.guiy_typing import calculate_typing_delay_seconds
+from bot.utils.guiy_typing import calculate_typing_delay_details
 from bot.utils.conversation_activity import should_thread_reply
 
 
@@ -72,13 +72,16 @@ async def _generate_and_send_reply(message: Message, text: str, *, media_inputs:
         )
         return
 
-    typing_delay = calculate_typing_delay_seconds(reply)
+    typing_delay_details = calculate_typing_delay_details(reply)
+    typing_delay = float(typing_delay_details["typing_delay_final"])
     logger.info(
-        "telegram ai typing simulation chat_id=%s user_id=%s delay=%ss reply_len=%s",
+        "telegram ai typing simulation chat_id=%s user_id=%s typing_delay_base=%s typing_delay_final=%ss reply_len=%s platform=%s",
         message.chat.id,
         sender_id,
+        typing_delay_details["typing_delay_base"],
         typing_delay,
-        len(reply),
+        typing_delay_details["reply_len"],
+        "telegram",
     )
     try:
         await message.bot.send_chat_action(message.chat.id, "typing")
