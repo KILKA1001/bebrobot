@@ -632,6 +632,39 @@ class GuiyAIGuardsTests(unittest.TestCase):
         models = _resolve_candidate_models(has_media=True)
         self.assertEqual(models, ("llama-3.1-8b-instant", "qwen/qwen3-32b", "llama-3.3-70b-versatile"))
 
+    @patch("bot.services.ai_service._resolve_text_models", return_value=("llama-3.1-8b-instant", "qwen/qwen3-32b"))
+    @patch("bot.services.ai_service._generate_once", new_callable=AsyncMock)
+    def test_generate_with_model_fallback_retries_next_model_on_413(self, generate_once_mock, _resolve_models_mock):
+        generate_once_mock.side_effect = [(None, 413), ("Ответ после fallback", 200)]
+
+        reply, model = asyncio.run(
+            ai_service._generate_with_model_fallback(
+                "x",
+                "sys",
+                "user",
+                route_label="text_only",
+            )
+        )
+
+        self.assertEqual(reply, "Ответ после fallback")
+        self.assertEqual(model, "qwen/qwen3-32b")
+        self.assertEqual(generate_once_mock.await_count, 2)
+
+    @patch("bot.services.ai_service._resolve_text_models", return_value=("llama-3.1-8b-instant",))
+    @patch("bot.services.ai_service._generate_once", new_callable=AsyncMock, return_value=(None, 500))
+    def test_generate_with_model_fallback_caps_max_tokens_for_llama31(self, generate_once_mock, _resolve_models_mock):
+        asyncio.run(
+            ai_service._generate_with_model_fallback(
+                "x",
+                "sys",
+                "user",
+                route_label="text_only",
+            )
+        )
+
+        kwargs = generate_once_mock.await_args.kwargs
+        self.assertEqual(kwargs["max_completion_tokens"], 1024)
+
     @patch.dict("os.environ", {}, clear=True)
     def test_resolve_vision_model_defaults_to_multimodal_llama_4_scout(self):
         self.assertEqual(_resolve_vision_model(), "meta-llama/llama-4-scout-17b-16e-instruct")
