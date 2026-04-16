@@ -1006,24 +1006,28 @@ def _set_ai_cooldown(
     conversation_id: str | int | None,
     user_id: str | int | None = None,
     hard_quota: bool = False,
+    cooldown_kind: str = "soft_rate_limit",
+    retry_after_raw: int | None = None,
 ) -> None:
-    max_window = 900 if hard_quota else 90
-    bounded = max(10, min(seconds, max_window))
+    max_window = 900 if hard_quota else 45
+    min_window = 10 if hard_quota else 4
+    bounded = max(min_window, min(seconds, max_window))
     until = time.time() + bounded
-    cooldown_scope, cooldown_scope_kind = _resolve_cooldown_scope(provider, conversation_id)
+    cooldown_scope, _cooldown_scope_kind = _resolve_cooldown_scope(provider, conversation_id)
     _AI_COOLDOWN_UNTIL[cooldown_scope] = max(_AI_COOLDOWN_UNTIL.get(cooldown_scope, 0.0), until)
     if hard_quota:
         _AI_HARD_QUOTA_UNTIL[cooldown_scope] = max(_AI_HARD_QUOTA_UNTIL.get(cooldown_scope, 0.0), until)
     logger.warning(
-        "AI cooldown enabled for %ss (hard_quota=%s until=%s provider=%s conversation_id=%s user_id=%s cooldown_scope=%s cooldown_scope_kind=%s)",
+        "AI cooldown enabled cooldown_scope=%s cooldown_kind=%s retry_after_raw=%s retry_after_bounded=%s hard_quota=%s provider=%s conversation_id=%s user_id=%s until=%s",
+        cooldown_scope,
+        cooldown_kind,
+        retry_after_raw if retry_after_raw is not None else seconds,
         bounded,
         hard_quota,
-        int(_AI_COOLDOWN_UNTIL[cooldown_scope]),
         provider,
         conversation_id,
         user_id,
-        cooldown_scope,
-        cooldown_scope_kind,
+        int(_AI_COOLDOWN_UNTIL[cooldown_scope]),
     )
 
 
@@ -1084,7 +1088,12 @@ def _cleanup_expired_cooldowns() -> None:
 
 def _fallback_reply(reason: str) -> str:
     logger.warning("guiy fallback reply used reason=%s", reason)
-    return "Я очень устал, не мешай мне спать."
+    normalized = (reason or "").lower()
+    if "лимиты ai провайдера исчерпаны" in normalized:
+        return "Сейчас сервис временно недоступен из-за лимита провайдера. Попробуйте немного позже."
+    if "лимит ai провайдера" in normalized or "cooldown" in normalized:
+        return "Сервис сейчас перегружен. Я уже восстанавливаюсь, повторите сообщение через несколько секунд."
+    return "Сейчас не получилось ответить. Повторите запрос, пожалуйста."
 
 
 async def _throttle_ai_reply() -> None:
@@ -1342,48 +1351,79 @@ async def _generate_once(
         return None, 200
 
     if status == 429:
+        retry_after = _extract_retry_after_seconds({}, body)
         if _is_hard_quota_exhausted(body):
-            retry_after = _extract_retry_after_seconds({}, body) or 3600
+            effective_retry_after = retry_after or 3600
             logger.error(
-                "Groq rate limit: hard quota exhausted model=%s cooldown=%ss provider=%s conversation_id=%s user_id=%s body=%s",
+                "Groq rate limit: hard quota exhausted model=%s cooldown_scope=%s cooldown_kind=%s retry_after_raw=%s retry_after_bounded=%s hard_quota=%s provider=%s conversation_id=%s user_id=%s body=%s",
                 model,
+                _resolve_cooldown_scope(provider, conversation_id)[0],
+                "hard_quota",
                 retry_after,
+                min(max(effective_retry_after, 10), 900),
+                True,
                 provider,
                 conversation_id,
                 user_id,
                 body[:800],
             )
             _set_ai_cooldown(
-                retry_after,
+                effective_retry_after,
                 provider=provider,
                 conversation_id=conversation_id,
                 user_id=user_id,
                 hard_quota=True,
+                cooldown_kind="hard_quota",
+                retry_after_raw=retry_after,
             )
         elif _is_temporary_upstream_rate_limited(body):
+            effective_retry_after = retry_after or 8
             logger.warning(
-                "Groq temporary upstream error model=%s status=%s body=%s",
+                "Groq temporary upstream rate limit model=%s status=%s cooldown_scope=%s cooldown_kind=%s retry_after_raw=%s retry_after_bounded=%s hard_quota=%s provider=%s conversation_id=%s user_id=%s body=%s",
                 model,
                 status,
-                body[:800],
-            )
-        else:
-            retry_after = _extract_retry_after_seconds({}, body) or 60
-            logger.warning(
-                "Groq rate limit model=%s cooldown=%ss provider=%s conversation_id=%s user_id=%s body=%s",
-                model,
+                _resolve_cooldown_scope(provider, conversation_id)[0],
+                "transient_429",
                 retry_after,
+                min(max(effective_retry_after, 4), 45),
+                False,
                 provider,
                 conversation_id,
                 user_id,
                 body[:800],
             )
             _set_ai_cooldown(
-                retry_after,
+                effective_retry_after,
                 provider=provider,
                 conversation_id=conversation_id,
                 user_id=user_id,
                 hard_quota=False,
+                cooldown_kind="transient_429",
+                retry_after_raw=retry_after,
+            )
+        else:
+            effective_retry_after = retry_after or 20
+            logger.warning(
+                "Groq rate limit model=%s cooldown_scope=%s cooldown_kind=%s retry_after_raw=%s retry_after_bounded=%s hard_quota=%s provider=%s conversation_id=%s user_id=%s body=%s",
+                model,
+                _resolve_cooldown_scope(provider, conversation_id)[0],
+                "soft_rate_limit",
+                retry_after,
+                min(max(effective_retry_after, 4), 45),
+                False,
+                provider,
+                conversation_id,
+                user_id,
+                body[:800],
+            )
+            _set_ai_cooldown(
+                effective_retry_after,
+                provider=provider,
+                conversation_id=conversation_id,
+                user_id=user_id,
+                hard_quota=False,
+                cooldown_kind="soft_rate_limit",
+                retry_after_raw=retry_after,
             )
 
     if _should_retry_status(status):
@@ -1492,6 +1532,56 @@ async def _generate_with_model_fallback(
     return None, None
 
 
+async def _retry_after_soft_cooldown(
+    *,
+    api_key: str,
+    base_prompt: str,
+    effective_user_text: str,
+    route: str,
+    provider: str | None,
+    conversation_id: str | int | None,
+    user_id: str | int | None,
+) -> tuple[str | None, str | None]:
+    hard_quota_remaining = _get_hard_quota_remaining(
+        provider=provider,
+        conversation_id=conversation_id,
+        user_id=user_id,
+    )
+    if hard_quota_remaining > 0:
+        return None, None
+
+    cooldown_remaining = _get_cooldown_remaining(
+        provider=provider,
+        conversation_id=conversation_id,
+        user_id=user_id,
+    )
+    if cooldown_remaining <= 0:
+        return None, None
+
+    short_wait = max(1.0, min(float(cooldown_remaining), 3.0))
+    logger.warning(
+        "AI transient cooldown short retry scheduled cooldown_scope=%s cooldown_kind=%s retry_after_raw=%s retry_after_bounded=%s hard_quota=%s provider=%s conversation_id=%s user_id=%s",
+        _resolve_cooldown_scope(provider, conversation_id)[0],
+        "transient_429",
+        cooldown_remaining,
+        short_wait,
+        False,
+        provider,
+        conversation_id,
+        user_id,
+    )
+    await asyncio.sleep(short_wait)
+    return await _generate_with_model_fallback(
+        api_key,
+        base_prompt,
+        effective_user_text,
+        route_label=f"{route}:soft_retry",
+        provider=provider,
+        conversation_id=conversation_id,
+        user_id=user_id,
+    )
+
+
 def _build_cooldown_reply(
     *,
     provider: str | None,
@@ -1511,9 +1601,7 @@ def _build_cooldown_reply(
             conversation_id,
             user_id,
         )
-        return _fallback_reply(
-            f"лимиты AI провайдера исчерпаны, проверь billing/credits и подожди {hard_quota_remaining}с"
-        )
+        return _fallback_reply(f"лимиты AI провайдера исчерпаны, проверь billing/credits и подожди {hard_quota_remaining}с")
 
     cooldown_remaining = _get_cooldown_remaining(
         provider=provider,
@@ -1553,11 +1641,25 @@ async def generate_guiy_reply(
             cooldown_scope,
             cooldown_scope_kind,
         )
-        return _build_cooldown_reply(
+        hard_quota_remaining = _get_hard_quota_remaining(
             provider=provider,
             conversation_id=conversation_id,
             user_id=user_id,
         )
+        if hard_quota_remaining <= 0:
+            logger.warning(
+                "AI cooldown preflight uses queue-style short defer cooldown_scope=%s cooldown_kind=%s retry_after_raw=%s retry_after_bounded=%s hard_quota=%s provider=%s conversation_id=%s user_id=%s",
+                cooldown_scope,
+                "transient_429",
+                cooldown_remaining,
+                min(float(cooldown_remaining), 2.0),
+                False,
+                provider,
+                conversation_id,
+                user_id,
+            )
+            await asyncio.sleep(min(float(cooldown_remaining), 2.0))
+        return _build_cooldown_reply(provider=provider, conversation_id=conversation_id, user_id=user_id)
 
     effective_user_text = _effective_user_text(user_text, media_inputs)
     media_summary: str | None = None
@@ -1684,17 +1786,36 @@ async def generate_guiy_reply(
             user_id=user_id,
         )
         if not first_try:
-            cooldown_remaining = _get_cooldown_remaining(
+            retry_try, retry_model = await _retry_after_soft_cooldown(
+                api_key=api_key,
+                base_prompt=base_prompt,
+                effective_user_text=effective_user_text,
+                route=route,
                 provider=provider,
                 conversation_id=conversation_id,
                 user_id=user_id,
             )
+            if retry_try and not _is_role_break(retry_try):
+                cleaned_retry_reply = _sanitize_guiy_reply(_force_guiy_prefix(retry_try))
+                if cleaned_retry_reply:
+                    logger.info(
+                        "guiy final reply generated after transient retry route=%s model=%s provider=%s conversation_id=%s user_id=%s",
+                        route,
+                        retry_model,
+                        provider,
+                        conversation_id,
+                        user_id,
+                    )
+                    _register_dialog_memory_turn(
+                        provider=provider,
+                        conversation_id=conversation_id,
+                        speaker="Гуй",
+                        text=cleaned_retry_reply,
+                    )
+                    return cleaned_retry_reply
+            cooldown_remaining = _get_cooldown_remaining(provider=provider, conversation_id=conversation_id, user_id=user_id)
             if cooldown_remaining > 0:
-                return _build_cooldown_reply(
-                    provider=provider,
-                    conversation_id=conversation_id,
-                    user_id=user_id,
-                )
+                return _build_cooldown_reply(provider=provider, conversation_id=conversation_id, user_id=user_id)
             return _fallback_reply("ошибка Groq API")
 
         if not _is_role_break(first_try):
@@ -1734,17 +1855,36 @@ async def generate_guiy_reply(
             user_id=user_id,
         )
         if not second_try:
-            cooldown_remaining = _get_cooldown_remaining(
+            retry_try, retry_model = await _retry_after_soft_cooldown(
+                api_key=api_key,
+                base_prompt=strict_prompt,
+                effective_user_text=effective_user_text,
+                route=f"{route}:role_retry",
                 provider=provider,
                 conversation_id=conversation_id,
                 user_id=user_id,
             )
+            if retry_try and not _is_role_break(retry_try):
+                cleaned_retry_reply = _sanitize_guiy_reply(_force_guiy_prefix(retry_try))
+                if cleaned_retry_reply:
+                    logger.info(
+                        "guiy final reply generated after role+transient retry route=%s model=%s provider=%s conversation_id=%s user_id=%s",
+                        route,
+                        retry_model,
+                        provider,
+                        conversation_id,
+                        user_id,
+                    )
+                    _register_dialog_memory_turn(
+                        provider=provider,
+                        conversation_id=conversation_id,
+                        speaker="Гуй",
+                        text=cleaned_retry_reply,
+                    )
+                    return cleaned_retry_reply
+            cooldown_remaining = _get_cooldown_remaining(provider=provider, conversation_id=conversation_id, user_id=user_id)
             if cooldown_remaining > 0:
-                return _build_cooldown_reply(
-                    provider=provider,
-                    conversation_id=conversation_id,
-                    user_id=user_id,
-                )
+                return _build_cooldown_reply(provider=provider, conversation_id=conversation_id, user_id=user_id)
             return _fallback_reply("повторная ошибка Groq API")
 
         if _is_role_break(second_try):
