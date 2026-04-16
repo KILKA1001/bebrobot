@@ -23,14 +23,14 @@ logger = logging.getLogger(__name__)
 
 
 TEXT_GROQ_MODELS = (
-    "moonshotai/kimi-k2-instruct-0905",
+    "llama-3.1-8b-instant",
     "qwen/qwen3-32b",
     "llama-3.3-70b-versatile",
 )
 
 MEDIA_GROQ_MODELS = (
+    "llama-3.1-8b-instant",
     "llama-3.3-70b-versatile",
-    "moonshotai/kimi-k2-instruct-0905",
     "qwen/qwen3-32b",
 )
 
@@ -645,6 +645,20 @@ def _resolve_text_models() -> tuple[str, ...]:
         models = free_tier_models
     else:
         models = default_models
+
+    unsupported_models = tuple(model for model in models if "kimi" in model.strip().lower())
+    if unsupported_models:
+        models = tuple(model for model in models if "kimi" not in model.strip().lower())
+        logger.warning(
+            "Groq text model chain dropped unsupported models models=%s",
+            ",".join(unsupported_models),
+        )
+        if not models:
+            models = default_models
+            logger.warning(
+                "Groq text model chain fallback applied after unsupported model removal fallback_models=%s",
+                ",".join(models),
+            )
 
     logger.info(
         "Groq text model chain resolved use_free_tier=%s models=%s explicit_text_model=%s explicit_text_models=%s legacy_model=%s legacy_models=%s",
