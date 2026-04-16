@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 
 from aiogram import F, Router
-from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 
 from bot.services import AccountsService
@@ -47,31 +46,26 @@ def _remember_chat(chat) -> None:
 @router.message(F.chat.type.in_(_GROUP_CHAT_TYPES))
 async def remember_group_message(message: Message) -> None:
     _remember_chat(message.chat)
-    raise SkipHandler()
 
 
 @router.edited_message(F.chat.type.in_(_GROUP_CHAT_TYPES))
 async def remember_group_edited_message(message: Message) -> None:
     _remember_chat(message.chat)
-    raise SkipHandler()
 
 
 @router.channel_post(F.chat.type == "channel")
 async def remember_channel_post(message: Message) -> None:
     _remember_chat(message.chat)
-    raise SkipHandler()
 
 
 @router.edited_channel_post(F.chat.type == "channel")
 async def remember_channel_edited_post(message: Message) -> None:
     _remember_chat(message.chat)
-    raise SkipHandler()
 
 
 @router.callback_query(F.message, F.message.chat.type.in_(_GROUP_CHAT_TYPES))
 async def remember_group_callback(callback: CallbackQuery) -> None:
     _remember_chat(callback.message.chat if callback.message else None)
-    raise SkipHandler()
 
 
 @router.my_chat_member(F.chat.type.in_(_TRACKED_CHAT_TYPES))
@@ -149,5 +143,3 @@ async def remember_user_membership(update: ChatMemberUpdated) -> None:
             old_status,
             new_status,
         )
-
-    raise SkipHandler()

@@ -189,7 +189,7 @@ class GuiyAIGuardsTests(unittest.TestCase):
 
         self.assertTrue(_is_bot_mentioned(message, bot_id=123, bot_username="GuiyBot"))
 
-    def test_handle_guiy_chat_skips_private_message_without_name_trigger(self):
+    def test_handle_guiy_chat_replies_in_private_without_name_trigger(self):
         from bot.telegram_bot.commands.ai_chat import handle_guiy_chat
 
         message = SimpleNamespace(
@@ -218,7 +218,7 @@ class GuiyAIGuardsTests(unittest.TestCase):
         ) as reply_mock:
             asyncio.run(handle_guiy_chat(message))
 
-        reply_mock.assert_not_awaited()
+        reply_mock.assert_awaited_once()
 
     def test_handle_guiy_chat_skips_group_message_without_trigger(self):
         from bot.telegram_bot.commands.ai_chat import handle_guiy_chat
