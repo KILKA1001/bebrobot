@@ -24,10 +24,10 @@ from aiohttp import ClientConnectionError, ClientError, ServerTimeoutError
 from dotenv import load_dotenv
 
 from bot.telegram_bot.config import TELEGRAM_BOT_TOKEN_ENV, get_telegram_bot_token
+from bot.services.ai_request_scheduler import enqueue_ai_request
 from bot.services.ai_service import (
     _build_media_input,
     close_shared_http_session,
-    generate_guiy_reply,
     init_shared_http_session,
 )
 
@@ -822,12 +822,11 @@ async def on_message(message: discord.Message):
                 len(media_inputs),
                 content[:160],
             )
-            reply = await generate_guiy_reply(
-                content,
-                provider="discord",
+            reply = await enqueue_ai_request(
+                platform="discord",
                 user_id=getattr(message.author, "id", None),
                 conversation_id=getattr(message.channel, "id", None),
-                media_inputs=media_inputs,
+                payload={"text": content, "media_inputs": media_inputs},
             )
             if reply:
                 typing_delay = calculate_typing_delay_seconds(reply)

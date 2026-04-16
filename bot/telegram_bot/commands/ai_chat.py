@@ -11,7 +11,8 @@ from aiogram import F, Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
-from bot.services.ai_service import _build_media_input, generate_guiy_reply
+from bot.services.ai_request_scheduler import enqueue_ai_request
+from bot.services.ai_service import _build_media_input
 from bot.telegram_bot.commands.engagement import has_pending_action
 from bot.telegram_bot.commands.linking import has_pending_profile_edit
 from bot.telegram_bot.identity import persist_telegram_identity_from_user
@@ -57,12 +58,11 @@ def _is_name_trigger(text: str) -> bool:
 async def _generate_and_send_reply(message: Message, text: str, *, media_inputs: list[dict[str, str]] | None = None) -> None:
     sender_id = message.from_user.id if message.from_user else None
     resolved_media_inputs = media_inputs if media_inputs is not None else await _extract_media_inputs(message)
-    reply = await generate_guiy_reply(
-        text,
-        provider="telegram",
+    reply = await enqueue_ai_request(
+        platform="telegram",
         user_id=sender_id,
         conversation_id=message.chat.id,
-        media_inputs=resolved_media_inputs,
+        payload={"text": text, "media_inputs": resolved_media_inputs},
     )
     if not reply:
         logger.warning(
