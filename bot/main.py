@@ -59,7 +59,7 @@ from bot.systems.interactive_rounds import RoundManagementView
 from bot.systems.tournament_logic import create_tournament_logic
 from bot.utils import safe_send
 from bot.utils.guiy_trigger import is_guiy_name_trigger
-from bot.utils.guiy_typing import calculate_typing_delay_seconds
+from bot.utils.guiy_typing import calculate_typing_delay_details
 from bot.utils.conversation_activity import should_thread_reply
 from bot.telegram_bot.main import (
     TelegramPollingConflictDetectedError,
@@ -829,13 +829,16 @@ async def on_message(message: discord.Message):
                 payload={"text": content, "media_inputs": media_inputs},
             )
             if reply:
-                typing_delay = calculate_typing_delay_seconds(reply)
+                typing_delay_details = calculate_typing_delay_details(reply)
+                typing_delay = float(typing_delay_details["typing_delay_final"])
                 logging.info(
-                    "discord ai typing simulation channel_id=%s author_id=%s delay=%ss reply_len=%s",
+                    "discord ai typing simulation channel_id=%s author_id=%s typing_delay_base=%s typing_delay_final=%ss reply_len=%s platform=%s",
                     getattr(message.channel, "id", None),
                     getattr(message.author, "id", None),
+                    typing_delay_details["typing_delay_base"],
                     typing_delay,
-                    len(reply),
+                    typing_delay_details["reply_len"],
+                    "discord",
                 )
                 try:
                     logging.info(
