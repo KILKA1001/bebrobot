@@ -44,7 +44,7 @@ def _remember_chat(chat) -> None:
         )
 
 
-@router.message(F.chat.type.in_(_GROUP_CHAT_TYPES))
+@router.message(F.chat.type.in_(_GROUP_CHAT_TYPES), flags={"block": False})
 async def remember_group_message(message: Message) -> None:
     _remember_chat(message.chat)
     logger.info(
@@ -55,7 +55,7 @@ async def remember_group_message(message: Message) -> None:
     raise SkipHandler()
 
 
-@router.edited_message(F.chat.type.in_(_GROUP_CHAT_TYPES))
+@router.edited_message(F.chat.type.in_(_GROUP_CHAT_TYPES), flags={"block": False})
 async def remember_group_edited_message(message: Message) -> None:
     _remember_chat(message.chat)
     logger.info(
@@ -66,7 +66,7 @@ async def remember_group_edited_message(message: Message) -> None:
     raise SkipHandler()
 
 
-@router.channel_post(F.chat.type == "channel")
+@router.channel_post(F.chat.type == "channel", flags={"block": False})
 async def remember_channel_post(message: Message) -> None:
     _remember_chat(message.chat)
     logger.info(
@@ -77,7 +77,7 @@ async def remember_channel_post(message: Message) -> None:
     raise SkipHandler()
 
 
-@router.edited_channel_post(F.chat.type == "channel")
+@router.edited_channel_post(F.chat.type == "channel", flags={"block": False})
 async def remember_channel_edited_post(message: Message) -> None:
     _remember_chat(message.chat)
     logger.info(
@@ -88,7 +88,7 @@ async def remember_channel_edited_post(message: Message) -> None:
     raise SkipHandler()
 
 
-@router.callback_query(F.message, F.message.chat.type.in_(_GROUP_CHAT_TYPES))
+@router.callback_query(F.message, F.message.chat.type.in_(_GROUP_CHAT_TYPES), flags={"block": False})
 async def remember_group_callback(callback: CallbackQuery) -> None:
     _remember_chat(callback.message.chat if callback.message else None)
     logger.info(
