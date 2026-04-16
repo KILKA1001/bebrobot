@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 
 from aiogram import F, Router
+from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 
 from bot.services import AccountsService
@@ -51,6 +52,7 @@ async def remember_group_message(message: Message) -> None:
         getattr(message.chat, "id", None),
         getattr(message.chat, "type", None),
     )
+    raise SkipHandler()
 
 
 @router.edited_message(F.chat.type.in_(_GROUP_CHAT_TYPES), flags={"block": False})
@@ -61,6 +63,7 @@ async def remember_group_edited_message(message: Message) -> None:
         getattr(message.chat, "id", None),
         getattr(message.chat, "type", None),
     )
+    raise SkipHandler()
 
 
 @router.channel_post(F.chat.type == "channel", flags={"block": False})
@@ -71,6 +74,7 @@ async def remember_channel_post(message: Message) -> None:
         getattr(message.chat, "id", None),
         getattr(message.chat, "type", None),
     )
+    raise SkipHandler()
 
 
 @router.edited_channel_post(F.chat.type == "channel", flags={"block": False})
@@ -81,6 +85,7 @@ async def remember_channel_edited_post(message: Message) -> None:
         getattr(message.chat, "id", None),
         getattr(message.chat, "type", None),
     )
+    raise SkipHandler()
 
 
 @router.callback_query(F.message, F.message.chat.type.in_(_GROUP_CHAT_TYPES), flags={"block": False})
@@ -91,6 +96,7 @@ async def remember_group_callback(callback: CallbackQuery) -> None:
         getattr(getattr(callback.message, "chat", None), "id", None),
         getattr(getattr(callback.message, "chat", None), "type", None),
     )
+    raise SkipHandler()
 
 
 @router.my_chat_member(F.chat.type.in_(_TRACKED_CHAT_TYPES))
