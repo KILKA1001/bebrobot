@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from aiogram import F, Router
 from aiogram.filters import Command
+from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.services.council_feedback_service import CouncilFeedbackService
@@ -787,16 +788,16 @@ async def proposal_callbacks(callback: CallbackQuery) -> None:
 @router.message()
 async def proposal_pending_input(message: Message) -> None:
     if not message.from_user:
-        return
+        raise SkipHandler()
     actor_id = message.from_user.id
     started_at = _PENDING_PROPOSAL_INPUT.get(actor_id)
     if not _is_alive(started_at):
         if started_at:
             _cleanup_pending(actor_id)
-        return
+        raise SkipHandler()
     text = str(message.text or "").strip()
     if not text or text.startswith("/"):
-        return
+        raise SkipHandler()
 
     try:
         if "\n\n" in text:

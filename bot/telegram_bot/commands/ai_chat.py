@@ -273,12 +273,13 @@ async def handle_guiy_chat(message: Message) -> None:
         )
         return
 
+    is_private_chat = str(getattr(message.chat, "type", "") or "").strip() == "private"
     is_named = _is_name_trigger(text)
 
     is_reply_to_bot = False
     is_bot_mention = False
 
-    if not is_named:
+    if not is_named and not is_private_chat:
         try:
             bot_user = await message.bot.get_me()
         except Exception:
@@ -297,9 +298,8 @@ async def handle_guiy_chat(message: Message) -> None:
         )
         is_bot_mention = _is_bot_mentioned(message, bot_user.id, bot_user.username)
 
-    is_private_chat = str(getattr(message.chat, "type", "") or "").strip() == "private"
-
-    if not (is_named or is_reply_to_bot or is_bot_mention):
+    should_reply = is_private_chat or is_named or is_reply_to_bot or is_bot_mention
+    if not should_reply:
         logger.info(
             "telegram ai skipped because trigger not matched chat_id=%s user_id=%s is_named=%s "
             "is_reply_to_bot=%s is_bot_mention=%s is_private_chat=%s text=%s",
@@ -324,10 +324,11 @@ async def handle_guiy_chat(message: Message) -> None:
 
     try:
         logger.info(
-            "telegram ai trigger matched chat_id=%s user_id=%s is_named=%s is_reply_to_bot=%s "
+            "telegram ai trigger matched chat_id=%s user_id=%s should_reply=%s is_named=%s is_reply_to_bot=%s "
             "is_bot_mention=%s is_private_chat=%s text=%s",
             message.chat.id,
             sender_id,
+            should_reply,
             is_named,
             is_reply_to_bot,
             is_bot_mention,

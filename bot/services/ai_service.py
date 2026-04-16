@@ -23,14 +23,14 @@ logger = logging.getLogger(__name__)
 
 
 TEXT_GROQ_MODELS = (
-    "moonshotai/kimi-k2-instruct-0905",
+    "llama-3.1-8b-instant",
     "qwen/qwen3-32b",
     "llama-3.3-70b-versatile",
 )
 
 MEDIA_GROQ_MODELS = (
+    "llama-3.1-8b-instant",
     "llama-3.3-70b-versatile",
-    "moonshotai/kimi-k2-instruct-0905",
     "qwen/qwen3-32b",
 )
 
@@ -645,6 +645,20 @@ def _resolve_text_models() -> tuple[str, ...]:
         models = free_tier_models
     else:
         models = default_models
+
+    unsupported_models = tuple(model for model in models if "kimi" in model.strip().lower())
+    if unsupported_models:
+        models = tuple(model for model in models if "kimi" not in model.strip().lower())
+        logger.warning(
+            "Groq text model chain dropped unsupported models models=%s",
+            ",".join(unsupported_models),
+        )
+        if not models:
+            models = default_models
+            logger.warning(
+                "Groq text model chain fallback applied after unsupported model removal fallback_models=%s",
+                ",".join(models),
+            )
 
     logger.info(
         "Groq text model chain resolved use_free_tier=%s models=%s explicit_text_model=%s explicit_text_models=%s legacy_model=%s legacy_models=%s",
@@ -1427,6 +1441,17 @@ async def _generate_with_model_fallback(
             "top_p": 0.95,
             "max_completion_tokens": 4096,
         }
+        if normalized_model == "llama-3.1-8b-instant":
+            request_kwargs["max_completion_tokens"] = min(
+                int(request_kwargs["max_completion_tokens"]),
+                1024,
+            )
+            logger.info(
+                "Groq text token cap applied for model=%s max_completion_tokens=%s route=%s",
+                model,
+                request_kwargs["max_completion_tokens"],
+                route_label,
+            )
         if normalized_model == "qwen/qwen3-32b":
             request_kwargs["reasoning_effort"] = "default"
         reply, status = await _generate_once(
@@ -1450,7 +1475,7 @@ async def _generate_with_model_fallback(
             return reply, model
 
         last_status = status
-        if status in {404, 429, 500, 502, 503, 504}:
+        if status in {404, 413, 429, 500, 502, 503, 504}:
             logger.warning(
                 "Groq text generation fallback route=%s status=%s failed_model=%s next_attempt=%s",
                 route_label,
