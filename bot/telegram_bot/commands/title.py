@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -37,6 +38,31 @@ class PendingTitleFlow:
 
 
 _PENDING: dict[int, PendingTitleFlow] = {}
+
+
+async def _safe_edit_title_panel(
+    callback: CallbackQuery,
+    *,
+    actor_id: int,
+    flow: PendingTitleFlow,
+    text: str,
+) -> None:
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=_build_title_keyboard(actor_id, mode=flow.mode, target_titles=flow.target_titles),
+        )
+    except TelegramBadRequest as error:
+        if "message is not modified" in str(error).lower():
+            logger.warning(
+                "telegram title panel edit skipped unchanged actor_id=%s target_provider=%s target_user_id=%s mode=%s",
+                actor_id,
+                flow.target_provider,
+                flow.target_user_id,
+                flow.mode,
+            )
+            return
+        raise
 
 
 def _build_title_keyboard(
@@ -172,13 +198,17 @@ async def title_callbacks(callback: CallbackQuery) -> None:
         flow.target_titles = TitleManagementService.get_target_titles(flow.target_provider, flow.target_user_id)
         _PENDING[actor_id] = flow
         mode_label = "повышение" if flow.mode == "promote" else "понижение"
-        await callback.message.edit_text(
-            "🛠️ Управление званием\n"
+        await _safe_edit_title_panel(
+            callback,
+            actor_id=actor_id,
+            flow=flow,
+            text=(
+                "🛠️ Управление званием\n"
             f"Пользователь: {flow.target_label}\n"
             f"Режим: {mode_label}\n"
             "Выбери звание кнопкой ниже.\n"
-            "✅ возле звания = у пользователя оно уже есть.",
-            reply_markup=_build_title_keyboard(actor_id, mode=flow.mode, target_titles=flow.target_titles),
+                "✅ возле звания = у пользователя оно уже есть."
+            ),
         )
         await callback.answer("✅ Режим обновлён.")
         return
@@ -212,12 +242,16 @@ async def title_callbacks(callback: CallbackQuery) -> None:
     mode_label = "повышение" if flow.mode == "promote" else "понижение"
     flow.target_titles = tuple(result.titles)
     _PENDING[actor_id] = flow
-    await callback.message.edit_text(
-        f"{result.message}\n"
+    await _safe_edit_title_panel(
+        callback,
+        actor_id=actor_id,
+        flow=flow,
+        text=(
+            f"{result.message}\n"
         f"Пользователь: {flow.target_label}\n"
         f"Режим: {mode_label}\n"
         f"Текущие звания: {', '.join(result.titles) if result.titles else 'нет'}\n\n"
-        "Можно продолжить в этой же панели: выбери другой режим или другое звание.",
-        reply_markup=_build_title_keyboard(actor_id, mode=flow.mode, target_titles=flow.target_titles),
+            "Можно продолжить в этой же панели: выбери другой режим или другое звание."
+        ),
     )
     await callback.answer("✅ Готово" if result.ok else "⚠️ Операция не применена", show_alert=not result.ok)
