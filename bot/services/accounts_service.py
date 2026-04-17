@@ -65,6 +65,20 @@ class AccountsService:
         return (str(provider or "").strip().lower(), str(provider_user_id or "").strip())
 
     @staticmethod
+    def _normalize_account_id_value(value: object, *, context: str) -> str | None:
+        candidate = str(value or "").strip()
+        if not candidate:
+            return None
+        if not _ACCOUNT_ID_RE.match(candidate):
+            logger.error(
+                "invalid account_id ignored context=%s raw_value=%s",
+                context,
+                value,
+            )
+            return None
+        return candidate
+
+    @staticmethod
     def _get_cached_account_id(provider: str, provider_user_id: str) -> str | None | object:
         cache_key = AccountsService._account_id_cache_key(provider, provider_user_id)
         cached_entry = AccountsService._account_id_cache.get(cache_key)
@@ -935,7 +949,10 @@ class AccountsService:
                 .execute()
             )
             if response.data:
-                account_id = str(response.data[0].get("account_id") or "").strip() or None
+                account_id = AccountsService._normalize_account_id_value(
+                    response.data[0].get("account_id"),
+                    context=f"resolve_account_id:{normalized_provider}:{normalized_user_id}",
+                )
                 AccountsService._cache_account_id(normalized_provider, normalized_user_id, account_id)
                 return account_id
             AccountsService._cache_account_id(normalized_provider, normalized_user_id, None)
@@ -2360,12 +2377,13 @@ class AccountsService:
 
     @staticmethod
     def get_account_titles(account_id: str) -> list[str]:
-        if not account_id:
+        normalized_account_id = AccountsService._normalize_account_id_value(account_id, context="get_account_titles")
+        if not normalized_account_id:
             return []
 
-        cached = AccountsService._account_titles_cache.get(str(account_id))
+        cached = AccountsService._account_titles_cache.get(normalized_account_id)
         if cached is not None:
-            return AccountsService._ensure_default_chat_member_title(list(cached), account_id=str(account_id))
+            return AccountsService._ensure_default_chat_member_title(list(cached), account_id=normalized_account_id)
 
         if not db.supabase:
             return []
@@ -2374,7 +2392,7 @@ class AccountsService:
             response = (
                 db.supabase.table("accounts")
                 .select("titles")
-                .eq("id", str(account_id))
+                .eq("id", normalized_account_id)
                 .limit(1)
                 .execute()
             )
@@ -2389,11 +2407,11 @@ class AccountsService:
                 titles = [item.strip() for item in value.split(",") if item.strip()]
             else:
                 titles = []
-            normalized_titles = AccountsService._ensure_default_chat_member_title(titles, account_id=str(account_id))
-            AccountsService._account_titles_cache[str(account_id)] = list(normalized_titles)
+            normalized_titles = AccountsService._ensure_default_chat_member_title(titles, account_id=normalized_account_id)
+            AccountsService._account_titles_cache[normalized_account_id] = list(normalized_titles)
             return normalized_titles
         except Exception as e:
-            logger.warning("get_account_titles failed for %s: %s", account_id, e)
+            logger.warning("get_account_titles failed for %s: %s", normalized_account_id, e)
             return []
 
     @staticmethod
@@ -2410,14 +2428,16 @@ class AccountsService:
 
     @staticmethod
     def save_account_titles(account_id: str, titles: list[str], source: str = "discord") -> bool:
-        if not account_id:
+        normalized_account_id = AccountsService._normalize_account_id_value(account_id, context="save_account_titles")
+        if not normalized_account_id:
+            logger.error("save_account_titles aborted invalid account_id=%s source=%s", account_id, source)
             return False
 
         normalized = [str(item).strip() for item in (titles or []) if str(item).strip()]
         normalized = list(dict.fromkeys(normalized))
 
         if not db.supabase:
-            logger.warning("save_account_titles skipped for account_id=%s source=%s: supabase is unavailable", account_id, source)
+            logger.warning("save_account_titles skipped for account_id=%s source=%s: supabase is unavailable", normalized_account_id, source)
             return False
 
         payload = {
@@ -2426,11 +2446,11 @@ class AccountsService:
             "titles_source": source,
         }
         try:
-            db.supabase.table("accounts").update(payload).eq("id", str(account_id)).execute()
-            AccountsService._account_titles_cache[str(account_id)] = list(normalized)
+            db.supabase.table("accounts").update(payload).eq("id", normalized_account_id).execute()
+            AccountsService._account_titles_cache[normalized_account_id] = list(normalized)
             return True
         except Exception as e:
-            logger.warning("save_account_titles failed for account_id=%s source=%s error=%s", account_id, source, e)
+            logger.warning("save_account_titles failed for account_id=%s source=%s error=%s", normalized_account_id, source, e)
             return False
 
     @staticmethod
