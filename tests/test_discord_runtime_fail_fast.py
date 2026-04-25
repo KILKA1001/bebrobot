@@ -106,6 +106,37 @@ def test_run_both_async_keeps_telegram_running_after_discord_failure():
     asyncio.run(_exercise())
 
 
+def test_run_both_async_stops_discord_when_telegram_fails():
+    bot_main = load_bot_main()
+    exc = RuntimeError("telegram boom")
+
+    async def _exercise() -> None:
+        discord_cancelled = asyncio.Event()
+
+        async def fake_run_telegram_polling(_token: str) -> None:
+            raise exc
+
+        async def fake_discord_start(_token: str) -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                discord_cancelled.set()
+                raise
+
+        with (
+            patch("bot.main.run_telegram_polling", side_effect=fake_run_telegram_polling),
+            patch.object(bot_main.bot, "start", AsyncMock(side_effect=fake_discord_start)),
+            patch.object(bot_main.bot, "close", AsyncMock()) as close_mock,
+        ):
+            with pytest.raises(RuntimeError, match="telegram boom"):
+                await bot_main._run_both_async("discord-token", "telegram-token")
+
+            assert discord_cancelled.is_set()
+            assert close_mock.await_count >= 1
+
+    asyncio.run(_exercise())
+
+
 def test_restore_runtime_views_once_skips_duplicate_db_reads_on_reconnect():
     bot_main = load_bot_main()
     bot_main.runtime_views_restored = False

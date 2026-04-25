@@ -1187,6 +1187,17 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
                         task_name,
                         ", ".join(sorted(other.get_name() for other in pending)) or "none",
                     )
+                    if task_name == "telegram-runtime":
+                        runtime_errors[task_name] = RuntimeError(
+                            "telegram runtime stopped unexpectedly without exception"
+                        )
+                        for other_task in pending:
+                            if not other_task.done():
+                                logging.error(
+                                    "telegram runtime stopped; cancelling remaining runtime=%s to force full restart",
+                                    other_task.get_name(),
+                                )
+                                other_task.cancel()
                     continue
 
                 runtime_errors[task_name] = exc
@@ -1207,6 +1218,14 @@ async def _run_both_async(discord_token: str, telegram_token: str) -> None:
                     remaining,
                     exc,
                 )
+                if task_name == "telegram-runtime":
+                    for other_task in pending:
+                        if not other_task.done():
+                            logging.error(
+                                "telegram runtime failed; cancelling remaining runtime=%s to force full restart",
+                                other_task.get_name(),
+                            )
+                            other_task.cancel()
 
         if runtime_errors and "telegram-runtime" in runtime_errors:
             raise runtime_errors["telegram-runtime"]
