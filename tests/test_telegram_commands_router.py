@@ -9,7 +9,13 @@ from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, patch
 
 from bot.telegram_bot.commands import get_commands_router
-from bot.telegram_bot.commands.linking import profile_command, roles_catalog_callback, roles_catalog_command
+from bot.telegram_bot.commands.linking import (
+    link_command,
+    link_discord_command,
+    profile_command,
+    roles_catalog_callback,
+    roles_catalog_command,
+)
 from bot.telegram_bot.main import BOT_COMMANDS
 from bot.telegram_bot.commands import proposal as telegram_proposal
 
@@ -22,6 +28,38 @@ def test_get_commands_router_is_singleton_instance() -> None:
 
 
 class TelegramCommandsRouterTests(IsolatedAsyncioTestCase):
+    async def test_link_command_answers_with_html_parse_mode(self) -> None:
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=123),
+            text="/link",
+            chat=SimpleNamespace(type="private"),
+            answer=AsyncMock(),
+        )
+
+        with (
+            patch("bot.telegram_bot.commands.linking.persist_telegram_identity_from_user"),
+            patch("bot.telegram_bot.commands.linking.run_blocking_io", return_value="Тест <b>HTML</b>"),
+        ):
+            await link_command(message)
+
+        message.answer.assert_awaited_once_with("Тест <b>HTML</b>", parse_mode="HTML")
+
+    async def test_link_discord_command_answers_with_html_parse_mode(self) -> None:
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=123),
+            text="/link_discord",
+            chat=SimpleNamespace(type="private"),
+            answer=AsyncMock(),
+        )
+
+        with (
+            patch("bot.telegram_bot.commands.linking.persist_telegram_identity_from_user"),
+            patch("bot.telegram_bot.commands.linking.run_blocking_io", return_value="Код: <code>123</code>"),
+        ):
+            await link_discord_command(message)
+
+        message.answer.assert_awaited_once_with("Код: <code>123</code>", parse_mode="HTML")
+
     async def test_profile_command_resolves_target_from_username_argument(self) -> None:
         message = SimpleNamespace(
             from_user=SimpleNamespace(id=123, full_name="Caller"),

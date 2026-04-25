@@ -920,7 +920,7 @@ async def link_command(message: Message) -> None:
         action="discord" if (message.text or "").strip().lower() in {"/link discord", "/link_discord"} else None,
         logger=logger,
     )
-    await message.answer(response)
+    await message.answer(response, parse_mode=ParseMode.HTML)
 
 
 @router.message(Command("link_discord"))
@@ -937,4 +937,4 @@ async def link_discord_command(message: Message) -> None:
         action="discord",
         logger=logger,
     )
-    await message.answer(response)
+    await message.answer(response, parse_mode=ParseMode.HTML)
