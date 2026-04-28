@@ -17,7 +17,7 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.services.title_management_service import TitleManagementService
-from bot.telegram_bot.commands.roles_admin import _resolve_telegram_target
+from bot.telegram_bot.commands.roles_admin import _resolve_telegram_target, _user_without_account_message
 from bot.telegram_bot.identity import persist_telegram_identity_from_user
 
 logger = logging.getLogger(__name__)
@@ -138,6 +138,23 @@ async def title_command(message: Message) -> None:
         return
     if target.get("error"):
         await message.answer(str(target.get("message") or "❌ Не удалось определить пользователя."))
+        return
+    if not str(target.get("account_id") or "").strip():
+        logger.warning(
+            "telegram title command blocked target without linked account actor_id=%s target_provider=%s target_user_id=%s source=%s",
+            actor_id,
+            target.get("provider"),
+            target.get("provider_user_id"),
+            "group" if message.chat.type != "private" else "private",
+        )
+        await message.answer(
+            _user_without_account_message()
+            + "\n\n"
+            + "Что нужно сделать пользователю:\n"
+            + "1) Выполнить /register в личных сообщениях боту.\n"
+            + "2) Завершить привязку аккаунта.\n"
+            + "3) После этого повторить команду /title."
+        )
         return
 
     flow = PendingTitleFlow(
