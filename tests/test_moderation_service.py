@@ -133,6 +133,7 @@ class _FakeDb:
                 },
             ],
             "moderation_warn_state": [],
+            "moderation_warn_state_by_violation": [],
             "moderation_cases": [],
             "moderation_actions": [],
             "moderation_mutes": [],
@@ -150,6 +151,7 @@ class _FakeDb:
             "moderation_cases": 100,
             "moderation_actions": 1000,
             "moderation_warn_state": 0,
+            "moderation_warn_state_by_violation": 0,
             "moderation_mutes": 200,
             "moderation_bans": 300,
             "moderation_case_fines": 400,
@@ -295,6 +297,7 @@ class ModerationServiceTests(unittest.TestCase):
         self.assertEqual(self.fake_db.tables["moderation_cases"][0]["penalty_rule_id"], 10)
         self.assertEqual(self.fake_db.tables["moderation_cases"][0]["status"], ModerationService.STATUS_APPLIED)
         self.assertEqual(self.fake_db.tables["moderation_warn_state"][0]["active_warn_count"], 1)
+        self.assertEqual(self.fake_db.tables["moderation_warn_state_by_violation"][0]["active_warn_count"], 1)
         self.assertEqual(len(self.fake_db.tables["moderation_mutes"]), 1)
         self.assertEqual(
             [row["action_type"] for row in self.fake_db.tables["moderation_actions"]],
@@ -329,6 +332,26 @@ class ModerationServiceTests(unittest.TestCase):
             [row["action_type"] for row in self.fake_db.tables["moderation_actions"]],
             ["warn", "ban"],
         )
+
+    def test_prepare_payload_resets_step_for_new_violation_type(self):
+        self.mock_resolve.side_effect = ["acc-actor", "acc-target", "acc-actor", "acc-target"]
+        self.fake_db.tables["moderation_violation_types"].append({"id": 2, "code": "bot_flood", "title": "Флуд ботов", "is_active": True})
+        self.fake_db.tables["moderation_penalty_rules"].append(
+            {"id": 20, "violation_type_id": 2, "escalation_step": 1, "warn_count_before": 0, "apply_warn": True, "mute_minutes": 0, "fine_points": 0, "apply_ban": False, "is_active": True}
+        )
+        self.fake_db.tables["moderation_warn_state"] = [{"id": 1, "account_id": "acc-target", "active_warn_count": 3}]
+        self.fake_db.tables["moderation_warn_state_by_violation"] = [{"id": 1, "account_id": "acc-target", "violation_type_id": 1, "active_warn_count": 1}]
+
+        spam_preview = ModerationService.prepare_moderation_payload("discord", "111", "222", "spam", {"skip_authority": True})
+        bot_flood_preview = ModerationService.prepare_moderation_payload("discord", "111", "222", "bot_flood", {"skip_authority": True})
+
+        self.assertTrue(spam_preview["ok"])
+        self.assertTrue(bot_flood_preview["ok"])
+        self.assertEqual(spam_preview["warn_count_before"], 1)
+        self.assertEqual(bot_flood_preview["warn_count_before"], 0)
+        self.assertEqual(bot_flood_preview["global_warn_before"], 3)
+        self.assertIn("Шаг по текущему нарушению", bot_flood_preview["ui_payload"]["preview_text"])
+        self.assertIn("Общие предупреждения", bot_flood_preview["ui_payload"]["preview_text"])
 
     def test_apply_violation_creates_manual_case_fine_when_rule_requires_payment(self):
         self.mock_resolve.side_effect = ["acc-actor", "acc-target"]

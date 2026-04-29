@@ -1031,17 +1031,26 @@ class ModerationService:
 
     @staticmethod
     def _load_warn_state(account_id: str, violation_type_id: Any | None = None) -> dict[str, Any]:
+        violation_state = ModerationService._load_warn_state_by_violation(account_id, violation_type_id)
+        projected_state = ModerationService._load_warn_state_global(account_id)
+        state = dict(violation_state)
+        state["global_active_warn_count"] = ModerationService._current_warn_count(projected_state)
+        state["has_prior_mutes"] = ModerationService._is_truthy(projected_state.get("has_prior_mutes"))
+        return state
+
+    @staticmethod
+    def _load_warn_state_by_violation(account_id: str, violation_type_id: Any | None = None) -> dict[str, Any]:
         violation_state: dict[str, Any] = {}
-        if violation_type_id is not None:
-            violation_state = (
-                ModerationService._select_single(
-                    "moderation_warn_state_by_violation",
-                    account_id=account_id,
-                    violation_type_id=violation_type_id,
-                )
-                or {}
+        if violation_type_id is None:
+            return {}
+        violation_state = (
+            ModerationService._select_single(
+                "moderation_warn_state_by_violation",
+                account_id=account_id,
+                violation_type_id=violation_type_id,
             )
-        projected_state = ModerationService._select_single("moderation_warn_state", account_id=account_id) or {}
+            or {}
+        )
         now = datetime.now(timezone.utc)
         cases = ModerationService._select_many("moderation_cases", account_id=account_id)
         active_warn_count = 0
@@ -1049,7 +1058,35 @@ class ModerationService:
         for case_row in cases:
             if str(case_row.get("status") or "").strip().lower() != ModerationService.STATUS_APPLIED:
                 continue
-            if violation_type_id is not None and case_row.get("violation_type_id") != violation_type_id:
+            if case_row.get("violation_type_id") != violation_type_id:
+                continue
+            for action_row in ModerationService._select_many("moderation_actions", case_id=case_row.get("id")):
+                if str(action_row.get("action_type") or "").strip().lower() != ModerationService.ACTION_WARN:
+                    continue
+                has_prior_warns = True
+                ends_at = ModerationService._parse_dt(action_row.get("ends_at"))
+                if ends_at is not None and ends_at <= now:
+                    continue
+                active_warn_count += max(0, ModerationService._safe_int(action_row.get("value_numeric"), 1) or 1)
+        if not cases and violation_state:
+            active_warn_count = ModerationService._safe_int(
+                violation_state.get("active_warn_count", violation_state.get("warn_count", 0)),
+                active_warn_count,
+            )
+        state = dict(violation_state)
+        state["active_warn_count"] = active_warn_count
+        state["has_prior_warns"] = has_prior_warns
+        return state
+
+    @staticmethod
+    def _load_warn_state_global(account_id: str) -> dict[str, Any]:
+        projected_state = ModerationService._select_single("moderation_warn_state", account_id=account_id) or {}
+        now = datetime.now(timezone.utc)
+        cases = ModerationService._select_many("moderation_cases", account_id=account_id)
+        active_warn_count = 0
+        has_prior_warns = ModerationService._is_truthy(projected_state.get("has_prior_warns"))
+        for case_row in cases:
+            if str(case_row.get("status") or "").strip().lower() != ModerationService.STATUS_APPLIED:
                 continue
             for action_row in ModerationService._select_many("moderation_actions", case_id=case_row.get("id")):
                 if str(action_row.get("action_type") or "").strip().lower() != ModerationService.ACTION_WARN:
@@ -1060,15 +1097,14 @@ class ModerationService:
                     continue
                 active_warn_count += max(0, ModerationService._safe_int(action_row.get("value_numeric"), 1) or 1)
 
-        if not cases and violation_state:
+        if not cases and projected_state:
             active_warn_count = ModerationService._safe_int(
-                violation_state.get("active_warn_count", violation_state.get("warn_count", 0)),
+                projected_state.get("active_warn_count", projected_state.get("warn_count", 0)),
                 active_warn_count,
             )
-
         mute_rows = ModerationService._select_many("moderation_mutes", account_id=account_id)
         has_prior_mutes = bool(mute_rows) or ModerationService._is_truthy(projected_state.get("has_prior_mutes"))
-        state = dict(violation_state)
+        state = dict(projected_state)
         state["active_warn_count"] = active_warn_count
         state["has_prior_warns"] = has_prior_warns
         state["has_prior_mutes"] = has_prior_mutes
@@ -1625,6 +1661,7 @@ class ModerationService:
         next_rule: dict[str, Any] | None,
         all_rules: list[dict[str, Any]],
         warn_count_before: int,
+        global_warn_before: int,
         authority: ModerationAuthorityDecision,
         context: dict[str, Any],
         case_id: Any | None = None,
@@ -1670,18 +1707,33 @@ class ModerationService:
         how_it_works_lines = ModerationService._how_it_works_lines()
         if ModerationService._rule_only_if_clean_record(rule):
             how_it_works_lines.append("• Для этого кейса сработало мягкое правило первого чистого проступка: сначала только предупреждение.")
+        global_warn_after = global_warn_before + warn_increment
+        global_warn_before_text = ModerationService._warn_progress_text(
+            warn_count=global_warn_before,
+            warn_limit=warn_limit,
+            suffix="до применения",
+        )
+        global_warn_after_text = ModerationService._warn_progress_text(
+            warn_count=global_warn_after,
+            warn_limit=warn_limit,
+            suffix="после применения",
+        )
+        escalation_step = ModerationService._rule_escalation_step(rule, warn_count_before)
         preview_lines = [
             f"👤 Нарушитель: {target_subject.get('label') or target_subject.get('provider_user_id') or 'неизвестно'}",
             f"📘 Нарушение: {violation_title}",
-            f"⚠️ Предупреждений до применения: {warn_before_text}",
+            f"⚠️ Шаг по текущему нарушению: {warn_before_text}",
+            f"⚠️ Общие предупреждения: {global_warn_before_text} до бана",
             f"🧮 Будет применено сейчас: {selected_action_summary}",
-            f"📈 Предупреждений после применения: {warn_after_text}",
+            f"📈 Шаг по текущему нарушению после применения: {warn_after_text}",
+            f"📈 Общие предупреждения после применения: {global_warn_after_text} до бана",
             f"⏭️ Следующий шаг: {next_step_text}",
         ]
         moderator_result_lines = [
             f"Причина: {violation_title}",
             f"Выдано сейчас: {selected_action_summary}",
-            f"Предупреждений теперь: {warn_after_text}",
+            f"Шаг по текущему нарушению: {warn_after_text}",
+            f"Общие предупреждения: {global_warn_after_text} до бана",
             next_step_text,
         ]
         history_hint = (
@@ -1699,6 +1751,8 @@ class ModerationService:
             "violation_title": violation_title,
             "warn_count_before": warn_count_before,
             "warn_count_after": warn_count_after,
+            "global_warn_before": global_warn_before,
+            "global_warn_after": global_warn_after,
             "warn_count_before_text": warn_before_text,
             "warn_count_after_text": warn_after_text,
             "ban_threshold": warn_limit,
@@ -1723,7 +1777,7 @@ class ModerationService:
             "case_id": case_id,
             "moderation_op_key": moderation_op_key,
             "rule_id": rule.get("id"),
-            "escalation_step": ModerationService._rule_escalation_step(rule, warn_count_before),
+            "escalation_step": escalation_step,
             "context": dict(context),
             "ban_applied": should_ban,
             "permanent_ban": permanent_ban,
@@ -1782,7 +1836,9 @@ class ModerationService:
                 }
 
         warn_state_before = ModerationService._load_warn_state(str(target_subject["account_id"]), violation_type["id"])
+        warn_state_global_before = ModerationService._load_warn_state_global(str(target_subject["account_id"]))
         warn_count_before = ModerationService._current_warn_count(warn_state_before)
+        global_warn_before = ModerationService._current_warn_count(warn_state_global_before)
         is_clean_record = ModerationService._has_clean_record(warn_state_before)
         all_rules = ModerationService._load_penalty_rules(violation_type["id"])
         rule = ModerationService._load_penalty_rule(violation_type["id"], warn_count_before, is_clean_record=is_clean_record)
@@ -1844,17 +1900,21 @@ class ModerationService:
             next_rule=next_rule,
             all_rules=all_rules,
             warn_count_before=warn_count_before,
+            global_warn_before=global_warn_before,
             authority=authority,
             context=context,
             moderation_op_key=moderation_op_key,
         )
         logger.info(
-            "moderation preview counters account_id=%s violation_type_id=%s warn_count_before=%s warn_count_after=%s rule_id=%s",
+            "moderation preview counters account_id=%s violation_type_id=%s per_violation_before=%s per_violation_after=%s global_warn_before=%s global_warn_after=%s rule_id=%s op_key=%s",
             target_subject.get("account_id"),
             violation_type.get("id"),
             warn_count_before,
             payload.get("warn_count_after"),
+            global_warn_before,
+            payload.get("global_warn_after"),
             rule.get("id"),
+            moderation_op_key,
         )
         return {
             "ok": True,
@@ -1865,6 +1925,8 @@ class ModerationService:
             "next_rule": next_rule,
             "warn_count_before": warn_count_before,
             "warn_count_after": payload["warn_count_after"],
+            "global_warn_before": global_warn_before,
+            "global_warn_after": payload["global_warn_after"],
             "selected_actions": payload["selected_actions"],
             "authority": authority,
             "ui_payload": payload,
@@ -1876,7 +1938,8 @@ class ModerationService:
         *,
         account_id: str,
         violation_type_id: Any,
-        warn_count_after: int,
+        per_violation_warn_count_after: int,
+        global_warn_count_after: int,
         case_id: Any,
         updated_at: str,
         has_prior_warns: bool = True,
@@ -1885,7 +1948,7 @@ class ModerationService:
         payload_by_violation = {
             "account_id": account_id,
             "violation_type_id": violation_type_id,
-            "active_warn_count": warn_count_after,
+            "active_warn_count": per_violation_warn_count_after,
             "last_case_id": case_id,
             "updated_at": updated_at,
             "last_warn_refresh_at": updated_at,
@@ -1904,6 +1967,21 @@ class ModerationService:
             return updated_rows[0] if updated_rows else payload_by_violation
 
         inserted = ModerationService._insert_row("moderation_warn_state_by_violation", payload_by_violation)
+        global_payload = {
+            "account_id": account_id,
+            "active_warn_count": global_warn_count_after,
+            "last_violation_type_id": violation_type_id,
+            "last_case_id": case_id,
+            "updated_at": updated_at,
+            "last_warn_refresh_at": updated_at,
+            "has_prior_warns": has_prior_warns,
+            "has_prior_mutes": has_prior_mutes,
+        }
+        existing_global = ModerationService._select_single("moderation_warn_state", account_id=account_id)
+        if existing_global:
+            ModerationService._update_rows("moderation_warn_state", {"account_id": account_id}, global_payload)
+        else:
+            ModerationService._insert_row("moderation_warn_state", global_payload)
         return inserted or payload_by_violation
 
     @staticmethod
@@ -2170,6 +2248,8 @@ class ModerationService:
         ui_payload = dict(preview["ui_payload"])
         warn_count_before = int(preview["warn_count_before"])
         warn_count_after = int(preview["warn_count_after"])
+        global_warn_before = int(preview.get("global_warn_before") or ui_payload.get("global_warn_before") or 0)
+        global_warn_after = int(preview.get("global_warn_after") or ui_payload.get("global_warn_after") or global_warn_before)
         authority: ModerationAuthorityDecision = preview["authority"]
         moderation_op_key = str(preview.get("moderation_op_key") or ui_payload.get("moderation_op_key") or ModerationService._build_op_key(context, actor_subject, target_subject, violation_code))
         ui_payload["moderation_op_key"] = moderation_op_key
@@ -2314,7 +2394,8 @@ class ModerationService:
                 warn_state = ModerationService._save_warn_state(
                     account_id=target_subject["account_id"],
                     violation_type_id=violation_type["id"],
-                    warn_count_after=warn_count_after,
+                    per_violation_warn_count_after=warn_count_after,
+                    global_warn_count_after=global_warn_after,
                     case_id=moderation_case["id"],
                     updated_at=created_at,
                     has_prior_warns=True,
@@ -2323,12 +2404,16 @@ class ModerationService:
                 if not warn_state:
                     raise RuntimeError("Не удалось обновить состояние предупреждений")
                 logger.info(
-                    "moderation apply counters account_id=%s violation_type_id=%s warn_count_before=%s warn_count_after=%s rule_id=%s",
+                    "moderation apply counters account_id=%s violation_type_id=%s per_violation_before=%s per_violation_after=%s global_warn_before=%s global_warn_after=%s rule_id=%s case_id=%s op_key=%s",
                     target_subject.get("account_id"),
                     violation_type.get("id"),
                     warn_count_before,
                     warn_count_after,
+                    global_warn_before,
+                    global_warn_after,
                     rule.get("id"),
+                    moderation_case.get("id"),
+                    moderation_op_key,
                 )
                 warn_changed = True
                 completed_steps.append(current_step)
