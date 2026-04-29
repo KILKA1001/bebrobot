@@ -1030,14 +1030,26 @@ class ModerationService:
         return None
 
     @staticmethod
-    def _load_warn_state(account_id: str) -> dict[str, Any]:
+    def _load_warn_state(account_id: str, violation_type_id: Any | None = None) -> dict[str, Any]:
+        violation_state: dict[str, Any] = {}
+        if violation_type_id is not None:
+            violation_state = (
+                ModerationService._select_single(
+                    "moderation_warn_state_by_violation",
+                    account_id=account_id,
+                    violation_type_id=violation_type_id,
+                )
+                or {}
+            )
         projected_state = ModerationService._select_single("moderation_warn_state", account_id=account_id) or {}
         now = datetime.now(timezone.utc)
         cases = ModerationService._select_many("moderation_cases", account_id=account_id)
         active_warn_count = 0
-        has_prior_warns = ModerationService._is_truthy(projected_state.get("has_prior_warns"))
+        has_prior_warns = ModerationService._is_truthy(violation_state.get("has_prior_warns"))
         for case_row in cases:
             if str(case_row.get("status") or "").strip().lower() != ModerationService.STATUS_APPLIED:
+                continue
+            if violation_type_id is not None and case_row.get("violation_type_id") != violation_type_id:
                 continue
             for action_row in ModerationService._select_many("moderation_actions", case_id=case_row.get("id")):
                 if str(action_row.get("action_type") or "").strip().lower() != ModerationService.ACTION_WARN:
@@ -1048,15 +1060,15 @@ class ModerationService:
                     continue
                 active_warn_count += max(0, ModerationService._safe_int(action_row.get("value_numeric"), 1) or 1)
 
-        if not cases and projected_state:
+        if not cases and violation_state:
             active_warn_count = ModerationService._safe_int(
-                projected_state.get("active_warn_count", projected_state.get("warn_count", 0)),
+                violation_state.get("active_warn_count", violation_state.get("warn_count", 0)),
                 active_warn_count,
             )
 
         mute_rows = ModerationService._select_many("moderation_mutes", account_id=account_id)
         has_prior_mutes = bool(mute_rows) or ModerationService._is_truthy(projected_state.get("has_prior_mutes"))
-        state = dict(projected_state)
+        state = dict(violation_state)
         state["active_warn_count"] = active_warn_count
         state["has_prior_warns"] = has_prior_warns
         state["has_prior_mutes"] = has_prior_mutes
@@ -1769,7 +1781,7 @@ class ModerationService:
                     "message": "Это нарушение применяется только к администраторам.",
                 }
 
-        warn_state_before = ModerationService._load_warn_state(str(target_subject["account_id"]))
+        warn_state_before = ModerationService._load_warn_state(str(target_subject["account_id"]), violation_type["id"])
         warn_count_before = ModerationService._current_warn_count(warn_state_before)
         is_clean_record = ModerationService._has_clean_record(warn_state_before)
         all_rules = ModerationService._load_penalty_rules(violation_type["id"])
@@ -1836,6 +1848,14 @@ class ModerationService:
             context=context,
             moderation_op_key=moderation_op_key,
         )
+        logger.info(
+            "moderation preview counters account_id=%s violation_type_id=%s warn_count_before=%s warn_count_after=%s rule_id=%s",
+            target_subject.get("account_id"),
+            violation_type.get("id"),
+            warn_count_before,
+            payload.get("warn_count_after"),
+            rule.get("id"),
+        )
         return {
             "ok": True,
             "actor": actor_subject,
@@ -1862,27 +1882,29 @@ class ModerationService:
         has_prior_warns: bool = True,
         has_prior_mutes: bool = False,
     ) -> dict[str, Any]:
-        payload = {
+        payload_by_violation = {
             "account_id": account_id,
+            "violation_type_id": violation_type_id,
             "active_warn_count": warn_count_after,
-            "last_violation_type_id": violation_type_id,
             "last_case_id": case_id,
             "updated_at": updated_at,
             "last_warn_refresh_at": updated_at,
-            "has_prior_warns": has_prior_warns,
-            "has_prior_mutes": has_prior_mutes,
         }
-        existing_state = ModerationService._select_single("moderation_warn_state", account_id=account_id)
+        existing_state = ModerationService._select_single(
+            "moderation_warn_state_by_violation",
+            account_id=account_id,
+            violation_type_id=violation_type_id,
+        )
         if existing_state:
             updated_rows = ModerationService._update_rows(
-                "moderation_warn_state",
-                {"account_id": account_id},
-                payload,
+                "moderation_warn_state_by_violation",
+                {"account_id": account_id, "violation_type_id": violation_type_id},
+                payload_by_violation,
             )
-            return updated_rows[0] if updated_rows else payload
+            return updated_rows[0] if updated_rows else payload_by_violation
 
-        inserted = ModerationService._insert_row("moderation_warn_state", payload)
-        return inserted or payload
+        inserted = ModerationService._insert_row("moderation_warn_state_by_violation", payload_by_violation)
+        return inserted or payload_by_violation
 
     @staticmethod
     def _remember_mute_history(account_id: str, updated_at: str) -> dict[str, Any]:
@@ -2195,7 +2217,9 @@ class ModerationService:
                 rule=rule,
                 violation_type=violation_type,
                 warnings_before=warn_count_before,
-                warnings_after=ModerationService._current_warn_count(ModerationService._load_warn_state(target_subject["account_id"])),
+                warnings_after=ModerationService._current_warn_count(
+                    ModerationService._load_warn_state(target_subject["account_id"], violation_type.get("id"))
+                ),
                 applied_actions=existing_action_rows,
                 mute_until=None,
                 ban_applied=ModerationService.ACTION_BAN in selected_actions,
@@ -2207,7 +2231,7 @@ class ModerationService:
 
         now = datetime.now(timezone.utc)
         created_at = now.isoformat()
-        warn_state_before = ModerationService._load_warn_state(str(target_subject["account_id"]))
+        warn_state_before = ModerationService._load_warn_state(str(target_subject["account_id"]), violation_type["id"])
         case_payload = {
             "account_id": target_subject["account_id"],
             "actor_account_id": actor_subject["account_id"],
@@ -2298,6 +2322,14 @@ class ModerationService:
                 )
                 if not warn_state:
                     raise RuntimeError("Не удалось обновить состояние предупреждений")
+                logger.info(
+                    "moderation apply counters account_id=%s violation_type_id=%s warn_count_before=%s warn_count_after=%s rule_id=%s",
+                    target_subject.get("account_id"),
+                    violation_type.get("id"),
+                    warn_count_before,
+                    warn_count_after,
+                    rule.get("id"),
+                )
                 warn_changed = True
                 completed_steps.append(current_step)
 
@@ -2653,7 +2685,9 @@ class ModerationService:
                 rule=rule,
                 violation_type=violation_type,
                 warnings_before=warn_count_before,
-                warnings_after=ModerationService._current_warn_count(ModerationService._load_warn_state(target_subject["account_id"])),
+                warnings_after=ModerationService._current_warn_count(
+                    ModerationService._load_warn_state(target_subject["account_id"], violation_type.get("id"))
+                ),
                 applied_actions=applied_actions,
                 mute_until=mute_until,
                 ban_applied=bool(ban_row),
